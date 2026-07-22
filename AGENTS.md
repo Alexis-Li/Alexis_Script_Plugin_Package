@@ -1,0 +1,80 @@
+# Repository Instructions
+
+## Repository Purpose
+
+This repository is a monorepo containing independent Autodesk Maya scripts,
+Maya tools, and Unreal Engine plugins for 3D art production.
+
+The repository root is the only Git repository. Do not create nested Git
+repositories under any project directory.
+
+Every structured tool or plugin must remain independently installable,
+testable, versioned, and packageable.
+
+## Repository Layout
+
+- `maya/scripts/`: self-contained Maya shelf scripts
+- `maya/tools/`: structured Maya tools and plugins
+- `unreal/Plugins/`: standalone Unreal Engine plugins
+- `templates/`: project templates
+- `tools/`: repository-level validation and packaging scripts
+- `docs/`: shared development documentation
+
+## General Rules
+
+- Make the smallest coherent change required by the task.
+- Do not refactor unrelated code.
+- Do not rename public APIs without explicit approval.
+- Do not add machine-specific absolute paths.
+- Do not commit secrets, credentials, personal paths, caches, or generated files.
+- Do not modify third-party code unless explicitly required.
+- Preserve backward compatibility unless a breaking change is requested.
+- Update documentation when installation, public APIs, supported versions,
+  directory structures, or user-visible behavior change.
+- Do not over-engineer simple Maya shelf scripts.
+- Keep user-facing `README.md` files in English and pair them with a Chinese
+  `README_CN.md` containing the same information.
+- Limit user-facing READMEs to an introduction, installation, and usage.
+  Put development rules and internal details in `AGENTS.md` or `docs/`.
+
+## Naming Conventions
+
+- Directories and repositories: lowercase kebab-case
+- Python packages and modules: lowercase snake_case
+- Python classes: PascalCase
+- Unreal plugins and modules: PascalCase
+- Unreal C++ classes: Unreal Engine naming conventions
+- Public versions: Semantic Versioning where practical
+
+## Project Boundaries
+
+Each structured project owns its README, changelog, version information,
+tests, documentation, packaging scripts, and runtime dependencies.
+
+Sibling projects must not depend on each other unless the dependency is
+explicitly documented and independently packageable.
+
+## Generated Files
+
+Never commit Python caches, Maya temporary files, Unreal generated folders,
+Visual Studio generated files, or packaged release archives. Release archives
+belong in GitHub Releases, not Git history.
+
+## Validation
+
+Before considering a task complete:
+
+1. Run the narrowest relevant tests.
+2. Run repository structural validation.
+3. Confirm no generated files were added.
+4. Confirm documentation remains accurate.
+5. Report tests that could not be run and why.
+
+## Git Rules
+
+- Do not initialize nested repositories.
+- Do not force-push or use destructive reset operations.
+- Do not rewrite unrelated history.
+- Keep commits scoped to one logical change.
+- Use project-prefixed release tags such as `maya-mesh-normal-tool-v0.2.0`
+  and `ue-asset-audit-v1.1.0`.
