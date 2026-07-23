@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from _repo_tools import ROOT, emit, pascal_case, require_kebab_name, snake_case
+from _repo_tools import ROOT, emit, pascal_case, require_kebab_name, require_pascal_name, snake_case
 
 
 KINDS = {
@@ -20,9 +20,9 @@ def _renamed(relative_path: Path, pascal: str, snake: str, kind: str) -> Path:
     parts = []
     for part in relative_path.parts:
         if kind == "maya-script" and part == "script_name.py":
-            part = snake + ".py"
-        elif part == "ToolName.mod":
-            part = pascal + ".mod"
+            part = pascal + ".py"
+        elif part == "ToolName.py":
+            part = pascal + ".py"
         elif part == "ToolName":
             part = pascal
         elif part == "tool_name":
@@ -44,12 +44,16 @@ def _renamed(relative_path: Path, pascal: str, snake: str, kind: str) -> Path:
 
 
 def create(kind: str, name: str, apply: bool = False) -> dict:
-    name = require_kebab_name(name)
+    if kind in {"maya-script", "maya-tool"}:
+        pascal = require_pascal_name(name)
+        snake = ""
+    else:
+        name = require_kebab_name(name)
+        pascal = pascal_case(name)
+        snake = snake_case(name)
     template_name, destination_parent = KINDS[kind]
     source = ROOT / "templates" / template_name
-    pascal = pascal_case(name)
-    snake = snake_case(name)
-    destination_name = pascal if kind == "unreal-plugin" else name
+    destination_name = pascal if kind in {"maya-script", "maya-tool", "unreal-plugin"} else name
     destination = ROOT / destination_parent / destination_name
     if destination.exists():
         raise FileExistsError("target already exists: {0}/{1}".format(destination_parent, destination_name))
@@ -76,6 +80,9 @@ def create(kind: str, name: str, apply: bool = False) -> dict:
             text = text.replace("{{PYTHON_PACKAGE}}", snake)
             text = text.replace("project-name", name)
             text = text.replace("project_name", snake)
+            text = text.replace("script_name.py", pascal + ".py")
+            text = text.replace("Script Name", pascal)
+            text = text.replace("脚本名称", pascal)
             destination_path.write_text(text, encoding="utf-8", newline="\n")
     return {
         "ok": True,
@@ -88,7 +95,7 @@ def create(kind: str, name: str, apply: bool = False) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=sorted(KINDS))
-    parser.add_argument("name", help="Project name in lowercase kebab-case.")
+    parser.add_argument("name", help="PascalCase for Maya projects; lowercase kebab-case otherwise.")
     parser.add_argument("--apply", action="store_true", help="Create files; otherwise preview only.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     args = parser.parse_args(argv)

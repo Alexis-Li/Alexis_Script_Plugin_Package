@@ -31,7 +31,7 @@ __author__ = "Alexis_Lee"
 __version__ = "4.0.4"
 
 WINDOW_NAME = "NitroPolyFloatingWindow"
-WINDOW_TITLE = "NitroPoly 4.0.4"
+WINDOW_TITLE = "NitroPoly " + __version__
 _INSTANCE = None
 
 
@@ -2611,3 +2611,7 @@ def uninitializePlugin(plugin_object):
     except Exception:
         pass
     _INSTANCE = None
+
+
+if __name__ == "__main__":
+    main()

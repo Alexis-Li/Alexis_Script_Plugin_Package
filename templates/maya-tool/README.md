@@ -4,16 +4,17 @@
 
 ## Introduction
 
-Describe what the Maya tool does and which Maya versions it supports.
+Describe what the Maya tool does.
+
+## Supported Versions
+
+List the supported Maya and Python versions.
 
 ## Installation
 
-Copy `package/{{TOOL_NAME}}.mod` and `package/{{TOOL_NAME}}/` to a Maya module
-location, then restart Maya.
+Copy the required files from `scripts/`, `plug-ins/`, and `icons/` to the
+matching Maya directories.
 
 ## Usage
 
-```python
-from {{PYTHON_PACKAGE}} import bootstrap
-bootstrap.show()
-```
+Run `scripts/{{TOOL_NAME}}.py` in Maya's Python Script Editor.

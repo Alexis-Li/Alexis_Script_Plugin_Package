@@ -4,7 +4,11 @@
 
 ## 简介
 
-说明 Unreal Engine 编辑器插件的用途和支持的引擎版本。
+说明 Unreal Engine 编辑器插件的用途。
+
+## 支持版本
+
+列出支持的 Unreal Engine 版本。
 
 ## 安装方式
 

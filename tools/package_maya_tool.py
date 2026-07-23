@@ -1,16 +1,12 @@
-"""Build a deterministic Maya module archive; dry-run unless --apply is used."""
+"""Build a deterministic Maya tool archive; dry-run unless --apply is used."""
 
 from __future__ import annotations
 
 import argparse
-import re
 import zipfile
 from pathlib import Path
 
-from _repo_tools import ROOT, emit, require_kebab_name
-
-
-MOD_RE = re.compile(r"^\+\s+(\S+)\s+(\S+)\s+", re.MULTILINE)
+from _repo_tools import ROOT, emit, maya_version, require_pascal_name
 
 
 def _write_archive(archive: Path, project: Path, files: list[Path]) -> None:
@@ -25,17 +21,16 @@ def _write_archive(archive: Path, project: Path, files: list[Path]) -> None:
 
 
 def package(name: str, output_dir: Path, apply: bool = False) -> dict:
-    name = require_kebab_name(name)
+    name = require_pascal_name(name)
     project = ROOT / "maya" / "tools" / name
-    module_files = list((project / "package").glob("*.mod")) if project.is_dir() else []
-    if len(module_files) != 1:
-        raise ValueError("Maya tool must contain exactly one package/*.mod")
-    match = MOD_RE.search(module_files[0].read_text(encoding="utf-8-sig"))
-    if not match:
-        raise ValueError("invalid Maya module file")
-    tool_name, version = match.groups()
+    if not project.is_dir():
+        raise ValueError("Maya tool not found")
+    version = maya_version(project)
     included_roots = [
-        project / "package",
+        project / "scripts",
+        project / "plug-ins",
+        project / "icons",
+        project / "presets",
         project / "README.md",
         project / "README_CN.md",
         project / "CHANGELOG.md",
@@ -47,7 +42,7 @@ def package(name: str, output_dir: Path, apply: bool = False) -> dict:
             files.append(item)
         elif item.is_dir():
             files.extend(path for path in item.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
-    archive = output_dir / "{0}-{1}.zip".format(tool_name, version)
+    archive = output_dir / "{0}-{1}.zip".format(name, version)
     if apply:
         _write_archive(archive, project, sorted(files))
     return {
@@ -60,7 +55,7 @@ def package(name: str, output_dir: Path, apply: bool = False) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("name", help="Maya tool directory name in kebab-case.")
+    parser.add_argument("name", help="Maya tool directory name in PascalCase.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "releases")
     parser.add_argument("--apply", action="store_true", help="Write the archive; otherwise preview only.")
     parser.add_argument("--json", action="store_true")

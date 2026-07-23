@@ -19,6 +19,11 @@ under `unreal/Plugins/`.
 - Implementation details belong in `Private/`.
 - Avoid unnecessary `PublicDependencyModuleNames`.
 
+## Naming
+
+- Unreal plugins and modules use PascalCase.
+- Unreal C++ classes follow Unreal Engine naming conventions.
+
 ## Generated Files
 
 Do not commit `Binaries/`, `Intermediate/`, `Saved/`, `DerivedDataCache/`,

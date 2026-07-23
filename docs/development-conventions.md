@@ -21,11 +21,12 @@ Maya and Unreal runtime code must use the versions shipped by the target host.
 
 ## Project ownership
 
-Structured projects own their README, changelog, version, tests, installation
-instructions, and packaging behavior. Release archives go to GitHub Releases,
-not Git history.
+Structured projects own their README, changelog, version, runtime dependencies,
+installation metadata, and any project-specific tests or documentation they
+need. Repository tools provide shared validation and packaging behavior.
+Release archives go to GitHub Releases, not Git history.
 
-User-facing projects provide an English `README.md` and matching Chinese
-`README_CN.md`. Keep both focused on introduction, installation, and usage;
-development and repository-maintenance details belong in `docs/` or
-`AGENTS.md`.
+The root English and Chinese READMEs explain the repository, list its tools,
+link documentation, and show how to start development. Project READMEs contain
+only an introduction, supported versions, installation, and usage;
+development and repository-maintenance details belong in `docs/` or `AGENTS.md`.

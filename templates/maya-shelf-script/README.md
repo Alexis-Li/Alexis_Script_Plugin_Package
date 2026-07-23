@@ -4,8 +4,11 @@
 
 ## Introduction
 
-Describe what the script does, its supported Maya versions, and any selection
-or scene state required before running it.
+Describe what the script does and any required selection or scene state.
+
+## Supported Versions
+
+List the supported Maya and Python versions.
 
 ## Installation
 
