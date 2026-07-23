@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from _repo_tools import ROOT, emit
+from _repo_tools import ROOT, emit, maya_version
 
 
 REQUIRED_PATHS = (
@@ -61,6 +61,7 @@ FORBIDDEN_DIRS = {
 FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".sln", ".suo", ".opensdf", ".sdf", ".vc.db", ".vc.opendb", ".zip", ".7z"}
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
 TEXT_SUFFIXES = {".py", ".md", ".json", ".ini", ".uplugin", ".uproject", ".cs", ".cpp", ".h", ".toml", ".yml", ".yaml"}
+PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 
 
 def _iter_files(root: Path):
@@ -103,6 +104,8 @@ def _validate_json(path: Path, errors: list[str], root: Path) -> None:
 def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
     scripts_root = root / "maya" / "scripts"
     for project in sorted(path for path in scripts_root.iterdir() if path.is_dir()):
+        if not PASCAL_RE.fullmatch(project.name):
+            errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
         files = [path for path in project.iterdir() if path.is_file() and path.name != ".gitkeep"]
         python_files = [path for path in files if path.suffix == ".py"]
         if (
@@ -116,7 +119,13 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
                 )
             )
             continue
-        unexpected = [path.name for path in project.iterdir() if path.is_dir()]
+        if python_files[0].stem != project.name:
+            errors.append("shelf script file must match project name: {0}.py".format(project.name))
+        unexpected = [
+            path.name
+            for path in project.iterdir()
+            if path.is_dir() and path.name.lower() not in FORBIDDEN_DIRS
+        ]
         if unexpected:
             errors.append("shelf script {0} contains directories: {1}".format(project.name, ", ".join(unexpected)))
         source = python_files[0].read_text(encoding="utf-8-sig")
@@ -127,12 +136,26 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
 def _validate_maya_tools(root: Path, errors: list[str]) -> None:
     tools_root = root / "maya" / "tools"
     for project in sorted(path for path in tools_root.iterdir() if path.is_dir()):
-        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE", "package", "tests"):
+        if not PASCAL_RE.fullmatch(project.name):
+            errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
+        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
             if not (project / required).exists():
                 errors.append("Maya tool {0} is missing {1}".format(project.name, required))
-        module_files = list((project / "package").glob("*.mod")) if (project / "package").is_dir() else []
-        if len(module_files) != 1:
-            errors.append("Maya tool {0} must contain exactly one package/*.mod".format(project.name))
+        if (project / "package").exists():
+            errors.append("Maya tool {0} contains obsolete package/ nesting".format(project.name))
+        runtime_dirs = [project / name for name in ("scripts", "plug-ins", "icons")]
+        if not any(path.is_dir() for path in runtime_dirs):
+            errors.append("Maya tool {0} needs scripts/, plug-ins/, or icons/".format(project.name))
+        for runtime_dir in runtime_dirs[:2]:
+            if not runtime_dir.is_dir():
+                continue
+            for runtime_file in runtime_dir.glob("*.py"):
+                if not PASCAL_RE.fullmatch(runtime_file.stem):
+                    errors.append("Maya runtime file must use PascalCase: {0}".format(runtime_file.name))
+        try:
+            maya_version(project)
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append("Maya tool {0}: {1}".format(project.name, exc))
 
 
 def _validate_unreal(root: Path, errors: list[str]) -> None:

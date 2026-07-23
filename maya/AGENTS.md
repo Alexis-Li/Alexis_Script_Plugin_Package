@@ -1,102 +1,90 @@
 # Maya Development Instructions
 
-## Project Classification
+## Default to One File
 
-Always start with the smallest structure that safely satisfies the requirement.
+Start with one Python file that runs directly in Maya's Python Script Editor.
+Do not add a package, bootstrap module, installer, icon, configuration, or
+resource directory unless the requested behavior needs it.
 
-### Shelf scripts
+Place a self-contained script at:
 
-Place a shelf script in `maya/scripts/<script-name>/` only when all of the
-following are true:
+```text
+maya/scripts/<ToolName>/
+├─ <ToolName>.py
+├─ README.md
+└─ README_CN.md
+```
 
-- The implementation reasonably remains one Python file.
-- The complete file can run from Maya's Python Script Editor or a shelf button.
-- It needs no install process, external package, icon, configuration, UI file,
-  asset, public API, test suite, startup hook, background service, persistent
-  callback, or Script Job.
-- It does not register a Maya node, command, deformer, translator, or compiled
-  plug-in. A context implemented entirely by the single script is acceptable
-  when running the script directly is the intended shelf workflow.
-- The single-file form remains readable and maintainable.
+The file must expose `run()` or `main()` and execute that entry point when run
+as `__main__`. It must not depend on the repository being on `PYTHONPATH`.
 
-Shelf scripts may use `maya.cmds`, `maya.mel`, `maya.api.OpenMaya`, and small
-temporary windows. They must expose a clear `run()` or `main()` entry point and
-may invoke it directly when the entire file is intended to be pasted into the
-Script Editor or saved to a shelf. They must not depend on the repository being
-on `PYTHONPATH`.
+Move a project to `maya/tools/<ToolName>/` only when it needs a Maya plug-in,
+multiple functional files, resources, installation, tests, persistent UI,
+long-lived callbacks, custom nodes or commands, or a reusable API.
 
-Each shelf-script directory contains only `<script_name>.py`, `README.md`, and
-`README_CN.md`.
-Do not add package, src, core, ui, tests, docs, icons, `.mod`, `pyproject.toml`,
-installation scripts, or a project-level `AGENTS.md`.
+## Tool Layout
 
-Validate inputs, show actionable Maya warnings or errors, group multi-step scene
-edits into an undo chunk where practical, restore selection when appropriate,
-and never leave temporary nodes, namespaces, callbacks, or preference changes.
-Document scene changes, undo behavior, and non-undoable operations.
+Structured Maya tools use Maya's standard runtime directory names directly at
+the project root:
 
-### Structured tools and plug-ins
+```text
+maya/tools/<ToolName>/
+├─ scripts/       # optional
+├─ plug-ins/      # optional
+├─ icons/         # optional
+├─ presets/       # optional
+├─ README.md
+├─ README_CN.md
+├─ CHANGELOG.md
+├─ LICENSE
+└─ tests/         # when automated checks are useful
+```
 
-Place a project in `maya/tools/<tool-name>/` when any of these applies:
+Create only the runtime directories the tool uses. Do not add
+`package/<ToolName>/` nesting. Keep a single user-facing entry file when that
+is enough; add Python packages or separate modules only when the implementation
+requires them.
 
-- It needs multiple functional Python modules or a persistent/complex UI.
-- It separates business logic, scene operations, and UI.
-- It needs assets, presets, configuration, installation, tests, packaging,
-  versioning, upgrades, or uninstall behavior.
-- It registers nodes, commands, deformers, translators, long-lived callbacks,
-  menus, shelf items, startup hooks, or event listeners.
-- It registers a context that requires installation, external resources, or
-  multiple functional modules instead of a self-contained shelf script.
-- It exposes a reusable API or is no longer safe to maintain as one file.
+Install small and medium tools by copying runtime files to Maya's matching
+directories. Do not add a `.mod` file unless module-based deployment is an
+explicit requirement. Declare the version once as `__version__` or
+`PLUGIN_VERSION` in a runtime Python file.
 
-A structured project normally owns README, changelog, license, package files,
-tests, documentation, and packaging tools. Omit directories that have no actual
-purpose. Place Maya module files at `package/<ToolName>.mod` and runtime content
-under `package/<ToolName>/`.
+## Naming
 
-Use `core/` for UI-independent business logic, `maya/` for scene and selection
-access, `ui/` for PySide interaction, `resources/` for configuration and style,
-and `bootstrap.py` as the single public launch entry. Users should not need to
-instantiate an internal window class.
+- Maya project directories use PascalCase: `FlattenMeshToUV`.
+- User-run Python files use PascalCase without hyphens or underscores:
+  `FlattenMeshToUV.py` or `RunFlattenMeshToUV.py`.
+- Internal Python packages and modules may use snake_case when multiple modules
+  are genuinely required.
+- Classes use PascalCase; functions and variables use snake_case.
 
-### Reclassification
+## Python Compatibility
 
-Move a shelf script to `maya/tools/` as soon as it gains a second functional
-module, persistent UI, external resource, installer, reusable API, long-lived
-callback, custom plug-in behavior, a context that no longer fits one file,
-tests, or an architecture boundary. Preserve the original user workflow where
-practical, document one public entry point, and add installation and usage
-instructions.
+- Make Maya runtime code compatible with both Python 2 and Python 3 when
+  practical. If one implementation cannot support both, prioritize Python 3
+  and state the supported Maya versions in the project README.
+- For dual-compatible files, avoid Python-3-only syntax and APIs, use explicit
+  compatibility shims only where needed, and test in both host generations
+  before claiming support.
+- Use the Python and Qt versions bundled with Maya. Do not assume a system
+  Python installation, hardcode Maya paths, or add PyMEL unless required.
+- Guard Maya- or Qt-version-specific APIs explicitly.
 
-## Python Structure
+## Runtime Safety
 
-The following rules apply to structured Maya tools. Self-contained shelf
-scripts follow the direct-execution rules above.
+- Validate selections and external input.
+- Use actionable Maya warnings and errors.
+- Group multi-step scene edits into one undo operation where practical.
+- Repeated launches must not create duplicate windows or callbacks.
+- Clean up temporary nodes, contexts, Script Jobs, event handlers, and UI.
+- Avoid Maya commands during import unless Maya plug-in registration requires it.
 
-- Keep business logic separate from Maya scene access and UI code.
-- `core/` must not import UI modules.
-- `ui/` may call `core/`, but `core/` must not call `ui/`.
-- Maya-specific scene access belongs in `maya/`.
-- Provide one documented public entry point through `bootstrap.py`.
-- Avoid executing Maya commands during module import.
+## Documentation and Tests
 
-## Maya Compatibility
+Project `README.md` and `README_CN.md` contain only an introduction, supported
+versions, installation, and usage, with matching information in both languages.
 
-- Do not assume a system Python installation.
-- Use the Python and Qt versions shipped with supported Maya versions.
-- Do not introduce PyMEL unless explicitly required.
-- Do not hardcode Maya installation paths.
-- Guard version-specific APIs explicitly.
-
-## UI
-
-- Parent Maya windows correctly.
-- Repeated launches must not create duplicate windows.
-- Clean up callbacks, Script Jobs, and event handlers when windows close.
-- Keep user-visible errors actionable and concise.
-
-## Tests
-
-- Pure Python logic should be testable outside Maya where practical.
-- Maya integration tests must be separate from unit tests.
-- Tests must not modify user preferences or production scenes.
+Use the smallest runnable check for new logic. Pure Python logic should run
+outside Maya where practical; Maya integration checks must use a supported
+Maya or `mayapy` and must not modify user preferences or production scenes.

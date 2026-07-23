@@ -4,33 +4,31 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
 
-from _repo_tools import ROOT, emit, require_kebab_name, require_semver
+from _repo_tools import (
+    MAYA_VERSION_RE,
+    ROOT,
+    emit,
+    maya_runtime_files,
+    require_pascal_name,
+    require_semver,
+)
 
 
 def _maya_changes(name: str, version: str) -> list[tuple[Path, str]]:
-    project = ROOT / "maya" / "tools" / require_kebab_name(name)
-    module_files = list((project / "package").glob("*.mod")) if project.is_dir() else []
-    if len(module_files) != 1:
-        raise ValueError("Maya tool must contain exactly one package/*.mod")
-    path = module_files[0]
-    text = path.read_text(encoding="utf-8-sig")
-    updated, count = re.subn(r"^(\+\s+\S+\s+)\S+", r"\g<1>" + version, text, count=1, flags=re.MULTILINE)
-    if count != 1:
-        raise ValueError("invalid Maya module file")
-    changes = [(path, updated)]
-    for init_file in (project / "package").rglob("__init__.py"):
-        init_text = init_file.read_text(encoding="utf-8-sig")
-        replaced, count = re.subn(
-            r'(__version__\s*=\s*["\'])[^"\']+(["\'])',
-            r"\g<1>" + version + r"\g<2>",
-            init_text,
-            count=1,
+    project = ROOT / "maya" / "tools" / require_pascal_name(name)
+    changes = []
+    for runtime_file in maya_runtime_files(project):
+        runtime_text = runtime_file.read_text(encoding="utf-8-sig")
+        replaced, count = MAYA_VERSION_RE.subn(
+            lambda match: match.group(1) + version + match.group(3),
+            runtime_text,
         )
         if count:
-            changes.append((init_file, replaced))
+            changes.append((runtime_file, replaced))
+    if not changes:
+        raise ValueError("Maya tool must declare __version__ or PLUGIN_VERSION")
     return changes
 
 
@@ -63,7 +61,7 @@ def update(kind: str, name: str, version: str, apply: bool = False) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=("maya", "unreal"))
-    parser.add_argument("name", help="Maya kebab-case name or Unreal PascalCase name.")
+    parser.add_argument("name", help="Maya or Unreal project name in PascalCase.")
     parser.add_argument("version", help="Semantic version, for example 1.2.3.")
     parser.add_argument("--apply", action="store_true", help="Write changes; otherwise preview only.")
     parser.add_argument("--json", action="store_true")

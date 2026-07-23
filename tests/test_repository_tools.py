@@ -18,15 +18,15 @@ class RepositoryToolTests(unittest.TestCase):
         self.assertEqual([], result["errors"])
 
     def test_create_project_defaults_to_preview(self):
-        result = create_project.create("maya-script", "preview-script", apply=False)
+        result = create_project.create("maya-script", "PreviewScript", apply=False)
         self.assertEqual("dry-run", result["mode"])
-        self.assertFalse((ROOT / "maya" / "scripts" / "preview-script").exists())
-        self.assertIn("maya/scripts/preview-script/README_CN.md", result["files"])
+        self.assertFalse((ROOT / "maya" / "scripts" / "PreviewScript").exists())
+        self.assertIn("maya/scripts/PreviewScript/README_CN.md", result["files"])
 
     def test_all_project_templates_include_bilingual_readmes(self):
         cases = (
-            ("maya-script", "sample-script", "maya/scripts/sample-script"),
-            ("maya-tool", "sample-tool", "maya/tools/sample-tool"),
+            ("maya-script", "SampleScript", "maya/scripts/SampleScript"),
+            ("maya-tool", "SampleTool", "maya/tools/SampleTool"),
             ("unreal-plugin", "sample-plugin", "unreal/Plugins/SamplePlugin"),
             (
                 "standalone-python-tool",
@@ -41,23 +41,32 @@ class RepositoryToolTests(unittest.TestCase):
                 self.assertIn(target + "/README_CN.md", result["files"])
 
     def test_maya_packages_can_be_previewed(self):
-        result = package_maya_tool.package("flatten-mesh-to-uv", ROOT / "releases", apply=False)
+        result = package_maya_tool.package("FlattenMeshToUV", ROOT / "releases", apply=False)
         self.assertEqual("dry-run", result["mode"])
+        self.assertEqual("releases/FlattenMeshToUV-2.0.1.zip", result["archive"])
         self.assertGreater(result["file_count"], 0)
 
     def test_version_update_defaults_to_preview(self):
-        module_file = (
+        runtime_file = (
             ROOT
             / "maya"
             / "tools"
-            / "flatten-mesh-to-uv"
-            / "package"
-            / "FlattenMeshToUV.mod"
+            / "FlattenMeshToUV"
+            / "plug-ins"
+            / "FlattenMeshToUV.py"
         )
-        before = module_file.read_text(encoding="utf-8")
-        result = update_versions.update("maya", "flatten-mesh-to-uv", "2.0.2", apply=False)
+        before = runtime_file.read_text(encoding="utf-8")
+        result = update_versions.update("maya", "FlattenMeshToUV", "2.0.2", apply=False)
         self.assertEqual("dry-run", result["mode"])
-        self.assertEqual(before, module_file.read_text(encoding="utf-8"))
+        self.assertEqual(before, runtime_file.read_text(encoding="utf-8"))
+        self.assertIn(
+            "maya/tools/FlattenMeshToUV/plug-ins/FlattenMeshToUV.py",
+            result["files"],
+        )
+
+    def test_maya_tool_template_does_not_create_module_file(self):
+        result = create_project.create("maya-tool", "SampleTool", apply=False)
+        self.assertFalse(any(path.endswith(".mod") for path in result["files"]))
 
 
 if __name__ == "__main__":

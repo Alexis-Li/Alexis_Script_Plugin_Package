@@ -1,27 +1,44 @@
 # Maya Development
 
-## Classification
+## Choose the Smallest Project Shape
 
-Use `maya/scripts/<script-name>/` only when the complete tool is one
-self-contained Python file that can be pasted into Maya's Python Script Editor.
-It must not need installation, resources, tests, a reusable API, persistent UI,
-long-lived callbacks, custom commands, nodes, or plug-in registration. A
-context may stay as a shelf script when it is fully contained in that one file
-and direct Script Editor execution is the intended workflow.
+Prefer `maya/scripts/<ToolName>/<ToolName>.py`: one PascalCase file that exposes
+`run()` or `main()` and runs directly in Maya's Python Script Editor. Add no
+installer, package, bootstrap layer, or resource folder unless the feature
+needs it.
 
-Use `maya/tools/<tool-name>/` when any structured-tool condition applies. Keep
-business logic in `core/`, Maya scene access in `maya/`, UI in `ui/`, and expose
-one documented entry point through `bootstrap.py`. Avoid Maya commands at import
-time and clean up windows, callbacks, Script Jobs, and contexts.
+Use `maya/tools/<ToolName>/` when the tool requires plug-in registration,
+multiple functional files, resources, persistent UI, tests, installation, or a
+reusable API. Put Maya runtime folders directly under the project:
 
-## Compatibility and testing
+```text
+<ToolName>/
+├─ scripts/       # optional
+├─ plug-ins/      # optional
+├─ icons/         # optional
+└─ presets/       # optional
+```
 
-Do not assume system Python or hardcode a Maya install. Use Maya's bundled
-Python and Qt bindings, guard version-specific APIs, and avoid PyMEL unless it
-is explicitly required. Pure logic tests may run outside Maya; integration
-tests must use `mayapy` and must not change user preferences or production scenes.
+Do not wrap this structure in `package/<ToolName>/`. Omit unused directories
+and install by copying runtime files to Maya's matching directories. Do not add
+a `.mod` file unless module-based deployment is an explicit project requirement.
 
-## Packaging
+Declare the project version once as `__version__` or `PLUGIN_VERSION` in a
+runtime Python file. Repository version and packaging commands use that value.
 
-Maya module packages place a `.mod` file beside the module directory. Package
-only project-owned runtime files and exclude caches, tests, and local settings.
+## Compatibility
+
+Support Python 2 and Python 3 in Maya runtime code where practical. Avoid
+Python-3-only syntax in dual-compatible files and verify both host generations
+before documenting compatibility. If the implementations cannot be shared,
+prioritize Python 3 and document the exact supported Maya versions.
+
+Use Maya's bundled Python and Qt, avoid hardcoded install paths, and guard
+version-specific APIs. Do not introduce PyMEL unless the feature requires it.
+
+## Safety and Verification
+
+Validate selection and input, keep errors actionable, preserve undo behavior,
+and clean up temporary nodes, windows, callbacks, Script Jobs, and contexts.
+Test pure logic outside Maya where practical and keep Maya integration checks
+separate from repository-level tests.

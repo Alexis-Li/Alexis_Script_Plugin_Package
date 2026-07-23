@@ -13,8 +13,8 @@ testable, versioned, and packageable.
 
 ## Repository Layout
 
-- `maya/scripts/`: self-contained Maya shelf scripts
-- `maya/tools/`: structured Maya tools and plugins
+- `maya/scripts/<ToolName>/`: self-contained Maya shelf scripts
+- `maya/tools/<ToolName>/`: Maya tools and plug-ins using standard runtime folders
 - `unreal/Plugins/`: standalone Unreal Engine plugins
 - `templates/`: project templates
 - `tools/`: repository-level validation and packaging scripts
@@ -31,25 +31,27 @@ testable, versioned, and packageable.
 - Preserve backward compatibility unless a breaking change is requested.
 - Update documentation when installation, public APIs, supported versions,
   directory structures, or user-visible behavior change.
-- Do not over-engineer simple Maya shelf scripts.
 - Keep user-facing `README.md` files in English and pair them with a Chinese
   `README_CN.md` containing the same information.
-- Limit user-facing READMEs to an introduction, installation, and usage.
-  Put development rules and internal details in `AGENTS.md` or `docs/`.
+- Keep the repository README comprehensive: repository purpose, tool index,
+  documentation links, and development setup.
+- Limit project READMEs to introduction, supported versions, installation, and
+  usage. Put development rules and internal details in `AGENTS.md` or `docs/`.
+- Keep platform-specific development and naming rules in the nearest platform
+  `AGENTS.md`.
 
 ## Naming Conventions
 
-- Directories and repositories: lowercase kebab-case
+- General repository directories: lowercase kebab-case
 - Python packages and modules: lowercase snake_case
 - Python classes: PascalCase
-- Unreal plugins and modules: PascalCase
-- Unreal C++ classes: Unreal Engine naming conventions
 - Public versions: Semantic Versioning where practical
 
 ## Project Boundaries
 
 Each structured project owns its README, changelog, version information,
-tests, documentation, packaging scripts, and runtime dependencies.
+runtime dependencies, and any project-specific tests or documentation it needs.
+Repository-level scripts may provide shared validation and packaging behavior.
 
 Sibling projects must not depend on each other unless the dependency is
 explicitly documented and independently packageable.

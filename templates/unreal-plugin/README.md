@@ -4,8 +4,11 @@
 
 ## Introduction
 
-Describe what the Unreal Engine editor plug-in does and which engine versions
-it supports.
+Describe what the Unreal Engine editor plug-in does.
+
+## Supported Versions
+
+List the supported Unreal Engine versions.
 
 ## Installation
 

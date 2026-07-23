@@ -2,17 +2,18 @@
 
 [English](README.md)
 
-## 简介
+## 工具简介
 
-说明 Maya 工具的用途和支持的 Maya 版本。
+说明 Maya 工具的用途。
+
+## 支持版本
+
+列出支持的 Maya 和 Python 版本。
 
 ## 安装方式
 
-将 `package/{{TOOL_NAME}}.mod` 和 `package/{{TOOL_NAME}}/` 复制到 Maya 模块目录，然后重新启动 Maya。
+将 `scripts/`、`plug-ins/` 和 `icons/` 中实际使用的文件复制到 Maya 对应目录。
 
 ## 使用方式
 
-```python
-from {{PYTHON_PACKAGE}} import bootstrap
-bootstrap.show()
-```
+在 Maya Python 脚本编辑器中运行 `scripts/{{TOOL_NAME}}.py`。

@@ -6,6 +6,10 @@
 
 Describe the standalone Python tool, its inputs, and its outputs.
 
+## Supported Versions
+
+List the supported Python and operating-system versions.
+
 ## Installation
 
 ```powershell
