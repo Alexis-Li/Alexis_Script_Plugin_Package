@@ -68,141 +68,141 @@ def _spec(tool_id, label, category, method, help_text, hotkey=None, tone="normal
 
 
 TOOL_SPECS = [
-    _spec("grow_loop", "循环扩展", "编辑选择", "grow_loop",
-          "用途：沿当前循环边或边界链向两端扩展一步。\n使用：选择连续循环边的一部分后执行。",
+    _spec("grow_loop", "\u5faa\u73af\u6269\u5c55", "\u7f16\u8f91\u9009\u62e9", "grow_loop",
+          "\u7528\u9014\uff1a\u6cbf\u5f53\u524d\u5faa\u73af\u8fb9\u6216\u8fb9\u754c\u94fe\u5411\u4e24\u7aef\u6269\u5c55\u4e00\u6b65\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u8fde\u7eed\u5faa\u73af\u8fb9\u7684\u4e00\u90e8\u5206\u540e\u6267\u884c\u3002",
           "NitroPoly_GrowLoop", "plus"),
-    _spec("shrink_loop", "循环缩小", "编辑选择", "shrink_loop",
-          "用途：从当前循环边选择的两端各移除一步。\n使用：选择至少三条连续循环边后执行。",
+    _spec("shrink_loop", "\u5faa\u73af\u7f29\u5c0f", "\u7f16\u8f91\u9009\u62e9", "shrink_loop",
+          "\u7528\u9014\uff1a\u4ece\u5f53\u524d\u5faa\u73af\u8fb9\u9009\u62e9\u7684\u4e24\u7aef\u5404\u79fb\u9664\u4e00\u6b65\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u81f3\u5c11\u4e09\u6761\u8fde\u7eed\u5faa\u73af\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_ShrinkLoop", "minus"),
-    _spec("grow_ring", "环形扩展", "编辑选择", "grow_ring",
-          "用途：沿四边面边环向两侧扩展一步。\n使用：选择同一边环中的一部分边后执行。",
+    _spec("grow_ring", "\u73af\u5f62\u6269\u5c55", "\u7f16\u8f91\u9009\u62e9", "grow_ring",
+          "\u7528\u9014\uff1a\u6cbf\u56db\u8fb9\u9762\u8fb9\u73af\u5411\u4e24\u4fa7\u6269\u5c55\u4e00\u6b65\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u540c\u4e00\u8fb9\u73af\u4e2d\u7684\u4e00\u90e8\u5206\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_GrowRing", "plus"),
-    _spec("shrink_ring", "环形缩小", "编辑选择", "shrink_ring",
-          "用途：从当前边环选择的两端各移除一步。\n使用：选择至少三条同一边环中的边后执行。",
+    _spec("shrink_ring", "\u73af\u5f62\u7f29\u5c0f", "\u7f16\u8f91\u9009\u62e9", "shrink_ring",
+          "\u7528\u9014\uff1a\u4ece\u5f53\u524d\u8fb9\u73af\u9009\u62e9\u7684\u4e24\u7aef\u5404\u79fb\u9664\u4e00\u6b65\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u81f3\u5c11\u4e09\u6761\u540c\u4e00\u8fb9\u73af\u4e2d\u7684\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_ShrinkRing", "minus"),
-    _spec("dot_loop", "循环间隔", "编辑选择", "dot_loop",
-          "用途：按间隔值选择循环边。\n使用：选择一条循环边作为起点，设置间隔后执行。",
+    _spec("dot_loop", "\u5faa\u73af\u95f4\u9694", "\u7f16\u8f91\u9009\u62e9", "dot_loop",
+          "\u7528\u9014\uff1a\u6309\u95f4\u9694\u503c\u9009\u62e9\u5faa\u73af\u8fb9\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e00\u6761\u5faa\u73af\u8fb9\u4f5c\u4e3a\u8d77\u70b9\uff0c\u8bbe\u7f6e\u95f4\u9694\u540e\u6267\u884c\u3002",
           "NitroPoly_DotLoop", "plus"),
-    _spec("dot_ring", "环形间隔", "编辑选择", "dot_ring",
-          "用途：按间隔值选择边环。\n使用：选择一条边环边作为起点，设置间隔后执行。",
+    _spec("dot_ring", "\u73af\u5f62\u95f4\u9694", "\u7f16\u8f91\u9009\u62e9", "dot_ring",
+          "\u7528\u9014\uff1a\u6309\u95f4\u9694\u503c\u9009\u62e9\u8fb9\u73af\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e00\u6761\u8fb9\u73af\u8fb9\u4f5c\u4e3a\u8d77\u70b9\uff0c\u8bbe\u7f6e\u95f4\u9694\u540e\u6267\u884c\u3002",
           "NitroPoly_DotRing", "minus"),
-    _spec("hard_edge", "选择硬边", "编辑选择", "hard_edge",
-          "用途：选出所选模型上的硬边。\n使用：选择模型或模型组件后执行。",
+    _spec("hard_edge", "\u9009\u62e9\u786c\u8fb9", "\u7f16\u8f91\u9009\u62e9", "hard_edge",
+          "\u7528\u9014\uff1a\u9009\u51fa\u6240\u9009\u6a21\u578b\u4e0a\u7684\u786c\u8fb9\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u6a21\u578b\u6216\u6a21\u578b\u7ec4\u4ef6\u540e\u6267\u884c\u3002",
           "NitroPoly_SelecthardEdge"),
-    _spec("uv_edge", "选择UV边", "编辑选择", "uv_edge",
-          "用途：选出 UV 接缝边，不包含普通几何边界。\n使用：选择模型或模型组件后执行。",
+    _spec("uv_edge", "\u9009\u62e9UV\u8fb9", "\u7f16\u8f91\u9009\u62e9", "uv_edge",
+          "\u7528\u9014\uff1a\u9009\u51fa UV \u63a5\u7f1d\u8fb9\uff0c\u4e0d\u5305\u542b\u666e\u901a\u51e0\u4f55\u8fb9\u754c\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u6a21\u578b\u6216\u6a21\u578b\u7ec4\u4ef6\u540e\u6267\u884c\u3002",
           "NitroPoly_SelectUVEdge"),
-    _spec("point_to_point", "点到点", "编辑选择", "point_to_point",
-          "用途：选择两个顶点间的最短边路径。\n使用：在同一模型上选择两个顶点后执行。",
+    _spec("point_to_point", "\u70b9\u5230\u70b9", "\u7f16\u8f91\u9009\u62e9", "point_to_point",
+          "\u7528\u9014\uff1a\u9009\u62e9\u4e24\u4e2a\u9876\u70b9\u95f4\u7684\u6700\u77ed\u8fb9\u8def\u5f84\u3002\n\u4f7f\u7528\uff1a\u5728\u540c\u4e00\u6a21\u578b\u4e0a\u9009\u62e9\u4e24\u4e2a\u9876\u70b9\u540e\u6267\u884c\u3002",
           "NitroPoly_PointToPoint"),
-    _spec("face_fill", "填充面", "编辑选择", "face_fill",
-          "用途：选择两个面之间的最短连续面路径。\n使用：在同一模型上选择两个面后执行。",
+    _spec("face_fill", "\u586b\u5145\u9762", "\u7f16\u8f91\u9009\u62e9", "face_fill",
+          "\u7528\u9014\uff1a\u9009\u62e9\u4e24\u4e2a\u9762\u4e4b\u95f4\u7684\u6700\u77ed\u8fde\u7eed\u9762\u8def\u5f84\u3002\n\u4f7f\u7528\uff1a\u5728\u540c\u4e00\u6a21\u578b\u4e0a\u9009\u62e9\u4e24\u4e2a\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_FaceFill"),
 
-    _spec("combine_clean", "清洁合并", "网格编辑", "combine_clean",
-          "用途：合并多个多边形模型并删除历史，保留第一个模型的名称、父级和轴心。\n使用：对象模式选择两个或更多模型后执行。",
+    _spec("combine_clean", "\u6e05\u6d01\u5408\u5e76", "\u7f51\u683c\u7f16\u8f91", "combine_clean",
+          "\u7528\u9014\uff1a\u5408\u5e76\u591a\u4e2a\u591a\u8fb9\u5f62\u6a21\u578b\u5e76\u5220\u9664\u5386\u53f2\uff0c\u4fdd\u7559\u7b2c\u4e00\u4e2a\u6a21\u578b\u7684\u540d\u79f0\u3001\u7236\u7ea7\u548c\u8f74\u5fc3\u3002\n\u4f7f\u7528\uff1a\u5bf9\u8c61\u6a21\u5f0f\u9009\u62e9\u4e24\u4e2a\u6216\u66f4\u591a\u6a21\u578b\u540e\u6267\u884c\u3002",
           "NitroPoly_CleanCombine", "plus"),
-    _spec("detach_clean", "清洁分离", "网格编辑", "detach_clean",
-          "用途：把选中面提取为独立模型，同时从原模型删除这些面。\n使用：在一个模型上选择部分面后执行。",
+    _spec("detach_clean", "\u6e05\u6d01\u5206\u79bb", "\u7f51\u683c\u7f16\u8f91", "detach_clean",
+          "\u7528\u9014\uff1a\u628a\u9009\u4e2d\u9762\u63d0\u53d6\u4e3a\u72ec\u7acb\u6a21\u578b\uff0c\u540c\u65f6\u4ece\u539f\u6a21\u578b\u5220\u9664\u8fd9\u4e9b\u9762\u3002\n\u4f7f\u7528\uff1a\u5728\u4e00\u4e2a\u6a21\u578b\u4e0a\u9009\u62e9\u90e8\u5206\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_CleanDetach", "minus"),
-    _spec("uni_connect", "简化连接", "网格编辑", "uni_connect",
-          "用途：按当前选择类型执行连接；对象模式进入 Multi-Cut，顶点或边执行连接，面执行原位挤出。\n使用：选择对象、顶点、边或面后执行。",
+    _spec("uni_connect", "\u7b80\u5316\u8fde\u63a5", "\u7f51\u683c\u7f16\u8f91", "uni_connect",
+          "\u7528\u9014\uff1a\u6309\u5f53\u524d\u9009\u62e9\u7c7b\u578b\u6267\u884c\u8fde\u63a5\uff1b\u5bf9\u8c61\u6a21\u5f0f\u8fdb\u5165 Multi-Cut\uff0c\u9876\u70b9\u6216\u8fb9\u6267\u884c\u8fde\u63a5\uff0c\u9762\u6267\u884c\u539f\u4f4d\u6324\u51fa\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u5bf9\u8c61\u3001\u9876\u70b9\u3001\u8fb9\u6216\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_UniConnect", "plus"),
-    _spec("uni_remove", "简化移除", "网格编辑", "uni_remove",
-          "用途：按当前选择类型执行删除、合并或塌陷。\n使用：选择对象、顶点、边或面后执行。",
+    _spec("uni_remove", "\u7b80\u5316\u79fb\u9664", "\u7f51\u683c\u7f16\u8f91", "uni_remove",
+          "\u7528\u9014\uff1a\u6309\u5f53\u524d\u9009\u62e9\u7c7b\u578b\u6267\u884c\u5220\u9664\u3001\u5408\u5e76\u6216\u584c\u9677\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u5bf9\u8c61\u3001\u9876\u70b9\u3001\u8fb9\u6216\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_uniRemove", "minus"),
 
-    _spec("base_pivot", "到底部", "轴心点/解冻变换", "base_pivot",
-          "用途：把模型轴心移到世界包围盒底部中心。\n使用：对象模式选择一个或多个模型后执行。",
+    _spec("base_pivot", "\u5230\u5e95\u90e8", "\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362", "base_pivot",
+          "\u7528\u9014\uff1a\u628a\u6a21\u578b\u8f74\u5fc3\u79fb\u5230\u4e16\u754c\u5305\u56f4\u76d2\u5e95\u90e8\u4e2d\u5fc3\u3002\n\u4f7f\u7528\uff1a\u5bf9\u8c61\u6a21\u5f0f\u9009\u62e9\u4e00\u4e2a\u6216\u591a\u4e2a\u6a21\u578b\u540e\u6267\u884c\u3002",
           "NitroPoly_basePivot"),
-    _spec("world_pivot", "到原点", "轴心点/解冻变换", "world_pivot",
-          "用途：把所选对象轴心移动到世界坐标原点。\n使用：对象模式选择一个或多个对象后执行。",
+    _spec("world_pivot", "\u5230\u539f\u70b9", "\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362", "world_pivot",
+          "\u7528\u9014\uff1a\u628a\u6240\u9009\u5bf9\u8c61\u8f74\u5fc3\u79fb\u52a8\u5230\u4e16\u754c\u5750\u6807\u539f\u70b9\u3002\n\u4f7f\u7528\uff1a\u5bf9\u8c61\u6a21\u5f0f\u9009\u62e9\u4e00\u4e2a\u6216\u591a\u4e2a\u5bf9\u8c61\u540e\u6267\u884c\u3002",
           "NitroPoly_WorldPivot"),
-    _spec("unfreeze_translate", "解冻变换", "轴心点/解冻变换", "unfreeze_translate",
-          "用途：在尽量保持模型世界位置的前提下恢复冻结前的位移通道。\n使用：对象模式选择模型后执行；复杂约束、实例或锁定通道应先备份。",
+    _spec("unfreeze_translate", "\u89e3\u51bb\u53d8\u6362", "\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362", "unfreeze_translate",
+          "\u7528\u9014\uff1a\u5728\u5c3d\u91cf\u4fdd\u6301\u6a21\u578b\u4e16\u754c\u4f4d\u7f6e\u7684\u524d\u63d0\u4e0b\u6062\u590d\u51bb\u7ed3\u524d\u7684\u4f4d\u79fb\u901a\u9053\u3002\n\u4f7f\u7528\uff1a\u5bf9\u8c61\u6a21\u5f0f\u9009\u62e9\u6a21\u578b\u540e\u6267\u884c\uff1b\u590d\u6742\u7ea6\u675f\u3001\u5b9e\u4f8b\u6216\u9501\u5b9a\u901a\u9053\u5e94\u5148\u5907\u4efd\u3002",
           "NitroPoly_UnFreezeTransform"),
-    _spec("move_to_origin", "物体移到原点", "轴心点/解冻变换", "move_to_origin",
-          "用途：按旋转轴心把对象移动到世界原点。\n使用：对象模式选择一个或多个对象后执行。",
+    _spec("move_to_origin", "\u7269\u4f53\u79fb\u5230\u539f\u70b9", "\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362", "move_to_origin",
+          "\u7528\u9014\uff1a\u6309\u65cb\u8f6c\u8f74\u5fc3\u628a\u5bf9\u8c61\u79fb\u52a8\u5230\u4e16\u754c\u539f\u70b9\u3002\n\u4f7f\u7528\uff1a\u5bf9\u8c61\u6a21\u5f0f\u9009\u62e9\u4e00\u4e2a\u6216\u591a\u4e2a\u5bf9\u8c61\u540e\u6267\u884c\u3002",
           "NitroPoly_MoveToOrigin"),
 
-    _spec("corner_plus", "∠ 旋转 45° +", "拓扑工具", "corner_plus",
-          "用途：以所选边为旋转轴，将所选面区域旋转正 45°。\n使用：同时选择一条边和一个或多个面后执行。",
+    _spec("corner_plus", "\u2220 \u65cb\u8f6c 45\u00b0 +", "\u62d3\u6251\u5de5\u5177", "corner_plus",
+          "\u7528\u9014\uff1a\u4ee5\u6240\u9009\u8fb9\u4e3a\u65cb\u8f6c\u8f74\uff0c\u5c06\u6240\u9009\u9762\u533a\u57df\u65cb\u8f6c\u6b63 45\u00b0\u3002\n\u4f7f\u7528\uff1a\u540c\u65f6\u9009\u62e9\u4e00\u6761\u8fb9\u548c\u4e00\u4e2a\u6216\u591a\u4e2a\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_CornerRot_Plus", "plus"),
-    _spec("corner_minus", "∠ 旋转 45° -", "拓扑工具", "corner_minus",
-          "用途：以所选边为旋转轴，将所选面区域旋转负 45°。\n使用：同时选择一条边和一个或多个面后执行。",
+    _spec("corner_minus", "\u2220 \u65cb\u8f6c 45\u00b0 -", "\u62d3\u6251\u5de5\u5177", "corner_minus",
+          "\u7528\u9014\uff1a\u4ee5\u6240\u9009\u8fb9\u4e3a\u65cb\u8f6c\u8f74\uff0c\u5c06\u6240\u9009\u9762\u533a\u57df\u65cb\u8f6c\u8d1f 45\u00b0\u3002\n\u4f7f\u7528\uff1a\u540c\u65f6\u9009\u62e9\u4e00\u6761\u8fb9\u548c\u4e00\u4e2a\u6216\u591a\u4e2a\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_CornerRot_Minus", "minus"),
-    _spec("f2_extend", "F2 扩展", "拓扑工具", "f2_extend",
-          "用途：按相邻四边面方向从一条边界边外推新四边面，并按阈值自动焊接附近顶点。\n使用：选择一条属于四边面的边界边后执行。",
+    _spec("f2_extend", "F2 \u6269\u5c55", "\u62d3\u6251\u5de5\u5177", "f2_extend",
+          "\u7528\u9014\uff1a\u6309\u76f8\u90bb\u56db\u8fb9\u9762\u65b9\u5411\u4ece\u4e00\u6761\u8fb9\u754c\u8fb9\u5916\u63a8\u65b0\u56db\u8fb9\u9762\uff0c\u5e76\u6309\u9608\u503c\u81ea\u52a8\u710a\u63a5\u9644\u8fd1\u9876\u70b9\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e00\u6761\u5c5e\u4e8e\u56db\u8fb9\u9762\u7684\u8fb9\u754c\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_F2Extend"),
-    _spec("bevel_plus", "倒角 +", "拓扑工具", "bevel_plus",
-          "用途：按理论尖角增大连续倒角轮廓宽度，轮廓两端保持不动。\n使用：选择至少三条连续、开放的倒角轮廓边后执行。",
+    _spec("bevel_plus", "\u5012\u89d2 +", "\u62d3\u6251\u5de5\u5177", "bevel_plus",
+          "\u7528\u9014\uff1a\u6309\u7406\u8bba\u5c16\u89d2\u589e\u5927\u8fde\u7eed\u5012\u89d2\u8f6e\u5ed3\u5bbd\u5ea6\uff0c\u8f6e\u5ed3\u4e24\u7aef\u4fdd\u6301\u4e0d\u52a8\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u81f3\u5c11\u4e09\u6761\u8fde\u7eed\u3001\u5f00\u653e\u7684\u5012\u89d2\u8f6e\u5ed3\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_Bevel_Plus", "plus"),
-    _spec("bevel_minus", "倒角 -", "拓扑工具", "bevel_minus",
-          "用途：按理论尖角缩小连续倒角轮廓宽度，轮廓两端保持不动。\n使用：选择至少三条连续、开放的倒角轮廓边后执行。",
+    _spec("bevel_minus", "\u5012\u89d2 -", "\u62d3\u6251\u5de5\u5177", "bevel_minus",
+          "\u7528\u9014\uff1a\u6309\u7406\u8bba\u5c16\u89d2\u7f29\u5c0f\u8fde\u7eed\u5012\u89d2\u8f6e\u5ed3\u5bbd\u5ea6\uff0c\u8f6e\u5ed3\u4e24\u7aef\u4fdd\u6301\u4e0d\u52a8\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u81f3\u5c11\u4e09\u6761\u8fde\u7eed\u3001\u5f00\u653e\u7684\u5012\u89d2\u8f6e\u5ed3\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_Bevel_Minus", "minus"),
 
-    _spec("load_edge_loop", "加载循环边", "连接工具", "load_edge_loop",
-          "用途：把当前连续边链保存为切割和缝合的参考边链。\n使用：选择参考边链后执行。",
+    _spec("load_edge_loop", "\u52a0\u8f7d\u5faa\u73af\u8fb9", "\u8fde\u63a5\u5de5\u5177", "load_edge_loop",
+          "\u7528\u9014\uff1a\u628a\u5f53\u524d\u8fde\u7eed\u8fb9\u94fe\u4fdd\u5b58\u4e3a\u5207\u5272\u548c\u7f1d\u5408\u7684\u53c2\u8003\u8fb9\u94fe\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u53c2\u8003\u8fb9\u94fe\u540e\u6267\u884c\u3002",
           "NitroPoly_LoadEdgeLoop", "plus"),
-    _spec("cut_stitch", "切割和缝合", "连接工具", "cut_stitch",
-          "用途：按已加载参考边链的位置切割目标边，并将切点吸附到参考顶点；同一模型时自动焊接。\n使用：先加载参考边链，再选择一条或多条穿过参考边链的目标边，按缝合阈值执行。",
+    _spec("cut_stitch", "\u5207\u5272\u548c\u7f1d\u5408", "\u8fde\u63a5\u5de5\u5177", "cut_stitch",
+          "\u7528\u9014\uff1a\u6309\u5df2\u52a0\u8f7d\u53c2\u8003\u8fb9\u94fe\u7684\u4f4d\u7f6e\u5207\u5272\u76ee\u6807\u8fb9\uff0c\u5e76\u5c06\u5207\u70b9\u5438\u9644\u5230\u53c2\u8003\u9876\u70b9\uff1b\u540c\u4e00\u6a21\u578b\u65f6\u81ea\u52a8\u710a\u63a5\u3002\n\u4f7f\u7528\uff1a\u5148\u52a0\u8f7d\u53c2\u8003\u8fb9\u94fe\uff0c\u518d\u9009\u62e9\u4e00\u6761\u6216\u591a\u6761\u7a7f\u8fc7\u53c2\u8003\u8fb9\u94fe\u7684\u76ee\u6807\u8fb9\uff0c\u6309\u7f1d\u5408\u9608\u503c\u6267\u884c\u3002",
           "NitroPoly_CutAndStitch", "minus"),
-    _spec("corner_connect", "平分", "连接工具", "corner_connect",
-          "用途：按 NitroPoly 2.0 的角部算法建立平分连接，并自动处理角点拓扑。\n使用：选择两条或更多边；也可选择两个顶点建立角部，选择多个顶点执行普通连接。",
+    _spec("corner_connect", "\u5e73\u5206", "\u8fde\u63a5\u5de5\u5177", "corner_connect",
+          "\u7528\u9014\uff1a\u6309 NitroPoly 2.0 \u7684\u89d2\u90e8\u7b97\u6cd5\u5efa\u7acb\u5e73\u5206\u8fde\u63a5\uff0c\u5e76\u81ea\u52a8\u5904\u7406\u89d2\u70b9\u62d3\u6251\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e24\u6761\u6216\u66f4\u591a\u8fb9\uff1b\u4e5f\u53ef\u9009\u62e9\u4e24\u4e2a\u9876\u70b9\u5efa\u7acb\u89d2\u90e8\uff0c\u9009\u62e9\u591a\u4e2a\u9876\u70b9\u6267\u884c\u666e\u901a\u8fde\u63a5\u3002",
           "NitroPoly_CornerConnect"),
-    _spec("end_connect", "四边末端", "连接工具", "end_connect",
-          "用途：在六顶点末端区域自动寻找对边，建立四边末端连接。\n使用：只选择一条末端边后执行。",
+    _spec("end_connect", "\u56db\u8fb9\u672b\u7aef", "\u8fde\u63a5\u5de5\u5177", "end_connect",
+          "\u7528\u9014\uff1a\u5728\u516d\u9876\u70b9\u672b\u7aef\u533a\u57df\u81ea\u52a8\u5bfb\u627e\u5bf9\u8fb9\uff0c\u5efa\u7acb\u56db\u8fb9\u672b\u7aef\u8fde\u63a5\u3002\n\u4f7f\u7528\uff1a\u53ea\u9009\u62e9\u4e00\u6761\u672b\u7aef\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_EndConnect"),
-    _spec("distance_connect", "距离", "连接工具", "distance_connect",
-          "用途：连接两条边；相邻边直接连接，不相邻时沿同一边环连接中间区域。\n使用：选择同一模型上的两条边后执行。",
+    _spec("distance_connect", "\u8ddd\u79bb", "\u8fde\u63a5\u5de5\u5177", "distance_connect",
+          "\u7528\u9014\uff1a\u8fde\u63a5\u4e24\u6761\u8fb9\uff1b\u76f8\u90bb\u8fb9\u76f4\u63a5\u8fde\u63a5\uff0c\u4e0d\u76f8\u90bb\u65f6\u6cbf\u540c\u4e00\u8fb9\u73af\u8fde\u63a5\u4e2d\u95f4\u533a\u57df\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u540c\u4e00\u6a21\u578b\u4e0a\u7684\u4e24\u6761\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_DistanceConnect"),
-    _spec("flow_connect", "流", "连接工具", "flow_connect",
-          "用途：按 Maya Edge Flow 建立贴合周围曲率的连接边。\n使用：选择同一模型上的两条或更多边后执行。",
+    _spec("flow_connect", "\u6d41", "\u8fde\u63a5\u5de5\u5177", "flow_connect",
+          "\u7528\u9014\uff1a\u6309 Maya Edge Flow \u5efa\u7acb\u8d34\u5408\u5468\u56f4\u66f2\u7387\u7684\u8fde\u63a5\u8fb9\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u540c\u4e00\u6a21\u578b\u4e0a\u7684\u4e24\u6761\u6216\u66f4\u591a\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_FlowConnect"),
-    _spec("vertex_to_edge", "点到边", "连接工具", "vertex_to_edge",
-          "用途：把顶点垂直投影到所选边，在投影位置切出新点后连接。\n使用：在 Multi 选择模式下选择一个顶点和一条同模型边。",
+    _spec("vertex_to_edge", "\u70b9\u5230\u8fb9", "\u8fde\u63a5\u5de5\u5177", "vertex_to_edge",
+          "\u7528\u9014\uff1a\u628a\u9876\u70b9\u5782\u76f4\u6295\u5f71\u5230\u6240\u9009\u8fb9\uff0c\u5728\u6295\u5f71\u4f4d\u7f6e\u5207\u51fa\u65b0\u70b9\u540e\u8fde\u63a5\u3002\n\u4f7f\u7528\uff1a\u5728 Multi \u9009\u62e9\u6a21\u5f0f\u4e0b\u9009\u62e9\u4e00\u4e2a\u9876\u70b9\u548c\u4e00\u6761\u540c\u6a21\u578b\u8fb9\u3002",
           "NitroPoly_VertEdge"),
-    _spec("load_vertex", "加载顶点", "连接工具", "load_vertex",
-          "用途：保存一个目标顶点，供“连接到顶点”使用。\n使用：选择一个顶点后执行。",
+    _spec("load_vertex", "\u52a0\u8f7d\u9876\u70b9", "\u8fde\u63a5\u5de5\u5177", "load_vertex",
+          "\u7528\u9014\uff1a\u4fdd\u5b58\u4e00\u4e2a\u76ee\u6807\u9876\u70b9\uff0c\u4f9b\u201c\u8fde\u63a5\u5230\u9876\u70b9\u201d\u4f7f\u7528\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e00\u4e2a\u9876\u70b9\u540e\u6267\u884c\u3002",
           "NitroPoly_LoadVertex", "plus"),
-    _spec("connect_to_vertex", "连接到顶点", "连接工具", "connect_to_vertex",
-          "用途：把当前所选顶点逐个连接到已加载顶点。\n使用：先加载目标顶点，再选择同一模型上的一个或多个其他顶点。",
+    _spec("connect_to_vertex", "\u8fde\u63a5\u5230\u9876\u70b9", "\u8fde\u63a5\u5de5\u5177", "connect_to_vertex",
+          "\u7528\u9014\uff1a\u628a\u5f53\u524d\u6240\u9009\u9876\u70b9\u9010\u4e2a\u8fde\u63a5\u5230\u5df2\u52a0\u8f7d\u9876\u70b9\u3002\n\u4f7f\u7528\uff1a\u5148\u52a0\u8f7d\u76ee\u6807\u9876\u70b9\uff0c\u518d\u9009\u62e9\u540c\u4e00\u6a21\u578b\u4e0a\u7684\u4e00\u4e2a\u6216\u591a\u4e2a\u5176\u4ed6\u9876\u70b9\u3002",
           "NitroPoly_ConnectToVertex", "minus"),
 
-    _spec("space_loop", "空间", "循环工具", "space_loop",
-          "用途：沿原有边链弧长均匀分布顶点；开放边链保留两端。\n使用：选择一组或多组连续边链后执行，可重复执行。",
+    _spec("space_loop", "\u7a7a\u95f4", "\u5faa\u73af\u5de5\u5177", "space_loop",
+          "\u7528\u9014\uff1a\u6cbf\u539f\u6709\u8fb9\u94fe\u5f27\u957f\u5747\u5300\u5206\u5e03\u9876\u70b9\uff1b\u5f00\u653e\u8fb9\u94fe\u4fdd\u7559\u4e24\u7aef\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u4e00\u7ec4\u6216\u591a\u7ec4\u8fde\u7eed\u8fb9\u94fe\u540e\u6267\u884c\uff0c\u53ef\u91cd\u590d\u6267\u884c\u3002",
           "NitroPoly_Space"),
-    _spec("straight_loop", "直线", "循环工具", "straight_loop",
-          "用途：把开放边链内部顶点投影到两端连线。\n使用：选择至少两条连续开放边后执行。",
+    _spec("straight_loop", "\u76f4\u7ebf", "\u5faa\u73af\u5de5\u5177", "straight_loop",
+          "\u7528\u9014\uff1a\u628a\u5f00\u653e\u8fb9\u94fe\u5185\u90e8\u9876\u70b9\u6295\u5f71\u5230\u4e24\u7aef\u8fde\u7ebf\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u81f3\u5c11\u4e24\u6761\u8fde\u7eed\u5f00\u653e\u8fb9\u540e\u6267\u884c\u3002",
           "NitroPoly_Straight"),
-    _spec("circle_loop", "圆形", "循环工具", "circle_loop",
-          "用途：把闭合边环整理为等半径、等角度圆形。\n使用：选择闭合边环后执行。",
+    _spec("circle_loop", "\u5706\u5f62", "\u5faa\u73af\u5de5\u5177", "circle_loop",
+          "\u7528\u9014\uff1a\u628a\u95ed\u5408\u8fb9\u73af\u6574\u7406\u4e3a\u7b49\u534a\u5f84\u3001\u7b49\u89d2\u5ea6\u5706\u5f62\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u95ed\u5408\u8fb9\u73af\u540e\u6267\u884c\u3002",
           "NitroPoly_Circle"),
-    _spec("geo_poly", "多边形", "循环工具", "geo_poly",
-          "用途：把所选面区域的外边界整理为规则多边形。\n使用：选择连续面区域后执行。",
+    _spec("geo_poly", "\u591a\u8fb9\u5f62", "\u5faa\u73af\u5de5\u5177", "geo_poly",
+          "\u7528\u9014\uff1a\u628a\u6240\u9009\u9762\u533a\u57df\u7684\u5916\u8fb9\u754c\u6574\u7406\u4e3a\u89c4\u5219\u591a\u8fb9\u5f62\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u8fde\u7eed\u9762\u533a\u57df\u540e\u6267\u884c\u3002",
           "NitroPoly_Geopoly"),
-    _spec("view_planar", "视角平面", "循环工具", "view_planar",
-          "用途：沿当前视角把所选组件压到同一平面。\n使用：选择顶点、边或面后执行。",
+    _spec("view_planar", "\u89c6\u89d2\u5e73\u9762", "\u5faa\u73af\u5de5\u5177", "view_planar",
+          "\u7528\u9014\uff1a\u6cbf\u5f53\u524d\u89c6\u89d2\u628a\u6240\u9009\u7ec4\u4ef6\u538b\u5230\u540c\u4e00\u5e73\u9762\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u9876\u70b9\u3001\u8fb9\u6216\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_ViewPlanar"),
-    _spec("make_planar", "平均平面", "循环工具", "make_planar",
-          "用途：按所选区域平均法线把组件压到同一平面。\n使用：选择顶点、边或面后执行。",
+    _spec("make_planar", "\u5e73\u5747\u5e73\u9762", "\u5faa\u73af\u5de5\u5177", "make_planar",
+          "\u7528\u9014\uff1a\u6309\u6240\u9009\u533a\u57df\u5e73\u5747\u6cd5\u7ebf\u628a\u7ec4\u4ef6\u538b\u5230\u540c\u4e00\u5e73\u9762\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u9876\u70b9\u3001\u8fb9\u6216\u9762\u540e\u6267\u884c\u3002",
           "NitroPoly_MakePlanar"),
-    _spec("center_loop", "中心", "循环工具", "center_loop",
-          "用途：使用 Maya Edge Flow 把所选边调整到相邻面的中心流线上。\n使用：选择边后执行，可重复执行。",
+    _spec("center_loop", "\u4e2d\u5fc3", "\u5faa\u73af\u5de5\u5177", "center_loop",
+          "\u7528\u9014\uff1a\u4f7f\u7528 Maya Edge Flow \u628a\u6240\u9009\u8fb9\u8c03\u6574\u5230\u76f8\u90bb\u9762\u7684\u4e2d\u5fc3\u6d41\u7ebf\u4e0a\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u8fb9\u540e\u6267\u884c\uff0c\u53ef\u91cd\u590d\u6267\u884c\u3002",
           "NitroPoly_Center"),
-    _spec("relax_loop", "松弛", "循环工具", "relax_loop",
-          "用途：对所选顶点或由边、面转换得到的顶点执行一次平均松弛。\n使用：选择组件后执行，可重复执行。",
+    _spec("relax_loop", "\u677e\u5f1b", "\u5faa\u73af\u5de5\u5177", "relax_loop",
+          "\u7528\u9014\uff1a\u5bf9\u6240\u9009\u9876\u70b9\u6216\u7531\u8fb9\u3001\u9762\u8f6c\u6362\u5f97\u5230\u7684\u9876\u70b9\u6267\u884c\u4e00\u6b21\u5e73\u5747\u677e\u5f1b\u3002\n\u4f7f\u7528\uff1a\u9009\u62e9\u7ec4\u4ef6\u540e\u6267\u884c\uff0c\u53ef\u91cd\u590d\u6267\u884c\u3002",
           "NitroPoly_Relax"),
 ]
 
 SPEC_BY_ID = dict((item["id"], item) for item in TOOL_SPECS)
 CATEGORIES = [
-    "编辑选择",
-    "网格编辑",
-    "轴心点/解冻变换",
-    "拓扑工具",
-    "连接工具",
-    "循环工具",
+    "\u7f16\u8f91\u9009\u62e9",
+    "\u7f51\u683c\u7f16\u8f91",
+    "\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362",
+    "\u62d3\u6251\u5de5\u5177",
+    "\u8fde\u63a5\u5de5\u5177",
+    "\u5faa\u73af\u5de5\u5177",
 ]
 
 LEGACY_ALIASES = {
@@ -252,7 +252,7 @@ LEGACY_ALIASES = {
 def _index(component):
     match = re.search(r"\[(-?\d+)\]", component)
     if not match:
-        raise NitroPolyError("无法读取组件编号：{}".format(component))
+        raise NitroPolyError("\u65e0\u6cd5\u8bfb\u53d6\u7ec4\u4ef6\u7f16\u53f7\uff1a{}".format(component))
     return int(match.group(1))
 
 
@@ -445,7 +445,7 @@ class MeshQuery(object):
     def ensure_same_owner(cls, components):
         owners = set(_owner(item) for item in components)
         if len(owners) != 1:
-            raise NitroPolyError("所选组件必须属于同一个模型")
+            raise NitroPolyError("\u6240\u9009\u7ec4\u4ef6\u5fc5\u987b\u5c5e\u4e8e\u540c\u4e00\u4e2a\u6a21\u578b")
         return list(owners)[0]
 
     @classmethod
@@ -485,22 +485,22 @@ class MeshQuery(object):
     def ordered_edge_chain(cls, edges):
         edges = list(edges)
         if not edges:
-            raise NitroPolyError("没有可排序的边")
+            raise NitroPolyError("\u6ca1\u6709\u53ef\u6392\u5e8f\u7684\u8fb9")
         cls.ensure_same_owner(edges)
         edge_vertices = {}
         vertex_edges = {}
         for edge in edges:
             vertices = cls.edge_vertices(edge)
             if len(vertices) != 2:
-                raise NitroPolyError("无法读取边端点：{}".format(edge))
+                raise NitroPolyError("\u65e0\u6cd5\u8bfb\u53d6\u8fb9\u7aef\u70b9\uff1a{}".format(edge))
             edge_vertices[edge] = vertices
             for vertex in vertices:
                 vertex_edges.setdefault(vertex, []).append(edge)
         if any(len(values) > 2 for values in vertex_edges.values()):
-            raise NitroPolyError("选择中存在分叉")
+            raise NitroPolyError("\u9009\u62e9\u4e2d\u5b58\u5728\u5206\u53c9")
         endpoints = [vertex for vertex, values in vertex_edges.items() if len(values) == 1]
         if len(endpoints) not in (0, 2):
-            raise NitroPolyError("所选边不是单条连续边链")
+            raise NitroPolyError("\u6240\u9009\u8fb9\u4e0d\u662f\u5355\u6761\u8fde\u7eed\u8fb9\u94fe")
         if endpoints:
             start = min(endpoints, key=_index)
         else:
@@ -521,7 +521,7 @@ class MeshQuery(object):
             current = vertices[1] if current == vertices[0] else vertices[0]
             ordered_vertices.append(current)
         if remaining:
-            raise NitroPolyError("选择包含不连续边组")
+            raise NitroPolyError("\u9009\u62e9\u5305\u542b\u4e0d\u8fde\u7eed\u8fb9\u7ec4")
         return ordered_edges, ordered_vertices
 
     @classmethod
@@ -558,7 +558,7 @@ class MeshQuery(object):
             for edge in edges:
                 adjacency[edge].update(cls.ring_neighbours(edge).intersection(selected))
         if any(len(values) > 2 for values in adjacency.values()):
-            raise NitroPolyError("路径存在分叉")
+            raise NitroPolyError("\u8def\u5f84\u5b58\u5728\u5206\u53c9")
         endpoints = [edge for edge, values in adjacency.items() if len(values) <= 1]
         closed = not endpoints and len(edges) > 2
         start = min(endpoints or edges, key=_index)
@@ -571,7 +571,7 @@ class MeshQuery(object):
             next_edge = min(candidates, key=_index) if candidates else None
             previous, current = current, next_edge
         if len(ordered) != len(edges):
-            raise NitroPolyError("无法建立完整路径顺序")
+            raise NitroPolyError("\u65e0\u6cd5\u5efa\u7acb\u5b8c\u6574\u8def\u5f84\u987a\u5e8f")
         return ordered, closed
 
     @classmethod
@@ -667,7 +667,7 @@ class SelectionTools(ToolBase):
     def _modify_path(self, mode, grow):
         selected = self.query.selection(32)
         if not selected:
-            raise NitroPolyError("请选择边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u8fb9")
         self.query.ensure_same_owner(selected)
         selected_set = set(selected)
         result = set()
@@ -704,7 +704,7 @@ class SelectionTools(ToolBase):
                             output_indices.add(index)
             result.update(ordered[index] for index in output_indices)
         if not result:
-            raise NitroPolyError("当前选择没有可保留的内部边")
+            raise NitroPolyError("\u5f53\u524d\u9009\u62e9\u6ca1\u6709\u53ef\u4fdd\u7559\u7684\u5185\u90e8\u8fb9")
         cmds.select(sorted(result, key=_index), replace=True)
 
     def grow_loop(self):
@@ -722,7 +722,7 @@ class SelectionTools(ToolBase):
     def _dot(self, mode):
         selected = self.query.selection(32)
         if not selected:
-            raise NitroPolyError("请选择一条边作为起点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u6761\u8fb9\u4f5c\u4e3a\u8d77\u70b9")
         spacing = max(2, int(self.value("gap", 1)) + 1)
         selected_set = set(selected)
         result = set()
@@ -748,18 +748,18 @@ class SelectionTools(ToolBase):
         faces = self.query.selection(34)
         if faces:
             if len(faces) != 2:
-                raise NitroPolyError("面模式需要选择两个相邻面")
+                raise NitroPolyError("\u9762\u6a21\u5f0f\u9700\u8981\u9009\u62e9\u4e24\u4e2a\u76f8\u90bb\u9762")
             first_edges = set(self.query.face_edges(faces[0]))
             shared = first_edges.intersection(self.query.face_edges(faces[1]))
             if len(shared) != 1:
-                raise NitroPolyError("两个面必须相邻")
+                raise NitroPolyError("\u4e24\u4e2a\u9762\u5fc5\u987b\u76f8\u90bb")
             shared_edge = list(shared)[0]
             ring = self.query.full_edge_path(shared_edge, "ring")
             strip_faces = set(self.query.faces(ring))
             strip_edges = set(self.query.edges(list(strip_faces)))
             candidates = list(strip_edges.difference(ring))
             if not candidates:
-                raise NitroPolyError("无法建立面循环")
+                raise NitroPolyError("\u65e0\u6cd5\u5efa\u7acb\u9762\u5faa\u73af")
             cmds.select(candidates[0], replace=True)
             self._dot("loop")
             dotted_faces = set(self.query.faces(self.query.selection(32)))
@@ -773,7 +773,7 @@ class SelectionTools(ToolBase):
     def hard_edge(self):
         shapes = self.query.selected_mesh_shapes()
         if not shapes:
-            raise NitroPolyError("请选择多边形模型")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u591a\u8fb9\u5f62\u6a21\u578b")
         all_edges = []
         for shape in shapes:
             count = cmds.polyEvaluate(shape, edge=True)
@@ -786,7 +786,7 @@ class SelectionTools(ToolBase):
     def uv_edge(self):
         shapes = self.query.selected_mesh_shapes()
         if not shapes:
-            raise NitroPolyError("请选择多边形模型")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u591a\u8fb9\u5f62\u6a21\u578b")
         seams = []
         for shape in shapes:
             cmds.select(shape + ".map[*]", replace=True)
@@ -800,12 +800,12 @@ class SelectionTools(ToolBase):
             cmds.select(seams, replace=True)
         else:
             cmds.select(clear=True)
-            self.message("所选模型没有检测到 UV 接缝")
+            self.message("\u6240\u9009\u6a21\u578b\u6ca1\u6709\u68c0\u6d4b\u5230 UV \u63a5\u7f1d")
 
     def point_to_point(self):
         vertices = self.query.selection(31)
         if len(vertices) != 2:
-            raise NitroPolyError("请选择两个顶点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u4e2a\u9876\u70b9")
         owner = self.query.ensure_same_owner(vertices)
         transform = self.query.transform(owner)
         ids = (_index(vertices[0]), _index(vertices[1]))
@@ -814,7 +814,7 @@ class SelectionTools(ToolBase):
     def face_fill(self):
         faces = self.query.selection(34)
         if len(faces) != 2:
-            raise NitroPolyError("请选择两个面")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u4e2a\u9762")
         self.query.ensure_same_owner(faces)
         start, goal = faces
         queue = [start]
@@ -831,7 +831,7 @@ class SelectionTools(ToolBase):
                     previous[neighbour] = current
                     queue.append(neighbour)
         if goal not in previous:
-            raise NitroPolyError("两个面之间没有可用路径")
+            raise NitroPolyError("\u4e24\u4e2a\u9762\u4e4b\u95f4\u6ca1\u6709\u53ef\u7528\u8def\u5f84")
         path = []
         current = goal
         while current is not None:
@@ -848,7 +848,7 @@ class MeshTools(ToolBase):
             if self.query.mesh_shape(item)
         ]
         if len(transforms) < 2:
-            raise NitroPolyError("请选择两个或更多多边形模型")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u4e2a\u6216\u66f4\u591a\u591a\u8fb9\u5f62\u6a21\u578b")
         first = transforms[0]
         first_short = first.rsplit("|", 1)[-1]
         parent = cmds.listRelatives(first, parent=True, fullPath=True) or []
@@ -870,13 +870,13 @@ class MeshTools(ToolBase):
     def detach_clean(self):
         faces = self.query.selection(34)
         if not faces:
-            raise NitroPolyError("请选择需要分离的面")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u9700\u8981\u5206\u79bb\u7684\u9762")
         owner = self.query.ensure_same_owner(faces)
         transform = self.query.transform(owner)
         face_count = cmds.polyEvaluate(owner, face=True)
         selected_ids = set(_index(face) for face in faces)
         if len(selected_ids) >= face_count:
-            raise NitroPolyError("不能分离模型的全部面")
+            raise NitroPolyError("\u4e0d\u80fd\u5206\u79bb\u6a21\u578b\u7684\u5168\u90e8\u9762")
         duplicate = cmds.duplicate(transform, returnRootsOnly=True)[0]
         duplicate_shape = self.query.mesh_shape(duplicate)
         delete_ids = set(range(face_count)).difference(selected_ids)
@@ -894,7 +894,7 @@ class MeshTools(ToolBase):
         faces = self.query.selection(34)
         if vertices:
             if len(vertices) < 2:
-                raise NitroPolyError("请选择至少两个顶点")
+                raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e24\u4e2a\u9876\u70b9")
             owner = self.query.ensure_same_owner(vertices)
             before = cmds.polyEvaluate(owner, edge=True)
             cmds.polyConnectComponents(vertices, constructionHistory=False)
@@ -965,7 +965,7 @@ class MeshTools(ToolBase):
         if transforms:
             mel.eval("dR_multiCutTool;")
             return
-        raise NitroPolyError("请选择对象或多边形组件")
+        raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61\u6216\u591a\u8fb9\u5f62\u7ec4\u4ef6")
 
     def uni_remove(self):
         vertices = self.query.selection(31)
@@ -995,14 +995,14 @@ class MeshTools(ToolBase):
         if transforms:
             cmds.delete(transforms)
             return
-        raise NitroPolyError("请选择对象或多边形组件")
+        raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61\u6216\u591a\u8fb9\u5f62\u7ec4\u4ef6")
 
 
 class TransformTools(ToolBase):
     def base_pivot(self):
         transforms = self.query.selected_transforms()
         if not transforms:
-            raise NitroPolyError("请选择对象")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61")
         for transform in transforms:
             box = cmds.exactWorldBoundingBox(transform)
             bottom = [
@@ -1015,21 +1015,21 @@ class TransformTools(ToolBase):
     def world_pivot(self):
         transforms = self.query.selected_transforms()
         if not transforms:
-            raise NitroPolyError("请选择对象")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61")
         for transform in transforms:
             cmds.xform(transform, worldSpace=True, pivots=(0.0, 0.0, 0.0))
 
     def unfreeze_translate(self):
         transforms = self.query.selected_transforms()
         if not transforms:
-            raise NitroPolyError("请选择对象")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61")
         for transform in transforms:
             locked = [
                 attribute for attribute in ("translateX", "translateY", "translateZ")
                 if cmds.getAttr(transform + "." + attribute, lock=True)
             ]
             if locked:
-                raise NitroPolyError("{} 的位移通道已锁定".format(transform))
+                raise NitroPolyError("{} \u7684\u4f4d\u79fb\u901a\u9053\u5df2\u9501\u5b9a".format(transform))
             cmds.makeIdentity(transform, apply=True, translate=True, rotate=False, scale=False)
             cmds.move(0.0, 0.0, 0.0, transform, rotatePivotRelative=True)
             position = [
@@ -1045,7 +1045,7 @@ class TransformTools(ToolBase):
     def move_to_origin(self):
         transforms = self.query.selected_transforms()
         if not transforms:
-            raise NitroPolyError("请选择对象")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u5bf9\u8c61")
         for transform in transforms:
             cmds.move(0.0, 0.0, 0.0, transform, rotatePivotRelative=True)
 
@@ -1055,12 +1055,12 @@ class TopologyTools(ToolBase):
         edges = self.query.selection(32)
         faces = self.query.selection(34)
         if len(edges) != 1 or not faces:
-            raise NitroPolyError("需要同时选择一条边和一个或多个面")
+            raise NitroPolyError("\u9700\u8981\u540c\u65f6\u9009\u62e9\u4e00\u6761\u8fb9\u548c\u4e00\u4e2a\u6216\u591a\u4e2a\u9762")
         components = edges + faces
         self.query.ensure_same_owner(components)
         edge_vertices = self.query.edge_vertices(edges[0])
         if len(edge_vertices) != 2:
-            raise NitroPolyError("无法读取旋转轴")
+            raise NitroPolyError("\u65e0\u6cd5\u8bfb\u53d6\u65cb\u8f6c\u8f74")
         positions = [
             cmds.xform(vertex, query=True, worldSpace=True, translation=True)
             for vertex in edge_vertices
@@ -1068,7 +1068,7 @@ class TopologyTools(ToolBase):
         pivot = _v_mul(_v_add(positions[0], positions[1]), 0.5)
         axis = _v_normal(_v_sub(positions[1], positions[0]))
         if _v_length(axis) <= 1e-12:
-            raise NitroPolyError("旋转轴长度为零")
+            raise NitroPolyError("\u65cb\u8f6c\u8f74\u957f\u5ea6\u4e3a\u96f6")
         fixed = set(edge_vertices)
         vertices = set(self.query.vertices(faces)).difference(fixed)
         radians = math.radians(float(degrees))
@@ -1087,15 +1087,15 @@ class TopologyTools(ToolBase):
     def f2_extend(self):
         edges = self.query.selection(32)
         if len(edges) != 1:
-            raise NitroPolyError("请选择一条边界边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u6761\u8fb9\u754c\u8fb9")
         edge = edges[0]
         connected_faces = self.query.edge_faces(edge)
         if len(connected_faces) != 1:
-            raise NitroPolyError("所选边必须是边界边")
+            raise NitroPolyError("\u6240\u9009\u8fb9\u5fc5\u987b\u662f\u8fb9\u754c\u8fb9")
         face = connected_faces[0]
         face_vertices = self.query.face_vertices(face)
         if len(face_vertices) != 4:
-            raise NitroPolyError("F2 扩展要求相邻面为四边面")
+            raise NitroPolyError("F2 \u6269\u5c55\u8981\u6c42\u76f8\u90bb\u9762\u4e3a\u56db\u8fb9\u9762")
         edge_vertices = self.query.edge_vertices(edge)
         face_edges = self.query.face_edges(face)
         inner_for_endpoint = {}
@@ -1108,7 +1108,7 @@ class TopologyTools(ToolBase):
                 if endpoint in vertices:
                     connected.extend(vertex for vertex in vertices if vertex != endpoint)
             if len(connected) != 1:
-                raise NitroPolyError("无法判断四边面外推方向")
+                raise NitroPolyError("\u65e0\u6cd5\u5224\u65ad\u56db\u8fb9\u9762\u5916\u63a8\u65b9\u5411")
             inner_for_endpoint[endpoint] = connected[0]
         endpoint_positions = dict(
             (vertex, cmds.xform(vertex, query=True, worldSpace=True, translation=True))
@@ -1135,7 +1135,7 @@ class TopologyTools(ToolBase):
             for value in range(before, after)
         ]
         if len(new_vertices) != 2:
-            raise NitroPolyError("F2 扩展没有生成两个新顶点")
+            raise NitroPolyError("F2 \u6269\u5c55\u6ca1\u6709\u751f\u6210\u4e24\u4e2a\u65b0\u9876\u70b9")
         assignments = {}
         remaining = set(new_vertices)
         for endpoint in edge_vertices:
@@ -1195,7 +1195,7 @@ class TopologyTools(ToolBase):
     def _bevel(self, increase):
         edges = self.query.selection(32)
         if len(edges) < 3:
-            raise NitroPolyError("请选择至少三条连续倒角轮廓边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e09\u6761\u8fde\u7eed\u5012\u89d2\u8f6e\u5ed3\u8fb9")
         self.query.ensure_same_owner(edges)
         groups = self.query.edge_groups(edges)
         factor_step = min(max(float(self.value("bevel_step", 0.1)), 0.001), 0.95)
@@ -1238,12 +1238,12 @@ class TopologyTools(ToolBase):
                 moves.setdefault(vertex, []).append(target)
             valid += 1
         if not moves:
-            raise NitroPolyError("所选边不是可调整的开放倒角轮廓")
+            raise NitroPolyError("\u6240\u9009\u8fb9\u4e0d\u662f\u53ef\u8c03\u6574\u7684\u5f00\u653e\u5012\u89d2\u8f6e\u5ed3")
         for vertex, targets in moves.items():
             cmds.xform(vertex, worldSpace=True, translation=_v_average(targets))
         cmds.select(edges, replace=True)
         if valid < len(groups):
-            self.message("部分边组不符合倒角轮廓条件，已跳过")
+            self.message("\u90e8\u5206\u8fb9\u7ec4\u4e0d\u7b26\u5408\u5012\u89d2\u8f6e\u5ed3\u6761\u4ef6\uff0c\u5df2\u8df3\u8fc7")
 
     def bevel_plus(self):
         self._bevel(True)
@@ -1256,30 +1256,30 @@ class ConnectTools(ToolBase):
     def load_edge_loop(self):
         edges = self.query.selection(32)
         if not edges:
-            raise NitroPolyError("请选择参考边链")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u53c2\u8003\u8fb9\u94fe")
         self.query.ensure_same_owner(edges)
         self.query.ordered_edge_chain(edges)
         self.app.state["loaded_edges"] = list(edges)
-        self.app.ui.set_status("loaded_edges", "{} 条边".format(len(edges)))
+        self.app.ui.set_status("loaded_edges", "{} \u6761\u8fb9".format(len(edges)))
 
     def cut_stitch(self):
         target_edges = self.query.selection(32)
         reference_edges = self.app.state.get("loaded_edges") or []
         if not target_edges:
-            raise NitroPolyError("请选择需要切割的目标边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u9700\u8981\u5207\u5272\u7684\u76ee\u6807\u8fb9")
         if not reference_edges or any(
                 not cmds.objExists(edge) for edge in reference_edges):
             self.app.state["loaded_edges"] = []
-            self.app.ui.set_status("loaded_edges", "无循环边")
-            raise NitroPolyError("请重新加载参考边链")
+            self.app.ui.set_status("loaded_edges", "\u65e0\u5faa\u73af\u8fb9")
+            raise NitroPolyError("\u8bf7\u91cd\u65b0\u52a0\u8f7d\u53c2\u8003\u8fb9\u94fe")
         if len(reference_edges) < len(target_edges):
-            raise NitroPolyError("目标边数量不能多于已加载参考边")
+            raise NitroPolyError("\u76ee\u6807\u8fb9\u6570\u91cf\u4e0d\u80fd\u591a\u4e8e\u5df2\u52a0\u8f7d\u53c2\u8003\u8fb9")
 
         self.query.ensure_same_owner(reference_edges)
         target_owner = self.query.ensure_same_owner(target_edges)
         _, reference_vertices = self.query.ordered_edge_chain(reference_edges)
         if len(reference_vertices) < 2:
-            raise NitroPolyError("参考边链无效")
+            raise NitroPolyError("\u53c2\u8003\u8fb9\u94fe\u65e0\u6548")
 
         reference_data = [
             (
@@ -1411,7 +1411,7 @@ class ConnectTools(ToolBase):
             processed += 1
 
         if not processed:
-            raise NitroPolyError("目标边没有在缝合阈值内穿过参考边链")
+            raise NitroPolyError("\u76ee\u6807\u8fb9\u6ca1\u6709\u5728\u7f1d\u5408\u9608\u503c\u5185\u7a7f\u8fc7\u53c2\u8003\u8fb9\u94fe")
 
         if same_mesh:
             weld_vertices = list(set(reference_vertices) | target_vertices)
@@ -1580,16 +1580,16 @@ class ConnectTools(ToolBase):
         if selected_vertices:
             vertices = selected_vertices
             if len(vertices) != 2:
-                raise NitroPolyError("请选择两个顶点")
+                raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u4e2a\u9876\u70b9")
         elif selected_edges:
             if len(selected_edges) != 1:
-                raise NitroPolyError("请选择一条边")
+                raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u6761\u8fb9")
             edge = selected_edges[0]
             vertices = self.query.edge_vertices(edge)
             if len(vertices) != 2:
-                raise NitroPolyError("无法读取边端点")
+                raise NitroPolyError("\u65e0\u6cd5\u8bfb\u53d6\u8fb9\u7aef\u70b9")
         else:
-            raise NitroPolyError("请选择两个顶点或一条边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u4e2a\u9876\u70b9\u6216\u4e00\u6761\u8fb9")
 
         self.query.ensure_same_owner(vertices)
         top_vertices = self._top_vertices(vertices)
@@ -1620,7 +1620,7 @@ class ConnectTools(ToolBase):
         owner = _owner(vertices[0])
         created_edges = self._soft_edge_connect(vertices)
         if not created_edges:
-            raise NitroPolyError("角部连接失败")
+            raise NitroPolyError("\u89d2\u90e8\u8fde\u63a5\u5931\u8d25")
         before = cmds.polyEvaluate(owner, vertex=True)
         cmds.select(created_edges, replace=True)
         cmds.polySubdivideEdge(
@@ -1629,7 +1629,7 @@ class ConnectTools(ToolBase):
         )
         after = cmds.polyEvaluate(owner, vertex=True)
         if after <= before:
-            raise NitroPolyError("未生成角部顶点")
+            raise NitroPolyError("\u672a\u751f\u6210\u89d2\u90e8\u9876\u70b9")
         new_vertex = "{}.vtx[{}]".format(owner, before)
         cmds.xform(
             new_vertex,
@@ -1643,7 +1643,7 @@ class ConnectTools(ToolBase):
         vertices = self.query.selection(31)
         if edges:
             if len(edges) < 2:
-                raise NitroPolyError("请选择至少两条边")
+                raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e24\u6761\u8fb9")
             owner = self.query.ensure_same_owner(edges)
             before = cmds.polyEvaluate(owner, vertex=True)
             created_edges = self._soft_edge_connect(edges)
@@ -1679,19 +1679,19 @@ class ConnectTools(ToolBase):
 
         if vertices:
             if len(vertices) < 2:
-                raise NitroPolyError("请选择至少两个顶点")
+                raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e24\u4e2a\u9876\u70b9")
             self.query.ensure_same_owner(vertices)
             if len(vertices) == 2:
                 self._connect_corner()
             else:
                 self._soft_edge_connect(vertices)
             return
-        raise NitroPolyError("请选择边或顶点")
+        raise NitroPolyError("\u8bf7\u9009\u62e9\u8fb9\u6216\u9876\u70b9")
 
     def end_connect(self):
         edges = self.query.selection(32)
         if len(edges) != 1:
-            raise NitroPolyError("请选择一条末端边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u6761\u672b\u7aef\u8fb9")
         edge = edges[0]
         owner = self.query.ensure_same_owner(edges)
         original_vertices = self.query.edge_vertices(edge)
@@ -1704,7 +1704,7 @@ class ConnectTools(ToolBase):
             if len(self.query.face_vertices(face)) == 6:
                 six_vertex_faces.append(face)
         if len(six_vertex_faces) != 1:
-            raise NitroPolyError("所选边必须位于唯一的六顶点末端区域")
+            raise NitroPolyError("\u6240\u9009\u8fb9\u5fc5\u987b\u4f4d\u4e8e\u552f\u4e00\u7684\u516d\u9876\u70b9\u672b\u7aef\u533a\u57df")
 
         face_vertices = self.query.face_vertices(six_vertex_faces[0])
         final_vertices = list(
@@ -1716,11 +1716,11 @@ class ConnectTools(ToolBase):
             internal=True
         )
         if len(opposite_edges) != 1:
-            raise NitroPolyError("未找到唯一的末端对边")
+            raise NitroPolyError("\u672a\u627e\u5230\u552f\u4e00\u7684\u672b\u7aef\u5bf9\u8fb9")
 
         created_edges = self._soft_edge_connect([edge, opposite_edges[0]])
         if not created_edges:
-            raise NitroPolyError("末端连接失败")
+            raise NitroPolyError("\u672b\u7aef\u8fde\u63a5\u5931\u8d25")
         pre_vertices = set(self.query.vertices(created_edges))
         cmds.select(created_edges, replace=True)
         cmds.polySubdivideEdge(constructionHistory=False)
@@ -1730,7 +1730,7 @@ class ConnectTools(ToolBase):
             key=_index
         )
         if not middle_vertices:
-            raise NitroPolyError("未生成末端中间顶点")
+            raise NitroPolyError("\u672a\u751f\u6210\u672b\u7aef\u4e2d\u95f4\u9876\u70b9")
 
         corner_edges = set()
         for old_vertex in original_vertices:
@@ -1760,7 +1760,7 @@ class ConnectTools(ToolBase):
     def distance_connect(self):
         edges = self.query.selection(32)
         if len(edges) != 2:
-            raise NitroPolyError("请选择两条边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e24\u6761\u8fb9")
         owner = self.query.ensure_same_owner(edges)
         before = cmds.polyEvaluate(owner, vertex=True)
 
@@ -1771,7 +1771,7 @@ class ConnectTools(ToolBase):
             path = self.query.full_edge_path(edges[0], "ring")
             ordered, closed = self.query.order_edge_path(path, "ring")
             if edges[1] not in ordered:
-                raise NitroPolyError("两条边不在同一边环")
+                raise NitroPolyError("\u4e24\u6761\u8fb9\u4e0d\u5728\u540c\u4e00\u8fb9\u73af")
             first_index = ordered.index(edges[0])
             second_index = ordered.index(edges[1])
             low, high = sorted((first_index, second_index))
@@ -1787,7 +1787,7 @@ class ConnectTools(ToolBase):
         )
         new_edges = self._new_edges_after(owner, before)
         if not new_edges:
-            raise NitroPolyError("没有生成新的连接边")
+            raise NitroPolyError("\u6ca1\u6709\u751f\u6210\u65b0\u7684\u8fde\u63a5\u8fb9")
         cmds.polySoftEdge(
             new_edges,
             angle=180,
@@ -1798,7 +1798,7 @@ class ConnectTools(ToolBase):
     def flow_connect(self):
         edges = self.query.selection(32)
         if len(edges) < 2:
-            raise NitroPolyError("请选择至少两条边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e24\u6761\u8fb9")
         owner = self.query.ensure_same_owner(edges)
         before = cmds.polyEvaluate(owner, vertex=True)
         cmds.polyConnectComponents(
@@ -1808,7 +1808,7 @@ class ConnectTools(ToolBase):
         )
         new_edges = self._new_edges_after(owner, before)
         if not new_edges:
-            raise NitroPolyError("没有生成新的流连接边")
+            raise NitroPolyError("\u6ca1\u6709\u751f\u6210\u65b0\u7684\u6d41\u8fde\u63a5\u8fb9")
         cmds.polySoftEdge(
             new_edges,
             angle=180,
@@ -1820,13 +1820,13 @@ class ConnectTools(ToolBase):
         vertices = self.query.selection(31)
         edges = self.query.selection(32)
         if len(vertices) != 1 or len(edges) != 1:
-            raise NitroPolyError("请选择一个顶点和一条边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u4e2a\u9876\u70b9\u548c\u4e00\u6761\u8fb9")
         vertex = vertices[0]
         edge = edges[0]
         owner = self.query.ensure_same_owner([vertex, edge])
         edge_vertices = self.query.edge_vertices(edge)
         if len(edge_vertices) != 2:
-            raise NitroPolyError("无法读取目标边端点")
+            raise NitroPolyError("\u65e0\u6cd5\u8bfb\u53d6\u76ee\u6807\u8fb9\u7aef\u70b9")
 
         start = cmds.xform(
             edge_vertices[0], query=True, worldSpace=True, translation=True
@@ -1840,10 +1840,10 @@ class ConnectTools(ToolBase):
         line = _v_sub(end, start)
         length_sq = _v_dot(line, line)
         if length_sq <= 1e-16:
-            raise NitroPolyError("目标边长度为零")
+            raise NitroPolyError("\u76ee\u6807\u8fb9\u957f\u5ea6\u4e3a\u96f6")
         parameter = _v_dot(_v_sub(point, start), line) / length_sq
         if parameter < -1e-7 or parameter > 1.0000001:
-            raise NitroPolyError("顶点投影不在所选边线段内")
+            raise NitroPolyError("\u9876\u70b9\u6295\u5f71\u4e0d\u5728\u6240\u9009\u8fb9\u7ebf\u6bb5\u5185")
         parameter = max(0.0, min(1.0, parameter))
 
         before = cmds.polyEvaluate(owner, vertex=True)
@@ -1854,7 +1854,7 @@ class ConnectTools(ToolBase):
         )
         after = cmds.polyEvaluate(owner, vertex=True)
         if after <= before:
-            raise NitroPolyError("没有在目标边上生成新顶点")
+            raise NitroPolyError("\u6ca1\u6709\u5728\u76ee\u6807\u8fb9\u4e0a\u751f\u6210\u65b0\u9876\u70b9")
         new_vertex = "{}.vtx[{}]".format(owner, before)
         cmds.polyConnectComponents(
             [vertex, new_vertex],
@@ -1865,7 +1865,7 @@ class ConnectTools(ToolBase):
     def load_vertex(self):
         vertices = self.query.selection(31)
         if len(vertices) != 1:
-            raise NitroPolyError("请选择一个顶点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u4e00\u4e2a\u9876\u70b9")
         self.app.state["loaded_vertex"] = vertices[0]
         self.app.ui.set_status(
             "loaded_vertex",
@@ -1876,12 +1876,12 @@ class ConnectTools(ToolBase):
         target = self.app.state.get("loaded_vertex")
         if not target or not cmds.objExists(target):
             self.app.state["loaded_vertex"] = ""
-            self.app.ui.set_status("loaded_vertex", "没有加载顶点")
-            raise NitroPolyError("请重新加载目标顶点")
+            self.app.ui.set_status("loaded_vertex", "\u6ca1\u6709\u52a0\u8f7d\u9876\u70b9")
+            raise NitroPolyError("\u8bf7\u91cd\u65b0\u52a0\u8f7d\u76ee\u6807\u9876\u70b9")
         selected = self.query.selection(31)
         selected = [item for item in selected if item != target]
         if not selected:
-            raise NitroPolyError("请选择需要连接的其他顶点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u9700\u8981\u8fde\u63a5\u7684\u5176\u4ed6\u9876\u70b9")
         self.query.ensure_same_owner(selected + [target])
         owner = _owner(target)
         before = cmds.polyEvaluate(owner, edge=True)
@@ -1892,7 +1892,7 @@ class ConnectTools(ToolBase):
             )
         after = cmds.polyEvaluate(owner, edge=True)
         if after <= before:
-            raise NitroPolyError("没有生成连接边")
+            raise NitroPolyError("\u6ca1\u6709\u751f\u6210\u8fde\u63a5\u8fb9")
         new_edges = [
             "{}.e[{}]".format(owner, value)
             for value in range(before, after)
@@ -1909,7 +1909,7 @@ class LoopTools(ToolBase):
     def _groups(self):
         edges = self.query.selection(32)
         if not edges:
-            raise NitroPolyError("请选择连续边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u8fde\u7eed\u8fb9")
         return self.query.edge_groups(edges), edges
 
     def _sample_polyline(self, points, distances, target):
@@ -1969,7 +1969,7 @@ class LoopTools(ToolBase):
         for group in groups:
             _, vertices = self.query.ordered_edge_chain(group)
             if vertices[0] == vertices[-1]:
-                raise NitroPolyError("直线工具不能处理闭合边环")
+                raise NitroPolyError("\u76f4\u7ebf\u5de5\u5177\u4e0d\u80fd\u5904\u7406\u95ed\u5408\u8fb9\u73af")
             first = cmds.xform(
                 vertices[0], query=True, worldSpace=True, translation=True
             )
@@ -1992,7 +1992,7 @@ class LoopTools(ToolBase):
     def _circle_edges(self, edges):
         _, vertices = self.query.ordered_edge_chain(edges)
         if vertices[0] != vertices[-1]:
-            raise NitroPolyError("圆形工具要求闭合边环")
+            raise NitroPolyError("\u5706\u5f62\u5de5\u5177\u8981\u6c42\u95ed\u5408\u8fb9\u73af")
         vertices = vertices[:-1]
         points = [
             cmds.xform(vertex, query=True, worldSpace=True, translation=True)
@@ -2001,12 +2001,12 @@ class LoopTools(ToolBase):
         center = _v_average(points)
         normal = _newell_normal(points)
         if _v_length(normal) <= 1e-12:
-            raise NitroPolyError("无法计算边环平面")
+            raise NitroPolyError("\u65e0\u6cd5\u8ba1\u7b97\u8fb9\u73af\u5e73\u9762")
         first_vector = _project_to_plane(points[0], center, normal)
         first_vector = _v_sub(first_vector, center)
         basis_u = _v_normal(first_vector)
         if _v_length(basis_u) <= 1e-12:
-            raise NitroPolyError("无法建立圆形方向")
+            raise NitroPolyError("\u65e0\u6cd5\u5efa\u7acb\u5706\u5f62\u65b9\u5411")
         basis_v = _v_normal(_v_cross(normal, basis_u))
         radius = sum(_v_distance(point, center) for point in points) / float(len(points))
         if len(points) > 1:
@@ -2038,7 +2038,7 @@ class LoopTools(ToolBase):
     def geo_poly(self):
         faces = self.query.selection(34)
         if not faces:
-            raise NitroPolyError("请选择连续面区域")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u8fde\u7eed\u9762\u533a\u57df")
         owner = self.query.ensure_same_owner(faces)
         selected_faces = set(faces)
         boundary = []
@@ -2048,7 +2048,7 @@ class LoopTools(ToolBase):
                 boundary.append(edge)
         groups = self.query.edge_groups(boundary)
         if not groups:
-            raise NitroPolyError("没有找到面区域外边界")
+            raise NitroPolyError("\u6ca1\u6709\u627e\u5230\u9762\u533a\u57df\u5916\u8fb9\u754c")
         for group in groups:
             self._circle_edges(group)
         cmds.select(faces, replace=True)
@@ -2057,7 +2057,7 @@ class LoopTools(ToolBase):
         selection = self.query.selection()
         vertices = self.query.vertices(selection)
         if len(vertices) < 3:
-            raise NitroPolyError("请选择至少三个有效顶点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e09\u4e2a\u6709\u6548\u9876\u70b9")
         return vertices
 
     def view_planar(self):
@@ -2076,7 +2076,7 @@ class LoopTools(ToolBase):
             if panels:
                 camera = cmds.modelPanel(panels[0], query=True, camera=True)
         if not camera:
-            raise NitroPolyError("无法取得当前视图相机")
+            raise NitroPolyError("\u65e0\u6cd5\u53d6\u5f97\u5f53\u524d\u89c6\u56fe\u76f8\u673a")
         matrix = cmds.xform(camera, query=True, worldSpace=True, matrix=True)
         normal = _v_normal([-matrix[8], -matrix[9], -matrix[10]])
         for vertex, point in zip(vertices, points):
@@ -2102,7 +2102,7 @@ class LoopTools(ToolBase):
         selection = self.query.selection()
         vertices = self.query.vertices(selection)
         if len(vertices) < 3:
-            raise NitroPolyError("请选择至少三个有效顶点")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e09\u4e2a\u6709\u6548\u9876\u70b9")
         faces = self.query.selection(34)
         if not faces:
             faces = self.query.faces(selection)
@@ -2114,7 +2114,7 @@ class LoopTools(ToolBase):
         if _v_length(normal) <= 1e-12:
             normal = _newell_normal(points)
         if _v_length(normal) <= 1e-12:
-            raise NitroPolyError("无法计算平均平面")
+            raise NitroPolyError("\u65e0\u6cd5\u8ba1\u7b97\u5e73\u5747\u5e73\u9762")
         center = _v_average(points)
         for vertex, point in zip(vertices, points):
             cmds.xform(
@@ -2126,14 +2126,14 @@ class LoopTools(ToolBase):
     def center_loop(self):
         edges = self.query.selection(32)
         if not edges:
-            raise NitroPolyError("请选择边")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u8fb9")
         cmds.select(edges, replace=True)
         mel.eval("polyEditEdgeFlow -adjustEdgeFlow 1;")
 
     def relax_loop(self):
         vertices = self.query.vertices(self.query.selection())
         if not vertices:
-            raise NitroPolyError("请选择顶点、边或面")
+            raise NitroPolyError("\u8bf7\u9009\u62e9\u9876\u70b9\u3001\u8fb9\u6216\u9762")
         cmds.polyAverageVertex(vertices, iterations=1, constructionHistory=False)
         cmds.select(vertices, replace=True)
 
@@ -2175,7 +2175,7 @@ class NitroPolyUI(object):
         if not self.help_field or not cmds.scrollField(self.help_field, exists=True):
             return
         spec = SPEC_BY_ID[tool_id]
-        text = "{}  ·  {}\n\n{}".format(
+        text = "{}  \u00b7  {}\n\n{}".format(
             spec["label"], spec["category"], spec["help"]
         )
         cmds.scrollField(self.help_field, edit=True, text=text)
@@ -2270,7 +2270,7 @@ class NitroPolyUI(object):
         return window
 
     def _build_selection(self):
-        self._frame("编辑选择")
+        self._frame("\u7f16\u8f91\u9009\u62e9")
         self._row(4, [96, 96, 96, 96])
         for tool_id in ("grow_loop", "shrink_loop", "grow_ring", "shrink_ring"):
             self._button(tool_id, 94)
@@ -2297,7 +2297,7 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_mesh(self):
-        self._frame("网格编辑")
+        self._frame("\u7f51\u683c\u7f16\u8f91")
         self._row(4, [96, 96, 96, 96])
         for tool_id in ("combine_clean", "detach_clean", "uni_connect", "uni_remove"):
             self._button(tool_id, 94)
@@ -2305,7 +2305,7 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_transform(self):
-        self._frame("轴心点/解冻变换")
+        self._frame("\u8f74\u5fc3\u70b9/\u89e3\u51bb\u53d8\u6362")
         self._row(4, [96, 96, 96, 96])
         for tool_id in ("base_pivot", "world_pivot", "unfreeze_translate", "move_to_origin"):
             self._button(tool_id, 94)
@@ -2313,14 +2313,14 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_topology(self):
-        self._frame("拓扑工具")
+        self._frame("\u62d3\u6251\u5de5\u5177")
         self._row(2, [194, 194])
         self._button("corner_plus", 190)
         self._button("corner_minus", 190)
         cmds.setParent("..")
 
         self.controls["f2_threshold"] = cmds.floatSliderGrp(
-            label="F2 阈值",
+            label="F2 \u9608\u503c",
             field=True,
             value=0.001,
             minValue=0.0001,
@@ -2333,7 +2333,7 @@ class NitroPolyUI(object):
         self._button("f2_extend", 386)
 
         self.controls["bevel_step"] = cmds.floatSliderGrp(
-            label="倒角步长",
+            label="\u5012\u89d2\u6b65\u957f",
             field=True,
             value=0.1,
             minValue=0.001,
@@ -2350,9 +2350,9 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_connect(self):
-        self._frame("连接工具")
+        self._frame("\u8fde\u63a5\u5de5\u5177")
         self.controls["stitch_threshold"] = cmds.floatSliderGrp(
-            label="缝合阈值",
+            label="\u7f1d\u5408\u9608\u503c",
             field=True,
             value=0.1,
             minValue=0.0001,
@@ -2370,7 +2370,7 @@ class NitroPolyUI(object):
             columnOffset3=(2, 2, 2)
         )
         self.status["loaded_edges"] = cmds.textField(
-            text="无循环边", editable=False, width=98,
+            text="\u65e0\u5faa\u73af\u8fb9", editable=False, width=98,
             backgroundColor=self.color(39, 39, 47)
         )
         self._button("load_edge_loop", 121)
@@ -2393,7 +2393,7 @@ class NitroPolyUI(object):
             columnOffset3=(2, 2, 2)
         )
         self.status["loaded_vertex"] = cmds.textField(
-            text="没有加载顶点", editable=False, width=98,
+            text="\u6ca1\u6709\u52a0\u8f7d\u9876\u70b9", editable=False, width=98,
             backgroundColor=self.color(39, 39, 47)
         )
         self._button("load_vertex", 121)
@@ -2402,7 +2402,7 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_loop(self):
-        self._frame("循环工具")
+        self._frame("\u5faa\u73af\u5de5\u5177")
         self._row(4, [96, 96, 96, 96])
         for tool_id in ("space_loop", "straight_loop", "circle_loop", "geo_poly"):
             self._button(tool_id, 94)
@@ -2414,12 +2414,12 @@ class NitroPolyUI(object):
         cmds.setParent("..")
 
     def _build_information(self):
-        self._frame("功能介绍")
+        self._frame("\u529f\u80fd\u4ecb\u7ecd")
         self.help_field = cmds.scrollField(
             editable=False,
             wordWrap=True,
             height=120,
-            text="鼠标移入功能按钮时，这里会立即显示该功能的用途和使用方法。"
+            text="\u9f20\u6807\u79fb\u5165\u529f\u80fd\u6309\u94ae\u65f6\uff0c\u8fd9\u91cc\u4f1a\u7acb\u5373\u663e\u793a\u8be5\u529f\u80fd\u7684\u7528\u9014\u548c\u4f7f\u7528\u65b9\u6cd5\u3002"
         )
         cmds.setParent("..")
 
@@ -2463,11 +2463,11 @@ class NitroPolyApp(object):
             )
         except Exception:
             pass
-        cmds.warning("NitroPoly：{}".format(text))
+        cmds.warning("NitroPoly\uff1a{}".format(text))
 
     def execute(self, tool_id, *args):
         if tool_id not in self.routes:
-            raise NitroPolyError("未注册功能：{}".format(tool_id))
+            raise NitroPolyError("\u672a\u6ce8\u518c\u529f\u80fd\uff1a{}".format(tool_id))
         try:
             with execution_context(tool_id):
                 return self.routes[tool_id]()
@@ -2475,7 +2475,7 @@ class NitroPolyApp(object):
             self.message(str(exc))
         except Exception as exc:
             traceback.print_exc()
-            self.message("{}：{}".format(SPEC_BY_ID[tool_id]["label"], exc))
+            self.message("{}\uff1a{}".format(SPEC_BY_ID[tool_id]["label"], exc))
         return None
 
     def show(self):
@@ -2505,7 +2505,7 @@ class NitroPolyApp(object):
                         category="NitroPoly"
                     )
             except Exception:
-                cmds.warning("NitroPoly：无法注册运行时命令 {}".format(name))
+                cmds.warning("NitroPoly\uff1a\u65e0\u6cd5\u6ce8\u518c\u8fd0\u884c\u65f6\u547d\u4ee4 {}".format(name))
 
 
 class NP(NitroPolyApp):

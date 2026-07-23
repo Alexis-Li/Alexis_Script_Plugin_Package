@@ -67,6 +67,8 @@ explicit requirement. Declare the version once as `__version__` or
 - For dual-compatible files, avoid Python-3-only syntax and APIs, use explicit
   compatibility shims only where needed, and test in both host generations
   before claiming support.
+- Keep directly executed Maya 2020/Python 2 source ASCII-only; encode localized
+  UI text with Unicode escapes so the Script Editor cannot corrupt the source.
 - Use the Python and Qt versions bundled with Maya. Do not assume a system
   Python installation, hardcode Maya paths, or add PyMEL unless required.
 - Guard Maya- or Qt-version-specific APIs explicitly.

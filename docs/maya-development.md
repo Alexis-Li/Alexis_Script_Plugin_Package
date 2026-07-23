@@ -33,6 +33,9 @@ Python-3-only syntax in dual-compatible files and verify both host generations
 before documenting compatibility. If the implementations cannot be shared,
 prioritize Python 3 and document the exact supported Maya versions.
 
+Keep directly executed Maya 2020/Python 2 source files ASCII-only. Represent
+localized UI text with Unicode escapes to prevent Script Editor corruption.
+
 Use Maya's bundled Python and Qt, avoid hardcoded install paths, and guard
 version-specific APIs. Do not introduce PyMEL unless the feature requires it.
 
