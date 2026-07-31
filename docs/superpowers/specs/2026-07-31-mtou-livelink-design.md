@@ -184,8 +184,8 @@ reported as successfully linked.
   the duplicates are listed.
 - The root transform is sampled in Maya world space. Every child transform is
   sampled relative to its transmitted parent joint. This includes evaluated
-  controller, constraint, IK, and `jointOrient` results while excluding rig
-  group offsets above the selected root.
+  controller, constraint, IK, `jointOrient`, and upstream rig-group effects,
+  while nodes above the selected root are not transmitted as bones.
 
 ### BlendShapes
 
