@@ -853,7 +853,7 @@ Run:
 
 ```powershell
 $ue_root = (Get-ItemProperty 'HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7').InstalledDirectory
-& "$ue_root\Engine\Build\BatchFiles\Build.bat" ToolsLabEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
+& "$ue_root\Engine\Build\BatchFiles\Build.bat" UnrealEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
 & "$ue_root\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "$PWD\unreal\ToolsLab.uproject" -unattended -nop4 -nosplash -NullRHI -ExecCmds="Automation RunTests MtoULiveLink.Protocol;Quit" -TestExit="Automation Test Queue Empty"
 ```
 
@@ -1230,7 +1230,7 @@ Expected: UE `5.7.4` build `51494982` and Python `3.7.7` from Maya 2022.4.
 & "$maya_root\bin\mayapy.exe" -m unittest discover -s maya/tools/MtoULiveLink/tests -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
-& "$ue_root\Engine\Build\BatchFiles\Build.bat" ToolsLabEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
+& "$ue_root\Engine\Build\BatchFiles\Build.bat" UnrealEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
 & "$ue_root\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "$PWD\unreal\ToolsLab.uproject" -unattended -nop4 -nosplash -NullRHI -ExecCmds="Automation RunTests MtoULiveLink;Quit" -TestExit="Automation Test Queue Empty"
 ```
 
