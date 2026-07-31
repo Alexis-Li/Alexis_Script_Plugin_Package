@@ -134,6 +134,73 @@ class SenderLifecycleTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual([], fake_socket.sent)
 
+    def test_stop_after_send_decision_prevents_init_write(self):
+        decision_released = threading.Event()
+        resume_write = threading.Event()
+
+        class PausingLock(object):
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._releases = 0
+
+            def __enter__(self):
+                self._lock.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self._releases += 1
+                pause = self._releases == 2
+                self._lock.release()
+                if pause:
+                    decision_released.set()
+                    resume_write.wait(1.0)
+
+        class PausingWriteSocket(object):
+            def __init__(self):
+                self.sent = []
+
+            def settimeout(self, timeout):
+                pass
+
+            def setblocking(self, blocking):
+                pass
+
+            def connect_ex(self, address):
+                return 0
+
+            def shutdown(self, how):
+                pass
+
+            def close(self):
+                pass
+
+            def sendall(self, packet):
+                self.sent.append(bytes(packet))
+
+            def send(self, packet):
+                if not resume_write.is_set():
+                    raise OSError(errno.EWOULDBLOCK, "send would block")
+                self.sent.append(bytes(packet))
+                return len(packet)
+
+        fake_socket = PausingWriteSocket()
+
+        def pause_writable(readable, writable, errors, timeout):
+            resume_write.wait(timeout)
+            return [], writable, []
+
+        with mock.patch.object(MODULE.socket, "socket", return_value=fake_socket), \
+             mock.patch.object(MODULE.select, "select", side_effect=pause_writable):
+            worker = MODULE._SenderWorker({"type": "init"})
+            worker._lock = PausingLock()
+            worker.start()
+            self.assertTrue(decision_released.wait(1.0))
+            worker.stop()
+            resume_write.set()
+            worker.join(0.2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual([], fake_socket.sent)
+
     def test_stop_closes_socket_while_initial_send_blocks(self):
         send_started = threading.Event()
         release_send = threading.Event()
@@ -165,12 +232,22 @@ class SenderLifecycleTests(unittest.TestCase):
                 send_started.set()
                 release_send.wait(2.0)
 
+            def send(self, packet):
+                send_started.set()
+                raise OSError(errno.EWOULDBLOCK, "send would block")
+
             def recv(self, size):
                 chunk, self._reply = self._reply[:size], self._reply[size:]
                 return chunk
 
         fake_socket = BlockingSendSocket()
-        with mock.patch.object(MODULE.socket, "socket", return_value=fake_socket):
+
+        def block_writable(readable, writable, errors, timeout):
+            release_send.wait(2.0)
+            return [], writable, []
+
+        with mock.patch.object(MODULE.socket, "socket", return_value=fake_socket), \
+             mock.patch.object(MODULE.select, "select", side_effect=block_writable):
             worker = MODULE._SenderWorker({"type": "init"})
             worker.start()
             self.assertTrue(send_started.wait(1.0))

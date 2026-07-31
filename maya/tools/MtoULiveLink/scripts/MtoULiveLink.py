@@ -271,19 +271,40 @@ class _SenderWorker(threading.Thread):
                     raise OSError(result, "connection failed")
         if self._stop_event.is_set():
             return None
-        sock.setblocking(True)
-        sock.settimeout(5.0)
         return sock
+
+    def _send_initial(self, sock):
+        packet = memoryview(self._init_packet)
+        deadline = time.time() + 5.0
+        while packet:
+            with self._lock:
+                if self._stop_event.is_set():
+                    return False
+                try:
+                    sent = sock.send(packet)
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        raise
+                    sent = None
+            if sent is None:
+                timeout = deadline - time.time()
+                if timeout <= 0.0:
+                    raise socket.timeout("timed out sending init message")
+                select.select([], [sock], [], min(0.05, timeout))
+            elif not sent:
+                raise EOFError("connection closed while sending init message")
+            else:
+                packet = packet[sent:]
+        return True
 
     def run(self):
         try:
             sock = self._connect()
             if sock is None or self._stop_event.is_set():
                 return
-            with self._lock:
-                if self._stop_event.is_set():
-                    return
-            sock.sendall(self._init_packet)
+            if not self._send_initial(sock):
+                return
+            sock.settimeout(5.0)
             reply = recv_message(sock)
             if reply.get("type") == "error":
                 raise RuntimeError(reply.get("message") or "Unreal rejected the connection")
