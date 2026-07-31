@@ -73,10 +73,18 @@ bool FMtoUFramingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("second combined payload"), FromUtf8(Payload), SecondText);
     TestTrue(TEXT("later bytes are exhausted exactly"), Decoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
 
-    const TArray<uint8> TooLarge = Prefix(static_cast<uint64>(MAX_int32) + 1);
-    Decoder.Append(TooLarge.GetData(), TooLarge.Num());
-    TestTrue(TEXT("unrepresentable payload is rejected"), Decoder.Pop(Payload, Error) == EMtoUDecodeResult::Error);
-    TestTrue(TEXT("length error is actionable"), Error.Contains(TEXT("int32")));
+    FMtoUFrameDecoder MaximumDecoder;
+    const TArray<uint8> MaximumPrefix = Prefix(static_cast<uint64>(MAX_int32) - 8);
+    MaximumDecoder.Append(MaximumPrefix.GetData(), MaximumPrefix.Num());
+    TestTrue(TEXT("maximum representable packet waits for its payload"),
+        MaximumDecoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
+
+    FMtoUFrameDecoder OverflowDecoder;
+    const TArray<uint8> OverflowPrefix = Prefix(static_cast<uint64>(MAX_int32) - 7);
+    OverflowDecoder.Append(OverflowPrefix.GetData(), OverflowPrefix.Num());
+    TestTrue(TEXT("packet one byte beyond the int32 container is rejected"),
+        OverflowDecoder.Pop(Payload, Error) == EMtoUDecodeResult::Error);
+    TestTrue(TEXT("packet length error is actionable"), Error.Contains(TEXT("int32")));
     return true;
 }
 
@@ -113,6 +121,50 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"other\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
         TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"child\",1]],\"curves\":[]}")), Message, Error));
+
+    const FString MarkerJson =
+        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"@\",-1]],\"curves\":[]}");
+    TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
+    const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
+    OverlongUtf8[OverlongMarker] = 0xc0;
+    OverlongUtf8.Insert(static_cast<uint8>(0xaf), OverlongMarker + 1);
+    TestFalse(TEXT("overlong UTF-8 encoding is rejected"),
+        FMtoUProtocol::ParseInit(OverlongUtf8, Message, Error));
+    TestTrue(TEXT("overlong UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
+
+    TArray<uint8> LoneContinuation = Utf8(MarkerJson);
+    const int32 ContinuationMarker = LoneContinuation.Find(static_cast<uint8>('@'));
+    LoneContinuation[ContinuationMarker] = 0x80;
+    TestFalse(TEXT("lone UTF-8 continuation byte is rejected"),
+        FMtoUProtocol::ParseInit(LoneContinuation, Message, Error));
+    TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
+
+    TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"根\",-1]],\"curves\":[\"笑\"]}")), Message, Error));
+    TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
+    TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
+
+    const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
+    TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"%s\",0]],\"curves\":[]}"),
+            *OverlongName)), Message, Error));
+    TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
+        && Error.Contains(TEXT("NAME_SIZE")));
+    TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"bad\\u0000tail\",0]],\"curves\":[]}")),
+        Message, Error));
+    TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
+        && Error.Contains(TEXT("U+0000")));
+    TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1]],\"curves\":[\"%s\"]}"),
+            *OverlongName)), Message, Error));
+    TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
+        && Error.Contains(TEXT("NAME_SIZE")));
+    TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1]],\"curves\":[\"bad\\u0000tail\"]}")),
+        Message, Error));
+    TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
+        && Error.Contains(TEXT("U+0000")));
 
     FMtoUInitMessage Small;
     Small.Bones = {{FName(TEXT("root")), INDEX_NONE}, {FName(TEXT("jaw")), 0}};
@@ -175,6 +227,17 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("non-finite frame does not close the connection"), bStructural);
     TestTrue(TEXT("non-finite diagnostic identifies curve"), Error.Contains(TEXT("curve 0")));
 
+    FMtoUFrameMessage FloatOverflow;
+    TestTrue(TEXT("finite double curve parses"), FMtoUProtocol::ParseFrame(Utf8(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e40]}")),
+        FloatOverflow, Error));
+    TestTrue(TEXT("overflow fixture is finite as double"), FMath::IsFinite(FloatOverflow.Curves[0]));
+    TestFalse(TEXT("curve that overflows Live Link float is rejected"),
+        FMtoUProtocol::ValidateFrame(FloatOverflow, 1, 1, Error, bStructural));
+    TestFalse(TEXT("float narrowing overflow does not close the connection"), bStructural);
+    TestTrue(TEXT("float narrowing diagnostic identifies curve"), Error.Contains(TEXT("curve 0"))
+        && Error.Contains(TEXT("float")));
+
     TestFalse(TEXT("each transform requires ten numbers"), FMtoUProtocol::ParseFrame(Utf8(
         TEXT("{\"type\":\"frame\",\"transforms\":[[0,0,0]],\"curves\":[]}")), Frame, Error));
     TestTrue(TEXT("zero quaternion has valid JSON shape"), FMtoUProtocol::ParseFrame(Utf8(
@@ -191,6 +254,8 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     FMtoUFrameMessage NativeFrame;
     NativeFrame.Transforms = {{FVector(1.0, 2.0, 3.0), FQuat::Identity, FVector::OneVector}};
     NativeFrame.Curves = {0.5, 0.25};
+    TestTrue(TEXT("native frame is validated before float narrowing"),
+        FMtoUProtocol::ValidateFrame(NativeFrame, 1, 2, Error, bStructural));
     FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeFrameData(NativeFrame, {1});
     const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
     TestNotNull(TEXT("native animation data is built"), Animation);
@@ -201,6 +266,8 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
             Animation->Transforms[0].GetTranslation().Equals(FVector(1.0, 2.0, 3.0)));
         TestEqual(TEXT("only accepted curve is published"), Animation->PropertyValues.Num(), 1);
         TestEqual(TEXT("accepted curve value"), Animation->PropertyValues[0], 0.25f);
+        TestTrue(TEXT("validated curve remains finite in Live Link data"),
+            FMath::IsFinite(Animation->PropertyValues[0]));
     }
     return true;
 }

@@ -20,6 +20,13 @@ bool ParseObject(const TArray<uint8>& Payload, TSharedPtr<FJsonObject>& OutObjec
     }
 
     FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Payload.GetData()), Payload.Num());
+    FTCHARToUTF8 RoundTrip(Converted.Get(), Converted.Length());
+    if (RoundTrip.Length() != Payload.Num()
+        || FMemory::Memcmp(RoundTrip.Get(), Payload.GetData(), Payload.Num()) != 0)
+    {
+        OutError = TEXT("Payload is not valid UTF-8.");
+        return false;
+    }
     const FString Text = FString::ConstructFromPtrSize(Converted.Get(), Converted.Length());
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
     if (!FJsonSerializer::Deserialize(Reader, OutObject) || !OutObject.IsValid())
@@ -83,6 +90,32 @@ bool GetExactInt(const TSharedPtr<FJsonValue>& Value, int32& OutValue)
 bool GetNumber(const TSharedPtr<FJsonValue>& Value, double& OutValue)
 {
     return Value.IsValid() && Value->Type == EJson::Number && Value->TryGetNumber(OutValue);
+}
+
+bool ValidateNameText(const FString& Name, const TCHAR* Kind, int32 Index, FString& OutError)
+{
+    if (Name.IsEmpty())
+    {
+        OutError = FString::Printf(TEXT("%s %d requires a non-empty string name."), Kind, Index);
+        return false;
+    }
+    int32 NullIndex = INDEX_NONE;
+    if (Name.FindChar(TEXT('\0'), NullIndex) && NullIndex < Name.Len())
+    {
+        OutError = FString::Printf(TEXT("%s %d name contains U+0000."), Kind, Index);
+        return false;
+    }
+    if (Name.Len() >= NAME_SIZE)
+    {
+        OutError = FString::Printf(
+            TEXT("%s %d name length %d exceeds the NAME_SIZE limit of %d characters."),
+            Kind,
+            Index,
+            Name.Len(),
+            NAME_SIZE - 1);
+        return false;
+    }
+    return true;
 }
 
 TArray<uint8> EncodeObject(const TSharedRef<FJsonObject>& Object)
@@ -157,9 +190,9 @@ EMtoUDecodeResult FMtoUFrameDecoder::Pop(TArray<uint8>& OutPayload, FString& Out
     {
         PayloadLength = (PayloadLength << 8) | Buffer[Index];
     }
-    if (PayloadLength > MAX_int32)
+    if (PayloadLength > static_cast<uint64>(MAX_int32) - 8)
     {
-        OutError = TEXT("Payload length exceeds Unreal's int32 container range.");
+        OutError = TEXT("Packet length exceeds Unreal's int32 container range.");
         return EMtoUDecodeResult::Error;
     }
     if (static_cast<uint64>(Buffer.Num()) < PayloadLength + 8)
@@ -230,9 +263,13 @@ bool FMtoUProtocol::ParseInit(
         FString NameText;
         int32 ParentIndex = INDEX_NONE;
         if (!(*Record)[0].IsValid() || (*Record)[0]->Type != EJson::String
-            || !(*Record)[0]->TryGetString(NameText) || NameText.IsEmpty())
+            || !(*Record)[0]->TryGetString(NameText))
         {
-            OutError = FString::Printf(TEXT("Bone %d requires a non-empty string name."), Index);
+            OutError = FString::Printf(TEXT("Bone %d name must have string JSON type."), Index);
+            return false;
+        }
+        if (!ValidateNameText(NameText, TEXT("Bone"), Index, OutError))
+        {
             return false;
         }
         if (!GetExactInt((*Record)[1], ParentIndex))
@@ -263,9 +300,13 @@ bool FMtoUProtocol::ParseInit(
     {
         FString NameText;
         if (!(*CurveValues)[Index].IsValid() || (*CurveValues)[Index]->Type != EJson::String
-            || !(*CurveValues)[Index]->TryGetString(NameText) || NameText.IsEmpty())
+            || !(*CurveValues)[Index]->TryGetString(NameText))
         {
-            OutError = FString::Printf(TEXT("Curve %d requires a non-empty string name."), Index);
+            OutError = FString::Printf(TEXT("Curve %d name must have string JSON type."), Index);
+            return false;
+        }
+        if (!ValidateNameText(NameText, TEXT("Curve"), Index, OutError))
+        {
             return false;
         }
         const FName Name(*NameText);
@@ -406,6 +447,13 @@ bool FMtoUProtocol::ValidateFrame(
         {
             bOutStructuralError = false;
             OutError = FString::Printf(TEXT("Non-finite curve %d."), Index);
+            return false;
+        }
+        if (FMath::Abs(Frame.Curves[Index]) > TNumericLimits<float>::Max())
+        {
+            bOutStructuralError = false;
+            OutError = FString::Printf(
+                TEXT("Curve %d cannot be represented as a finite Live Link float."), Index);
             return false;
         }
     }
