@@ -1005,7 +1005,7 @@ The worker exclusively owns `FSocket* ListenSocket` and `FSocket* ClientSocket`.
 
 - [ ] **Step 2: Implement loopback-only socket lifecycle**
 
-Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the configured port, create `NAME_Stream`, enable reuse, bind, listen with backlog `1`, and set non-blocking. The worker loop must:
+Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the configured port, create `NAME_Stream`, require exclusive port ownership without address reuse, bind, listen with backlog `1`, and set non-blocking. The worker loop must:
 
 1. Accept a client when none exists.
 2. While one exists, accept any second pending socket only to send `{"type":"error","message":"MtoU_LiveLink already has a Maya client."}` and close it.

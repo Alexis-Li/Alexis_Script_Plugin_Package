@@ -12,6 +12,7 @@
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
 #include "Misc/AutomationTest.h"
+#include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
@@ -618,12 +619,28 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         Primary && SendBytes(*Primary, Combined.GetData(), Combined.Num()));
 
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
-    TestTrue(TEXT("non-finite frame is dropped and following valid frame is published"), PollUntil([&]()
+    FLiveLinkSubjectFrameData EvaluatedFrame;
+    const bool bEvaluated = PollUntil([&]()
     {
         Source->Update();
         LiveLinkClient.ForceTick();
-        return !LiveLinkClient.GetSubjectFrameTimes(SubjectKey).IsEmpty();
-    }));
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), EvaluatedFrame))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            EvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        return Animation && Animation->Transforms.IsValidIndex(0);
+    });
+    TestTrue(TEXT("following valid frame is evaluated after the non-finite frame"), bEvaluated);
+    if (bEvaluated)
+    {
+        const FLiveLinkAnimationFrameData* Animation =
+            EvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        TestTrue(TEXT("following valid frame keeps the transmitted root translation"),
+            Animation->Transforms[0].GetTranslation().Equals(FVector(1.0, 2.0, 3.0)));
+    }
 
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
@@ -655,23 +672,20 @@ bool FMtoUSourceBindErrorTest::RunTest(const FString& Parameters)
     {
         return false;
     }
-    FSocket* Occupied = BindLoopback(*SocketSubsystem, 0, true);
-    TestNotNull(TEXT("conflict listener is created"), Occupied);
-    if (!Occupied)
-    {
-        return false;
-    }
-    TSharedRef<FInternetAddr> Address = SocketSubsystem->CreateInternetAddr();
-    Occupied->GetAddress(*Address);
-    const uint16 Port = static_cast<uint16>(Address->GetPort());
+    TSharedRef<FMtoULiveLinkSource> First = MakeShared<FMtoULiveLinkSource>(0);
+    TestTrue(TEXT("first source reaches listening state"), WaitForStatus(First, TEXT("Listening on")));
+    const int32 Port = ListeningPort(First);
+    TestTrue(TEXT("first source reports its ephemeral port"), Port > 0 && Port <= MAX_uint16);
 
     AddExpectedError(
         TEXT("Failed to bind MtoU_LiveLink"), EAutomationExpectedErrorFlags::Contains, 1);
-    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
-    TestTrue(TEXT("bind failure remains visible in source status"), WaitForStatus(Source, TEXT("bind")));
-    TestTrue(TEXT("bind-failed source remains displayable"), Source->IsSourceStillValid());
-    Source->StopListener();
-    DestroySocket(*SocketSubsystem, Occupied);
+    TSharedRef<FMtoULiveLinkSource> Second =
+        MakeShared<FMtoULiveLinkSource>(static_cast<uint16>(Port));
+    TestTrue(TEXT("second source reports an actionable bind failure"), WaitForStatus(Second, TEXT("bind")));
+    TestTrue(TEXT("first source retains exclusive ownership"), WaitForStatus(First, TEXT("Listening on")));
+    TestTrue(TEXT("bind-failed second source remains displayable"), Second->IsSourceStillValid());
+    Second->StopListener();
+    First->StopListener();
     return true;
 }
 

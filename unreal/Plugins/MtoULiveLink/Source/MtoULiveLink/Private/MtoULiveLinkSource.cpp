@@ -236,7 +236,6 @@ uint32 FMtoULiveLinkSource::Run()
     Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
     Address->SetPort(ConfiguredPort);
     if (!bValidAddress
-        || !ListenSocket->SetReuseAddr(true)
         || !ListenSocket->Bind(*Address)
         || !ListenSocket->Listen(1)
         || !ListenSocket->SetNonBlocking(true))
