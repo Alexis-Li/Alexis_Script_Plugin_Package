@@ -1,5 +1,6 @@
 """MtoULiveLink Maya entry point."""
 
+import errno
 import json
 import math
 import re
@@ -235,13 +236,50 @@ class _SenderWorker(threading.Thread):
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _connect(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with self._lock:
+            self._socket = sock
+        if self._stop_event.is_set():
+            return None
+        sock.setblocking(False)
+        result = sock.connect_ex((HOST, PORT))
+        pending = (errno.EINPROGRESS, errno.EWOULDBLOCK)
+        if result not in (0,) + pending:
+            raise OSError(result, "connection failed")
+        deadline = time.time() + 2.0
+        while result:
+            if self._stop_event.is_set():
+                return None
+            timeout = deadline - time.time()
+            if timeout <= 0.0:
+                raise socket.timeout("timed out connecting to Unreal")
+            try:
+                _, writable, errors = select.select([], [sock], [sock], min(0.05, timeout))
+            except OSError:
+                if self._stop_event.is_set():
+                    return None
+                raise
+            if writable or errors:
+                result = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if result:
+                    raise OSError(result, "connection failed")
+        if self._stop_event.is_set():
+            return None
+        sock.setblocking(True)
+        sock.settimeout(5.0)
+        return sock
 
     def run(self):
         try:
-            sock = socket.create_connection((HOST, PORT), timeout=2.0)
-            sock.settimeout(5.0)
-            with self._lock:
-                self._socket = sock
+            sock = self._connect()
+            if sock is None or self._stop_event.is_set():
+                return
             sock.sendall(self._init_packet)
             reply = recv_message(sock)
             if reply.get("type") == "error":
@@ -324,14 +362,20 @@ class _Controller(object):
         self._set_error("")
         self._set_status("Connecting to Unreal...")
         self._worker.start()
-        self._callback_ids = [
-            om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeNew, self._on_scene_change),
-            om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeOpen, self._on_scene_change),
-            om.MSceneMessage.addCallback(om.MSceneMessage.kMayaExiting, self._on_scene_change),
-            om.MNodeMessage.addNodeDestroyedCallback(subject["bones"][0]["dag_path"].node(),
-                                                     self._on_root_destroyed),
-        ]
-        self._timer_id = om.MTimerMessage.addTimerCallback(1.0 / 30.0, self._on_timer)
+        try:
+            self._callback_ids.append(
+                om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeNew, self._on_scene_change))
+            self._callback_ids.append(
+                om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeOpen, self._on_scene_change))
+            self._callback_ids.append(
+                om.MSceneMessage.addCallback(om.MSceneMessage.kMayaExiting, self._on_scene_change))
+            self._callback_ids.append(
+                om.MNodeMessage.addNodeDestroyedCallback(subject["bones"][0]["dag_path"].node(),
+                                                         self._on_root_destroyed))
+            self._timer_id = om.MTimerMessage.addTimerCallback(1.0 / 30.0, self._on_timer)
+        except Exception as exc:
+            self._set_error(str(exc))
+            self.disconnect(keep_error=True)
 
     def _on_timer(self, elapsed, last_time, client_data):
         worker = self._worker
