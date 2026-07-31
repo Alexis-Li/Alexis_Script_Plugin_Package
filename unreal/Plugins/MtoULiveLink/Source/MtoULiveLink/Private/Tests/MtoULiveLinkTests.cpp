@@ -1,7 +1,9 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkProtocol.h"
 
+#include "Engine/World.h"
 #include "Misc/AutomationTest.h"
 #include "Roles/LiveLinkAnimationTypes.h"
 
@@ -313,6 +315,46 @@ bool FMtoUSkeletonComparisonTest::RunTest(const FString& Parameters)
         Diagnostic.Find(TEXT("beta")) < Diagnostic.Find(TEXT("omega")));
     TestTrue(TEXT("parent mismatch names both parents"),
         Diagnostic.Contains(TEXT("hand: Maya=zebra, Unreal=root")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUWorldOffsetTest,
+    "MtoULiveLink.Protocol.WorldOffset",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUWorldOffsetTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    TestNotNull(TEXT("editor preview world is created"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    const FTransform PlacedTransform(FRotator(10.0, 20.0, 30.0), FVector(100.0, 200.0, 300.0));
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>(
+        AMtoULiveLinkActor::StaticClass(), PlacedTransform);
+    TestNotNull(TEXT("binding actor is spawned"), Actor);
+
+    const FTransform StreamedRoot(FRotator(5.0, 15.0, 25.0), FVector(7.0, 8.0, 9.0));
+    FMtoUFrameMessage Frame;
+    Frame.Transforms = {{StreamedRoot.GetTranslation(), StreamedRoot.GetRotation(), StreamedRoot.GetScale3D()}};
+    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeFrameData(Frame, {});
+    const FLiveLinkAnimationFrameData* AnimationData = FrameData.Cast<FLiveLinkAnimationFrameData>();
+    TestNotNull(TEXT("animation frame is built"), AnimationData);
+    if (AnimationData)
+    {
+        TestTrue(TEXT("Root motion stays in Live Link frame"),
+            AnimationData->Transforms[0].Equals(StreamedRoot));
+    }
+    if (Actor)
+    {
+        TestTrue(TEXT("Actor placement is unchanged"),
+            Actor->GetActorTransform().Equals(PlacedTransform));
+    }
+
+    World->DestroyWorld(false);
     return true;
 }
 
