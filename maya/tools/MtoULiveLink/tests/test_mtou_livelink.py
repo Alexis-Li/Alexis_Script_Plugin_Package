@@ -134,6 +134,58 @@ class SenderLifecycleTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual([], fake_socket.sent)
 
+    def test_stop_closes_socket_while_initial_send_blocks(self):
+        send_started = threading.Event()
+        release_send = threading.Event()
+        stop_finished = threading.Event()
+
+        class BlockingSendSocket(object):
+            def __init__(self):
+                self._reply = MODULE.encode_message({"type": "ready"})
+                self.closed = False
+
+            def settimeout(self, timeout):
+                pass
+
+            def setblocking(self, blocking):
+                pass
+
+            def connect_ex(self, address):
+                return 0
+
+            def shutdown(self, how):
+                self.closed = True
+                release_send.set()
+
+            def close(self):
+                self.closed = True
+                release_send.set()
+
+            def sendall(self, packet):
+                send_started.set()
+                release_send.wait(2.0)
+
+            def recv(self, size):
+                chunk, self._reply = self._reply[:size], self._reply[size:]
+                return chunk
+
+        fake_socket = BlockingSendSocket()
+        with mock.patch.object(MODULE.socket, "socket", return_value=fake_socket):
+            worker = MODULE._SenderWorker({"type": "init"})
+            worker.start()
+            self.assertTrue(send_started.wait(1.0))
+            stopper = threading.Thread(target=lambda: (worker.stop(), stop_finished.set()))
+            stopper.start()
+            try:
+                self.assertTrue(stop_finished.wait(0.2))
+                self.assertTrue(fake_socket.closed)
+                worker.join(0.2)
+                self.assertFalse(worker.is_alive())
+            finally:
+                release_send.set()
+                stopper.join(1.0)
+                worker.join(1.0)
+
 
 class ControllerLifecycleTests(unittest.TestCase):
     def test_connect_rolls_back_worker_and_registered_callbacks_on_setup_error(self):

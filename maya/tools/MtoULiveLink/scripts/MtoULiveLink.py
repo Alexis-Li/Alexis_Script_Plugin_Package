@@ -283,7 +283,7 @@ class _SenderWorker(threading.Thread):
             with self._lock:
                 if self._stop_event.is_set():
                     return
-                sock.sendall(self._init_packet)
+            sock.sendall(self._init_packet)
             reply = recv_message(sock)
             if reply.get("type") == "error":
                 raise RuntimeError(reply.get("message") or "Unreal rejected the connection")
