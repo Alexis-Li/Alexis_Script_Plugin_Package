@@ -10,6 +10,7 @@ Desktop.ini
 .vscode/
 .idea/
 *.code-workspace
+.worktrees/
 
 # Python
 __pycache__/
