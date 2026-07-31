@@ -11,6 +11,15 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+class LatestFrameTests(unittest.TestCase):
+    def test_only_newest_unsent_frame_is_kept(self):
+        slot = MODULE._LatestFrame()
+        slot.put(b"first")
+        slot.put(b"second")
+        self.assertEqual(b"second", slot.take())
+        self.assertIsNone(slot.take())
+
+
 class ProtocolTests(unittest.TestCase):
     def test_namespace_normalization(self):
         self.assertEqual("spine_01", MODULE.normalize_name("|Rig|Hero:spine_01"))

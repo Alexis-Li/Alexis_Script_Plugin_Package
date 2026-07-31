@@ -3,8 +3,11 @@
 import json
 import math
 import re
+import select
 import socket
 import struct
+import threading
+import time
 
 
 __version__ = "0.1.0"
@@ -182,9 +185,231 @@ def _sample_pose(subject):
     return transforms, curves
 
 
+class _LatestFrame(object):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._value = None
+
+    def put(self, value):
+        with self._lock:
+            self._value = value
+
+    def take(self):
+        with self._lock:
+            value, self._value = self._value, None
+            return value
+
+
+class _SenderWorker(threading.Thread):
+    def __init__(self, init_message):
+        threading.Thread.__init__(self, name="MtoULiveLinkSender")
+        self.daemon = True
+        self._init_packet = encode_message(init_message)
+        self._latest = _LatestFrame()
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._socket = None
+        self._state = "connecting"
+        self._detail = "Connecting to Unreal..."
+        self._missing_curves = []
+
+    def submit(self, frame_message):
+        self._latest.put(encode_message(frame_message))
+
+    def status(self):
+        with self._lock:
+            return self._state, self._detail, list(self._missing_curves)
+
+    def _set_status(self, state, detail, missing_curves=None):
+        with self._lock:
+            self._state = state
+            self._detail = detail
+            self._missing_curves = list(missing_curves or [])
+
+    def stop(self):
+        self._stop_event.set()
+        with self._lock:
+            sock = self._socket
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def run(self):
+        try:
+            sock = socket.create_connection((HOST, PORT), timeout=2.0)
+            sock.settimeout(5.0)
+            with self._lock:
+                self._socket = sock
+            sock.sendall(self._init_packet)
+            reply = recv_message(sock)
+            if reply.get("type") == "error":
+                raise RuntimeError(reply.get("message") or "Unreal rejected the connection")
+            if reply.get("type") != "ready":
+                raise RuntimeError("expected ready, received {0}".format(reply.get("type")))
+            self._set_status("ready", "Connected", reply.get("missing_curves") or [])
+            sock.settimeout(0.25)
+            while not self._stop_event.is_set():
+                packet = self._latest.take()
+                if packet is not None:
+                    sock.sendall(packet)
+                readable, _, _ = select.select([sock], [], [], 0.01)
+                if readable and not sock.recv(1):
+                    raise EOFError("Unreal closed the connection")
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                self._set_status("error", str(exc))
+        finally:
+            with self._lock:
+                sock, self._socket = self._socket, None
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            if self._stop_event.is_set():
+                self._set_status("disconnected", "Disconnected")
+
+
+class _Controller(object):
+    def __init__(self):
+        self._worker = None
+        self._subject = None
+        self._callback_ids = []
+        self._timer_id = None
+        self._ready = False
+        self._root_text = None
+        self._status_text = None
+        self._error_text = None
+
+    def build_ui(self):
+        cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close)
+        cmds.columnLayout(adjustableColumn=True)
+        self._root_text = cmds.text(label="Root: None", align="left")
+        cmds.button(label="Connect", command=lambda *_: self.connect())
+        cmds.button(label="Disconnect", command=lambda *_: self.disconnect())
+        self._status_text = cmds.text(label="Disconnected", align="left")
+        self._error_text = cmds.text(label="", align="left")
+        cmds.showWindow(WINDOW_NAME)
+
+    def _set_text(self, control, text):
+        if control and cmds.control(control, exists=True):
+            cmds.text(control, edit=True, label=text)
+
+    def _set_status(self, text):
+        self._set_text(self._status_text, text)
+
+    def _set_error(self, text):
+        self._set_text(self._error_text, text)
+
+    def connect(self):
+        _require_maya()
+        if self._worker is not None:
+            return
+        try:
+            subject = _capture_subject()
+        except ValueError as exc:
+            self._set_status("Disconnected")
+            self._set_error(str(exc))
+            return
+        init_message = make_init_message(
+            [[bone["name"], bone["parent"]] for bone in subject["bones"]],
+            [curve["name"] for curve in subject["curves"]],
+        )
+        self._subject = subject
+        self._worker = _SenderWorker(init_message)
+        self._ready = False
+        self._set_text(self._root_text, "Root: {0}".format(subject["root"]))
+        self._set_error("")
+        self._set_status("Connecting to Unreal...")
+        self._worker.start()
+        self._callback_ids = [
+            om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeNew, self._on_scene_change),
+            om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeOpen, self._on_scene_change),
+            om.MSceneMessage.addCallback(om.MSceneMessage.kMayaExiting, self._on_scene_change),
+            om.MNodeMessage.addNodeDestroyedCallback(subject["bones"][0]["dag_path"].node(),
+                                                     self._on_root_destroyed),
+        ]
+        self._timer_id = om.MTimerMessage.addTimerCallback(1.0 / 30.0, self._on_timer)
+
+    def _on_timer(self, elapsed, last_time, client_data):
+        worker = self._worker
+        if worker is None:
+            return
+        state, detail, missing_curves = worker.status()
+        if state == "error":
+            self._set_error(detail)
+            self.disconnect(keep_error=True)
+            return
+        if state != "ready":
+            self._set_status(detail)
+            return
+        if not self._ready:
+            self._ready = True
+            if missing_curves:
+                detail = "Connected (missing Morph Targets: {0})".format(
+                    ", ".join(missing_curves))
+            self._set_status(detail)
+        try:
+            transforms, curves = _sample_pose(self._subject)
+            worker.submit(make_frame_message(transforms, curves))
+        except (RuntimeError, ValueError) as exc:
+            self._set_error(str(exc))
+            self.disconnect(keep_error=True)
+
+    def _on_scene_change(self, *unused):
+        self.disconnect()
+
+    def _on_root_destroyed(self, *unused):
+        self.disconnect()
+
+    def disconnect(self, keep_error=False):
+        timer_id, self._timer_id = self._timer_id, None
+        if timer_id is not None:
+            try:
+                om.MMessage.removeCallback(timer_id)
+            except RuntimeError:
+                pass
+        callback_ids, self._callback_ids = self._callback_ids, []
+        for callback_id in callback_ids:
+            try:
+                om.MMessage.removeCallback(callback_id)
+            except RuntimeError:
+                pass
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.stop()
+            worker.join(1.0)
+        self._subject = None
+        self._ready = False
+        self._set_text(self._root_text, "Root: None")
+        self._set_status("Disconnected")
+        if not keep_error:
+            self._set_error("")
+
+    def close(self, *unused):
+        self.disconnect()
+
+
+_CONTROLLER = None
+WINDOW_NAME = "MtoULiveLinkWindow"
+
+
+def run():
+    global _CONTROLLER
+    _require_maya()
+    if cmds.window(WINDOW_NAME, exists=True):
+        cmds.showWindow(WINDOW_NAME)
+        cmds.window(WINDOW_NAME, edit=True, restoreCommand="")
+        return _CONTROLLER
+    _CONTROLLER = _Controller()
+    _CONTROLLER.build_ui()
+    return _CONTROLLER
+
+
 def main():
-    """Launch the tool."""
-    raise NotImplementedError("Implement MtoULiveLink.main()")
+    return run()
 
 
 if __name__ == "__main__":
