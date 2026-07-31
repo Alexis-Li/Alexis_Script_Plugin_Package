@@ -4,17 +4,28 @@
 
 ## Introduction
 
-Describe what the Unreal Engine editor plug-in does.
+MtoULiveLink receives one local Maya character as native Live Link animation
+and curves while preserving each placed actor transform.
 
 ## Supported Versions
 
-List the supported Unreal Engine versions.
+- Windows 64-bit
+- Stock Unreal Editor 5.7.4
+
+Compatibility with third-party Unreal Engine 5.7 builds is not yet claimed.
 
 ## Installation
 
-Copy this directory to a project's `Plugins/` directory, regenerate project
-files, compile, and enable the plugin in the Plugin Browser.
+1. Copy this entire plugin directory under the project's `Plugins/` directory.
+2. Compile the project.
+3. Enable **Live Link** and **MtoU_LiveLink**.
+4. Restart Unreal Editor.
 
 ## Usage
 
-Describe how to open and use the plug-in after enabling it.
+1. Create an **MtoU_LiveLink Binding** in the chosen Content Browser folder.
+2. Set its **Skeletal Mesh** to an existing asset.
+3. Drag the binding into the level.
+4. Connect from Maya.
+
+No Animation Sequence is created.

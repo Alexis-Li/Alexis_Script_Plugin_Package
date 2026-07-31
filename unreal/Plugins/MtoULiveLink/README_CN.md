@@ -4,16 +4,28 @@
 
 ## 简介
 
-说明 Unreal Engine 编辑器插件的用途。
+MtoULiveLink 将本机的一名 Maya 角色作为原生 Live Link 动画和曲线接收，
+同时保留每个已放置 Actor 的变换。
 
 ## 支持版本
 
-列出支持的 Unreal Engine 版本。
+- 64 位 Windows
+- 官方原版 Unreal Editor 5.7.4
+
+目前不声明兼容第三方 Unreal Engine 5.7 版本。
 
 ## 安装方式
 
-将插件目录复制到 Unreal 项目的 `Plugins/` 目录，重新生成项目文件并编译，然后在插件浏览器中启用插件。
+1. 将整个插件目录复制到项目的 `Plugins/` 目录下。
+2. 编译项目。
+3. 启用 **Live Link** 和 **MtoU_LiveLink**。
+4. 重启 Unreal Editor。
 
 ## 使用方式
 
-说明启用插件后如何打开和使用主要功能。
+1. 在所选内容浏览器文件夹中创建 **MtoU_LiveLink Binding**。
+2. 将其 **Skeletal Mesh** 设置为现有资产。
+3. 将该绑定拖入关卡。
+4. 从 Maya 连接。
+
+此流程不会创建 Animation Sequence。

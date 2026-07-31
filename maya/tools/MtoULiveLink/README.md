@@ -4,17 +4,26 @@
 
 ## Introduction
 
-Describe what the Maya tool does.
+MtoULiveLink streams one evaluated Maya deformation skeleton and its matching
+BlendShapes to the local Unreal `MtoU_Character` Live Link subject without
+editing or exporting the scene.
 
 ## Supported Versions
 
-List the supported Maya and Python versions.
+- Windows 64-bit
+- Autodesk Maya 2022.4 only
 
 ## Installation
 
-Copy the required files from `scripts/`, `plug-ins/`, and `icons/` to the
-matching Maya directories.
+Copy `scripts/MtoULiveLink.py` to a Maya scripts directory, or open the file
+directly in Maya's Python Script Editor.
 
 ## Usage
 
-Run `scripts/MtoULiveLink.py` in Maya's Python Script Editor.
+1. Place and configure the Unreal binding actor first.
+2. In Maya, select exactly one deformation root.
+3. Execute `scripts/MtoULiveLink.py`.
+4. Select **Connect**.
+5. Pose, play, or scrub the Maya scene.
+6. Select **Disconnect** when finished.
+7. Reconnect after topology edits or after either host restarts.
