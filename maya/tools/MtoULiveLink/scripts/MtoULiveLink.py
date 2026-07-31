@@ -280,6 +280,9 @@ class _SenderWorker(threading.Thread):
             with self._lock:
                 if self._stop_event.is_set():
                     return False
+                timeout = deadline - time.time()
+                if timeout <= 0.0:
+                    raise socket.timeout("timed out sending init message")
                 try:
                     sent = sock.send(packet)
                 except OSError as exc:
@@ -287,9 +290,6 @@ class _SenderWorker(threading.Thread):
                         raise
                     sent = None
             if sent is None:
-                timeout = deadline - time.time()
-                if timeout <= 0.0:
-                    raise socket.timeout("timed out sending init message")
                 select.select([], [sock], [], min(0.05, timeout))
             elif not sent:
                 raise EOFError("connection closed while sending init message")

@@ -263,6 +263,28 @@ class SenderLifecycleTests(unittest.TestCase):
                 stopper.join(1.0)
                 worker.join(1.0)
 
+    def test_initial_send_times_out_during_continuous_partial_writes(self):
+        class FakeClock(object):
+            now = 0.0
+
+            def time(self):
+                return self.now
+
+        clock = FakeClock()
+
+        class PartialSendSocket(object):
+            def send(self, packet):
+                clock.now += 1.0
+                return 1
+
+        worker = MODULE._SenderWorker({"type": "init"})
+        with mock.patch.object(MODULE.time, "time", side_effect=clock.time):
+            with self.assertRaisesRegex(MODULE.socket.timeout,
+                                        "timed out sending init message"):
+                worker._send_initial(PartialSendSocket())
+
+        self.assertEqual(5.0, clock.now)
+
 
 class ControllerLifecycleTests(unittest.TestCase):
     def test_connect_rolls_back_worker_and_registered_callbacks_on_setup_error(self):
