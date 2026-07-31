@@ -1015,7 +1015,7 @@ Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the co
 6. Sleep no more than 5 ms when no socket did work.
 7. On `Stop`, leave the loop, close both sockets on the worker, and return; `StopListener` joins the thread and resets it.
 
-Port `0` is allowed only through the internal constructor for the clean-shutdown automation test; production always uses `54321`.
+Port `0` is allowed only for automation tests; production always uses `54321`.
 
 - [ ] **Step 3: Validate every placed binding on the game thread**
 
