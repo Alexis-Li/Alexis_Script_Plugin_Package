@@ -1,11 +1,20 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "MtoULiveLinkActor.h"
+#include "MtoULiveLinkBinding.h"
 #include "MtoULiveLinkProtocol.h"
+#include "MtoULiveLinkSource.h"
 
+#include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
+#include "Features/IModularFeatures.h"
+#include "HAL/PlatformProcess.h"
+#include "ILiveLinkClient.h"
+#include "IPAddress.h"
 #include "Misc/AutomationTest.h"
 #include "Roles/LiveLinkAnimationTypes.h"
+#include "SocketSubsystem.h"
+#include "Sockets.h"
 
 namespace
 {
@@ -40,6 +49,141 @@ TArray<uint8> Packet(const FString& Text)
     TArray<uint8> Bytes = Prefix(Payload.Num());
     Bytes.Append(Payload);
     return Bytes;
+}
+
+TSharedRef<FInternetAddr> LoopbackAddress(ISocketSubsystem& SocketSubsystem, uint16 Port)
+{
+    TSharedRef<FInternetAddr> Address = SocketSubsystem.CreateInternetAddr();
+    bool bValid = false;
+    Address->SetIp(TEXT("127.0.0.1"), bValid);
+    check(bValid);
+    Address->SetPort(Port);
+    return Address;
+}
+
+void DestroySocket(ISocketSubsystem& SocketSubsystem, FSocket*& Socket)
+{
+    if (Socket)
+    {
+        Socket->Close();
+        SocketSubsystem.DestroySocket(Socket);
+        Socket = nullptr;
+    }
+}
+
+bool PollUntil(TFunctionRef<bool()> Predicate)
+{
+    const double Deadline = FPlatformTime::Seconds() + 1.0;
+    do
+    {
+        if (Predicate())
+        {
+            return true;
+        }
+        FPlatformProcess::Sleep(0.005f);
+    }
+    while (FPlatformTime::Seconds() < Deadline);
+    return Predicate();
+}
+
+bool WaitForStatus(const TSharedRef<FMtoULiveLinkSource>& Source, const FString& Text)
+{
+    return PollUntil([&]() { return Source->GetSourceStatus().ToString().Contains(Text); });
+}
+
+int32 ListeningPort(const TSharedRef<FMtoULiveLinkSource>& Source)
+{
+    const FString Status = Source->GetSourceStatus().ToString();
+    int32 Separator = INDEX_NONE;
+    return Status.FindLastChar(TEXT(':'), Separator)
+        ? FCString::Atoi(*Status.Mid(Separator + 1))
+        : 0;
+}
+
+FSocket* BindLoopback(ISocketSubsystem& SocketSubsystem, uint16 Port, bool bListen)
+{
+    FSocket* Socket = SocketSubsystem.CreateSocket(NAME_Stream, TEXT("MtoULiveLink automation socket"));
+    if (!Socket || !Socket->Bind(*LoopbackAddress(SocketSubsystem, Port))
+        || (bListen && !Socket->Listen(1)))
+    {
+        DestroySocket(SocketSubsystem, Socket);
+    }
+    return Socket;
+}
+
+FSocket* ConnectLoopback(ISocketSubsystem& SocketSubsystem, uint16 Port)
+{
+    FSocket* Socket = SocketSubsystem.CreateSocket(NAME_Stream, TEXT("MtoULiveLink automation client"));
+    if (!Socket || !Socket->Connect(*LoopbackAddress(SocketSubsystem, Port)))
+    {
+        DestroySocket(SocketSubsystem, Socket);
+        return nullptr;
+    }
+    Socket->SetNonBlocking(true);
+    return Socket;
+}
+
+bool SendBytes(FSocket& Socket, const uint8* Data, int32 Num)
+{
+    int32 Offset = 0;
+    const double Deadline = FPlatformTime::Seconds() + 1.0;
+    while (Offset < Num && FPlatformTime::Seconds() < Deadline)
+    {
+        int32 Sent = 0;
+        if (Socket.Send(Data + Offset, Num - Offset, Sent) && Sent > 0)
+        {
+            Offset += Sent;
+        }
+        else
+        {
+            Socket.Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(5));
+        }
+    }
+    return Offset == Num;
+}
+
+bool ReceivePacket(
+    FSocket& Socket,
+    TArray<uint8>& OutPayload,
+    TFunctionRef<void()> Pump = []() {})
+{
+    FMtoUFrameDecoder Decoder;
+    FString Error;
+    return PollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+        {
+            Decoder.Append(Buffer, Read);
+        }
+        return Decoder.Pop(OutPayload, Error) == EMtoUDecodeResult::Message;
+    });
+}
+
+bool WaitForClose(FSocket& Socket)
+{
+    return PollUntil([&]()
+    {
+        uint8 Buffer[1024];
+        int32 Read = 0;
+        return !Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read);
+    });
+}
+
+AMtoULiveLinkActor* AddBoundActor(UWorld& World)
+{
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Mesh;
+    AMtoULiveLinkActor* Actor = World.SpawnActor<AMtoULiveLinkActor>();
+    if (Actor)
+    {
+        Actor->SetBinding(Binding);
+    }
+    return Actor;
 }
 }
 
@@ -355,6 +499,179 @@ bool FMtoUWorldOffsetTest::RunTest(const FString& Parameters)
     }
 
     World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceShutdownTest,
+    "MtoULiveLink.Source.IdempotentShutdown",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSourceShutdownTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(0);
+    TestTrue(TEXT("port zero source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+    const int32 Port = ListeningPort(Source);
+    TestTrue(TEXT("ephemeral listening port is reported"), Port > 0 && Port <= MAX_uint16);
+
+    Source->StopListener();
+    Source->StopListener();
+    TestTrue(TEXT("shutdown request remains idempotent"), Source->RequestSourceShutdown());
+    TestFalse(TEXT("stopped source is no longer valid"), Source->IsSourceStillValid());
+
+    FSocket* Replacement = Port > 0
+        ? BindLoopback(*SocketSubsystem, static_cast<uint16>(Port), true)
+        : nullptr;
+    TestNotNull(TEXT("worker released its ephemeral listener socket"), Replacement);
+    DestroySocket(*SocketSubsystem, Replacement);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceSocketFlowTest,
+    "MtoULiveLink.Source.SocketFlow",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("first Maya client connects"), Primary);
+    const TArray<uint8> Init = Packet(
+        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[\"Missing\"]}"));
+    if (Primary)
+    {
+        TestTrue(TEXT("partial init prefix is sent"), SendBytes(*Primary, Init.GetData(), 3));
+        FPlatformProcess::Sleep(0.02f);
+        TestTrue(TEXT("remaining init bytes are sent"),
+            SendBytes(*Primary, Init.GetData() + 3, Init.Num() - 3));
+    }
+
+    TArray<uint8> Payload;
+    TestTrue(TEXT("partial init produces ready response"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready response reports the omitted morph curve"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("Missing")));
+
+    FSocket* Second = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("second TCP client reaches listener"), Second);
+    Payload.Reset();
+    TestTrue(TEXT("second client receives a framed rejection"),
+        Second && ReceivePacket(*Second, Payload));
+    TestTrue(TEXT("second client rejection is actionable"),
+        FromUtf8(Payload).Contains(TEXT("already has a Maya client")));
+    DestroySocket(*SocketSubsystem, Second);
+
+    const TArray<uint8> NonFinite = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e400]}"));
+    const TArray<uint8> Valid = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.5]}"));
+    TArray<uint8> Combined = NonFinite;
+    Combined.Append(Valid);
+    AddExpectedError(TEXT("Dropped frame: Non-finite curve 0."),
+        EAutomationExpectedErrorFlags::Contains, 1);
+    TestTrue(TEXT("combined invalid and valid frame packets are sent"),
+        Primary && SendBytes(*Primary, Combined.GetData(), Combined.Num()));
+
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    TestTrue(TEXT("non-finite frame is dropped and following valid frame is published"), PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return !LiveLinkClient.GetSubjectFrameTimes(SubjectKey).IsEmpty();
+    }));
+
+    const TArray<uint8> WrongCount = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
+    TestTrue(TEXT("structurally invalid frame is sent"),
+        Primary && SendBytes(*Primary, WrongCount.GetData(), WrongCount.Num()));
+    TestTrue(TEXT("structural count mismatch closes the session"),
+        Primary && WaitForClose(*Primary));
+
+    DestroySocket(*SocketSubsystem, Primary);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceBindErrorTest,
+    "MtoULiveLink.Source.BindErrorStatus",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSourceBindErrorTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    FSocket* Occupied = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("conflict listener is created"), Occupied);
+    if (!Occupied)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> Address = SocketSubsystem->CreateInternetAddr();
+    Occupied->GetAddress(*Address);
+    const uint16 Port = static_cast<uint16>(Address->GetPort());
+
+    AddExpectedError(
+        TEXT("Failed to bind MtoU_LiveLink"), EAutomationExpectedErrorFlags::Contains, 1);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    TestTrue(TEXT("bind failure remains visible in source status"), WaitForStatus(Source, TEXT("bind")));
+    TestTrue(TEXT("bind-failed source remains displayable"), Source->IsSourceStillValid());
+    Source->StopListener();
+    DestroySocket(*SocketSubsystem, Occupied);
     return true;
 }
 
