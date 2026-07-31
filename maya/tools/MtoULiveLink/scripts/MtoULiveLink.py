@@ -228,8 +228,8 @@ class _SenderWorker(threading.Thread):
             self._missing_curves = list(missing_curves or [])
 
     def stop(self):
-        self._stop_event.set()
         with self._lock:
+            self._stop_event.set()
             sock = self._socket
         if sock is not None:
             try:
@@ -280,7 +280,10 @@ class _SenderWorker(threading.Thread):
             sock = self._connect()
             if sock is None or self._stop_event.is_set():
                 return
-            sock.sendall(self._init_packet)
+            with self._lock:
+                if self._stop_event.is_set():
+                    return
+                sock.sendall(self._init_packet)
             reply = recv_message(sock)
             if reply.get("type") == "error":
                 raise RuntimeError(reply.get("message") or "Unreal rejected the connection")
