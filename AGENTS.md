@@ -101,3 +101,20 @@ Before considering a task complete:
 - Keep commits scoped to one logical change.
 - Use project-prefixed release tags such as `maya-mesh-normal-tool-v0.2.0`
   and `ue-asset-audit-v1.1.0`.
+
+## Agent skills
+
+### Issue tracker
+
+Track issues and specs in GitHub Issues using the `gh` CLI. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical triage label mapping when classifying or updating issues.
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the multi-context domain layout when exploring terminology or architectural
+decisions. See `docs/agents/domain.md`.

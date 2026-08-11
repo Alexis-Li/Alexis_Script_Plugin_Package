@@ -1,5 +1,9 @@
 # Release Process
 
+Use this checklist with the owning project rules and
+[`naming-conventions.md`](naming-conventions.md). A release is not complete
+until both host-specific verification and repository validation pass.
+
 1. Update the project's version and changelog.
 2. Run project tests and `python tools/validate_repository.py`.
 3. Build or package with the target Maya or Unreal runtime.

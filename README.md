@@ -31,7 +31,7 @@ implementation cannot support both.
 - [MtoU Live Link](composite/MtoULiveLink/README.md)
 - [NitroPoly](maya/tools/NitroPoly/README.md)
 - [ZiSpread](maya/scripts/ZiSpread/README.md)
-- [Maya development rules](docs/maya-development.md)
+- [Maya project guide](docs/maya-development.md)
 - [Naming conventions](docs/naming-conventions.md)
 - [Release process](docs/release-process.md)
 - [Project development history](docs/project-history/README.md)
@@ -56,4 +56,5 @@ implementation cannot support both.
    ```
 
 See [development conventions](docs/development-conventions.md) for the shared
-workflow and [Unreal development](docs/unreal-development.md) for Unreal rules.
+workflow and the [Unreal plugin guide](docs/unreal-development.md) for project
+navigation.

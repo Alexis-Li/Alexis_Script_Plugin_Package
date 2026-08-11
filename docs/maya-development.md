@@ -1,15 +1,21 @@
-# Maya Development
+# Maya Project Guide
+
+Use this guide to choose a project shape. The normative Maya naming,
+compatibility, safety, layout, and test rules live in
+[`maya/AGENTS.md`](../maya/AGENTS.md).
 
 ## Choose the Smallest Project Shape
 
-Prefer `maya/scripts/<ToolName>/<ToolName>.py`: one PascalCase file that exposes
-`run()` or `main()` and runs directly in Maya's Python Script Editor. Add no
-installer, package, bootstrap layer, or resource folder unless the feature
-needs it.
+| Need | Project shape |
+| --- | --- |
+| One directly runnable Script Editor file | `maya/scripts/<ToolName>/` |
+| Plug-in registration, multiple functional files, resources, persistent UI, tests, installation, or reusable API | `maya/tools/<ToolName>/` |
+| One product spanning Maya and another host | `composite/<ProjectName>/maya/<ToolName>/` |
 
-Use `maya/tools/<ToolName>/` when the tool requires plug-in registration,
-multiple functional files, resources, persistent UI, tests, installation, or a
-reusable API. Put Maya runtime folders directly under the project:
+Start with the first shape that satisfies the requirement. A direct script
+exposes `run()` or `main()` and does not depend on the repository being on
+`PYTHONPATH`. Structured tools put only the runtime folders they use directly
+under the project root.
 
 A Maya component of a cross-host product instead uses
 `composite/<ProjectName>/maya/<ToolName>/` and follows the same runtime layout,
@@ -25,29 +31,9 @@ keep README, changelog, license, and project rules at the composite root.
 └─ presets/       # optional
 ```
 
-Do not wrap this structure in `package/<ToolName>/`. Omit unused directories
-and install by copying runtime files to Maya's matching directories. Do not add
-a `.mod` file unless module-based deployment is an explicit project requirement.
+## Verification path
 
-Declare the project version once as `__version__` or `PLUGIN_VERSION` in a
-runtime Python file. Repository version and packaging commands use that value.
-
-## Compatibility
-
-Support Python 2 and Python 3 in Maya runtime code where practical. Avoid
-Python-3-only syntax in dual-compatible files and verify both host generations
-before documenting compatibility. If the implementations cannot be shared,
-prioritize Python 3 and document the exact supported Maya versions.
-
-Keep directly executed Maya 2020/Python 2 source files ASCII-only. Represent
-localized UI text with Unicode escapes to prevent Script Editor corruption.
-
-Use Maya's bundled Python and Qt, avoid hardcoded install paths, and guard
-version-specific APIs. Do not introduce PyMEL unless the feature requires it.
-
-## Safety and Verification
-
-Validate selection and input, keep errors actionable, preserve undo behavior,
-and clean up temporary nodes, windows, callbacks, Script Jobs, and contexts.
-Test pure logic outside Maya where practical and keep Maya integration checks
-separate from repository-level tests.
+1. Run pure-Python tests outside Maya when the tested code permits it.
+2. Run integration checks with a supported Maya or `mayapy`.
+3. Run `python tools/validate_repository.py` from the repository root.
+4. Confirm the project documentation states only versions actually tested.

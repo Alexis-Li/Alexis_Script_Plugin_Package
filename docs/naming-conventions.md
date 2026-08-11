@@ -1,5 +1,9 @@
 # Naming Conventions
 
+This is the consolidated human reference for repository names. The applicable
+`AGENTS.md` remains normative for agent work and may impose additional
+platform-specific constraints.
+
 - Maya project directories use PascalCase without separators:
   `FlattenMeshToUV`, `NitroPoly`, `ZiSpread`.
 - Maya user-run tool files also use PascalCase: `FlattenMeshToUV.py`.
@@ -16,5 +20,6 @@
 
 Release tags use `maya-<project-name>-v<version>`,
 `ue-<plugin-name>-v<version>`, or `composite-<project-name>-v<version>`.
-Composite components keep their host-specific archive formats. Archives use readable project names such as
-`FlattenMeshToUV-2.0.1.zip` or `AssetAudit-0.4.0-UE5.7.zip`.
+Composite components keep their host-specific archive formats. Archives use
+readable project names such as `FlattenMeshToUV-2.0.1.zip` or
+`AssetAudit-0.4.0-UE5.7.zip`.

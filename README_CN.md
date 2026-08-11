@@ -28,7 +28,7 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
 - [MtoU Live Link](composite/MtoULiveLink/README_CN.md)
 - [NitroPoly](maya/tools/NitroPoly/README_CN.md)
 - [ZiSpread](maya/scripts/ZiSpread/README_CN.md)
-- [Maya 开发规则](docs/maya-development.md)
+- [Maya 项目指南](docs/maya-development.md)
 - [命名规范](docs/naming-conventions.md)
 - [发布流程](docs/release-process.md)
 - [项目开发历史](docs/project-history/README.md)
@@ -52,5 +52,5 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
    python tools/validate_repository.py
    ```
 
-通用流程见[开发约定](docs/development-conventions.md)，Unreal 规则见
-[Unreal 开发说明](docs/unreal-development.md)。
+通用流程见[开发约定](docs/development-conventions.md)，Unreal 项目导航见
+[Unreal 插件指南](docs/unreal-development.md)。

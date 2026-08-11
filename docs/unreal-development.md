@@ -1,19 +1,33 @@
-# Unreal Engine Development
+# Unreal Plugin Guide
 
-Each direct child of `unreal/Plugins/` is a standalone plugin with a root
-`.uplugin` file. A composite Unreal component at
-`composite/<ProjectName>/unreal/<PluginName>/` follows the same standalone
-plugin contract and must not load files from sibling host directories. Its
-component root contains the descriptor, runtime source, and embedded Automation
-tests; product metadata stays at the composite root. Runtime features belong in Runtime modules; menus, editor UI,
-asset actions, and editor utilities belong in Editor modules. Expose only
-intentional APIs from `Public/` and keep implementation details in `Private/`.
+Use this guide for repository navigation. The normative Unreal module, asset,
+dependency, generated-file, and validation rules live in
+[`unreal/AGENTS.md`](../unreal/AGENTS.md).
+
+## Plugin locations
+
+| Plugin type | Location |
+| --- | --- |
+| Standalone plug-in | `unreal/Plugins/<PluginName>/` |
+| Unreal component of a cross-host product | `composite/<ProjectName>/unreal/<PluginName>/` |
+
+Both locations contain a complete, independently installable plug-in with its
+`.uplugin` descriptor at the plug-in root. Composite product metadata remains
+at `composite/<ProjectName>/`.
+
+## Design guide
+
+Runtime features belong in Runtime modules. Menus, editor UI, asset actions,
+and editor utilities belong in Editor modules. `Public/` contains intentional
+APIs; implementation details stay in `Private/`.
 
 Assets belong in the plugin's own `Content/`. When there are no assets, omit the
 directory and set `CanContainContent` to `false`. The ToolsLab project only hosts
-and validates plugins; it must not contain reusable plugin code.
+and validates plug-ins; reusable plug-in code stays in its owning plug-in.
+
+## Verification path
 
 After a change, compile affected modules, inspect new warnings, run relevant
-automation tests, load the plugin in ToolsLab, and confirm generated directories
-are not staged. Never commit `Binaries`, `Intermediate`, `Saved`,
-`DerivedDataCache`, `.vs`, or generated solution/project files.
+Automation tests, load the plug-in in ToolsLab, and run repository validation.
+Finish by checking `git status` against the generated-file rules in
+`unreal/AGENTS.md`.

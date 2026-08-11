@@ -1,48 +1,45 @@
 # Development Conventions
 
-## Scope and boundaries
-
-The repository is a monorepo, but every structured Maya tool and Unreal plugin
-is an independently versioned project. Composite products group two or more
-independently installable host components under `composite/`; they may share a
-documented protocol but must not load files from sibling host roots. Keep
-runtime code, assets, and colocated tests inside the owning host component; keep
-shared documentation and project metadata at the composite root. Do not create
-nested Git repositories or undocumented dependencies between sibling projects.
+This is the human-facing change workflow. Normative boundaries and platform
+requirements live in the repository and nearest platform `AGENTS.md`; use the
+[repository map](workspace-spec.md) to find them.
 
 ## Change workflow
 
-1. Classify the project before choosing a directory.
-2. Make the smallest coherent change and preserve public entry points.
-3. Update user documentation and the owning changelog for visible behavior.
-4. Run the narrowest project tests, then `python tools/validate_repository.py`.
-5. Inspect `git status` for generated or unrelated files.
+1. Read the applicable `AGENTS.md` chain and classify the project before
+   choosing a directory.
+2. Inspect the owning project, dependency declarations, tests, and packaging
+   commands before editing.
+3. Make the smallest coherent change and preserve public entry points unless a
+   breaking change is explicitly required.
+4. Update the owning user documentation and changelog when behavior changes.
+5. Run the narrowest project checks, then repository validation and tests.
+6. Inspect `git status` for generated or unrelated files before handoff.
+
+The repository-wide gates are:
+
+```powershell
+python tools/validate_repository.py
+python -m unittest discover -s tests -v
+```
+
+Host-dependent Maya and Unreal checks remain project-specific and run in the
+supported host runtime.
+
+## Repository tools
 
 Repository Python tools must use the standard library unless a dependency is
 explicitly approved. Write commands default to dry-run and require `--apply`.
 Maya and Unreal runtime code must use the versions shipped by the target host.
 
-## Project ownership
+## Documentation ownership
 
-Standalone structured projects under `maya/` and `unreal/` own their README,
-changelog, version, runtime dependencies, installation metadata, and any
-project-specific tests or documentation they need. A composite project instead
-owns exactly one root `README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE`;
-its host components keep only implementation and colocated tests. Repository
-tools provide shared validation and packaging behavior without changing the
-standalone Maya and Unreal ownership rules.
-Release archives go to GitHub Releases, not Git history.
+| Information | Owner |
+| --- | --- |
+| User installation and usage | Project `README.md` and `README_CN.md` |
+| Released and unreleased behavior changes | Owning `CHANGELOG.md` |
+| Normative development constraints | Applicable `AGENTS.md` |
+| Stable completed architecture and acceptance evidence | `docs/project-history/<project>/` |
+| Active domain vocabulary and decisions | Context and ADR locations described in `docs/agents/domain.md` |
 
-The root English and Chinese READMEs explain the repository, list its tools,
-link documentation, and show how to start development. Project READMEs contain
-only an introduction, supported versions, installation, and usage;
-development and repository-maintenance details belong in `docs/` or `AGENTS.md`.
-
-## Project development history
-
-Completed projects archive durable architecture, migration, and acceptance
-records under `docs/project-history/<project-name>/`. Each project history has
-a `README.md` timeline and stable purpose-based document names. Temporary
-implementation plans are removed after their lasting decisions are integrated
-into current documentation, repository rules, or the project history. Normative
-rules remain in `AGENTS.md` and are linked rather than copied into history.
+Link to the owner instead of copying its full content into another document.

@@ -1,29 +1,23 @@
-# Workspace Specification
+# Repository Map
 
-This repository is the only Git root. Its independent projects live under:
+This document routes developers to the right project location and rule file. It
+is not a second copy of the repository rules.
 
-```text
-maya/scripts/<ToolName>/
-maya/tools/<ToolName>/
-unreal/Plugins/<PluginName>/
-composite/<ProjectName>/<host>/<ComponentName>/
-```
+## Project locations
 
-Maya names use PascalCase. A direct Script Editor tool is one Python file under
-`maya/scripts`; a structured Maya project exposes only the standard runtime
-folders it needs (`scripts`, `plug-ins`, `icons`, or `presets`) at its project
-root. Small and medium Maya tools do not require `.mod` files and install by
-copying runtime files to Maya's matching directories. Unreal plug-ins keep
-their `.uplugin` at the plug-in root. Composite projects use a PascalCase
-product directory, lowercase host directories, and a complete PascalCase
-component root per host. Users install the host component, not the composite
-project directory. The composite project root owns its README pair, changelog,
-license, and project rules exactly once; component roots contain only host
-implementation files and tests that need to remain beside that implementation.
-Standalone projects under `maya/` and `unreal/` continue to own their existing
-project-level metadata.
+| Project type | Location |
+| --- | --- |
+| Direct Maya Script Editor tool | `maya/scripts/<ToolName>/` |
+| Structured Maya tool or plug-in | `maya/tools/<ToolName>/` |
+| Standalone Unreal plug-in | `unreal/Plugins/<PluginName>/` |
+| Cross-host product | `composite/<ProjectName>/<host>/<ComponentName>/` |
+| Reusable project template | `templates/<template-name>/` |
+| Repository tooling and tests | `tools/` and `tests/` |
 
-The authoritative rules are:
+The repository root is the only Git root. Each project or host component keeps
+the installation boundary defined by its nearest `AGENTS.md`.
+
+## Rule ownership
 
 - [`AGENTS.md`](../AGENTS.md): repository-wide development and Git rules.
 - [`maya/AGENTS.md`](../maya/AGENTS.md): Maya classification, layout, Python
@@ -31,9 +25,17 @@ The authoritative rules are:
 - [`unreal/AGENTS.md`](../unreal/AGENTS.md): Unreal plug-in rules.
 - [`composite/AGENTS.md`](../composite/AGENTS.md): cross-host product and
   component-boundary rules.
-- [`development-conventions.md`](development-conventions.md): shared workflow.
-- [`naming-conventions.md`](naming-conventions.md): naming and release formats.
 
-Project READMEs are user-facing and contain only introduction, supported
-versions, installation, and usage. Root READMEs contain the broader repository
-overview and developer onboarding.
+Read the repository rule file and every nearer platform rule before editing a
+project. When a guide and an `AGENTS.md` disagree, follow `AGENTS.md` and fix the
+guide.
+
+## Supporting documentation
+
+- [`development-conventions.md`](development-conventions.md): change workflow
+  and documentation ownership.
+- [`naming-conventions.md`](naming-conventions.md): naming and release formats.
+- [`release-process.md`](release-process.md): release checklist.
+- [`agents/`](agents/): issue-tracker and domain-documentation integration for
+  engineering skills.
+- [`project-history/`](project-history/): stable records from completed work.
