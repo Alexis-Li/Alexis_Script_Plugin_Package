@@ -75,7 +75,7 @@ Expected: errors because the three resolver functions do not exist.
 
 - [x] **Step 3: Move both component roots with Git history**
 
-Create the two lowercase host parent directories and use `git mv` for the complete existing component directories. Confirm the old roots are absent and each destination contains its existing README pair, changelog, license, runtime source, tests, and descriptor where applicable.
+Create the two lowercase host parent directories and use `git mv` for the complete existing component directories. Confirm the old roots are absent, the composite root owns the README pair, changelog, and license, and each destination contains only its runtime source, nearby tests, and descriptor where applicable.
 
 - [x] **Step 4: Implement exact-one component resolution**
 
@@ -169,7 +169,7 @@ Expected: errors because `_validate_composite` and `_validate_nested_git` do not
 
 - [x] **Step 3: Add composite governance and product metadata**
 
-`composite/AGENTS.md` must require independently installable host roots, lowercase host directory names, PascalCase project/component names, paired READMEs, and no implicit cross-host filesystem dependency. The bilingual product READMEs must describe supported Maya 2022.4 and stock UE 5.7.4, show the exact component copy destinations, and link to both component READMEs. The product changelog records the layout migration; the product license matches the repository license.
+`composite/AGENTS.md` must require independently installable host roots, lowercase host directory names, PascalCase project/component names, root-owned paired READMEs, and no implicit cross-host filesystem dependency. The bilingual product READMEs must describe supported Maya 2022.4 and stock UE 5.7.4 and show the exact component copy destinations. The product changelog records the layout migration; the product license matches the repository license.
 
 - [x] **Step 4: Extract reusable host validators and add composite validation**
 

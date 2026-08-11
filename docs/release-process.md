@@ -12,4 +12,6 @@
 Maya archive names use `<ToolName>-<version>.zip`. Unreal archive names include
 the engine version, for example `<PluginName>-<version>-UE5.7.zip`. Composite
 projects publish those host-specific archives separately; do not wrap them in
-one combined archive.
+one combined archive. Composite component archives contain only the files
+required by that host; publish the shared README, changelog, and license once
+from the composite project root.

@@ -87,6 +87,13 @@ TEXT_SUFFIXES = {
 }
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 HOST_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+COMPOSITE_ROOT_METADATA = (
+    "README.md",
+    "README_CN.md",
+    "CHANGELOG.md",
+    "LICENSE",
+)
+COMPOSITE_COMPONENT_METADATA = COMPOSITE_ROOT_METADATA + ("AGENTS.md",)
 
 
 def _iter_files(root: Path):
@@ -166,12 +173,15 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
             errors.append("shelf script {0} must expose run() or main()".format(project.name))
 
 
-def _validate_maya_project(project: Path, errors: list[str], root: Path) -> None:
+def _validate_maya_project(
+    project: Path, errors: list[str], root: Path, require_metadata: bool = True
+) -> None:
     if not PASCAL_RE.fullmatch(project.name):
         errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
-    for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
-        if not (project / required).exists():
-            errors.append("Maya tool {0} is missing {1}".format(project.name, required))
+    if require_metadata:
+        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+            if not (project / required).exists():
+                errors.append("Maya tool {0} is missing {1}".format(project.name, required))
     if (project / "package").exists():
         errors.append("Maya tool {0} contains obsolete package/ nesting".format(project.name))
     runtime_dirs = [project / name for name in ("scripts", "plug-ins", "icons")]
@@ -197,12 +207,15 @@ def _validate_maya_tools(root: Path, errors: list[str]) -> None:
         _validate_maya_project(project, errors, root)
 
 
-def _validate_unreal_plugin(plugin: Path, errors: list[str], root: Path) -> None:
+def _validate_unreal_plugin(
+    plugin: Path, errors: list[str], root: Path, require_metadata: bool = True
+) -> None:
     if not PASCAL_RE.fullmatch(plugin.name):
         errors.append("Unreal plugin directory must use PascalCase: {0}".format(plugin.name))
-    for required in ("README.md", "README_CN.md"):
-        if not (plugin / required).is_file():
-            errors.append("Unreal plugin {0} is missing {1}".format(plugin.name, required))
+    if require_metadata:
+        for required in ("README.md", "README_CN.md"):
+            if not (plugin / required).is_file():
+                errors.append("Unreal plugin {0} is missing {1}".format(plugin.name, required))
     descriptors = list(plugin.glob("*.uplugin"))
     if len(descriptors) != 1:
         errors.append(
@@ -221,6 +234,19 @@ def _validate_unreal(root: Path, errors: list[str]) -> None:
         _validate_unreal_plugin(plugin, errors, root)
 
 
+def _validate_composite_component_metadata(
+    project: Path, host: Path, component: Path, errors: list[str]
+) -> None:
+    for metadata in COMPOSITE_COMPONENT_METADATA:
+        if (component / metadata).exists():
+            errors.append(
+                "Composite component {0}/{1}/{2} must not contain {3}; "
+                "metadata belongs at the project root".format(
+                    project.name, host.name, component.name, metadata
+                )
+            )
+
+
 def _validate_composite(root: Path, errors: list[str]) -> None:
     composite_root = root / "composite"
     if not composite_root.is_dir():
@@ -230,7 +256,7 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
             errors.append(
                 "Composite project directory must use PascalCase: {0}".format(project.name)
             )
-        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+        for required in COMPOSITE_ROOT_METADATA:
             if not (project / required).is_file():
                 errors.append("Composite project {0} is missing {1}".format(project.name, required))
         hosts = sorted(path for path in project.iterdir() if path.is_dir())
@@ -256,10 +282,12 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
                 )
             if host.name == "maya":
                 for component in components:
-                    _validate_maya_project(component, errors, root)
+                    _validate_composite_component_metadata(project, host, component, errors)
+                    _validate_maya_project(component, errors, root, require_metadata=False)
             elif host.name == "unreal":
                 for component in components:
-                    _validate_unreal_plugin(component, errors, root)
+                    _validate_composite_component_metadata(project, host, component, errors)
+                    _validate_unreal_plugin(component, errors, root, require_metadata=False)
 
 
 def _validate_nested_git(root: Path, errors: list[str]) -> None:

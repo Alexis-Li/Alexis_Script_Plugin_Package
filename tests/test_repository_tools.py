@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -17,6 +18,23 @@ import validate_repository
 
 
 class RepositoryToolTests(unittest.TestCase):
+    def _create_composite_fixture(self, root):
+        project = root / "composite" / "SampleBridge"
+        for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+            (project / metadata).parent.mkdir(parents=True, exist_ok=True)
+            (project / metadata).write_text(metadata, encoding="utf-8")
+
+        maya_component = project / "maya" / "SampleBridge"
+        (maya_component / "scripts").mkdir(parents=True)
+        (maya_component / "scripts" / "SampleBridge.py").write_text(
+            '__version__ = "1.0.0"\n', encoding="utf-8"
+        )
+
+        unreal_component = project / "unreal" / "SampleBridge"
+        unreal_component.mkdir(parents=True)
+        (unreal_component / "SampleBridge.uplugin").write_text("{}", encoding="utf-8")
+        return project, maya_component, unreal_component
+
     def test_repository_is_structurally_valid(self):
         result = validate_repository.validate(ROOT)
         self.assertEqual([], result["errors"])
@@ -96,6 +114,89 @@ class RepositoryToolTests(unittest.TestCase):
                     "Composite project SampleBridge is missing {0}".format(required),
                     errors,
                 )
+
+    def test_composite_components_inherit_root_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self._create_composite_fixture(root)
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual([], errors)
+
+    def test_composite_components_reject_duplicate_metadata(self):
+        for host_name, component_index in (("maya", 1), ("unreal", 2)):
+            for metadata in validate_repository.COMPOSITE_COMPONENT_METADATA:
+                with self.subTest(host=host_name, metadata=metadata):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = pathlib.Path(directory)
+                        fixture = self._create_composite_fixture(root)
+                        component = fixture[component_index]
+                        (component / metadata).write_text("duplicate", encoding="utf-8")
+                        errors = []
+                        validate_repository._validate_composite(root, errors)
+                        self.assertIn(
+                            "Composite component SampleBridge/{0}/SampleBridge must not "
+                            "contain {1}; metadata belongs at the project root".format(
+                                host_name, metadata
+                            ),
+                            errors,
+                        )
+
+    def test_legacy_maya_tool_still_requires_its_own_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project = root / "maya" / "tools" / "LegacyTool"
+            (project / "scripts").mkdir(parents=True)
+            (project / "scripts" / "LegacyTool.py").write_text(
+                '__version__ = "1.0.0"\n', encoding="utf-8"
+            )
+            errors = []
+            validate_repository._validate_maya_project(project, errors, root)
+            for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+                self.assertIn("Maya tool LegacyTool is missing {0}".format(metadata), errors)
+
+    def test_legacy_unreal_plugin_still_requires_its_own_readmes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            plugin = root / "unreal" / "Plugins" / "LegacyPlugin"
+            plugin.mkdir(parents=True)
+            (plugin / "LegacyPlugin.uplugin").write_text("{}", encoding="utf-8")
+            errors = []
+            validate_repository._validate_unreal_plugin(plugin, errors, root)
+            self.assertIn("Unreal plugin LegacyPlugin is missing README.md", errors)
+            self.assertIn("Unreal plugin LegacyPlugin is missing README_CN.md", errors)
+
+    def test_composite_packages_contain_only_component_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            maya_result = package_maya_tool.package("MtoULiveLink", output, apply=True)
+            unreal_result = package_unreal_plugin.package(
+                "MtoULiveLink", "5.7", output, apply=True
+            )
+
+            with zipfile.ZipFile(output / pathlib.Path(maya_result["archive"]).name) as archive:
+                self.assertEqual(["scripts/MtoULiveLink.py"], archive.namelist())
+
+            with zipfile.ZipFile(output / pathlib.Path(unreal_result["archive"]).name) as archive:
+                names = archive.namelist()
+            self.assertIn("MtoULiveLink/MtoULiveLink.uplugin", names)
+            self.assertIn(
+                "MtoULiveLink/Source/MtoULiveLink/Private/Tests/"
+                "MtoULiveLinkTests.cpp",
+                names,
+            )
+            forbidden_names = {
+                "README.md",
+                "README_CN.md",
+                "CHANGELOG.md",
+                "LICENSE",
+                "AGENTS.md",
+                "ICON.md",
+                ".gitkeep",
+            }
+            self.assertFalse(
+                [name for name in names if pathlib.PurePosixPath(name).name in forbidden_names]
+            )
 
     def test_git_worktree_file_is_not_a_nested_repository(self):
         with tempfile.TemporaryDirectory() as directory:

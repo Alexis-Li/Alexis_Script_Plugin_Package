@@ -17,7 +17,11 @@ copying runtime files to Maya's matching directories. Unreal plug-ins keep
 their `.uplugin` at the plug-in root. Composite projects use a PascalCase
 product directory, lowercase host directories, and a complete PascalCase
 component root per host. Users install the host component, not the composite
-project directory.
+project directory. The composite project root owns its README pair, changelog,
+license, and project rules exactly once; component roots contain only host
+implementation files and tests that need to remain beside that implementation.
+Standalone projects under `maya/` and `unreal/` continue to own their existing
+project-level metadata.
 
 The authoritative rules are:
 

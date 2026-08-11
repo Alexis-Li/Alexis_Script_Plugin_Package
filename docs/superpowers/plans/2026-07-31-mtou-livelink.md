@@ -60,8 +60,6 @@ Every packet is UTF-8 JSON preceded by an unsigned 64-bit big-endian payload len
 - `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py` — sole runtime file; pure protocol/conversion helpers, Maya discovery/sampling, sender thread, lifecycle, UI, and `run()`.
 - `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_mtou_livelink.py` — pure standard-library tests runnable under repository Python and `mayapy`.
 - `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_maya_host.py` — Maya-standalone sampling/discovery smoke tests; skipped outside Maya.
-- `composite/MtoULiveLink/maya/MtoULiveLink/README.md` and `README_CN.md` — matching user-facing introduction, versions, installation, and usage.
-- `composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md` and `LICENSE` — project release history and repository license copy.
 
 ### Unreal project
 
@@ -78,11 +76,11 @@ Every packet is UTF-8 JSON preceded by an unsigned 64-bit big-endian payload len
 - `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.h/.cpp` — binding factory and binding-to-actor factory.
 - `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkEditorModule.cpp` — one-line default Editor module implementation.
 - `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/Tests/MtoULiveLinkEditorTests.cpp` — factory automation smoke tests.
-- `composite/MtoULiveLink/unreal/MtoULiveLink/README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE` — independently installable plugin metadata.
 
 ### Repository integration
 
 - `unreal/ToolsLab.uproject` — enable `MtoULiveLink` in the validation host.
+- `composite/MtoULiveLink/README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE` — shared product metadata and host-specific installation instructions.
 - `README.md`, `README_CN.md`, and `CHANGELOG.md` — add both independently installable sides to the repository index/history.
 
 ---
@@ -1152,12 +1150,9 @@ git commit -m "feat(unreal): add MtoU binding workflow"
 ### Task 8: Bilingual docs, changelogs, index, and packaging checks
 
 **Files:**
-- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/README.md`
-- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/README_CN.md`
-- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md`
-- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/README.md`
-- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/README_CN.md`
-- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/CHANGELOG.md`
+- Modify: `composite/MtoULiveLink/README.md`
+- Modify: `composite/MtoULiveLink/README_CN.md`
+- Modify: `composite/MtoULiveLink/CHANGELOG.md`
 - Modify: `README.md`
 - Modify: `README_CN.md`
 - Modify: `CHANGELOG.md`
@@ -1166,7 +1161,7 @@ git commit -m "feat(unreal): add MtoU binding workflow"
 - Consumes: completed user workflow from Tasks 3, 6, and 7.
 - Produces: independently usable installation/usage docs and repository discovery links.
 
-- [ ] **Step 1: Write the matching Maya README pair**
+- [ ] **Step 1: Write the Maya sections of the matching product README pair**
 
 English content must say:
 
@@ -1177,7 +1172,7 @@ English content must say:
 
 The Chinese README must carry the same facts, steps, limitations, and cross-link, with no development/protocol section.
 
-- [ ] **Step 2: Write the matching Unreal README pair**
+- [ ] **Step 2: Write the Unreal sections of the matching product README pair**
 
 English content must say:
 
@@ -1190,7 +1185,7 @@ The Chinese README must match exactly in scope and limitations.
 
 - [ ] **Step 3: Update changelogs and root indexes**
 
-Each project changelog gets `## 0.1.0` with one initial release entry describing its side. Root English/Chinese tool tables add one Maya tool row and one Unreal plugin row, and both documentation lists link to the corresponding project README. Root `Unreleased` gets one line: `Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.`
+The composite project changelog gets `## 0.1.0` entries describing both sides. Root English/Chinese tool tables list the product once and link to the composite README. Root `Unreleased` gets one line: `Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.`
 
 - [ ] **Step 4: Run tests, repository validation, and dry-run packaging**
 
@@ -1208,7 +1203,7 @@ Expected: tests and validator PASS; package commands report `dry-run`, version `
 - [ ] **Step 5: Commit documentation and integration metadata**
 
 ```powershell
-git add README.md README_CN.md CHANGELOG.md composite/MtoULiveLink/maya/MtoULiveLink/README.md composite/MtoULiveLink/maya/MtoULiveLink/README_CN.md composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md composite/MtoULiveLink/unreal/MtoULiveLink/README.md composite/MtoULiveLink/unreal/MtoULiveLink/README_CN.md composite/MtoULiveLink/unreal/MtoULiveLink/CHANGELOG.md
+git add README.md README_CN.md CHANGELOG.md composite/MtoULiveLink/README.md composite/MtoULiveLink/README_CN.md composite/MtoULiveLink/CHANGELOG.md
 git commit -m "docs: document MtoU Live Link"
 ```
 

@@ -51,8 +51,17 @@ testable, versioned, and packageable.
 
 ## Project Boundaries
 
-Each structured project owns its README, changelog, version information,
-runtime dependencies, and any project-specific tests or documentation it needs.
+Each independent project under `maya/` or `unreal/` owns its README, changelog,
+version information, runtime dependencies, and any project-specific tests or
+documentation it needs. These existing single-host ownership rules do not
+change for legacy or future standalone Maya and Unreal projects.
+
+For a project under `composite/`, the composite project root is the sole owner
+of `README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE`. Host component
+roots contain only their implementation, host-required descriptors or assets,
+and tests that must stay beside that implementation. Do not duplicate project
+metadata inside a composite host component.
+
 Repository-level scripts may provide shared validation and packaging behavior.
 
 Sibling projects must not depend on each other unless the dependency is
@@ -61,7 +70,7 @@ explicitly documented and independently packageable.
 Composite products group cooperating host components without merging their
 installation boundaries. Each host component must remain independently
 installable, testable, versioned, and packageable; follow `composite/AGENTS.md`
-and the nearest component rules.
+and the applicable host development conventions.
 
 ## Generated Files
 

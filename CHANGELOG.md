@@ -1,12 +1,15 @@
 # Changelog
 
-All notable repository-wide changes are documented here. Individual structured
-tools and plugins maintain their own changelogs.
+All notable repository-wide changes are documented here. Standalone structured
+tools and plugins maintain their own changelogs; composite products maintain
+one changelog at the composite project root.
 
 ## Unreleased
 
 - Move MtoU_LiveLink into the new `composite/` category with independently
   installable Maya and Unreal component roots.
+- Standardize composite metadata ownership at the project root while preserving
+  the existing standalone Maya and Unreal project contracts.
 - Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.
 - Establish the Maya and Unreal Engine monorepo workspace.
 - Add repository validation, project creation, packaging, and version tools.

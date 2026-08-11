@@ -5,9 +5,9 @@
 ## Introduction
 
 MtoU_LiveLink is a composite Maya and Unreal plugin for locally previewing one
-evaluated Maya character in Unreal Live Link. Its two components communicate
-over the documented loopback protocol while remaining independently
-installable and packageable.
+evaluated Maya deformation skeleton and its matching BlendShapes in Unreal
+Live Link. Its two components communicate over a local loopback connection
+while remaining independently installable and packageable.
 
 ## Supported Versions
 
@@ -19,14 +19,11 @@ Compatibility with third-party Unreal Engine 5.7 builds is not claimed.
 
 ## Installation
 
-Install only the component needed by each host:
+Install the matching component in each host:
 
-1. Maya: use the files under
-   [`maya/MtoULiveLink/`](maya/MtoULiveLink/README.md). Copy
-   `scripts/MtoULiveLink.py` to a Maya scripts directory or run it directly in
-   Maya's Python Script Editor.
-2. Unreal: copy the complete
-   [`unreal/MtoULiveLink/`](unreal/MtoULiveLink/README.md) directory to
+1. Maya: copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts
+   directory, or run it directly in Maya's Python Script Editor.
+2. Unreal: copy the complete `unreal/MtoULiveLink/` directory to
    `<Project>/Plugins/MtoULiveLink/`. The installed descriptor must be
    `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`.
 3. Compile the Unreal project, enable **Live Link** and **MtoU_LiveLink**, and
@@ -34,7 +31,15 @@ Install only the component needed by each host:
 
 ## Usage
 
-In Unreal, create an **MtoU_LiveLink Binding**, assign its Skeletal Mesh, and
-drag it into the level. In Maya, select exactly one deformation root, run
-`MtoULiveLink.py`, and select **Connect**. Pose, play, or scrub in Maya to drive
-the Unreal Live Link subject; select **Disconnect** when finished.
+1. In Unreal, create an **MtoU_LiveLink Binding** in the chosen Content Browser
+   folder, assign its **Skeletal Mesh**, and drag the binding into the level.
+2. In Maya, select exactly one deformation root, run `MtoULiveLink.py`, and
+   select **Connect**.
+3. Pose, play, or scrub in Maya to drive the `MtoU_Character` Live Link subject.
+   Select **Disconnect** when finished, and reconnect after topology changes or
+   either host restarts.
+
+The receiver preserves each placed actor transform and does not create an
+Animation Sequence. Same-named BlendShapes on separate skinned mesh parts are
+sent as one Unreal curve when their evaluated values agree. If those values
+differ, sampling stops and identifies every conflicting Maya plug.

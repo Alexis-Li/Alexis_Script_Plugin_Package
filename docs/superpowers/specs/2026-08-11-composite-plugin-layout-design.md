@@ -1,7 +1,7 @@
 # Composite Plugin Layout Design
 
 Date: 2026-08-11
-Status: Approved for implementation
+Status: Accepted repository standard
 
 ## Summary
 
@@ -27,26 +27,28 @@ composite/
    ├─ maya/
    │  └─ MtoULiveLink/
    │     ├─ scripts/
-   │     ├─ tests/
-   │     ├─ README.md
-   │     ├─ README_CN.md
-   │     ├─ CHANGELOG.md
-   │     └─ LICENSE
+   │     └─ tests/
    └─ unreal/
       └─ MtoULiveLink/
          ├─ MtoULiveLink.uplugin
-         ├─ Source/
-         ├─ README.md
-         ├─ README_CN.md
-         ├─ CHANGELOG.md
-         ├─ LICENSE
-         └─ AGENTS.md
+         └─ Source/
 ```
 
 `composite` is a repository category and therefore uses lowercase kebab-case.
 `MtoULiveLink` remains PascalCase because it is the public project and component
 identifier. The lowercase `maya` and `unreal` directories identify hosts; the
 nested PascalCase directory is the independently installable component root.
+
+## Metadata Ownership Contract
+
+- The composite project root is the only location for `README.md`,
+  `README_CN.md`, `CHANGELOG.md`, and `LICENSE`.
+- Host component roots contain only implementation, host-required descriptors
+  or assets, and tests that are coupled to that implementation.
+- Composite validation requires the four root metadata files and rejects their
+  duplicates inside every host component.
+- Standalone projects under `maya/` and `unreal/` retain their existing metadata
+  requirements. This exception applies only below a validated composite project.
 
 ## Installation Contract
 
@@ -60,10 +62,10 @@ Users copy components, not the entire composite project:
   `<Project>/Plugins/MtoULiveLink/`. The destination must contain
   `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`.
 
-The composite-level bilingual READMEs explain the combined workflow and point
-to the component READMEs for host-specific installation. Component archives
-remain independent; the migration does not introduce a combined binary or
-source archive.
+The composite-level bilingual READMEs contain the combined workflow and all
+host-specific installation instructions. Component archives remain independent
+and contain only host runtime files; the migration does not introduce a
+combined binary or source archive.
 
 ## Repository Tooling
 
@@ -85,9 +87,12 @@ checks:
 - a composite project uses a PascalCase directory name;
 - it has paired root READMEs, changelog, and license;
 - it contains at least two host component directories;
-- each Maya component satisfies the existing Maya tool contract;
-- each Unreal component contains exactly one root descriptor and paired
-  READMEs;
+- each Maya component satisfies the existing Maya runtime contract;
+- each Unreal component contains exactly one root descriptor;
+- component roots do not duplicate the project README pair, changelog, license,
+  or project rules;
+- standalone Maya and Unreal projects continue to satisfy their existing
+  metadata contracts;
 - generated outputs and nested repositories remain forbidden.
 
 No new production dependency or project template is added. A composite project

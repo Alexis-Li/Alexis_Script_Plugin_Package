@@ -5,8 +5,9 @@
 The repository is a monorepo, but every structured Maya tool and Unreal plugin
 is an independently versioned project. Composite products group two or more
 independently installable host components under `composite/`; they may share a
-documented protocol but must not load files from sibling host roots. Keep runtime code, assets, tests,
-documentation, and package metadata inside the owning project. Do not create
+documented protocol but must not load files from sibling host roots. Keep
+runtime code, assets, and colocated tests inside the owning host component; keep
+shared documentation and project metadata at the composite root. Do not create
 nested Git repositories or undocumented dependencies between sibling projects.
 
 ## Change workflow
@@ -23,11 +24,13 @@ Maya and Unreal runtime code must use the versions shipped by the target host.
 
 ## Project ownership
 
-Structured projects own their README, changelog, version, runtime dependencies,
-installation metadata, and any project-specific tests or documentation they
-need. Composite products additionally own a root README pair, changelog, and
-license while each host component keeps its own installation metadata.
-Repository tools provide shared validation and packaging behavior.
+Standalone structured projects under `maya/` and `unreal/` own their README,
+changelog, version, runtime dependencies, installation metadata, and any
+project-specific tests or documentation they need. A composite project instead
+owns exactly one root `README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE`;
+its host components keep only implementation and colocated tests. Repository
+tools provide shared validation and packaging behavior without changing the
+standalone Maya and Unreal ownership rules.
 Release archives go to GitHub Releases, not Git history.
 
 The root English and Chinese READMEs explain the repository, list its tools,
