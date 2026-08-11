@@ -156,19 +156,20 @@ Skeletal Mesh.
    Maya origin should appear.
 5. In the Maya animation scene, select the deformation skeleton root, including
    a namespaced root such as `Hero:root`.
-6. Run `MtoULiveLink.py`, choose **Use Current Selection**, and click
-   **Connect**.
-7. When the Maya skeleton and Unreal Skeletal Mesh both exist, Unreal validates
-   them and enables the Live Link pose.
+6. Run `MtoULiveLink.py` and click **Connect**. Connect captures and validates
+   the currently selected root joint.
+7. Unreal validates the Maya skeleton against the placed binding actor's
+   Skeletal Mesh and returns `ready`. If no binding actor exists or validation
+   fails, Maya displays the returned error and disconnects.
 8. Pose, play, or scrub in Maya. Unreal updates the placed actor without
    changing its world transform.
 9. Click **Disconnect** when finished. No Animation Sequence is written.
 
-The Maya connection and Unreal actor may be created in either order. Multiple
-instances of the same binding may consume the one subject and keep independent
-world transforms. Simultaneously placed bindings that reference different
-skeletal hierarchies are outside the single-character scope and must not be
-reported as successfully linked.
+A placed binding actor is required before Maya connects. Multiple instances of
+the same binding may consume the one subject and keep independent world
+transforms. Simultaneously placed bindings that reference different skeletal
+hierarchies are outside the single-character scope and must not be reported as
+successfully linked.
 
 ## Maya Sampling
 
@@ -195,12 +196,12 @@ curve only when the selected Skeletal Mesh contains a Morph Target with the
 same name. A missing Morph Target is reported but does not invalidate an
 otherwise matching skeleton.
 
-### Change detection
+### Sampling and handoff
 
-Maya callbacks for time changes and relevant joint or BlendShape dirtiness only
-mark the subject dirty. They do not query the dependency graph inside the
-callback. A Maya-main-thread timer samples an evaluated pose at most 60 times
-per second and only while dirty.
+A Maya-main-thread timer samples the evaluated pose 30 times per second while
+connected. Version 0.1.0 does not register per-joint or per-BlendShape dirty
+callbacks. The fixed polling rate is measured against the production character
+before adding another change-detection mechanism.
 
 The sampled, serialized frame replaces any older unsent frame in a one-slot
 handoff to a sender thread. The worker touches no Maya API. Dropping stale
@@ -240,22 +241,23 @@ remains the overall offset.
 
 Message sequence:
 
-1. `hello`: protocol version and Maya host information.
-2. `hello_ack` or `error`: Unreal accepts or rejects the protocol.
-3. `skeleton`: an ordered list of bone records, each containing its normalized
-   name and parent index, plus the curve names.
-4. `skeleton_ack`, `waiting_for_binding`, or `skeleton_error`: binding state and
-   hierarchy validation result.
-5. `frame`: Maya frame number, frame rate, transforms in accepted bone order,
-   and a curve-value object keyed by curve name.
-6. `status` or `error`: connection-level feedback when needed.
+1. `init`: protocol version, an ordered list of bone records containing each
+   normalized name and parent index, and the ordered curve names.
+2. `ready` or `error`: Unreal accepts or rejects the protocol, placed binding,
+   and skeleton hierarchy. An error closes the connection.
+3. `frame`: transforms in accepted bone order and an ordered numeric curve
+   array aligned with the curve names from `init`.
+
+After `ready`, Maya sends only `frame` messages. Socket closure communicates
+transport or structural failure; Unreal logs the actionable reason locally.
 
 The protocol has no application-defined maximum message, bone, or curve count.
 Collections and buffers are sized from the received data and remain subject
 only to host memory and Unreal container representation limits. The parser
-still enforces two correctness invariants:
+still enforces three correctness invariants:
 
 - the transform count must equal the accepted skeleton's bone count;
+- the curve-value count must equal the accepted skeleton's curve count;
 - transform and curve numbers must be finite, never `NaN` or infinity.
 
 A structurally invalid message closes the connection. A frame containing a
@@ -264,11 +266,11 @@ valid frames remain eligible for display.
 
 ## Unreal Skeleton Validation
 
-Validation begins when both static Maya skeleton data and a placed binding
-actor are available. It compares normalized bone name to parent bone name, not
-array position. A link succeeds only when every Maya bone exists in the Unreal
-reference skeleton, every Unreal reference bone exists in the Maya skeleton,
-and every parent relationship matches.
+During `init`, Unreal requires a placed binding actor and compares the static
+Maya skeleton with its Skeletal Mesh. It compares normalized bone name to parent
+bone name, not array position. A link succeeds only when every Maya bone exists
+in the Unreal reference skeleton, every Unreal reference bone exists in the
+Maya skeleton, and every parent relationship matches.
 
 The validation response lists missing bones, extra bones, and parent mismatches.
 No pose is applied to a mismatched actor. Retargeting, permissive subsets, and
@@ -280,8 +282,7 @@ automatic bone-name maps are not part of version 0.1.0.
 
 The native Maya window contains only:
 
-- the current root-joint path;
-- **Use Current Selection**;
+- the connected root-joint path;
 - **Connect** / **Disconnect**;
 - connection status;
 - the last actionable error.
@@ -302,14 +303,14 @@ state as read-only diagnostics.
 ### Maya
 
 - **Connect** validates the selected root before opening the socket.
-- Connection registers callbacks once and sends the static skeleton plus the
-  current pose immediately.
-- **Disconnect**, window close, root deletion, scene open/new, plugin unload,
-  and Maya shutdown all remove callbacks, stop the timer and worker, and close
-  the socket.
+- Connection registers lifecycle callbacks once and sends `init`; after
+  `ready`, it sends the current pose immediately.
+- **Disconnect**, window close, root deletion, scene open/new, and Maya shutdown
+  all remove lifecycle callbacks, stop the timer and worker, and close the
+  socket.
 - A failed connection attempt leaves no callbacks or worker behind.
-- Bone rename, insertion, deletion, or reparenting during a session invalidates
-  the link and requires an explicit reconnect.
+- Version 0.1.0 does not detect bone rename, insertion, deletion, or reparenting
+  during a session. The user disconnects and reconnects after topology edits.
 - Maya never modifies the scene as part of streaming.
 
 ### Unreal
@@ -332,10 +333,11 @@ contain 700 or more bones. The target is a visible Maya-to-Unreal update within
 actual production rig. Tests report achieved update rate, serialized frame
 size, and latency rather than rejecting a character because of its size.
 
-The first implementation uses compact JSON and newest-frame-wins queuing. A
-binary frame format is deliberately deferred and should be introduced only if
-measurements on the production character show JSON serialization or parsing is
-the bottleneck.
+The first implementation uses a fixed 30 Hz polling timer, compact JSON, and
+newest-frame-wins queuing. Per-node dirty callbacks and a binary frame format
+are deliberately deferred. Either is introduced only if measurements on the
+production character show polling or JSON processing is the relevant
+bottleneck.
 
 ## Verification
 
@@ -358,9 +360,9 @@ Run it first under repository Python, then under Maya 2022 `mayapy`.
 Development-only automation tests cover:
 
 - partial TCP frames and multiple messages in one receive buffer;
-- handshake and protocol-version rejection;
+- `init`/`ready` and protocol-version rejection;
 - dynamically sized skeleton and frame parsing;
-- transform-count mismatch;
+- transform- and curve-count mismatch;
 - `NaN` and infinity rejection;
 - order-independent skeleton hierarchy matching;
 - detailed missing, extra, and wrong-parent diagnostics;
