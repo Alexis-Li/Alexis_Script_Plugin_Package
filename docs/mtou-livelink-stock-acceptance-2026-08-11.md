@@ -37,6 +37,9 @@ and rejected cases.
   The source scene SHA-256 remained unchanged.
 - Stock UE build: both runtime and editor modules were force-compiled and linked
   successfully with no new compiler warning.
+- Composite-layout revalidation: ToolsLab mounted `MtoULiveLink` as an external
+  plugin from `composite/MtoULiveLink/unreal`, then compiled and linked both
+  modules from that independently copyable component root.
 - Unreal Automation: all 9 `MtoULiveLink` tests passed, including frame/init
   validation, hierarchy comparison, packet handling, world offset, bind errors,
   idempotent shutdown, and socket flow.

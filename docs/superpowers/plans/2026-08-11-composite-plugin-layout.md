@@ -1,6 +1,6 @@
 # Composite Plugin Layout Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a governed `composite/` repository category and migrate MtoU_LiveLink into independently copyable Maya and Unreal component roots without changing its runtime behavior or CLI packaging contracts.
 
@@ -37,7 +37,7 @@
 - Consumes: repository root `ROOT` and PascalCase project name validation.
 - Produces: `resolve_component(label: str, candidates: tuple[Path, ...]) -> Path`, `maya_tool_path(name: str) -> Path`, and `unreal_plugin_path(name: str) -> Path`.
 
-- [ ] **Step 1: Write failing resolver and location tests**
+- [x] **Step 1: Write failing resolver and location tests**
 
 Add imports for `_repo_tools` and `package_unreal_plugin`, then add tests equivalent to:
 
@@ -63,7 +63,7 @@ def test_mtou_components_resolve_from_composite_project(self):
     )
 ```
 
-- [ ] **Step 2: Run the targeted tests and verify RED**
+- [x] **Step 2: Run the targeted tests and verify RED**
 
 Run:
 
@@ -73,11 +73,11 @@ python -m unittest tests.test_repository_tools.RepositoryToolTests.test_componen
 
 Expected: errors because the three resolver functions do not exist.
 
-- [ ] **Step 3: Move both component roots with Git history**
+- [x] **Step 3: Move both component roots with Git history**
 
 Create the two lowercase host parent directories and use `git mv` for the complete existing component directories. Confirm the old roots are absent and each destination contains its existing README pair, changelog, license, runtime source, tests, and descriptor where applicable.
 
-- [ ] **Step 4: Implement exact-one component resolution**
+- [x] **Step 4: Implement exact-one component resolution**
 
 Add this behavior to `tools/_repo_tools.py`:
 
@@ -108,7 +108,7 @@ def unreal_plugin_path(name: str) -> Path:
 
 Make the Maya packager call `maya_tool_path(name)`. Make the Unreal packager call `unreal_plugin_path(plugin_name)` and report a descriptor error using the resolved repository-relative location.
 
-- [ ] **Step 5: Run resolver and packaging tests and verify GREEN**
+- [x] **Step 5: Run resolver and packaging tests and verify GREEN**
 
 Run:
 
@@ -120,7 +120,7 @@ python tools/package_unreal_plugin.py MtoULiveLink --engine 5.7 --json
 
 Expected: all repository-tool tests pass; both dry-runs report `ok: true`, unchanged archive versions, and non-zero file counts.
 
-- [ ] **Step 6: Commit the component move and resolver behavior**
+- [x] **Step 6: Commit the component move and resolver behavior**
 
 ```powershell
 git add tools tests composite/MtoULiveLink maya/tools/MtoULiveLink unreal/Plugins/MtoULiveLink
@@ -142,7 +142,7 @@ git commit -m "refactor(mtou): move components into composite layout"
 - Consumes: `maya_version(project: Path) -> str` and host component roots created in Task 1.
 - Produces: `_validate_maya_project(project: Path, errors: list[str], root: Path) -> None`, `_validate_unreal_plugin(plugin: Path, errors: list[str], root: Path) -> None`, `_validate_composite(root: Path, errors: list[str]) -> None`, and `_validate_nested_git(root: Path, errors: list[str]) -> None`.
 
-- [ ] **Step 1: Write failing composite and worktree tests**
+- [x] **Step 1: Write failing composite and worktree tests**
 
 Add a temporary composite fixture that lacks root metadata, invoke `_validate_composite`, and assert errors for `README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE`. Add another temporary fixture with a nested `.git` file and a nested `.git` directory, invoke `_validate_nested_git`, and assert only the directory is reported.
 
@@ -161,23 +161,23 @@ def test_git_worktree_file_is_not_a_nested_repository(self):
         self.assertEqual(["nested Git repository: vendor/.git"], errors)
 ```
 
-- [ ] **Step 2: Run the targeted tests and verify RED**
+- [x] **Step 2: Run the targeted tests and verify RED**
 
 Run the new test methods directly with `python -m unittest ... -v`.
 
 Expected: errors because `_validate_composite` and `_validate_nested_git` do not exist.
 
-- [ ] **Step 3: Add composite governance and product metadata**
+- [x] **Step 3: Add composite governance and product metadata**
 
 `composite/AGENTS.md` must require independently installable host roots, lowercase host directory names, PascalCase project/component names, paired READMEs, and no implicit cross-host filesystem dependency. The bilingual product READMEs must describe supported Maya 2022.4 and stock UE 5.7.4, show the exact component copy destinations, and link to both component READMEs. The product changelog records the layout migration; the product license matches the repository license.
 
-- [ ] **Step 4: Extract reusable host validators and add composite validation**
+- [x] **Step 4: Extract reusable host validators and add composite validation**
 
 Refactor current Maya and Unreal loops into the interfaces above. Validate every direct child of `composite/` as PascalCase with four root metadata files and at least two lowercase host directories. For `maya/<ProjectName>` call `_validate_maya_project`; for `unreal/<PluginName>` call `_validate_unreal_plugin`. Add `composite/AGENTS.md` to `REQUIRED_PATHS`.
 
 `_validate_nested_git` must report nested `.git` directories only; a `.git` file is a registered worktree marker, not a nested repository.
 
-- [ ] **Step 5: Run tests and structural validation**
+- [x] **Step 5: Run tests and structural validation**
 
 ```powershell
 python -m unittest tests.test_repository_tools -v
@@ -186,7 +186,7 @@ python tools/validate_repository.py --json
 
 Expected: all tests pass and the validator returns `ok: true` without treating `.worktrees/mtou-livelink/.git` as a nested repository.
 
-- [ ] **Step 6: Commit validation and governance**
+- [x] **Step 6: Commit validation and governance**
 
 ```powershell
 git add composite tools/validate_repository.py tests/test_repository_tools.py
@@ -215,7 +215,7 @@ git commit -m "feat(repo): validate composite plugins"
 - Consumes: composite roots and packaging/validation behavior from Tasks 1-2.
 - Produces: ToolsLab external plugin discovery and one consistent current documentation model.
 
-- [ ] **Step 1: Add ToolsLab external plugin discovery**
+- [x] **Step 1: Add ToolsLab external plugin discovery**
 
 Keep the existing enabled plugin entry and add exactly:
 
@@ -227,15 +227,15 @@ Keep the existing enabled plugin entry and add exactly:
 
 Validate the JSON immediately with `python -m json.tool unreal/ToolsLab.uproject`.
 
-- [ ] **Step 2: Update repository governance and indexes**
+- [x] **Step 2: Update repository governance and indexes**
 
 Document `composite/<ProjectName>/<host>/<ComponentName>/` in root governance, workspace, naming, development, host-specific, and release documents. List MtoU_LiveLink once in both root READMEs and link to the composite bilingual README. Add an Unreleased changelog entry for the migration.
 
-- [ ] **Step 3: Update active MtoU path references**
+- [x] **Step 3: Update active MtoU path references**
 
 In the current MtoU design, implementation plan, and stock acceptance record, replace active references to the old Maya and Unreal roots with the new composite component roots. Keep the two old roots only in the approved migration design section that explicitly says they are pre-migration paths that must be absent.
 
-- [ ] **Step 4: Scan documentation and verify tooling**
+- [x] **Step 4: Scan documentation and verify tooling**
 
 ```powershell
 rg -n "maya/tools/MtoULiveLink|unreal/Plugins/MtoULiveLink" AGENTS.md README.md README_CN.md CHANGELOG.md docs composite unreal/ToolsLab.uproject -g "*.md" -g "*.uproject"
@@ -248,7 +248,7 @@ python tools/package_unreal_plugin.py MtoULiveLink --engine 5.7 --json
 Expected: only explicit migration instructions in the approved composite design
 and this implementation plan match; all commands pass.
 
-- [ ] **Step 5: Commit documentation and ToolsLab discovery**
+- [x] **Step 5: Commit documentation and ToolsLab discovery**
 
 ```powershell
 git add AGENTS.md README.md README_CN.md CHANGELOG.md docs composite unreal/ToolsLab.uproject
@@ -266,7 +266,7 @@ git commit -m "docs(mtou): document composite installation layout"
 - Consumes: the completed migration and local stock Maya/Unreal installations.
 - Produces: verified stock-host acceptance evidence and a clean Git working tree.
 
-- [ ] **Step 1: Run Maya 2022.4 tests and Ruff**
+- [x] **Step 1: Run Maya 2022.4 tests and Ruff**
 
 ```powershell
 $maya_root = '<Maya-2022.4-install-root>'
@@ -276,7 +276,7 @@ ruff check composite/MtoULiveLink/maya/MtoULiveLink/scripts composite/MtoULiveLi
 
 Expected: all 15 Maya tests pass and Ruff reports no errors.
 
-- [ ] **Step 2: Run stock UE 5.7.4 build**
+- [x] **Step 2: Run stock UE 5.7.4 build**
 
 ```powershell
 $ue_root = '<stock-UE-5.7.4-install-root>'
@@ -285,7 +285,7 @@ $ue_root = '<stock-UE-5.7.4-install-root>'
 
 Expected: UnrealBuildTool discovers the external plugin directory, compiles or validates both MtoULiveLink modules, and exits successfully.
 
-- [ ] **Step 3: Run all MtoULiveLink Automation tests**
+- [x] **Step 3: Run all MtoULiveLink Automation tests**
 
 ```powershell
 & "$ue_root\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "$PWD\unreal\ToolsLab.uproject" -unattended -nop4 -nosplash -NullRHI -DDC-ForceMemoryCache -ExecCmds='Automation RunTests MtoULiveLink;Quit' -TestExit='Automation Test Queue Empty'
@@ -293,7 +293,7 @@ Expected: UnrealBuildTool discovers the external plugin directory, compiles or v
 
 Expected: all 9 Automation tests pass.
 
-- [ ] **Step 4: Restore ignored/test-mutated project state and run final checks**
+- [x] **Step 4: Restore ignored/test-mutated project state and run final checks**
 
 Restore only UE config files changed by the Automation run, confirm generated outputs remain ignored, then run:
 
@@ -306,7 +306,7 @@ git diff --check
 
 Expected: tests and validation pass, `git diff --check` is empty, and status contains only intentional migration changes before the final commit.
 
-- [ ] **Step 5: Commit the verified migration closeout**
+- [x] **Step 5: Commit the verified migration closeout**
 
 ```powershell
 git add -A
