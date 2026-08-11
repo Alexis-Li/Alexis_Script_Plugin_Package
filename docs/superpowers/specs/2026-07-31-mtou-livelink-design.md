@@ -1,7 +1,7 @@
 # MtoU_LiveLink Design
 
 Date: 2026-07-31
-Status: Approved design; implementation not started
+Status: Implemented; stock-engine production acceptance completed 2026-08-11
 
 ## Summary
 
@@ -191,10 +191,16 @@ successfully linked.
 ### BlendShapes
 
 The sender discovers BlendShape deformers affecting meshes skinned to the
-selected skeleton. It sends aliases and evaluated weights. Unreal applies a
-curve only when the selected Skeletal Mesh contains a Morph Target with the
-same name. A missing Morph Target is reported but does not invalidate an
-otherwise matching skeleton.
+selected skeleton. Multiple deformers may use the same alias on different mesh
+parts, matching Unreal's FBX behavior of combining same-named shapes into one
+Morph Target. The sender therefore groups those plugs by alias and publishes
+one Live Link curve value per unique alias. Every plug in a group must evaluate
+to the same value within an absolute tolerance of `1e-6`; a conflict stops
+sampling with an actionable error instead of choosing or overwriting a value.
+
+Unreal applies a curve only when the selected Skeletal Mesh contains a Morph
+Target with the same name. A missing Morph Target is reported but does not
+invalidate an otherwise matching skeleton.
 
 ### Sampling and handoff
 
@@ -399,9 +405,10 @@ Development-only automation tests cover:
 10. Attempt a link with an intentionally wrong Skeletal Mesh and confirm that
     the pose is refused with explicit hierarchy differences.
 
-The same compilation and acceptance checks must be repeated against the user's
-third-party-modified UE 5.7 installation before compatibility with that engine
-is reported.
+Compatibility is claimed only for stock Unreal Editor 5.7.4. The user's
+third-party-modified UE 5.7 installation was explicitly excluded from the
+2026-08-11 acceptance scope; it must pass the same checks before compatibility
+with that engine is reported.
 
 ## Documentation and Packaging
 

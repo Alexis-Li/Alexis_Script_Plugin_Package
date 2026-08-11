@@ -3,5 +3,10 @@
   "EngineAssociation": "5.7",
   "Category": "Tools",
   "Description": "Host project for validating standalone art-tool plugins.",
-  "Plugins": []
+  "Plugins": [
+    {
+      "Name": "MtoULiveLink",
+      "Enabled": true
+    }
+  ]
 }

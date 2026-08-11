@@ -5,6 +5,7 @@ tools and plugins maintain their own changelogs.
 
 ## Unreleased
 
+- Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.
 - Establish the Maya and Unreal Engine monorepo workspace.
 - Add repository validation, project creation, packaging, and version tools.
 - Use PascalCase for Maya project directories and user-run tool files.

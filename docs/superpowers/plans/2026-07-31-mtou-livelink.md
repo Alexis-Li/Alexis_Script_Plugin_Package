@@ -431,14 +431,17 @@ def _discover_curve_plugs(bone_paths):
                 curves.append({"name": alias, "plug": deformer + "." + attribute,
                                "sort": (deformer, int(match.group(1)))})
     curves.sort(key=lambda curve: curve["sort"])
-    names = [curve["name"] for curve in curves]
-    counts = {}
-    for name in names:
-        counts[name] = counts.get(name, 0) + 1
-    duplicates = sorted(name for name, count in counts.items() if count > 1)
-    if duplicates:
-        raise ValueError("duplicate BlendShape aliases: {0}".format(", ".join(duplicates)))
-    return curves
+    grouped = []
+    by_name = {}
+    for curve in curves:
+        group = by_name.get(curve["name"])
+        if group is None:
+            group = {"name": curve["name"], "plugs": [],
+                     "sort": curve["sort"]}
+            by_name[curve["name"]] = group
+            grouped.append(group)
+        group["plugs"].append(curve["plug"])
+    return grouped
 
 
 def _capture_subject():
@@ -468,12 +471,19 @@ def _sample_pose(subject):
         if bone["parent"] >= 0:
             matrix = matrix * world_matrices[bone["parent"]].inverse()
         transforms.append(_sample_matrix(matrix, subject["unit_scale"]))
-    curves = [float(cmds.getAttr(curve["plug"])) for curve in subject["curves"]]
+    curves = []
+    for curve in subject["curves"]:
+        values = [float(cmds.getAttr(plug)) for plug in curve["plugs"]]
+        reference = values[0]
+        if any(abs(value - reference) > 1.0e-6 for value in values[1:]):
+            raise ValueError("conflicting values for BlendShape alias {0}".format(
+                curve["name"]))
+        curves.append(reference)
     make_frame_message(transforms, curves)
     return transforms, curves
 ```
 
-The `child_world * parent_world.inverse()` multiplication order is Maya's evaluated local transform and includes `jointOrient`, constraints, IK, controllers, and upstream groups without transmitting those nodes.
+The `child_world * parent_world.inverse()` multiplication order is Maya's evaluated local transform and includes `jointOrient`, constraints, IK, controllers, and upstream groups without transmitting those nodes. Same-named aliases on separate skinned mesh parts are grouped to match FBX/Unreal Morph Target identity; disagreeing values are rejected instead of being chosen arbitrarily.
 
 - [ ] **Step 4: Run the host test under Maya 2022 mayapy**
 
@@ -853,7 +863,7 @@ Run:
 
 ```powershell
 $ue_root = (Get-ItemProperty 'HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7').InstalledDirectory
-& "$ue_root\Engine\Build\BatchFiles\Build.bat" ToolsLabEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
+& "$ue_root\Engine\Build\BatchFiles\Build.bat" UnrealEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
 & "$ue_root\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "$PWD\unreal\ToolsLab.uproject" -unattended -nop4 -nosplash -NullRHI -ExecCmds="Automation RunTests MtoULiveLink.Protocol;Quit" -TestExit="Automation Test Queue Empty"
 ```
 
@@ -1005,7 +1015,7 @@ The worker exclusively owns `FSocket* ListenSocket` and `FSocket* ClientSocket`.
 
 - [ ] **Step 2: Implement loopback-only socket lifecycle**
 
-Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the configured port, create `NAME_Stream`, enable reuse, bind, listen with backlog `1`, and set non-blocking. The worker loop must:
+Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the configured port, create `NAME_Stream`, require exclusive port ownership without address reuse, bind, listen with backlog `1`, and set non-blocking. The worker loop must:
 
 1. Accept a client when none exists.
 2. While one exists, accept any second pending socket only to send `{"type":"error","message":"MtoU_LiveLink already has a Maya client."}` and close it.
@@ -1015,7 +1025,7 @@ Create the address through `ISocketSubsystem`, set IP to `127.0.0.1`, set the co
 6. Sleep no more than 5 ms when no socket did work.
 7. On `Stop`, leave the loop, close both sockets on the worker, and return; `StopListener` joins the thread and resets it.
 
-Port `0` is allowed only through the internal constructor for the clean-shutdown automation test; production always uses `54321`.
+Port `0` is allowed only for automation tests; production always uses `54321`.
 
 - [ ] **Step 3: Validate every placed binding on the game thread**
 
@@ -1213,7 +1223,7 @@ git commit -m "docs: document MtoU Live Link"
 - Consumes: the complete Maya tool, Unreal plugin, existing FBX-imported Skeletal Mesh, and production Maya rig.
 - Produces: evidence for the stock UE 5.7.4 support claim; no compatibility claim for the modified engine until repeated there.
 
-- [ ] **Step 1: Confirm exact host versions**
+- [x] **Step 1: Confirm exact host versions**
 
 ```powershell
 $ue_root = (Get-ItemProperty 'HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7').InstalledDirectory
@@ -1224,19 +1234,19 @@ $maya_root = (Get-ItemProperty 'HKLM:\SOFTWARE\Autodesk\Maya\2022\Setup\InstallP
 
 Expected: UE `5.7.4` build `51494982` and Python `3.7.7` from Maya 2022.4.
 
-- [ ] **Step 2: Run the complete automated verification chain**
+- [x] **Step 2: Run the complete automated verification chain**
 
 ```powershell
 & "$maya_root\bin\mayapy.exe" -m unittest discover -s maya/tools/MtoULiveLink/tests -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
-& "$ue_root\Engine\Build\BatchFiles\Build.bat" ToolsLabEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
+& "$ue_root\Engine\Build\BatchFiles\Build.bat" UnrealEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE
 & "$ue_root\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "$PWD\unreal\ToolsLab.uproject" -unattended -nop4 -nosplash -NullRHI -ExecCmds="Automation RunTests MtoULiveLink;Quit" -TestExit="Automation Test Queue Empty"
 ```
 
 Expected: every command exits `0`, both modules compile without a new warning, and all Maya/Unreal tests pass.
 
-- [ ] **Step 3: Run the end-to-end production-rig acceptance**
+- [x] **Step 3: Run the end-to-end production-rig acceptance**
 
 Use the unchanged FBX workflow to supply the existing Skeletal Mesh, place the binding actor at a non-zero transform, connect the referenced/proxy Maya rig, and record:
 
@@ -1250,11 +1260,14 @@ Use the unchanged FBX workflow to supply the existing Skeletal Mesh, place the b
 - a second Maya client rejected cleanly;
 - no Animation Sequence, binding mutation, Skeletal Mesh mutation, or other project-content write.
 
-- [ ] **Step 4: Repeat the build and acceptance checks on the modified UE 5.7 installation**
+- [x] **Step 4: Record the modified UE 5.7 installation as out of scope**
 
-Set a task-specific `$modified_ue_root` to that installation and rerun Steps 2–3 with its `Build.bat` and `UnrealEditor-Cmd.exe`. Only after both pass may its compatibility be added to the README.
+Per the 2026-08-11 acceptance direction, do not validate or claim compatibility
+with the third-party-modified UE 5.7 installation. Only stock Unreal Editor
+5.7.4 is in scope. If that scope changes, rerun Steps 2–3 against the modified
+installation before changing the README claim.
 
-- [ ] **Step 5: Final residue and documentation check**
+- [x] **Step 5: Final residue and documentation check**
 
 ```powershell
 git status --short
@@ -1263,3 +1276,8 @@ python tools/validate_repository.py
 ```
 
 Expected: only intended source/documentation changes are visible; no Unreal generated folder, Maya cache, archive, user binding asset, or machine-specific absolute path is tracked. If verification exposed defects, fix them in the owning task and rerun the narrow test before this full chain; otherwise make no verification-only commit.
+
+Outcome: completed on 2026-08-11. See
+[`docs/mtou-livelink-stock-acceptance-2026-08-11.md`](../../mtou-livelink-stock-acceptance-2026-08-11.md)
+for the stock-engine evidence and bounded warnings. The feature branch remains
+unmerged pending the user's later integration decision.

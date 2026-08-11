@@ -1,0 +1,31 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "MtoU_LiveLink",
+  "Description": "Streams evaluated Maya character animation into Unreal Live Link.",
+  "Category": "Animation",
+  "CanContainContent": false,
+  "Modules": [
+    {
+      "Name": "MtoULiveLink",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": ["Win64"],
+      "TargetAllowList": ["Editor"]
+    },
+    {
+      "Name": "MtoULiveLinkEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": ["Win64"],
+      "TargetAllowList": ["Editor"]
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "LiveLink",
+      "Enabled": true
+    }
+  ]
+}
