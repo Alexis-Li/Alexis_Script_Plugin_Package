@@ -37,3 +37,12 @@ The root English and Chinese READMEs explain the repository, list its tools,
 link documentation, and show how to start development. Project READMEs contain
 only an introduction, supported versions, installation, and usage;
 development and repository-maintenance details belong in `docs/` or `AGENTS.md`.
+
+## Project development history
+
+Completed projects archive durable architecture, migration, and acceptance
+records under `docs/project-history/<project-name>/`. Each project history has
+a `README.md` timeline and stable purpose-based document names. Temporary
+implementation plans are removed after their lasting decisions are integrated
+into current documentation, repository rules, or the project history. Normative
+rules remain in `AGENTS.md` and are linked rather than copied into history.

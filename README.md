@@ -34,6 +34,7 @@ implementation cannot support both.
 - [Maya development rules](docs/maya-development.md)
 - [Naming conventions](docs/naming-conventions.md)
 - [Release process](docs/release-process.md)
+- [Project development history](docs/project-history/README.md)
 
 ## Start Developing
 

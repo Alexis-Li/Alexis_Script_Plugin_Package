@@ -1,4 +1,4 @@
-# MtoU_LiveLink Design
+# MtoU_LiveLink Architecture
 
 Date: 2026-07-31
 Status: Implemented; stock-engine production acceptance completed 2026-08-11
@@ -95,8 +95,9 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both projects use version `0.1.0` initially and own matching English and Chinese
-READMEs, a changelog, license, and project tests.
+Both components share product version `0.1.0`. The composite project root owns
+the matching English and Chinese READMEs, changelog, and license; host-specific
+tests stay beside the implementation they exercise.
 
 ## Architecture
 
@@ -412,9 +413,10 @@ with that engine is reported.
 
 ## Documentation and Packaging
 
-Each side includes matching English and Chinese README content limited to an
-introduction, supported versions, installation, and usage. Internal protocol,
-development, and test details remain in project development documentation.
+The composite project includes matching English and Chinese README content
+limited to an introduction, supported versions, installation, and usage.
+Internal protocol, development, and test details remain in this project history
+and beside the implementation where appropriate.
 
 The Maya and Unreal components are independently packageable with the existing
 repository tools. Generated archives and Unreal build output remain untracked.

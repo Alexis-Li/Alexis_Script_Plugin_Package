@@ -21,6 +21,8 @@ testable, versioned, and packageable.
 - `templates/`: project templates
 - `tools/`: repository-level validation and packaging scripts
 - `docs/`: shared development documentation
+- `docs/project-history/<project-name>/`: stable architecture, migration, and
+  acceptance history for completed projects
 
 ## General Rules
 
@@ -41,6 +43,9 @@ testable, versioned, and packageable.
   usage. Put development rules and internal details in `AGENTS.md` or `docs/`.
 - Keep platform-specific development and naming rules in the nearest platform
   `AGENTS.md`.
+- After a project is complete, integrate durable design and acceptance records
+  under `docs/project-history/<project-name>/` with stable purpose-based names.
+  Do not retain completed implementation plans as active documentation.
 
 ## Naming Conventions
 

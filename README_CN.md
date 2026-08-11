@@ -31,6 +31,7 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
 - [Maya 开发规则](docs/maya-development.md)
 - [命名规范](docs/naming-conventions.md)
 - [发布流程](docs/release-process.md)
+- [项目开发历史](docs/project-history/README.md)
 
 ## 开始开发
 

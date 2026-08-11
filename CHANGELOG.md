@@ -10,6 +10,8 @@ one changelog at the composite project root.
   installable Maya and Unreal component roots.
 - Standardize composite metadata ownership at the project root while preserving
   the existing standalone Maya and Unreal project contracts.
+- Replace temporary agent implementation plans with a stable per-project
+  development-history archive.
 - Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.
 - Establish the Maya and Unreal Engine monorepo workspace.
 - Add repository validation, project creation, packaging, and version tools.

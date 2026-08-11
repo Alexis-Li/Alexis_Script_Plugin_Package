@@ -18,6 +18,7 @@ REQUIRED_PATHS = (
     "docs/maya-development.md",
     "docs/unreal-development.md",
     "docs/release-process.md",
+    "docs/project-history/README.md",
     "maya/AGENTS.md",
     "maya/scripts",
     "maya/tools",
