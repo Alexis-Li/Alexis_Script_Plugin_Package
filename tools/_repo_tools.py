@@ -6,14 +6,11 @@ import json
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$")
 KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
-MAYA_VERSION_RE = re.compile(
-    r'((?:__version__|PLUGIN_VERSION)\s*=\s*["\'])' r'([^"\']+)(["\'])'
-)
+MAYA_VERSION_RE = re.compile(r'((?:__version__|PLUGIN_VERSION)\s*=\s*["\'])' r'([^"\']+)(["\'])')
 
 
 def emit(payload: dict, as_json: bool) -> None:

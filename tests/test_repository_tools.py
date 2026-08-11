@@ -1,8 +1,9 @@
+# ruff: noqa: E402
+
 import pathlib
 import sys
 import tempfile
 import unittest
-
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -70,9 +71,7 @@ class RepositoryToolTests(unittest.TestCase):
         )
 
     def test_composite_mtou_packages_can_be_previewed(self):
-        maya_result = package_maya_tool.package(
-            "MtoULiveLink", ROOT / "releases", apply=False
-        )
+        maya_result = package_maya_tool.package("MtoULiveLink", ROOT / "releases", apply=False)
         unreal_result = package_unreal_plugin.package(
             "MtoULiveLink", "5.7", ROOT / "releases", apply=False
         )
@@ -113,12 +112,7 @@ class RepositoryToolTests(unittest.TestCase):
 
     def test_version_update_defaults_to_preview(self):
         runtime_file = (
-            ROOT
-            / "maya"
-            / "tools"
-            / "FlattenMeshToUV"
-            / "plug-ins"
-            / "FlattenMeshToUV.py"
+            ROOT / "maya" / "tools" / "FlattenMeshToUV" / "plug-ins" / "FlattenMeshToUV.py"
         )
         before = runtime_file.read_text(encoding="utf-8")
         result = update_versions.update("maya", "FlattenMeshToUV", "2.0.2", apply=False)

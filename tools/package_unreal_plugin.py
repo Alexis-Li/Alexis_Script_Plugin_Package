@@ -9,7 +9,6 @@ from pathlib import Path
 
 from _repo_tools import ROOT, emit, unreal_plugin_path
 
-
 EXCLUDED_DIRS = {"Binaries", "DerivedDataCache", "Intermediate", "Saved", ".vs", ".git"}
 
 
@@ -18,14 +17,13 @@ def package(plugin_name: str, engine: str, output_dir: Path, apply: bool = False
     descriptor = project / (plugin_name + ".uplugin")
     if not descriptor.is_file():
         raise ValueError(
-            "missing plugin descriptor: {0}".format(
-                descriptor.relative_to(ROOT).as_posix()
-            )
+            "missing plugin descriptor: {0}".format(descriptor.relative_to(ROOT).as_posix())
         )
     metadata = json.loads(descriptor.read_text(encoding="utf-8-sig"))
     version = str(metadata.get("VersionName") or "0.0.0")
     files = [
-        path for path in project.rglob("*")
+        path
+        for path in project.rglob("*")
         if path.is_file() and not any(part in EXCLUDED_DIRS for part in path.parts)
     ]
     archive = output_dir / "{0}-{1}-UE{2}.zip".format(plugin_name, version, engine)
@@ -41,7 +39,9 @@ def package(plugin_name: str, engine: str, output_dir: Path, apply: bool = False
     return {
         "ok": True,
         "mode": "apply" if apply else "dry-run",
-        "archive": archive.relative_to(ROOT).as_posix() if archive.is_relative_to(ROOT) else archive.name,
+        "archive": archive.relative_to(ROOT).as_posix()
+        if archive.is_relative_to(ROOT)
+        else archive.name,
         "file_count": len(files),
     }
 
@@ -51,7 +51,9 @@ def main(argv=None) -> int:
     parser.add_argument("plugin_name", help="Plugin directory and descriptor name in PascalCase.")
     parser.add_argument("--engine", default="5.7", help="Engine version used in the archive name.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "releases")
-    parser.add_argument("--apply", action="store_true", help="Write the archive; otherwise preview only.")
+    parser.add_argument(
+        "--apply", action="store_true", help="Write the archive; otherwise preview only."
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     output_dir = args.output_dir if args.output_dir.is_absolute() else ROOT / args.output_dir

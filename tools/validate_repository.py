@@ -10,7 +10,6 @@ from pathlib import Path
 
 from _repo_tools import ROOT, emit, maya_version
 
-
 REQUIRED_PATHS = (
     ".github/workflows",
     ".github/ISSUE_TEMPLATE",
@@ -59,9 +58,33 @@ FORBIDDEN_DIRS = {
     "saved",
     ".vs",
 }
-FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".sln", ".suo", ".opensdf", ".sdf", ".vc.db", ".vc.opendb", ".zip", ".7z"}
+FORBIDDEN_SUFFIXES = {
+    ".pyc",
+    ".pyo",
+    ".sln",
+    ".suo",
+    ".opensdf",
+    ".sdf",
+    ".vc.db",
+    ".vc.opendb",
+    ".zip",
+    ".7z",
+}
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
-TEXT_SUFFIXES = {".py", ".md", ".json", ".ini", ".uplugin", ".uproject", ".cs", ".cpp", ".h", ".toml", ".yml", ".yaml"}
+TEXT_SUFFIXES = {
+    ".py",
+    ".md",
+    ".json",
+    ".ini",
+    ".uplugin",
+    ".uproject",
+    ".cs",
+    ".cpp",
+    ".h",
+    ".toml",
+    ".yml",
+    ".yaml",
+}
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 HOST_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
@@ -93,7 +116,11 @@ def _version_control_paths(root: Path) -> list[Path]:
         completed = subprocess.run(command, check=True, capture_output=True)
     except (OSError, subprocess.CalledProcessError):
         return []
-    return [root / value.decode("utf-8", errors="surrogateescape") for value in completed.stdout.split(b"\0") if value]
+    return [
+        root / value.decode("utf-8", errors="surrogateescape")
+        for value in completed.stdout.split(b"\0")
+        if value
+    ]
 
 
 def _validate_json(path: Path, errors: list[str], root: Path) -> None:
@@ -129,7 +156,11 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
             if path.is_dir() and path.name.lower() not in FORBIDDEN_DIRS
         ]
         if unexpected:
-            errors.append("shelf script {0} contains directories: {1}".format(project.name, ", ".join(unexpected)))
+            errors.append(
+                "shelf script {0} contains directories: {1}".format(
+                    project.name, ", ".join(unexpected)
+                )
+            )
         source = python_files[0].read_text(encoding="utf-8-sig")
         if "def run(" not in source and "def main(" not in source:
             errors.append("shelf script {0} must expose run() or main()".format(project.name))
@@ -151,7 +182,9 @@ def _validate_maya_project(project: Path, errors: list[str], root: Path) -> None
             continue
         for runtime_file in runtime_dir.glob("*.py"):
             if not PASCAL_RE.fullmatch(runtime_file.stem):
-                errors.append("Maya runtime file must use PascalCase: {0}".format(runtime_file.name))
+                errors.append(
+                    "Maya runtime file must use PascalCase: {0}".format(runtime_file.name)
+                )
     try:
         maya_version(project)
     except (OSError, UnicodeError, ValueError) as exc:
@@ -172,7 +205,9 @@ def _validate_unreal_plugin(plugin: Path, errors: list[str], root: Path) -> None
             errors.append("Unreal plugin {0} is missing {1}".format(plugin.name, required))
     descriptors = list(plugin.glob("*.uplugin"))
     if len(descriptors) != 1:
-        errors.append("Unreal plugin {0} must contain exactly one root .uplugin".format(plugin.name))
+        errors.append(
+            "Unreal plugin {0} must contain exactly one root .uplugin".format(plugin.name)
+        )
         return
     _validate_json(descriptors[0], errors, root)
 
@@ -193,17 +228,11 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
     for project in sorted(path for path in composite_root.iterdir() if path.is_dir()):
         if not PASCAL_RE.fullmatch(project.name):
             errors.append(
-                "Composite project directory must use PascalCase: {0}".format(
-                    project.name
-                )
+                "Composite project directory must use PascalCase: {0}".format(project.name)
             )
         for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
             if not (project / required).is_file():
-                errors.append(
-                    "Composite project {0} is missing {1}".format(
-                        project.name, required
-                    )
-                )
+                errors.append("Composite project {0} is missing {1}".format(project.name, required))
         hosts = sorted(path for path in project.iterdir() if path.is_dir())
         if len(hosts) < 2:
             errors.append(
@@ -238,9 +267,7 @@ def _validate_nested_git(root: Path, errors: list[str]) -> None:
     for nested_git in root.rglob(".git"):
         if nested_git != root_git and nested_git.is_dir():
             errors.append(
-                "nested Git repository: {0}".format(
-                    nested_git.relative_to(root).as_posix()
-                )
+                "nested Git repository: {0}".format(nested_git.relative_to(root).as_posix())
             )
 
 
@@ -254,7 +281,11 @@ def validate(root: Path = ROOT) -> dict:
 
     for path in _iter_files(root):
         relative_path = path.relative_to(root).as_posix()
-        if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES and "workspace-spec.md" not in relative_path:
+        if (
+            path.is_file()
+            and path.suffix.lower() in TEXT_SUFFIXES
+            and "workspace-spec.md" not in relative_path
+        ):
             try:
                 text = path.read_text(encoding="utf-8-sig")
             except UnicodeError:

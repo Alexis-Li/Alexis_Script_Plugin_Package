@@ -38,14 +38,20 @@ def package(name: str, output_dir: Path, apply: bool = False) -> dict:
         if item.is_file():
             files.append(item)
         elif item.is_dir():
-            files.extend(path for path in item.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
+            files.extend(
+                path
+                for path in item.rglob("*")
+                if path.is_file() and "__pycache__" not in path.parts
+            )
     archive = output_dir / "{0}-{1}.zip".format(name, version)
     if apply:
         _write_archive(archive, project, sorted(files))
     return {
         "ok": True,
         "mode": "apply" if apply else "dry-run",
-        "archive": archive.relative_to(ROOT).as_posix() if archive.is_relative_to(ROOT) else archive.name,
+        "archive": archive.relative_to(ROOT).as_posix()
+        if archive.is_relative_to(ROOT)
+        else archive.name,
         "file_count": len(files),
     }
 
@@ -54,7 +60,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name", help="Maya tool directory name in PascalCase.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "releases")
-    parser.add_argument("--apply", action="store_true", help="Write the archive; otherwise preview only.")
+    parser.add_argument(
+        "--apply", action="store_true", help="Write the archive; otherwise preview only."
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     output_dir = args.output_dir if args.output_dir.is_absolute() else ROOT / args.output_dir
