@@ -84,6 +84,33 @@ class RepositoryToolTests(unittest.TestCase):
         self.assertGreater(maya_result["file_count"], 0)
         self.assertGreater(unreal_result["file_count"], 0)
 
+    def test_composite_project_requires_root_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project = root / "composite" / "SampleBridge"
+            (project / "maya").mkdir(parents=True)
+            (project / "unreal").mkdir()
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+                self.assertIn(
+                    "Composite project SampleBridge is missing {0}".format(required),
+                    errors,
+                )
+
+    def test_git_worktree_file_is_not_a_nested_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / ".git").mkdir()
+            worktree_git = root / ".worktrees" / "feature" / ".git"
+            worktree_git.parent.mkdir(parents=True)
+            worktree_git.write_text("gitdir: elsewhere", encoding="utf-8")
+            nested_git = root / "vendor" / ".git"
+            nested_git.mkdir(parents=True)
+            errors = []
+            validate_repository._validate_nested_git(root, errors)
+            self.assertEqual(["nested Git repository: vendor/.git"], errors)
+
     def test_version_update_defaults_to_preview(self):
         runtime_file = (
             ROOT

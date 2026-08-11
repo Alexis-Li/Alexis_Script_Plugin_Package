@@ -28,6 +28,7 @@ REQUIRED_PATHS = (
     "unreal/Content",
     "unreal/Source",
     "unreal/Plugins",
+    "composite/AGENTS.md",
     "templates/maya-shelf-script",
     "templates/maya-tool",
     "templates/unreal-plugin",
@@ -62,6 +63,7 @@ FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".sln", ".suo", ".opensdf", ".sdf", ".vc.d
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
 TEXT_SUFFIXES = {".py", ".md", ".json", ".ini", ".uplugin", ".uproject", ".cs", ".cpp", ".h", ".toml", ".yml", ".yaml"}
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+HOST_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 
 def _iter_files(root: Path):
@@ -133,29 +135,46 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
             errors.append("shelf script {0} must expose run() or main()".format(project.name))
 
 
+def _validate_maya_project(project: Path, errors: list[str], root: Path) -> None:
+    if not PASCAL_RE.fullmatch(project.name):
+        errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
+    for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+        if not (project / required).exists():
+            errors.append("Maya tool {0} is missing {1}".format(project.name, required))
+    if (project / "package").exists():
+        errors.append("Maya tool {0} contains obsolete package/ nesting".format(project.name))
+    runtime_dirs = [project / name for name in ("scripts", "plug-ins", "icons")]
+    if not any(path.is_dir() for path in runtime_dirs):
+        errors.append("Maya tool {0} needs scripts/, plug-ins/, or icons/".format(project.name))
+    for runtime_dir in runtime_dirs[:2]:
+        if not runtime_dir.is_dir():
+            continue
+        for runtime_file in runtime_dir.glob("*.py"):
+            if not PASCAL_RE.fullmatch(runtime_file.stem):
+                errors.append("Maya runtime file must use PascalCase: {0}".format(runtime_file.name))
+    try:
+        maya_version(project)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append("Maya tool {0}: {1}".format(project.name, exc))
+
+
 def _validate_maya_tools(root: Path, errors: list[str]) -> None:
     tools_root = root / "maya" / "tools"
     for project in sorted(path for path in tools_root.iterdir() if path.is_dir()):
-        if not PASCAL_RE.fullmatch(project.name):
-            errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
-        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
-            if not (project / required).exists():
-                errors.append("Maya tool {0} is missing {1}".format(project.name, required))
-        if (project / "package").exists():
-            errors.append("Maya tool {0} contains obsolete package/ nesting".format(project.name))
-        runtime_dirs = [project / name for name in ("scripts", "plug-ins", "icons")]
-        if not any(path.is_dir() for path in runtime_dirs):
-            errors.append("Maya tool {0} needs scripts/, plug-ins/, or icons/".format(project.name))
-        for runtime_dir in runtime_dirs[:2]:
-            if not runtime_dir.is_dir():
-                continue
-            for runtime_file in runtime_dir.glob("*.py"):
-                if not PASCAL_RE.fullmatch(runtime_file.stem):
-                    errors.append("Maya runtime file must use PascalCase: {0}".format(runtime_file.name))
-        try:
-            maya_version(project)
-        except (OSError, UnicodeError, ValueError) as exc:
-            errors.append("Maya tool {0}: {1}".format(project.name, exc))
+        _validate_maya_project(project, errors, root)
+
+
+def _validate_unreal_plugin(plugin: Path, errors: list[str], root: Path) -> None:
+    if not PASCAL_RE.fullmatch(plugin.name):
+        errors.append("Unreal plugin directory must use PascalCase: {0}".format(plugin.name))
+    for required in ("README.md", "README_CN.md"):
+        if not (plugin / required).is_file():
+            errors.append("Unreal plugin {0} is missing {1}".format(plugin.name, required))
+    descriptors = list(plugin.glob("*.uplugin"))
+    if len(descriptors) != 1:
+        errors.append("Unreal plugin {0} must contain exactly one root .uplugin".format(plugin.name))
+        return
+    _validate_json(descriptors[0], errors, root)
 
 
 def _validate_unreal(root: Path, errors: list[str]) -> None:
@@ -164,14 +183,65 @@ def _validate_unreal(root: Path, errors: list[str]) -> None:
         _validate_json(project_file, errors, root)
     plugins_root = root / "unreal" / "Plugins"
     for plugin in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
-        for required in ("README.md", "README_CN.md"):
-            if not (plugin / required).is_file():
-                errors.append("Unreal plugin {0} is missing {1}".format(plugin.name, required))
-        descriptors = list(plugin.glob("*.uplugin"))
-        if len(descriptors) != 1:
-            errors.append("Unreal plugin {0} must contain exactly one root .uplugin".format(plugin.name))
-            continue
-        _validate_json(descriptors[0], errors, root)
+        _validate_unreal_plugin(plugin, errors, root)
+
+
+def _validate_composite(root: Path, errors: list[str]) -> None:
+    composite_root = root / "composite"
+    if not composite_root.is_dir():
+        return
+    for project in sorted(path for path in composite_root.iterdir() if path.is_dir()):
+        if not PASCAL_RE.fullmatch(project.name):
+            errors.append(
+                "Composite project directory must use PascalCase: {0}".format(
+                    project.name
+                )
+            )
+        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+            if not (project / required).is_file():
+                errors.append(
+                    "Composite project {0} is missing {1}".format(
+                        project.name, required
+                    )
+                )
+        hosts = sorted(path for path in project.iterdir() if path.is_dir())
+        if len(hosts) < 2:
+            errors.append(
+                "Composite project {0} must contain at least two host directories".format(
+                    project.name
+                )
+            )
+        for host in hosts:
+            if not HOST_RE.fullmatch(host.name):
+                errors.append(
+                    "Composite host directory must use lowercase kebab-case: {0}/{1}".format(
+                        project.name, host.name
+                    )
+                )
+            components = sorted(path for path in host.iterdir() if path.is_dir())
+            if host.name in {"maya", "unreal"} and not components:
+                errors.append(
+                    "Composite host {0}/{1} must contain a component root".format(
+                        project.name, host.name
+                    )
+                )
+            if host.name == "maya":
+                for component in components:
+                    _validate_maya_project(component, errors, root)
+            elif host.name == "unreal":
+                for component in components:
+                    _validate_unreal_plugin(component, errors, root)
+
+
+def _validate_nested_git(root: Path, errors: list[str]) -> None:
+    root_git = root / ".git"
+    for nested_git in root.rglob(".git"):
+        if nested_git != root_git and nested_git.is_dir():
+            errors.append(
+                "nested Git repository: {0}".format(
+                    nested_git.relative_to(root).as_posix()
+                )
+            )
 
 
 def validate(root: Path = ROOT) -> dict:
@@ -201,10 +271,7 @@ def validate(root: Path = ROOT) -> dict:
         if path.name.lower().endswith(tuple(FORBIDDEN_SUFFIXES)):
             errors.append("version-control-visible generated file: {0}".format(relative_path))
 
-    root_git = root / ".git"
-    for nested_git in root.rglob(".git"):
-        if nested_git != root_git:
-            errors.append("nested Git repository: {0}".format(nested_git.relative_to(root).as_posix()))
+    _validate_nested_git(root, errors)
 
     if (root / "maya" / "scripts").is_dir():
         _validate_shelf_scripts(root, errors)
@@ -212,6 +279,7 @@ def validate(root: Path = ROOT) -> dict:
         _validate_maya_tools(root, errors)
     if (root / "unreal" / "Plugins").is_dir():
         _validate_unreal(root, errors)
+    _validate_composite(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}
 
