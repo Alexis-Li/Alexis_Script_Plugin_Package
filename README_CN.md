@@ -5,7 +5,8 @@
 ## 这个仓库是什么
 
 这是一个面向 3D 美术生产的 Autodesk Maya 脚本与工具合集，每个项目都可以
-独立使用；仓库同时提供独立 Unreal Engine 插件的开发工作区。
+独立使用；仓库同时提供独立 Unreal Engine 插件，以及跨多个宿主软件协作的复合
+产品开发工作区。
 
 Maya 项目优先提供可直接运行的单个 Python 文件。只有功能确实需要时，才增加
 `scripts/`、`plug-ins/`、`icons/` 或其他文件。中小型工具通过将这些文件复制到
@@ -17,16 +18,14 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
 | 工具 | 用途 | 位置 |
 | --- | --- | --- |
 | Flatten Mesh To UV | 将模型的 UV 展开结果转换为平面多边形。 | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
-| MtoU Live Link（Maya） | 将一名已求值 Maya 角色流式发送到 Unreal Live Link。 | [`maya/tools/MtoULiveLink`](maya/tools/MtoULiveLink/) |
-| MtoU Live Link（Unreal） | 通过 Live Link 接收 Maya 角色动画和曲线。 | [`unreal/Plugins/MtoULiveLink`](unreal/Plugins/MtoULiveLink/) |
+| MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，将一名已求值 Maya 角色流式发送到官方版 Unreal Live Link。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | 提供选择、拓扑、轴心、连接和循环边等多边形建模功能。 | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
 | ZiSpread | 通过交互拖动均匀分布所选环线。 | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
 
 ## 工具文档
 
 - [Flatten Mesh To UV](maya/tools/FlattenMeshToUV/README_CN.md)
-- [MtoU Live Link Maya 端](maya/tools/MtoULiveLink/README_CN.md)
-- [MtoU Live Link Unreal 端](unreal/Plugins/MtoULiveLink/README_CN.md)
+- [MtoU Live Link](composite/MtoULiveLink/README_CN.md)
 - [NitroPoly](maya/tools/NitroPoly/README_CN.md)
 - [ZiSpread](maya/scripts/ZiSpread/README_CN.md)
 - [Maya 开发规则](docs/maya-development.md)

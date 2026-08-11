@@ -5,6 +5,8 @@ tools and plugins maintain their own changelogs.
 
 ## Unreleased
 
+- Move MtoU_LiveLink into the new `composite/` category with independently
+  installable Maya and Unreal component roots.
 - Add the MtoU_LiveLink Maya sender and Unreal Live Link receiver.
 - Establish the Maya and Unreal Engine monorepo workspace.
 - Add repository validation, project creation, packaging, and version tools.

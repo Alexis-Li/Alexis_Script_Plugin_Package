@@ -65,10 +65,10 @@ and rejected cases.
 The final gate consists of:
 
 ```powershell
-mayapy -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
-ruff check maya/tools/MtoULiveLink/scripts maya/tools/MtoULiveLink/tests
+ruff check composite/MtoULiveLink/maya/MtoULiveLink/scripts composite/MtoULiveLink/maya/MtoULiveLink/tests
 Build.bat UnrealEditor Win64 Development unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE
 UnrealEditor-Cmd.exe unreal/ToolsLab.uproject -unattended -nop4 -nosplash -NullRHI -DDC-ForceMemoryCache -ExecCmds="Automation RunTests MtoULiveLink;Quit" -TestExit="Automation Test Queue Empty"
 python tools/package_maya_tool.py MtoULiveLink --json

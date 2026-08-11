@@ -90,8 +90,8 @@ The user-facing product and Unreal `FriendlyName` are `MtoU_LiveLink`.
 Technical identifiers omit the underscore to satisfy repository and Unreal
 module conventions:
 
-- Maya tool: `maya/tools/MtoULiveLink/`
-- Unreal plugin: `unreal/Plugins/MtoULiveLink/`
+- Maya tool: `composite/MtoULiveLink/maya/MtoULiveLink/`
+- Unreal plugin: `composite/MtoULiveLink/unreal/MtoULiveLink/`
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
@@ -104,7 +104,7 @@ READMEs, a changelog, license, and project tests.
 
 The Maya side is one directly runnable Python file:
 
-`maya/tools/MtoULiveLink/scripts/MtoULiveLink.py`
+`composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`
 
 It owns:
 

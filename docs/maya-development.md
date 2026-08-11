@@ -11,6 +11,11 @@ Use `maya/tools/<ToolName>/` when the tool requires plug-in registration,
 multiple functional files, resources, persistent UI, tests, installation, or a
 reusable API. Put Maya runtime folders directly under the project:
 
+A Maya component of a cross-host product instead uses
+`composite/<ProjectName>/maya/<ToolName>/` and follows the same runtime layout,
+version, packaging, and safety rules. It must remain installable without its
+sibling host source tree.
+
 ```text
 <ToolName>/
 ├─ scripts/       # optional

@@ -8,5 +8,8 @@
       "Name": "MtoULiveLink",
       "Enabled": true
     }
+  ],
+  "AdditionalPluginDirectories": [
+    "../composite/MtoULiveLink/unreal"
   ]
 }

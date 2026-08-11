@@ -16,7 +16,9 @@ Compatibility with third-party Unreal Engine 5.7 builds is not yet claimed.
 
 ## Installation
 
-1. Copy this entire plugin directory under the project's `Plugins/` directory.
+1. Copy this complete `MtoULiveLink` directory to
+   `<Project>/Plugins/MtoULiveLink/`. Confirm the descriptor is at
+   `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`.
 2. Compile the project.
 3. Enable **Live Link** and **MtoU_LiveLink**.
 4. Restart Unreal Editor.

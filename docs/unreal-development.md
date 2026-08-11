@@ -1,7 +1,9 @@
 # Unreal Engine Development
 
 Each direct child of `unreal/Plugins/` is a standalone plugin with a root
-`.uplugin` file. Runtime features belong in Runtime modules; menus, editor UI,
+`.uplugin` file. A composite Unreal component at
+`composite/<ProjectName>/unreal/<PluginName>/` follows the same standalone
+plugin contract and must not load files from sibling host directories. Runtime features belong in Runtime modules; menus, editor UI,
 asset actions, and editor utilities belong in Editor modules. Expose only
 intentional APIs from `Public/` and keep implementation details in `Private/`.
 

@@ -16,6 +16,8 @@ testable, versioned, and packageable.
 - `maya/scripts/<ToolName>/`: self-contained Maya shelf scripts
 - `maya/tools/<ToolName>/`: Maya tools and plug-ins using standard runtime folders
 - `unreal/Plugins/`: standalone Unreal Engine plugins
+- `composite/<ProjectName>/<host>/<ComponentName>/`: independently installable
+  host components that form one cross-application product
 - `templates/`: project templates
 - `tools/`: repository-level validation and packaging scripts
 - `docs/`: shared development documentation
@@ -55,6 +57,11 @@ Repository-level scripts may provide shared validation and packaging behavior.
 
 Sibling projects must not depend on each other unless the dependency is
 explicitly documented and independently packageable.
+
+Composite products group cooperating host components without merging their
+installation boundaries. Each host component must remain independently
+installable, testable, versioned, and packageable; follow `composite/AGENTS.md`
+and the nearest component rules.
 
 ## Generated Files
 

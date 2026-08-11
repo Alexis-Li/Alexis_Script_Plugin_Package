@@ -16,7 +16,8 @@ MtoULiveLink 将本机的一名 Maya 角色作为原生 Live Link 动画和曲�
 
 ## 安装方式
 
-1. 将整个插件目录复制到项目的 `Plugins/` 目录下。
+1. 将完整的 `MtoULiveLink` 目录复制到 `<Project>/Plugins/MtoULiveLink/`，并确认
+   描述文件位于 `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`。
 2. 编译项目。
 3. 启用 **Live Link** 和 **MtoU_LiveLink**。
 4. 重启 Unreal Editor。

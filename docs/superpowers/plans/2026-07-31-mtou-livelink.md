@@ -57,28 +57,28 @@ Every packet is UTF-8 JSON preceded by an unsigned 64-bit big-endian payload len
 
 ### Maya project
 
-- `maya/tools/MtoULiveLink/scripts/MtoULiveLink.py` — sole runtime file; pure protocol/conversion helpers, Maya discovery/sampling, sender thread, lifecycle, UI, and `run()`.
-- `maya/tools/MtoULiveLink/tests/test_mtou_livelink.py` — pure standard-library tests runnable under repository Python and `mayapy`.
-- `maya/tools/MtoULiveLink/tests/test_maya_host.py` — Maya-standalone sampling/discovery smoke tests; skipped outside Maya.
-- `maya/tools/MtoULiveLink/README.md` and `README_CN.md` — matching user-facing introduction, versions, installation, and usage.
-- `maya/tools/MtoULiveLink/CHANGELOG.md` and `LICENSE` — project release history and repository license copy.
+- `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py` — sole runtime file; pure protocol/conversion helpers, Maya discovery/sampling, sender thread, lifecycle, UI, and `run()`.
+- `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_mtou_livelink.py` — pure standard-library tests runnable under repository Python and `mayapy`.
+- `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_maya_host.py` — Maya-standalone sampling/discovery smoke tests; skipped outside Maya.
+- `composite/MtoULiveLink/maya/MtoULiveLink/README.md` and `README_CN.md` — matching user-facing introduction, versions, installation, and usage.
+- `composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md` and `LICENSE` — project release history and repository license copy.
 
 ### Unreal project
 
-- `unreal/Plugins/MtoULiveLink/MtoULiveLink.uplugin` — version, Win64/Editor restriction, modules, and Live Link dependency.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/MtoULiveLink.Build.cs` — Runtime module dependencies.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkBinding.h` — `UMtoULiveLinkBinding` data asset with one Skeletal Mesh reference.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkActor.h` — placed actor, Skeletal Mesh Component, binding, and read-only transient status.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkActor.cpp` — binding application and native `ULiveLinkInstance` setup.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.h/.cpp` — framing, JSON parsing, finite/count checks, hierarchy diagnostics, and Live Link data construction.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.h/.cpp` — loopback listener, one connection, worker, newest-frame handoff, actor scan, validation, and Live Link publication.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp` — idempotent source registration and shutdown.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp` — Runtime automation tests.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/MtoULiveLinkEditor.Build.cs` — Editor-only dependencies.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.h/.cpp` — binding factory and binding-to-actor factory.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkEditorModule.cpp` — one-line default Editor module implementation.
-- `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/Tests/MtoULiveLinkEditorTests.cpp` — factory automation smoke tests.
-- `unreal/Plugins/MtoULiveLink/README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE` — independently installable plugin metadata.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/MtoULiveLink.uplugin` — version, Win64/Editor restriction, modules, and Live Link dependency.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/MtoULiveLink.Build.cs` — Runtime module dependencies.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkBinding.h` — `UMtoULiveLinkBinding` data asset with one Skeletal Mesh reference.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkActor.h` — placed actor, Skeletal Mesh Component, binding, and read-only transient status.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkActor.cpp` — binding application and native `ULiveLinkInstance` setup.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.h/.cpp` — framing, JSON parsing, finite/count checks, hierarchy diagnostics, and Live Link data construction.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.h/.cpp` — loopback listener, one connection, worker, newest-frame handoff, actor scan, validation, and Live Link publication.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp` — idempotent source registration and shutdown.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp` — Runtime automation tests.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/MtoULiveLinkEditor.Build.cs` — Editor-only dependencies.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.h/.cpp` — binding factory and binding-to-actor factory.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkEditorModule.cpp` — one-line default Editor module implementation.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/Tests/MtoULiveLinkEditorTests.cpp` — factory automation smoke tests.
+- `composite/MtoULiveLink/unreal/MtoULiveLink/README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE` — independently installable plugin metadata.
 
 ### Repository integration
 
@@ -90,9 +90,9 @@ Every packet is UTF-8 JSON preceded by an unsigned 64-bit big-endian payload len
 ### Task 1: Maya pure protocol and conversion core
 
 **Files:**
-- Create from template: `maya/tools/MtoULiveLink/`
-- Modify: `maya/tools/MtoULiveLink/scripts/MtoULiveLink.py`
-- Replace test: `maya/tools/MtoULiveLink/tests/test_package_layout.py` -> `maya/tools/MtoULiveLink/tests/test_mtou_livelink.py`
+- Create from template: `composite/MtoULiveLink/maya/MtoULiveLink/`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`
+- Replace test: `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_package_layout.py` -> `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_mtou_livelink.py`
 
 **Interfaces:**
 - Consumes: Python 3.7 standard library only.
@@ -107,7 +107,7 @@ python tools/create_project.py maya-tool MtoULiveLink --json
 python tools/create_project.py maya-tool MtoULiveLink --apply --json
 ```
 
-Expected: the preview and apply results list `maya/tools/MtoULiveLink`, the runtime file, bilingual READMEs, changelog, test, and license; no `.mod` file is created.
+Expected: the preview and apply results list `composite/MtoULiveLink/maya/MtoULiveLink`, the runtime file, bilingual READMEs, changelog, test, and license; no `.mod` file is created.
 
 - [ ] **Step 2: Replace the template test with failing protocol tests**
 
@@ -172,7 +172,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-python -m unittest discover -s maya/tools/MtoULiveLink/tests -p "test_mtou_livelink.py" -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p "test_mtou_livelink.py" -v
 ```
 
 Expected: FAIL because `normalize_name` and the other protocol functions do not exist.
@@ -288,7 +288,7 @@ The basis change is Maya `(x, y, z)` to Unreal `(x, z, y)`. Because that axis sw
 Run:
 
 ```powershell
-python -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 python tools/validate_repository.py
 ```
 
@@ -297,7 +297,7 @@ Expected: both commands PASS.
 - [ ] **Step 6: Commit the pure Maya core**
 
 ```powershell
-git add maya/tools/MtoULiveLink
+git add composite/MtoULiveLink/maya/MtoULiveLink
 git commit -m "feat(maya): add MtoU Live Link protocol core"
 ```
 
@@ -306,8 +306,8 @@ git commit -m "feat(maya): add MtoU Live Link protocol core"
 ### Task 2: Maya hierarchy, BlendShape discovery, and evaluated sampling
 
 **Files:**
-- Modify: `maya/tools/MtoULiveLink/scripts/MtoULiveLink.py`
-- Create: `maya/tools/MtoULiveLink/tests/test_maya_host.py`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`
+- Create: `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_maya_host.py`
 
 **Interfaces:**
 - Consumes: Task 1's `build_hierarchy`, `centimeters_per_unit`, and `convert_transform`.
@@ -378,7 +378,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-python -m unittest discover -s maya/tools/MtoULiveLink/tests -p "test_maya_host.py" -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p "test_maya_host.py" -v
 ```
 
 Expected: one skipped test because system Python has no Maya module.
@@ -491,7 +491,7 @@ Run:
 
 ```powershell
 $maya_root = (Get-ItemProperty 'HKLM:\SOFTWARE\Autodesk\Maya\2022\Setup\InstallPath').MAYA_INSTALL_LOCATION
-& "$maya_root\bin\mayapy.exe" -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+& "$maya_root\bin\mayapy.exe" -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 ```
 
 Expected: all pure and Maya-host tests PASS; Maya reports API `20220400` if printed for diagnosis.
@@ -499,7 +499,7 @@ Expected: all pure and Maya-host tests PASS; Maya reports API `20220400` if prin
 - [ ] **Step 5: Commit evaluated Maya sampling**
 
 ```powershell
-git add maya/tools/MtoULiveLink/scripts/MtoULiveLink.py maya/tools/MtoULiveLink/tests
+git add composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py composite/MtoULiveLink/maya/MtoULiveLink/tests
 git commit -m "feat(maya): sample evaluated MtoU character data"
 ```
 
@@ -508,8 +508,8 @@ git commit -m "feat(maya): sample evaluated MtoU character data"
 ### Task 3: Maya sender worker, lifecycle, and native UI
 
 **Files:**
-- Modify: `maya/tools/MtoULiveLink/scripts/MtoULiveLink.py`
-- Modify: `maya/tools/MtoULiveLink/tests/test_mtou_livelink.py`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/tests/test_mtou_livelink.py`
 
 **Interfaces:**
 - Consumes: Task 2's captured subject and sampled pose.
@@ -679,9 +679,9 @@ Set the window's `closeCommand` to `_Controller.close`, and make a repeated `run
 Run:
 
 ```powershell
-python -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 $maya_root = (Get-ItemProperty 'HKLM:\SOFTWARE\Autodesk\Maya\2022\Setup\InstallPath').MAYA_INSTALL_LOCATION
-& "$maya_root\bin\mayapy.exe" -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+& "$maya_root\bin\mayapy.exe" -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 ```
 
 Expected: all tests PASS. In Maya 2022.4, execute `MtoULiveLink.py` twice and confirm one window exists; Connect without one selected joint reports the exact selection error and leaves no worker/callback.
@@ -689,7 +689,7 @@ Expected: all tests PASS. In Maya 2022.4, execute `MtoULiveLink.py` twice and co
 - [ ] **Step 6: Commit the complete Maya runtime behavior**
 
 ```powershell
-git add maya/tools/MtoULiveLink/scripts/MtoULiveLink.py maya/tools/MtoULiveLink/tests
+git add composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py composite/MtoULiveLink/maya/MtoULiveLink/tests
 git commit -m "feat(maya): stream evaluated MtoU poses"
 ```
 
@@ -698,16 +698,16 @@ git commit -m "feat(maya): stream evaluated MtoU poses"
 ### Task 4: Unreal plugin scaffold and protocol core
 
 **Files:**
-- Create from template: `unreal/Plugins/MtoULiveLink/`
-- Modify: `unreal/Plugins/MtoULiveLink/MtoULiveLink.uplugin`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/MtoULiveLink.Build.cs`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.h`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.cpp`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
-- Modify: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/MtoULiveLinkEditor.Build.cs`
-- Modify: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkEditorModule.cpp`
-- Delete: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Public/MtoULiveLinkEditorModule.h`
+- Create from template: `composite/MtoULiveLink/unreal/MtoULiveLink/`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/MtoULiveLink.uplugin`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/MtoULiveLink.Build.cs`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.h`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkProtocol.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/MtoULiveLinkEditor.Build.cs`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkEditorModule.cpp`
+- Delete: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Public/MtoULiveLinkEditorModule.h`
 - Modify: `unreal/ToolsLab.uproject`
 
 **Interfaces:**
@@ -872,7 +872,7 @@ Expected: both modules compile without a new warning and every `MtoULiveLink.Pro
 - [ ] **Step 7: Commit the Unreal protocol core**
 
 ```powershell
-git add unreal/Plugins/MtoULiveLink unreal/ToolsLab.uproject
+git add composite/MtoULiveLink/unreal/MtoULiveLink unreal/ToolsLab.uproject
 git commit -m "feat(unreal): add MtoU Live Link protocol core"
 ```
 
@@ -881,10 +881,10 @@ git commit -m "feat(unreal): add MtoU Live Link protocol core"
 ### Task 5: Unreal binding asset and placed actor
 
 **Files:**
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkBinding.h`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkActor.h`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkActor.cpp`
-- Modify: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkBinding.h`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Public/MtoULiveLinkActor.h`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkActor.cpp`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
 
 **Interfaces:**
 - Consumes: UE `UDataAsset`, `USkeletalMeshComponent`, and `ULiveLinkInstance`.
@@ -966,7 +966,7 @@ Expected: compile and tests PASS; no actor transform changes occur.
 - [ ] **Step 5: Commit the binding and actor**
 
 ```powershell
-git add unreal/Plugins/MtoULiveLink/Source/MtoULiveLink
+git add composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink
 git commit -m "feat(unreal): add MtoU binding actor"
 ```
 
@@ -975,10 +975,10 @@ git commit -m "feat(unreal): add MtoU binding actor"
 ### Task 6: Unreal listener, hierarchy gate, and Live Link source
 
 **Files:**
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.h`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.cpp`
-- Modify: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp`
-- Modify: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.h`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkSource.cpp`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/MtoULiveLinkModule.cpp`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink/Private/Tests/MtoULiveLinkTests.cpp`
 
 **Interfaces:**
 - Consumes: Task 4 protocol builders and Task 5 placed actors/bindings.
@@ -1076,7 +1076,7 @@ Run the stock UE build and all `MtoULiveLink` automation tests. Then open ToolsL
 - [ ] **Step 8: Commit the Runtime bridge**
 
 ```powershell
-git add unreal/Plugins/MtoULiveLink/Source/MtoULiveLink
+git add composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLink
 git commit -m "feat(unreal): publish MtoU Live Link frames"
 ```
 
@@ -1085,9 +1085,9 @@ git commit -m "feat(unreal): publish MtoU Live Link frames"
 ### Task 7: Binding creation and drag-to-level factories
 
 **Files:**
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.h`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.cpp`
-- Create: `unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor/Private/Tests/MtoULiveLinkEditorTests.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.h`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/MtoULiveLinkFactories.cpp`
+- Create: `composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor/Private/Tests/MtoULiveLinkEditorTests.cpp`
 
 **Interfaces:**
 - Consumes: `UMtoULiveLinkBinding` and `AMtoULiveLinkActor`.
@@ -1143,7 +1143,7 @@ Expected in ToolsLab:
 - [ ] **Step 5: Commit the Editor workflow**
 
 ```powershell
-git add unreal/Plugins/MtoULiveLink/Source/MtoULiveLinkEditor
+git add composite/MtoULiveLink/unreal/MtoULiveLink/Source/MtoULiveLinkEditor
 git commit -m "feat(unreal): add MtoU binding workflow"
 ```
 
@@ -1152,12 +1152,12 @@ git commit -m "feat(unreal): add MtoU binding workflow"
 ### Task 8: Bilingual docs, changelogs, index, and packaging checks
 
 **Files:**
-- Modify: `maya/tools/MtoULiveLink/README.md`
-- Modify: `maya/tools/MtoULiveLink/README_CN.md`
-- Modify: `maya/tools/MtoULiveLink/CHANGELOG.md`
-- Modify: `unreal/Plugins/MtoULiveLink/README.md`
-- Modify: `unreal/Plugins/MtoULiveLink/README_CN.md`
-- Modify: `unreal/Plugins/MtoULiveLink/CHANGELOG.md`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/README.md`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/README_CN.md`
+- Modify: `composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/README.md`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/README_CN.md`
+- Modify: `composite/MtoULiveLink/unreal/MtoULiveLink/CHANGELOG.md`
 - Modify: `README.md`
 - Modify: `README_CN.md`
 - Modify: `CHANGELOG.md`
@@ -1195,7 +1195,7 @@ Each project changelog gets `## 0.1.0` with one initial release entry describing
 - [ ] **Step 4: Run tests, repository validation, and dry-run packaging**
 
 ```powershell
-python -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
 python tools/package_maya_tool.py MtoULiveLink --json
@@ -1208,7 +1208,7 @@ Expected: tests and validator PASS; package commands report `dry-run`, version `
 - [ ] **Step 5: Commit documentation and integration metadata**
 
 ```powershell
-git add README.md README_CN.md CHANGELOG.md maya/tools/MtoULiveLink/README.md maya/tools/MtoULiveLink/README_CN.md maya/tools/MtoULiveLink/CHANGELOG.md unreal/Plugins/MtoULiveLink/README.md unreal/Plugins/MtoULiveLink/README_CN.md unreal/Plugins/MtoULiveLink/CHANGELOG.md
+git add README.md README_CN.md CHANGELOG.md composite/MtoULiveLink/maya/MtoULiveLink/README.md composite/MtoULiveLink/maya/MtoULiveLink/README_CN.md composite/MtoULiveLink/maya/MtoULiveLink/CHANGELOG.md composite/MtoULiveLink/unreal/MtoULiveLink/README.md composite/MtoULiveLink/unreal/MtoULiveLink/README_CN.md composite/MtoULiveLink/unreal/MtoULiveLink/CHANGELOG.md
 git commit -m "docs: document MtoU Live Link"
 ```
 
@@ -1237,7 +1237,7 @@ Expected: UE `5.7.4` build `51494982` and Python `3.7.7` from Maya 2022.4.
 - [x] **Step 2: Run the complete automated verification chain**
 
 ```powershell
-& "$maya_root\bin\mayapy.exe" -m unittest discover -s maya/tools/MtoULiveLink/tests -v
+& "$maya_root\bin\mayapy.exe" -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
 & "$ue_root\Engine\Build\BatchFiles\Build.bat" UnrealEditor Win64 Development "$PWD\unreal\ToolsLab.uproject" -WaitMutex -NoHotReloadFromIDE

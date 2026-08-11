@@ -245,7 +245,8 @@ python tools/package_maya_tool.py MtoULiveLink --json
 python tools/package_unreal_plugin.py MtoULiveLink --engine 5.7 --json
 ```
 
-Expected: only the explicit pre-migration absence list in the approved composite design matches; all commands pass.
+Expected: only explicit migration instructions in the approved composite design
+and this implementation plan match; all commands pass.
 
 - [ ] **Step 5: Commit documentation and ToolsLab discovery**
 
