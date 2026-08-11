@@ -7,19 +7,21 @@ import json
 import zipfile
 from pathlib import Path
 
-from _repo_tools import ROOT, emit
+from _repo_tools import ROOT, emit, unreal_plugin_path
 
 
 EXCLUDED_DIRS = {"Binaries", "DerivedDataCache", "Intermediate", "Saved", ".vs", ".git"}
 
 
 def package(plugin_name: str, engine: str, output_dir: Path, apply: bool = False) -> dict:
-    if not plugin_name or not plugin_name[0].isupper() or not plugin_name.isalnum():
-        raise ValueError("plugin name must be PascalCase letters and numbers")
-    project = ROOT / "unreal" / "Plugins" / plugin_name
+    project = unreal_plugin_path(plugin_name)
     descriptor = project / (plugin_name + ".uplugin")
     if not descriptor.is_file():
-        raise ValueError("missing plugin descriptor: unreal/Plugins/{0}/{0}.uplugin".format(plugin_name))
+        raise ValueError(
+            "missing plugin descriptor: {0}".format(
+                descriptor.relative_to(ROOT).as_posix()
+            )
+        )
     metadata = json.loads(descriptor.read_text(encoding="utf-8-sig"))
     version = str(metadata.get("VersionName") or "0.0.0")
     files = [

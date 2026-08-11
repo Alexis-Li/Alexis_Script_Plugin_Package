@@ -1,13 +1,16 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import _repo_tools
 import create_project
 import package_maya_tool
+import package_unreal_plugin
 import update_versions
 import validate_repository
 
@@ -45,6 +48,41 @@ class RepositoryToolTests(unittest.TestCase):
         self.assertEqual("dry-run", result["mode"])
         self.assertEqual("releases/FlattenMeshToUV-2.0.1.zip", result["archive"])
         self.assertGreater(result["file_count"], 0)
+
+    def test_component_resolver_rejects_ambiguous_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first = root / "legacy" / "MtoULiveLink"
+            second = root / "composite" / "MtoULiveLink"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "ambiguous Maya tool"):
+                _repo_tools.resolve_component("Maya tool", (first, second))
+
+    def test_mtou_components_resolve_from_composite_project(self):
+        self.assertEqual(
+            pathlib.Path("composite/MtoULiveLink/maya/MtoULiveLink"),
+            _repo_tools.maya_tool_path("MtoULiveLink").relative_to(ROOT),
+        )
+        self.assertEqual(
+            pathlib.Path("composite/MtoULiveLink/unreal/MtoULiveLink"),
+            _repo_tools.unreal_plugin_path("MtoULiveLink").relative_to(ROOT),
+        )
+
+    def test_composite_mtou_packages_can_be_previewed(self):
+        maya_result = package_maya_tool.package(
+            "MtoULiveLink", ROOT / "releases", apply=False
+        )
+        unreal_result = package_unreal_plugin.package(
+            "MtoULiveLink", "5.7", ROOT / "releases", apply=False
+        )
+        self.assertEqual("releases/MtoULiveLink-0.1.0.zip", maya_result["archive"])
+        self.assertEqual(
+            "releases/MtoULiveLink-0.1.0-UE5.7.zip",
+            unreal_result["archive"],
+        )
+        self.assertGreater(maya_result["file_count"], 0)
+        self.assertGreater(unreal_result["file_count"], 0)
 
     def test_version_update_defaults_to_preview(self):
         runtime_file = (

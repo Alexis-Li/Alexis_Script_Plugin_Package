@@ -6,7 +6,7 @@ import argparse
 import zipfile
 from pathlib import Path
 
-from _repo_tools import ROOT, emit, maya_version, require_pascal_name
+from _repo_tools import ROOT, emit, maya_tool_path, maya_version
 
 
 def _write_archive(archive: Path, project: Path, files: list[Path]) -> None:
@@ -21,10 +21,7 @@ def _write_archive(archive: Path, project: Path, files: list[Path]) -> None:
 
 
 def package(name: str, output_dir: Path, apply: bool = False) -> dict:
-    name = require_pascal_name(name)
-    project = ROOT / "maya" / "tools" / name
-    if not project.is_dir():
-        raise ValueError("Maya tool not found")
+    project = maya_tool_path(name)
     version = maya_version(project)
     included_roots = [
         project / "scripts",

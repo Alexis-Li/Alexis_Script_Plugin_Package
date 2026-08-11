@@ -47,6 +47,45 @@ def require_semver(value: str) -> str:
     return value
 
 
+def _component_location(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.name
+
+
+def resolve_component(label: str, candidates: tuple[Path, ...]) -> Path:
+    matches = [path for path in candidates if path.is_dir()]
+    if not matches:
+        raise ValueError("{0} not found".format(label))
+    if len(matches) > 1:
+        locations = ", ".join(_component_location(path) for path in matches)
+        raise ValueError("ambiguous {0}: {1}".format(label, locations))
+    return matches[0]
+
+
+def maya_tool_path(name: str) -> Path:
+    name = require_pascal_name(name)
+    return resolve_component(
+        "Maya tool",
+        (
+            ROOT / "maya" / "tools" / name,
+            ROOT / "composite" / name / "maya" / name,
+        ),
+    )
+
+
+def unreal_plugin_path(name: str) -> Path:
+    name = require_pascal_name(name)
+    return resolve_component(
+        "Unreal plugin",
+        (
+            ROOT / "unreal" / "Plugins" / name,
+            ROOT / "composite" / name / "unreal" / name,
+        ),
+    )
+
+
 def maya_runtime_files(project: Path) -> list[Path]:
     files = []
     for directory in (project / "scripts", project / "plug-ins"):
