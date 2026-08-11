@@ -27,3 +27,7 @@ directly in Maya's Python Script Editor.
 5. Pose, play, or scrub the Maya scene.
 6. Select **Disconnect** when finished.
 7. Reconnect after topology edits or after either host restarts.
+
+Same-named BlendShapes on separate skinned mesh parts are sent as one Unreal
+curve when their evaluated values agree. If those values differ, sampling stops
+and identifies every conflicting Maya plug.

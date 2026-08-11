@@ -1,12 +1,11 @@
-import importlib.util
 import errno
+import importlib.util
 import math
 import pathlib
 import struct
 import threading
 import unittest
 from unittest import mock
-
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "MtoULiveLink.py"
 SPEC = importlib.util.spec_from_file_location("MtoULiveLink", str(SCRIPT))
@@ -369,7 +368,11 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(["root", "a", "tip", "b"], [record["name"] for record in records])
         self.assertEqual([-1, 0, 1, 0], [record["parent"] for record in records])
         with self.assertRaisesRegex(ValueError, "duplicate normalized bone names: arm"):
-            MODULE.build_hierarchy("|root", lambda path: ["|root|A:arm", "|root|B:arm"] if path == "|root" else [])
+            MODULE.build_hierarchy(
+                "|root",
+                lambda path: ["|root|A:arm", "|root|B:arm"]
+                if path == "|root" else [],
+            )
 
     def test_units_and_basis_conversion(self):
         self.assertEqual(100.0, MODULE.centimeters_per_unit("m"))

@@ -10,12 +10,12 @@ import struct
 import threading
 import time
 
-
 __version__ = "0.1.0"
 PROTOCOL_VERSION = 1
 HOST = "127.0.0.1"
 PORT = 54321
 SUBJECT_NAME = "MtoU_Character"
+CURVE_VALUE_TOLERANCE = 1.0e-6
 
 try:
     import maya.api.OpenMaya as om
@@ -144,14 +144,16 @@ def _discover_curve_plugs(bone_paths):
                 curves.append({"name": alias, "plug": deformer + "." + attribute,
                                "sort": (deformer, int(match.group(1)))})
     curves.sort(key=lambda curve: curve["sort"])
-    names = [curve["name"] for curve in curves]
-    counts = {}
-    for name in names:
-        counts[name] = counts.get(name, 0) + 1
-    duplicates = sorted(name for name, count in counts.items() if count > 1)
-    if duplicates:
-        raise ValueError("duplicate BlendShape aliases: {0}".format(", ".join(duplicates)))
-    return curves
+    grouped = []
+    by_name = {}
+    for curve in curves:
+        group = by_name.get(curve["name"])
+        if group is None:
+            group = {"name": curve["name"], "plugs": [], "sort": curve["sort"]}
+            by_name[curve["name"]] = group
+            grouped.append(group)
+        group["plugs"].append(curve["plug"])
+    return grouped
 
 
 def _capture_subject():
@@ -181,7 +183,18 @@ def _sample_pose(subject):
         if bone["parent"] >= 0:
             matrix = matrix * world_matrices[bone["parent"]].inverse()
         transforms.append(_sample_matrix(matrix, subject["unit_scale"]))
-    curves = [float(cmds.getAttr(curve["plug"])) for curve in subject["curves"]]
+    curves = []
+    for curve in subject["curves"]:
+        values = [float(cmds.getAttr(plug)) for plug in curve["plugs"]]
+        reference = values[0]
+        if any(abs(value - reference) > CURVE_VALUE_TOLERANCE
+               for value in values[1:]):
+            details = ", ".join("{0}={1}".format(plug, value)
+                                for plug, value in zip(curve["plugs"], values))
+            raise ValueError(
+                "conflicting values for BlendShape alias {0}: {1}".format(
+                    curve["name"], details))
+        curves.append(reference)
     make_frame_message(transforms, curves)
     return transforms, curves
 
