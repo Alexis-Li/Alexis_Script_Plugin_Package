@@ -93,9 +93,9 @@ class RepositoryToolTests(unittest.TestCase):
         unreal_result = package_unreal_plugin.package(
             "MtoULiveLink", "5.7", ROOT / "releases", apply=False
         )
-        self.assertEqual("releases/MtoULiveLink-0.1.0.zip", maya_result["archive"])
+        self.assertEqual("releases/MtoULiveLink-0.2.0.zip", maya_result["archive"])
         self.assertEqual(
-            "releases/MtoULiveLink-0.1.0-UE5.7.zip",
+            "releases/MtoULiveLink-0.2.0-UE5.7.zip",
             unreal_result["archive"],
         )
         self.assertGreater(maya_result["file_count"], 0)

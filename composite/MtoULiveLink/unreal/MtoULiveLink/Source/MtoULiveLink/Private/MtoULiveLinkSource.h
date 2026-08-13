@@ -57,7 +57,10 @@ public:
 private:
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void PublishLatestFrameOnGameThread();
-    void EnqueueErrorOnGameThread(const FString& Message);
+    void EnqueueErrorOnGameThread(
+        const FString& Code,
+        const FString& Message,
+        const FString& Details = FString());
     bool IsCurrentSession(uint64 SessionId) const;
     void SetStatus(const FString& InStatus);
 

@@ -2,12 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "LiveLinkTypes.h"
-
-struct FMtoUBone
-{
-    FName Name;
-    int32 ParentIndex = INDEX_NONE;
-};
+#include "MtoUConnectionNegotiator.h"
 
 struct FMtoUTransform
 {
@@ -18,7 +13,7 @@ struct FMtoUTransform
 
 struct FMtoUInitMessage
 {
-    TArray<FMtoUBone> Bones;
+    TArray<FMtoUDescriptionBone> Bones;
     TArray<FName> Curves;
 };
 
@@ -48,6 +43,7 @@ private:
 class FMtoUProtocol
 {
 public:
+    static constexpr int32 Version = 2;
     static bool ParseInit(const TArray<uint8>& Payload, FMtoUInitMessage& OutMessage, FString& OutError);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
     static bool ValidateFrame(
@@ -56,9 +52,14 @@ public:
         int32 ExpectedCurveCount,
         FString& OutError,
         bool& bOutStructuralError);
-    static FString CompareSkeletons(const TArray<FMtoUBone>& Maya, const TArray<FMtoUBone>& Unreal);
-    static TArray<uint8> EncodeReady(const TArray<FName>& MissingCurves);
-    static TArray<uint8> EncodeError(const FString& Message);
+    static TArray<uint8> EncodeReady(
+        const TArray<FName>& MissingInUnreal,
+        const TArray<FName>& MissingInMaya,
+        const TArray<FString>& BoneNameRemaps);
+    static TArray<uint8> EncodeError(
+        const FString& Code,
+        const FString& Message,
+        const FString& Details = FString());
     static FLiveLinkStaticDataStruct MakeStaticData(
         const FMtoUInitMessage& Init,
         const TArray<FName>& AcceptedCurveNames);

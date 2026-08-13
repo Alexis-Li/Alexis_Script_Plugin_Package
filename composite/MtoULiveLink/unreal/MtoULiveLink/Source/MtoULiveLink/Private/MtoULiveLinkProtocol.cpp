@@ -137,35 +137,6 @@ TArray<uint8> EncodeObject(const TSharedRef<FJsonObject>& Object)
     return Packet;
 }
 
-TMap<FName, FName> ParentMap(const TArray<FMtoUBone>& Bones)
-{
-    TMap<FName, FName> Result;
-    for (const FMtoUBone& Bone : Bones)
-    {
-        const FName Parent = Bones.IsValidIndex(Bone.ParentIndex)
-            ? Bones[Bone.ParentIndex].Name
-            : NAME_None;
-        Result.Add(Bone.Name, Parent);
-    }
-    return Result;
-}
-
-void AppendSection(FString& Diagnostic, const TCHAR* Heading, const TArray<FString>& Lines)
-{
-    Diagnostic += Heading;
-    Diagnostic += TEXT(":\n");
-    if (Lines.IsEmpty())
-    {
-        Diagnostic += TEXT("  (none)\n");
-        return;
-    }
-    for (const FString& Line : Lines)
-    {
-        Diagnostic += TEXT("  ");
-        Diagnostic += Line;
-        Diagnostic += TEXT("\n");
-    }
-}
 }
 
 void FMtoUFrameDecoder::Append(const uint8* Data, int32 Num)
@@ -227,11 +198,13 @@ bool FMtoUProtocol::ParseInit(
     }
 
     TSharedPtr<FJsonValue> VersionValue;
-    int32 Version = 0;
+    int32 MessageVersion = 0;
     if (!GetTypedField(Object, TEXT("version"), EJson::Number, VersionValue, OutError)
-        || !GetExactInt(VersionValue, Version) || Version != 1)
+        || !GetExactInt(VersionValue, MessageVersion)
+        || MessageVersion != FMtoUProtocol::Version)
     {
-        OutError = TEXT("Unsupported protocol version; expected 1.");
+        OutError = FString::Printf(
+            TEXT("Unsupported protocol version; expected %d."), FMtoUProtocol::Version);
         return false;
     }
 
@@ -248,7 +221,6 @@ bool FMtoUProtocol::ParseInit(
         return false;
     }
 
-    TSet<FName> BoneNames;
     OutMessage.Bones.Reserve(BoneValues->Num());
     for (int32 Index = 0; Index < BoneValues->Num(); ++Index)
     {
@@ -284,14 +256,7 @@ bool FMtoUProtocol::ParseInit(
             return false;
         }
 
-        const FName Name(*NameText);
-        if (BoneNames.Contains(Name))
-        {
-            OutError = FString::Printf(TEXT("Duplicate bone name: %s."), *NameText);
-            return false;
-        }
-        BoneNames.Add(Name);
-        OutMessage.Bones.Add({Name, ParentIndex});
+        OutMessage.Bones.Add({FName(*NameText), ParentIndex});
     }
 
     TSet<FName> CurveNames;
@@ -461,73 +426,45 @@ bool FMtoUProtocol::ValidateFrame(
     return true;
 }
 
-FString FMtoUProtocol::CompareSkeletons(
-    const TArray<FMtoUBone>& Maya,
-    const TArray<FMtoUBone>& Unreal)
+TArray<uint8> FMtoUProtocol::EncodeReady(
+    const TArray<FName>& MissingInUnreal,
+    const TArray<FName>& MissingInMaya,
+    const TArray<FString>& BoneNameRemaps)
 {
-    const TMap<FName, FName> MayaParents = ParentMap(Maya);
-    const TMap<FName, FName> UnrealParents = ParentMap(Unreal);
-    TArray<FString> Missing;
-    TArray<FString> Extra;
-    TArray<FString> ParentMismatches;
-
-    for (const TPair<FName, FName>& Pair : MayaParents)
+    auto EncodeNames = [](const TArray<FName>& Names)
     {
-        const FName* UnrealParent = UnrealParents.Find(Pair.Key);
-        if (!UnrealParent)
+        TArray<TSharedPtr<FJsonValue>> Values;
+        Values.Reserve(Names.Num());
+        for (const FName& Name : Names)
         {
-            Missing.Add(Pair.Key.ToString());
+            Values.Add(MakeShared<FJsonValueString>(Name.ToString()));
         }
-        else if (*UnrealParent != Pair.Value)
-        {
-            ParentMismatches.Add(FString::Printf(
-                TEXT("%s: Maya=%s, Unreal=%s"),
-                *Pair.Key.ToString(),
-                *Pair.Value.ToString(),
-                *UnrealParent->ToString()));
-        }
-    }
-    for (const TPair<FName, FName>& Pair : UnrealParents)
-    {
-        if (!MayaParents.Contains(Pair.Key))
-        {
-            Extra.Add(Pair.Key.ToString());
-        }
-    }
-    if (Missing.IsEmpty() && Extra.IsEmpty() && ParentMismatches.IsEmpty())
-    {
-        return FString();
-    }
-
-    Missing.Sort();
-    Extra.Sort();
-    ParentMismatches.Sort();
-    FString Diagnostic;
-    AppendSection(Diagnostic, TEXT("Missing in Unreal"), Missing);
-    AppendSection(Diagnostic, TEXT("Extra in Unreal"), Extra);
-    AppendSection(Diagnostic, TEXT("Parent mismatches"), ParentMismatches);
-    return Diagnostic;
-}
-
-TArray<uint8> FMtoUProtocol::EncodeReady(const TArray<FName>& MissingCurves)
-{
-    TArray<TSharedPtr<FJsonValue>> Curves;
-    Curves.Reserve(MissingCurves.Num());
-    for (const FName& Name : MissingCurves)
-    {
-        Curves.Add(MakeShared<FJsonValueString>(Name.ToString()));
-    }
+        return Values;
+    };
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("ready"));
-    Object->SetArrayField(TEXT("missing_curves"), Curves);
+    Object->SetArrayField(TEXT("missing_in_unreal"), EncodeNames(MissingInUnreal));
+    Object->SetArrayField(TEXT("missing_in_maya"), EncodeNames(MissingInMaya));
+    TArray<TSharedPtr<FJsonValue>> RemapValues;
+    RemapValues.Reserve(BoneNameRemaps.Num());
+    for (const FString& Remap : BoneNameRemaps)
+    {
+        RemapValues.Add(MakeShared<FJsonValueString>(Remap));
+    }
+    Object->SetArrayField(TEXT("bone_name_remaps"), RemapValues);
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeError(const FString& Message)
+TArray<uint8> FMtoUProtocol::EncodeError(
+    const FString& Code,
+    const FString& Message,
+    const FString& Details)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("error"));
+    Object->SetStringField(TEXT("code"), Code);
     Object->SetStringField(TEXT("message"), Message);
+    Object->SetStringField(TEXT("details"), Details.IsEmpty() ? Message : Details);
     return EncodeObject(Object);
 }
 
@@ -539,7 +476,7 @@ FLiveLinkStaticDataStruct FMtoUProtocol::MakeStaticData(
     FLiveLinkSkeletonStaticData* Skeleton = StaticData.Cast<FLiveLinkSkeletonStaticData>();
     Skeleton->BoneNames.Reserve(Init.Bones.Num());
     Skeleton->BoneParents.Reserve(Init.Bones.Num());
-    for (const FMtoUBone& Bone : Init.Bones)
+    for (const FMtoUDescriptionBone& Bone : Init.Bones)
     {
         Skeleton->BoneNames.Add(Bone.Name);
         Skeleton->BoneParents.Add(Bone.ParentIndex);

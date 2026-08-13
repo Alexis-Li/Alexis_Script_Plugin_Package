@@ -2,8 +2,9 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUConnectionNegotiator.h"
 
-#include "Algo/AllOf.h"
+#include "Animation/MorphTarget.h"
 #include "Engine/SkeletalMesh.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
@@ -57,16 +58,24 @@ bool SendPacket(FSocket& Socket, const TArray<uint8>& Packet, const TAtomic<bool
     return Offset == Packet.Num();
 }
 
-TArray<FMtoUBone> BonesFromMesh(const USkeletalMesh& Mesh)
+FMtoUTargetDescription DescribeTarget(const USkeletalMesh& Mesh)
 {
     const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-    TArray<FMtoUBone> Bones;
-    Bones.Reserve(Skeleton.GetNum());
+    FMtoUTargetDescription Target;
+    Target.Bones.Reserve(Skeleton.GetNum());
     for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
     {
-        Bones.Add({Skeleton.GetBoneName(Index), Skeleton.GetParentIndex(Index)});
+        Target.Bones.Add({Skeleton.GetBoneName(Index), Skeleton.GetParentIndex(Index)});
     }
-    return Bones;
+    Target.MorphTargetNames.Reserve(Mesh.GetMorphTargets().Num());
+    for (const TObjectPtr<UMorphTarget>& MorphTarget : Mesh.GetMorphTargets())
+    {
+        if (MorphTarget)
+        {
+            Target.MorphTargetNames.Add(MorphTarget->GetFName());
+        }
+    }
+    return Target;
 }
 
 bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
@@ -293,11 +302,14 @@ uint32 FMtoULiveLinkSource::Run()
         }
     };
 
-    auto SendErrorAndDisconnect = [&](const FString& Message)
+    auto SendErrorAndDisconnect = [&](const FString& Code, const FString& Message)
     {
         if (ClientSocket)
         {
-            SendPacket(*ClientSocket, FMtoUProtocol::EncodeError(Message), bStopRequested);
+            SendPacket(
+                *ClientSocket,
+                FMtoUProtocol::EncodeError(Code, Message),
+                bStopRequested);
         }
         MarkDisconnected();
     };
@@ -319,6 +331,7 @@ uint32 FMtoULiveLinkSource::Run()
                     SendPacket(
                         *Accepted,
                         FMtoUProtocol::EncodeError(
+                            TEXT("SECOND_CLIENT_REJECTED"),
                             TEXT("MtoU_LiveLink already has a Maya client.")),
                         bStopRequested);
                     CloseSocket(*SocketSubsystem, Accepted);
@@ -395,7 +408,7 @@ uint32 FMtoULiveLinkSource::Run()
                     }
                     if (Result == EMtoUDecodeResult::Error)
                     {
-                        SendErrorAndDisconnect(Error);
+                        SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), Error);
                         break;
                     }
 
@@ -404,7 +417,10 @@ uint32 FMtoULiveLinkSource::Run()
                         FMtoUInitMessage Init;
                         if (!FMtoUProtocol::ParseInit(Payload, Init, Error))
                         {
-                            SendErrorAndDisconnect(Error);
+                            const FString Code = Error.Contains(TEXT("protocol version"))
+                                ? TEXT("PROTOCOL_VERSION_MISMATCH")
+                                : TEXT("INVALID_MESSAGE");
+                            SendErrorAndDisconnect(Code, Error);
                             break;
                         }
                         bInitReceived = true;
@@ -415,6 +431,7 @@ uint32 FMtoULiveLinkSource::Run()
                     if (!bReady)
                     {
                         SendErrorAndDisconnect(
+                            TEXT("INVALID_MESSAGE"),
                             TEXT("A frame was received before the init message was accepted."));
                         break;
                     }
@@ -423,7 +440,7 @@ uint32 FMtoULiveLinkSource::Run()
                     bool bStructuralError = true;
                     if (!FMtoUProtocol::ParseFrame(Payload, Frame, Error))
                     {
-                        SendErrorAndDisconnect(Error);
+                        SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), Error);
                         break;
                     }
                     if (!FMtoUProtocol::ValidateFrame(
@@ -435,7 +452,7 @@ uint32 FMtoULiveLinkSource::Run()
                     {
                         if (bStructuralError)
                         {
-                            SendErrorAndDisconnect(Error);
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), Error);
                             break;
                         }
                         UE_LOG(LogMtoULiveLinkSource, Warning, TEXT("Dropped frame: %s"), *Error);
@@ -484,7 +501,22 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     if (Actors.IsEmpty())
     {
         EnqueueErrorOnGameThread(
+            TEXT("NO_BINDING_ACTOR"),
             TEXT("Place an MtoU_LiveLink binding actor in an Editor or PIE world before connecting."));
+        return;
+    }
+    if (Actors.Num() > 1)
+    {
+        TArray<FString> Names;
+        Names.Reserve(Actors.Num());
+        for (const AMtoULiveLinkActor* Actor : Actors)
+        {
+            Names.Add(Actor->GetPathName());
+        }
+        EnqueueErrorOnGameThread(
+            TEXT("MULTIPLE_BINDING_ACTORS"),
+            TEXT("Exactly one MtoU_LiveLink binding actor is required."),
+            FString::Printf(TEXT("Found %d actors:\n%s"), Actors.Num(), *FString::Join(Names, TEXT("\n"))));
         return;
     }
 
@@ -495,70 +527,55 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         Actor->SetConnectionStatus(TEXT("Validating"));
     }
 
-    TArray<FString> Errors;
-    TArray<USkeletalMesh*> Meshes;
-    Meshes.Reserve(Actors.Num());
-    for (AMtoULiveLinkActor* Actor : Actors)
+    AMtoULiveLinkActor* Actor = Actors[0];
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    if (!Binding)
     {
-        UMtoULiveLinkBinding* Binding = Actor->GetBinding();
-        if (!Binding)
-        {
-            Errors.Add(FString::Printf(
-                TEXT("%s has no MtoU_LiveLink Binding."), *Actor->GetName()));
-            continue;
-        }
-        USkeletalMesh* Mesh = Binding->SkeletalMesh;
-        if (!Mesh)
-        {
-            Errors.Add(FString::Printf(
-                TEXT("%s binding has no Skeletal Mesh."), *Actor->GetName()));
-            continue;
-        }
-        Meshes.Add(Mesh);
-        const FString Difference = FMtoUProtocol::CompareSkeletons(
-            Message.Bones, BonesFromMesh(*Mesh));
-        if (!Difference.IsEmpty())
-        {
-            Errors.Add(FString::Printf(
-                TEXT("%s skeleton differs:\n%s"), *Actor->GetName(), *Difference));
-        }
+        const FString Details = FString::Printf(
+            TEXT("%s has no MtoU_LiveLink Binding."), *Actor->GetName());
+        Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
+        EnqueueErrorOnGameThread(
+            TEXT("INVALID_BINDING"),
+            TEXT("The MtoU_LiveLink binding is invalid."),
+            Details);
+        return;
     }
-
-    if (!Errors.IsEmpty())
+    USkeletalMesh* Mesh = Binding->SkeletalMesh;
+    if (!Mesh)
     {
-        const FString Error = FString::Join(Errors, TEXT("\n"));
-        for (AMtoULiveLinkActor* Actor : Actors)
-        {
-            Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Error));
-        }
-        EnqueueErrorOnGameThread(Error);
+        const FString Details = FString::Printf(
+            TEXT("%s binding has no Skeletal Mesh."), *Actor->GetName());
+        Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
+        EnqueueErrorOnGameThread(
+            TEXT("INVALID_BINDING"),
+            TEXT("The MtoU_LiveLink binding is invalid."),
+            Details);
         return;
     }
 
-    TArray<FName> AcceptedCurveNames;
-    TArray<FName> MissingCurveNames;
-    AcceptedCurveIndices.Reset();
-    for (int32 Index = 0; Index < Message.Curves.Num(); ++Index)
+    FMtoUCharacterDescription Character;
+    Character.Bones = Message.Bones;
+    Character.CurveNames = Message.Curves;
+    FMtoUNegotiationOutcome Outcome =
+        FMtoUConnectionNegotiator::Negotiate(Character, DescribeTarget(*Mesh));
+    if (!Outcome.bUsable)
     {
-        const FName CurveName = Message.Curves[Index];
-        const bool bPresentOnEveryMesh = Algo::AllOf(Meshes, [CurveName](const USkeletalMesh* Mesh)
-        {
-            return Mesh->FindMorphTarget(CurveName) != nullptr;
-        });
-        if (bPresentOnEveryMesh)
-        {
-            AcceptedCurveIndices.Add(Index);
-            AcceptedCurveNames.Add(CurveName);
-        }
-        else
-        {
-            MissingCurveNames.Add(CurveName);
-        }
+        const FString Details = FString::Printf(
+            TEXT("%s skeleton cannot be mapped:\n%s"),
+            *Actor->GetName(),
+            *Outcome.TechnicalDetails());
+        Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
+        EnqueueErrorOnGameThread(
+            Outcome.FailureCategory,
+            TEXT("The Maya and Unreal skeletons do not match."),
+            Details);
+        return;
     }
 
     if (!Client || !SourceGuid.IsValid())
     {
-        EnqueueErrorOnGameThread(TEXT("The Unreal Live Link client is unavailable."));
+        EnqueueErrorOnGameThread(
+            TEXT("INTERNAL_ERROR"), TEXT("The Unreal Live Link client is unavailable."));
         return;
     }
     if (!IsCurrentSession(SessionId))
@@ -568,19 +585,24 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
-    for (AMtoULiveLinkActor* Actor : Actors)
+    AcceptedCurveIndices = Outcome.AcceptedCurveIndices;
+    for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
     {
-        Actor->SetConnectionStatus(TEXT("Connected"));
+        Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
     }
+    Actor->SetConnectionStatus(TEXT("Connected"));
 
     Client->PushSubjectStaticData_AnyThread(
         SubjectKey,
         ULiveLinkAnimationRole::StaticClass(),
-        FMtoUProtocol::MakeStaticData(Message, AcceptedCurveNames));
+        FMtoUProtocol::MakeStaticData(Message, Outcome.AcceptedCurveNames));
 
     FMtoUOutgoing Reply;
     Reply.SessionId = SessionId;
-    Reply.Packet = FMtoUProtocol::EncodeReady(MissingCurveNames);
+    Reply.Packet = FMtoUProtocol::EncodeReady(
+        Outcome.MayaOnlyMorphNames,
+        Outcome.UnrealOnlyMorphNames,
+        Outcome.BoneNameMappings);
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;
@@ -611,7 +633,10 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
         FMtoUProtocol::MakeFrameData(Frame->Message, AcceptedCurveIndices));
 }
 
-void FMtoULiveLinkSource::EnqueueErrorOnGameThread(const FString& Message)
+void FMtoULiveLinkSource::EnqueueErrorOnGameThread(
+    const FString& Code,
+    const FString& Message,
+    const FString& Details)
 {
     check(IsInGameThread());
     if (!IsCurrentSession(GameThreadSession))
@@ -621,7 +646,7 @@ void FMtoULiveLinkSource::EnqueueErrorOnGameThread(const FString& Message)
     SetStatus(Message);
     FMtoUOutgoing Reply;
     Reply.SessionId = GameThreadSession;
-    Reply.Packet = FMtoUProtocol::EncodeError(Message);
+    Reply.Packet = FMtoUProtocol::EncodeError(Code, Message, Details);
     Reply.bCloseAfter = true;
     OutgoingReplies.Enqueue(MoveTemp(Reply));
 }

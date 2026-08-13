@@ -31,15 +31,25 @@ Install the matching component in each host:
 
 ## Usage
 
-1. In Unreal, create an **MtoU_LiveLink Binding** in the chosen Content Browser
-   folder, assign its **Skeletal Mesh**, and drag the binding into the level.
-2. In Maya, select exactly one deformation root, run `MtoULiveLink.py`, and
-   select **Connect**.
-3. Pose, play, or scrub in Maya to drive the `MtoU_Character` Live Link subject.
-   Select **Disconnect** when finished, and reconnect after topology changes or
-   either host restarts.
+1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Skeletal Mesh**,
+   and keep exactly one binding actor in the level.
+2. In Maya, run `MtoULiveLink.py`, select exactly one deformation root, and
+   select **Set Character**. The tool finds the character's `Display_ctrl` and
+   Clothes enum; use the manual Display button if discovery is ambiguous.
+   If duplicate transmitted bone names are found, use **Select Duplicate
+   Bones** in the error dialog or main window to select every conflicting joint
+   by its full DAG path and locate it in the Outliner.
+   Duplicates do not fail immediately: Unreal maps a uniquely numeric-suffixed
+   imported bone below the already matched parent, warns on success, and rejects
+   an ambiguous mapping.
+3. Confirm the displayed outfit and scene rate, then select **Connect**. The
+   stream samples at the exact Maya scene rate from 1 through 60 fps.
+4. Pose, play, or scrub in Maya. Changing the Clothes enum disconnects the
+   session; replace the Unreal binding actor with the new outfit and reconnect.
 
 The receiver preserves each placed actor transform and does not create an
 Animation Sequence. Same-named BlendShapes on separate skinned mesh parts are
 sent as one Unreal curve when their evaluated values agree. If those values
-differ, sampling stops and identifies every conflicting Maya plug.
+differ, sampling stops and identifies every conflicting Maya plug. Maya- and
+Unreal-only BlendShape names are non-blocking warnings. Protocol version 2
+requires matching Maya and Unreal 0.2.0 components.

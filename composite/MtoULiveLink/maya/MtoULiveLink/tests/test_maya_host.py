@@ -29,6 +29,63 @@ class MayaHostTests(unittest.TestCase):
         cmds.file(new=True, force=True)
         cmds.currentUnit(linear="cm")
 
+    def _create_display(self, parent, entries="Clothes01:Clothes02"):
+        add_group = cmds.createNode("transform", name="Add_Ctrl_grp", parent=parent)
+        display_group = cmds.createNode(
+            "transform", name="Display_ctrl_grp", parent=add_group
+        )
+        display = cmds.createNode("transform", name="Display_ctrl", parent=display_group)
+        cmds.addAttr(display, longName="clothes", attributeType="enum", enumName=entries)
+        return display
+
+    def test_discovers_display_enum_and_visible_skinned_meshes(self):
+        group = cmds.createNode("transform", name="Group")
+        motion = cmds.createNode("transform", name="MotionSystem", parent=group)
+        display = self._create_display(motion)
+        geometry = cmds.createNode("transform", name="Geometry", parent=group)
+        high_mesh = cmds.createNode("transform", name="HighMesh", parent=geometry)
+        root = cmds.joint(name="root")
+        cmds.parent(root, group)
+        visible = cmds.polyCube(name="SM_C01_Clothes01")[0]
+        hidden = cmds.polyCube(name="SM_C01_Clothes02")[0]
+        cmds.parent(visible, hidden, high_mesh)
+        cmds.skinCluster(root, visible, name="visibleSkin")
+        cmds.skinCluster(root, hidden, name="hiddenSkin")
+        cmds.setAttr(hidden + ".visibility", False)
+
+        self.assertEqual(["|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl"],
+                         module._display_candidates("|Group|root"))
+        enum = module._enum_attributes(display)
+        self.assertEqual(["clothes"], [item["attribute"] for item in enum])
+        self.assertEqual("Clothes01", module._current_enum_label(enum[0]))
+        self.assertEqual(["|Group|Geometry|HighMesh|SM_C01_Clothes01"],
+                         module._visible_skinned_meshes(["|Group|root"]))
+
+    def test_capture_rejects_character_without_visible_skinned_mesh(self):
+        root = cmds.joint(name="root")
+        mesh = cmds.polyCube(name="hiddenBody")[0]
+        cmds.skinCluster(root, mesh)
+        cmds.setAttr(mesh + ".visibility", False)
+        with self.assertRaisesRegex(ValueError, "NO_VISIBLE_SKINNED_MESH"):
+            module._capture_subject(root)
+
+    def test_duplicate_bone_action_selects_every_conflicting_dag_path(self):
+        root = cmds.joint(name="duplicateRoot")
+        left_parent = cmds.joint(name="leftHair")
+        cmds.select(root)
+        right_parent = cmds.joint(name="rightHair")
+        cmds.select(left_parent)
+        cmds.joint(name="duplicateTip")
+        cmds.select(right_parent)
+        cmds.joint(name="duplicateTip")
+        paths = cmds.ls("duplicateTip", long=True, type="joint")
+
+        controller = module._Controller()
+        controller._set_duplicate_paths(paths)
+        controller.select_duplicate_bones()
+
+        self.assertEqual(sorted(paths), sorted(cmds.ls(selection=True, long=True)))
+
     def test_captures_evaluated_joints_and_blendshape_alias(self):
         cmds.namespace(add="Hero")
         root = cmds.joint(name="Hero:root", position=(1, 2, 3))

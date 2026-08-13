@@ -128,6 +128,8 @@ The Runtime module owns:
 
 - the localhost listener and single accepted Maya connection;
 - protocol parsing and validation;
+- pure connection negotiation between captured Maya character facts and Unreal
+  target facts, including complete skeleton mapping and Morph differences;
 - the automatically registered native Live Link source;
 - the fixed `MtoU_Character` Live Link subject;
 - `UMtoULiveLinkBinding`, which references one existing Skeletal Mesh;
@@ -182,8 +184,9 @@ successfully linked.
 - It sends joints only; controllers and constraint nodes are never subjects.
 - Each Maya namespace is removed from the transmitted leaf bone name, for
   example `Hero:spine_01` becomes `spine_01`.
-- If normalization produces duplicate bone names, connection is refused and
-  the duplicates are listed.
+- If normalization produces duplicate bone names, Maya retains their full DAG
+  paths for selection. Version 0.2.0 may connect them through the Unreal remap
+  rules documented in the addendum below.
 - The root transform is sampled in Maya world space. Every child transform is
   sampled relative to its transmitted parent joint. This includes evaluated
   controller, constraint, IK, `jointOrient`, and upstream rig-group effects,
@@ -410,6 +413,47 @@ Compatibility is claimed only for stock Unreal Editor 5.7.4. The user's
 third-party-modified UE 5.7 installation was explicitly excluded from the
 2026-08-11 acceptance scope; it must pass the same checks before compatibility
 with that engine is reported.
+
+## Version 0.2.0 Addendum
+
+Date: 2026-08-12
+
+Version 0.2.0 keeps the single-character, local-editor architecture and adds a
+Maya-side outfit-aware workflow. After the user selects the deformation root,
+Maya locates the same-character `Display_ctrl` transform and the unique enum
+attribute containing Clothes entries. Only effectively visible, non-intermediate
+skinned meshes contribute BlendShape curves. A Clothes enum change disconnects
+the active session, refreshes Maya diagnostics, and requires the user to replace
+the single Unreal Binding Actor and reconnect.
+
+Maya presents a Chinese UI with a red/green connection indicator, current
+outfit, exact scene frame rate, transmitted bone count, and unique BlendShape
+count. The sender samples at the actual Maya scene rate from 1 through 60 fps;
+the production files supplied for acceptance use Maya `ntsc`, or 30 fps.
+Changing to another valid rate rebuilds the timer without a new handshake.
+
+The protocol version is 2. Error replies now contain stable `code`, `message`,
+and `details` fields. Ready replies report both Maya curves missing in Unreal
+and Unreal Morph Targets missing in Maya. Curve differences remain warnings,
+while skeleton differences remain blocking. Unreal now requires exactly one
+placed MtoU Binding Actor for a connection.
+
+The supplied `SK_C04_Last09.0013.ma` production scene confirmed automatic
+discovery of `|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl`,
+its `Mod` enum, current `Clothes09`, 30 fps, 860 transmitted joints, and 127
+unique visible-mesh BlendShape curves. The supplied multi-outfit
+`SK_C01_SumTotal.0004.ma` confirmed the 13 Clothes enum entries, but its
+deformation hierarchy currently contains three short bone names duplicated
+across two different Maya DAG branches. Unreal imports the second branch with
+numeric suffixes, so version 0.2.0 attempts the unique parent-scoped remap
+described below and warns when it succeeds.
+
+Duplicate-name diagnostics retain every conflicting Maya DAG path, and the Maya
+error dialog and main window can select all affected joints directly. Duplicate
+short names may connect when Unreal finds exactly one importer-renamed numeric
+suffix candidate below the already matched parent. Live Link publishes the
+actual Unreal bone name while preserving Maya transform order. The connection
+reports every remap as a warning; zero or multiple candidates remain blocking.
 
 ## Documentation and Packaging
 

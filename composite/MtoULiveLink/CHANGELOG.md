@@ -2,9 +2,27 @@
 
 ## Unreleased
 
+- Keep the Maya sender window fitted to its controls so moving the window no
+  longer alternates between a clipped and fully visible bottom section.
 - Consolidate the bilingual README, changelog, license, and project rules at
   the composite root while keeping host tests beside their component code.
 - Keep packaged components limited to their host runtime files.
+
+## 0.2.0 - 2026-08-12
+
+- Add a Chinese Maya UI with a red/green connection light, role setup,
+  current-outfit, scene-frame-rate, streamed-bone, and BlendShape diagnostics.
+- Detect the character Display controller and its Clothes enum, stream only
+  effectively visible skinned meshes, and disconnect when the outfit changes.
+- Sample at the Maya scene's exact 1-60 fps rate and rebuild the timer when the
+  time unit changes.
+- Upgrade the local protocol to version 2 with stable error codes, detailed
+  skeleton diagnostics, bidirectional BlendShape differences, and an exactly
+  one Binding Actor requirement.
+- Add a Maya action that selects all joints involved in duplicate transmitted
+  bone names by full DAG path for quick Outliner inspection.
+- Allow duplicate Maya short bone names when Unreal can uniquely map its
+  importer-added numeric suffixes within the corresponding parent branch.
 
 ## 0.1.0 - 2026-08-11
 

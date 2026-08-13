@@ -1,6 +1,6 @@
 # MtoU_LiveLink Development History
 
-MtoU_LiveLink 0.1.0 is a completed composite Maya 2022.4 and stock Unreal
+MtoU_LiveLink 0.2.0 is a composite Maya 2022.4 and stock Unreal
 Editor 5.7.4 Live Link product.
 
 ## Timeline
@@ -17,6 +17,9 @@ Editor 5.7.4 Live Link product.
 - **2026-08-11:** Migrated both host components into the `composite/` category,
   verified ToolsLab external-plugin discovery, and centralized product metadata
   at the composite project root.
+- **2026-08-12:** Released the protocol-v2 outfit-aware Maya workflow, Chinese
+  status and diagnostics UI, exact scene-rate sampling, bidirectional
+  BlendShape warnings, and the single Binding Actor connection rule.
 
 ## Stable Records
 

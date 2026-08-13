@@ -2,6 +2,7 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUConnectionNegotiator.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 
@@ -252,25 +253,26 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         Bones += FString::Printf(TEXT("[\"bone_%d\",%d]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
 
     TestTrue(TEXT("701 parent-first bones are accepted"), FMtoUProtocol::ParseInit(Utf8(Valid), Message, Error));
     TestEqual(TEXT("all bones are retained"), Message.Bones.Num(), 701);
-    TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":1"), TEXT("\"version\":2"))), Message, Error));
+    TestFalse(TEXT("protocol version 1 is rejected"),
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":2"), TEXT("\"version\":1"))), Message, Error));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":1"), TEXT("\"version\":\"1\""))), Message, Error));
-    TestFalse(TEXT("duplicate bone names are rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"root\",0]],\"curves\":[]}")), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":2"), TEXT("\"version\":\"2\""))), Message, Error));
+    TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
+        FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"root\",0]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"other\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"other\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"child\",1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"child\",1]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"@\",-1]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"@\",-1]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -287,28 +289,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"根\",-1]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"根\",-1]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"%s\",0]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"%s\",0]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1],[\"bad\\u0000tail\",0]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"bad\\u0000tail\",0]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"root\",-1]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -330,14 +332,24 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
 
     FMtoUFrameDecoder Decoder;
     TArray<uint8> ReplyPayload;
-    TArray<uint8> Ready = FMtoUProtocol::EncodeReady({FName(TEXT("Blink_R"))});
+    TArray<uint8> Ready = FMtoUProtocol::EncodeReady(
+        {FName(TEXT("Blink_R"))},
+        {FName(TEXT("Corrective"))},
+        {TEXT("hair_7/tip -> tip1")});
     Decoder.Append(Ready.GetData(), Ready.Num());
     TestTrue(TEXT("ready reply is framed"), Decoder.Pop(ReplyPayload, Error) == EMtoUDecodeResult::Message);
     TestTrue(TEXT("ready reply names missing curve"), FromUtf8(ReplyPayload).Contains(TEXT("Blink_R")));
-    TArray<uint8> Failure = FMtoUProtocol::EncodeError(TEXT("bad skeleton"));
+    TestTrue(TEXT("ready reply names Unreal-only morph"),
+        FromUtf8(ReplyPayload).Contains(TEXT("Corrective")));
+    TestTrue(TEXT("ready reply reports bone name remapping"),
+        FromUtf8(ReplyPayload).Contains(TEXT("tip1")));
+    TArray<uint8> Failure = FMtoUProtocol::EncodeError(
+        TEXT("SKELETON_MISMATCH"), TEXT("bad skeleton"), TEXT("Missing in Unreal: jaw"));
     Decoder.Append(Failure.GetData(), Failure.Num());
     TestTrue(TEXT("error reply is framed"), Decoder.Pop(ReplyPayload, Error) == EMtoUDecodeResult::Message);
     TestTrue(TEXT("error reply keeps message"), FromUtf8(ReplyPayload).Contains(TEXT("bad skeleton")));
+    TestTrue(TEXT("error reply keeps stable code"),
+        FromUtf8(ReplyPayload).Contains(TEXT("SKELETON_MISMATCH")));
     return true;
 }
 
@@ -419,47 +431,161 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSkeletonComparisonTest,
-    "MtoULiveLink.Protocol.OrderIndependentSkeletonComparison",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUConnectionNegotiatorTest,
+    "MtoULiveLink.Negotiation.ConnectionCompatibility",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FMtoUSkeletonComparisonTest::RunTest(const FString& Parameters)
+bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    const TArray<FMtoUBone> Maya = {
-        {FName(TEXT("root")), INDEX_NONE},
-        {FName(TEXT("arm")), 0},
-        {FName(TEXT("hand")), 1},
+    const FMtoUCharacterDescription ExactCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("arm")), 0},
+            {FName(TEXT("hand")), 1},
+        },
+        {FName(TEXT("Smile")), FName(TEXT("Blink"))},
     };
-    const TArray<FMtoUBone> ShuffledUnreal = {
-        {FName(TEXT("hand")), 2},
-        {FName(TEXT("root")), INDEX_NONE},
-        {FName(TEXT("arm")), 1},
+    const FMtoUTargetDescription ExactTarget = {
+        {
+            {FName(TEXT("hand")), 2},
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("arm")), 1},
+        },
+        {FName(TEXT("Corrective")), FName(TEXT("Smile"))},
     };
-    TestTrue(TEXT("equivalent shuffled skeletons match"),
-        FMtoUProtocol::CompareSkeletons(Maya, ShuffledUnreal).IsEmpty());
+    const FMtoUNegotiationOutcome Exact =
+        FMtoUConnectionNegotiator::Negotiate(ExactCharacter, ExactTarget);
+    TestTrue(TEXT("equivalent shuffled skeletons are usable"), Exact.bUsable);
+    TestTrue(TEXT("usable outcome has no failure category"), Exact.FailureCategory.IsEmpty());
+    TestTrue(TEXT("publish names preserve Maya transform order"),
+        Exact.PublishBoneNames == TArray<FName>({TEXT("root"), TEXT("arm"), TEXT("hand")}));
+    TestTrue(TEXT("matching Maya curve is accepted by index and name"),
+        Exact.AcceptedCurveIndices == TArray<int32>({0})
+        && Exact.AcceptedCurveNames == TArray<FName>({TEXT("Smile")}));
+    TestTrue(TEXT("bidirectional Morph differences are reported and sorted"),
+        Exact.MayaOnlyMorphNames == TArray<FName>({TEXT("Blink")})
+        && Exact.UnrealOnlyMorphNames == TArray<FName>({TEXT("Corrective")}));
 
-    const TArray<FMtoUBone> DifferentMaya = {
-        {FName(TEXT("root")), INDEX_NONE},
-        {FName(TEXT("zebra")), 0},
-        {FName(TEXT("alpha")), 0},
-        {FName(TEXT("hand")), 1},
+    const FMtoUCharacterDescription DuplicateCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("hair_1")), 0},
+            {FName(TEXT("tip_2")), 1},
+            {FName(TEXT("tip_3")), 2},
+            {FName(TEXT("hair_7")), 0},
+            {FName(TEXT("tip_2")), 4},
+            {FName(TEXT("tip_3")), 5},
+        },
+        {},
     };
-    const TArray<FMtoUBone> DifferentUnreal = {
-        {FName(TEXT("root")), INDEX_NONE},
-        {FName(TEXT("omega")), 0},
-        {FName(TEXT("beta")), 0},
-        {FName(TEXT("zebra")), 0},
-        {FName(TEXT("hand")), 0},
+    const FMtoUTargetDescription AutoRenamedTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("hair_1")), 0},
+            {FName(TEXT("tip_2")), 1},
+            {FName(TEXT("tip_3")), 2},
+            {FName(TEXT("hair_7")), 0},
+            {FName(TEXT("tip_21")), 4},
+            {FName(TEXT("tip_31")), 5},
+        },
+        {},
     };
-    const FString Diagnostic = FMtoUProtocol::CompareSkeletons(DifferentMaya, DifferentUnreal);
-    TestTrue(TEXT("missing section is separate"), Diagnostic.Contains(TEXT("Missing in Unreal")));
-    TestTrue(TEXT("extra section is separate"), Diagnostic.Contains(TEXT("Extra in Unreal")));
-    TestTrue(TEXT("parent mismatch section is separate"), Diagnostic.Contains(TEXT("Parent mismatches")));
-    TestTrue(TEXT("extra names are sorted"),
-        Diagnostic.Find(TEXT("beta")) < Diagnostic.Find(TEXT("omega")));
-    TestTrue(TEXT("parent mismatch names both parents"),
-        Diagnostic.Contains(TEXT("hand: Maya=zebra, Unreal=root")));
+    const FMtoUNegotiationOutcome Remapped =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateCharacter, AutoRenamedTarget);
+    TestTrue(TEXT("unique parent-scoped numeric suffix remaps are usable"), Remapped.bUsable);
+    TestTrue(TEXT("second duplicate receives the UE imported name"),
+        Remapped.PublishBoneNames[5] == FName(TEXT("tip_21")));
+    TestEqual(TEXT("both imported renames are reported"), Remapped.BoneNameMappings.Num(), 2);
+
+    FMtoUTargetDescription AmbiguousTarget = AutoRenamedTarget;
+    AmbiguousTarget.Bones[6] = {FName(TEXT("tip_22")), 4};
+    const FMtoUNegotiationOutcome Ambiguous =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateCharacter, AmbiguousTarget);
+    TestFalse(TEXT("multiple numeric-suffix candidates are blocking"), Ambiguous.bUsable);
+    TestEqual(TEXT("skeleton mismatch has a stable failure category"),
+        Ambiguous.FailureCategory, FString(TEXT("SKELETON_MISMATCH")));
+    TestTrue(TEXT("ambiguity details name the Maya bone"),
+        Ambiguous.MappingAmbiguities.Num() == 1
+        && Ambiguous.MappingAmbiguities[0].Contains(TEXT("tip_2")));
+    TestTrue(TEXT("ambiguity blocks its descendant instead of guessing"),
+        Ambiguous.DescendantsBlockedByParent.Num() == 1
+        && Ambiguous.DescendantsBlockedByParent[0].Contains(TEXT("tip_3")));
+
+    const FMtoUCharacterDescription BranchCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("left_child")), 1},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("right_child")), 3},
+        },
+        {FName(TEXT("Smile"))},
+    };
+    const FMtoUTargetDescription BrokenBranchesTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("wrong_left")), 0},
+            {FName(TEXT("left_child")), 1},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("wrong_right_child")), 3},
+            {FName(TEXT("extra")), 0},
+        },
+        {FName(TEXT("Smile"))},
+    };
+    const FMtoUNegotiationOutcome BrokenBranches =
+        FMtoUConnectionNegotiator::Negotiate(BranchCharacter, BrokenBranchesTarget);
+    TestFalse(TEXT("missing and extra bones are blocking"), BrokenBranches.bUsable);
+    TestTrue(TEXT("independent branch failures are both reported"),
+        BrokenBranches.MissingBones.Contains(TEXT("left"))
+        && BrokenBranches.MissingBones.Contains(TEXT("right_child")));
+    TestTrue(TEXT("a failed parent records its blocked descendant"),
+        BrokenBranches.DescendantsBlockedByParent.Num() == 1
+        && BrokenBranches.DescendantsBlockedByParent[0].Contains(TEXT("left_child")));
+    TestTrue(TEXT("unmatched target bones are reported as extra"),
+        BrokenBranches.ExtraBones.Contains(TEXT("extra")));
+    TestTrue(TEXT("Morph comparison does not run for a blocking skeleton"),
+        BrokenBranches.AcceptedCurveIndices.IsEmpty()
+        && BrokenBranches.MayaOnlyMorphNames.IsEmpty()
+        && BrokenBranches.UnrealOnlyMorphNames.IsEmpty());
+
+    const FMtoUTargetDescription WrongParentTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("arm")), 0},
+            {FName(TEXT("hand")), 0},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome WrongParent =
+        FMtoUConnectionNegotiator::Negotiate(ExactCharacter, WrongParentTarget);
+    TestTrue(TEXT("wrong-parent details name both parents"),
+        WrongParent.ParentMismatches.Num() == 1
+        && WrongParent.ParentMismatches[0].Contains(TEXT("hand"))
+        && WrongParent.ParentMismatches[0].Contains(TEXT("arm"))
+        && WrongParent.ParentMismatches[0].Contains(TEXT("root")));
+    TestTrue(TEXT("structured failures render protocol-ready technical details"),
+        WrongParent.TechnicalDetails().Contains(TEXT("Parent mismatches")));
+
+    const FMtoUCharacterDescription DuplicateRootName = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("root")), 0},
+        },
+        {},
+    };
+    const FMtoUTargetDescription SuffixedRoot = {
+        {
+            {FName(TEXT("root1")), INDEX_NONE},
+            {FName(TEXT("child")), 0},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome RootRename =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateRootName, SuffixedRoot);
+    TestFalse(TEXT("numeric suffix remapping requires an already mapped parent"), RootRename.bUsable);
+    TestTrue(TEXT("a root typo is reported as missing instead of fuzzy matched"),
+        RootRename.MissingBones.Contains(TEXT("root")));
     return true;
 }
 
@@ -579,10 +705,32 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
+    AMtoULiveLinkActor* ExtraActor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("second binding actor fixture is created"), ExtraActor);
+    FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
+    const TArray<uint8> MultipleActorInit = Packet(
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[]}"));
+    TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
+        && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("multiple actors produce a framed rejection"),
+        MultipleActorClient && ReceivePacket(
+            *MultipleActorClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("multiple actors use the stable error code"),
+        FromUtf8(Payload).Contains(TEXT("MULTIPLE_BINDING_ACTORS")));
+    DestroySocket(*SocketSubsystem, MultipleActorClient);
+    if (ExtraActor)
+    {
+        ExtraActor->MarkAsGarbage();
+    }
+    TestTrue(TEXT("source returns to listening after actor-count rejection"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
     FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("first Maya client connects"), Primary);
     const TArray<uint8> Init = Packet(
-        TEXT("{\"type\":\"init\",\"version\":1,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[\"Missing\"]}"));
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[\"Missing\"]}"));
     if (Primary)
     {
         TestTrue(TEXT("partial init prefix is sent"), SendBytes(*Primary, Init.GetData(), 3));
@@ -591,7 +739,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             SendBytes(*Primary, Init.GetData() + 3, Init.Num() - 3));
     }
 
-    TArray<uint8> Payload;
+    Payload.Reset();
     TestTrue(TEXT("partial init produces ready response"), Primary && ReceivePacket(
         *Primary, Payload, [&]() { Source->Update(); }));
     TestTrue(TEXT("ready response reports the omitted morph curve"),
