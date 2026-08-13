@@ -44,7 +44,11 @@ class FMtoUProtocol
 {
 public:
     static constexpr int32 Version = 2;
-    static bool ParseInit(const TArray<uint8>& Payload, FMtoUInitMessage& OutMessage, FString& OutError);
+    static bool ParseInit(
+        const TArray<uint8>& Payload,
+        FMtoUInitMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
     static bool ValidateFrame(
         const FMtoUFrameMessage& Frame,

@@ -19,3 +19,15 @@ _Avoid_: Bone rename, fuzzy match
 **Morph difference**:
 A Morph Target name present only in the Maya character description or only in the Unreal target description. It reduces expression coverage but does not make the connection unusable.
 _Avoid_: Morph error, BlendShape failure
+
+**Protocol contract**:
+The versioned wire-level agreement shared by the Maya and Unreal adapters: framing, message shapes, value limits, stable error categories, and connection-closing semantics.
+_Avoid_: Protocol implementation, connection negotiation
+
+**Conformance corpus**:
+The canonical collection of language-neutral protocol cases that both host adapters must satisfy.
+_Avoid_: Protocol fixtures, golden files
+
+**Conformance case**:
+One input and its expected protocol outcome, including successful messages and rejected messages with their stable category and connection-closing semantics.
+_Avoid_: Test vector, sample payload

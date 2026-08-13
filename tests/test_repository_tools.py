@@ -1,5 +1,6 @@
 # ruff: noqa: E402
 
+import importlib.util
 import pathlib
 import sys
 import tempfile
@@ -16,8 +17,58 @@ import package_unreal_plugin
 import update_versions
 import validate_repository
 
+CONFORMANCE_GENERATOR = (
+    ROOT / "composite" / "MtoULiveLink" / "protocol" / "generate_unreal_corpus.py"
+)
+
 
 class RepositoryToolTests(unittest.TestCase):
+    def test_mtou_unreal_conformance_data_is_current(self):
+        spec = importlib.util.spec_from_file_location(
+            "generate_mtou_unreal_corpus", str(CONFORMANCE_GENERATOR)
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual([], module.check_generated())
+
+    def test_mtou_conformance_validation_errors_are_deterministic(self):
+        spec = importlib.util.spec_from_file_location(
+            "generate_mtou_unreal_corpus_invalid", str(CONFORMANCE_GENERATOR)
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        invalid = {
+            "schema_version": 1,
+            "protocol_version": 2,
+            "cases": [
+                {
+                    "id": "duplicate",
+                    "operation": "init",
+                    "applies_to": ["unreal"],
+                    "payload": {},
+                    "expected": {"accepted": True, "close": False},
+                },
+                {
+                    "id": "duplicate",
+                    "operation": "unknown",
+                    "applies_to": [],
+                    "expected": {"accepted": False, "close": True},
+                },
+            ],
+        }
+        self.assertEqual(
+            [
+                "case 1 id is duplicated: duplicate",
+                "case 1 operation is unsupported",
+                "case 1 applies_to must contain maya and/or unreal",
+                "case 1 must define exactly one input source",
+                "case 1 rejected case needs a stable parser error_code",
+            ],
+            module.validate_corpus(invalid),
+        )
+
     def _create_composite_fixture(self, root):
         project = root / "composite" / "SampleBridge"
         for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):

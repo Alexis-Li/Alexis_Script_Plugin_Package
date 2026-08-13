@@ -12,6 +12,7 @@ import time
 
 __version__ = "0.2.0"
 PROTOCOL_VERSION = 2
+MAX_PAYLOAD_SIZE = (2 ** 31) - 9
 HOST = "127.0.0.1"
 PORT = 54321
 SUBJECT_NAME = "MtoU_Character"
@@ -238,7 +239,34 @@ def _recv_exact(sock, size):
 
 def recv_message(sock):
     size = struct.unpack(">Q", _recv_exact(sock, 8))[0]
+    if size > MAX_PAYLOAD_SIZE:
+        raise ValueError("protocol message length exceeds the supported container range")
     return json.loads(_recv_exact(sock, size).decode("utf-8"))
+
+
+def validate_reply(reply):
+    if not isinstance(reply, dict):
+        raise ValueError("protocol reply must be a JSON object")
+    reply_type = reply.get("type")
+    required = {
+        "ready": {
+            "missing_in_unreal": list,
+            "missing_in_maya": list,
+            "bone_name_remaps": list,
+        },
+        "error": {"code": str, "message": str, "details": str},
+    }
+    fields = required.get(reply_type)
+    if fields is None:
+        raise ValueError("protocol reply type must be 'ready' or 'error'")
+    for name, expected_type in fields.items():
+        if name not in reply:
+            raise ValueError("protocol reply requires field '{0}'".format(name))
+        if not isinstance(reply[name], expected_type):
+            raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
+        if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
+            raise ValueError("protocol reply field '{0}' must contain strings".format(name))
+    return reply
 
 
 def _require_maya():
@@ -585,7 +613,7 @@ class _SenderWorker(threading.Thread):
             if not self._send_initial(sock):
                 return
             sock.settimeout(5.0)
-            reply = recv_message(sock)
+            reply = validate_reply(recv_message(sock))
             if reply.get("type") == "error":
                 diagnostic = make_diagnostic(
                     reply.get("code") or "INTERNAL_ERROR",
@@ -609,7 +637,7 @@ class _SenderWorker(threading.Thread):
                     sock.sendall(packet)
                 readable, _, _ = select.select([sock], [], [], 0.01)
                 if readable:
-                    reply = recv_message(sock)
+                    reply = validate_reply(recv_message(sock))
                     if reply.get("type") == "error":
                         diagnostic = make_diagnostic(
                             reply.get("code") or "STREAM_INTERRUPTED",
@@ -625,7 +653,10 @@ class _SenderWorker(threading.Thread):
                     return
         except Exception as exc:
             if not self._stop_event.is_set():
-                code = "STREAM_INTERRUPTED" if connected else "UNREAL_NOT_REACHABLE"
+                if isinstance(exc, (ValueError, UnicodeError, json.JSONDecodeError)):
+                    code = "INVALID_MESSAGE"
+                else:
+                    code = "STREAM_INTERRUPTED" if connected else "UNREAL_NOT_REACHABLE"
                 diagnostic = make_diagnostic(code, str(exc), details=str(exc))
                 self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
         finally:

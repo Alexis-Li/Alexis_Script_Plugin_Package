@@ -180,10 +180,15 @@ EMtoUDecodeResult FMtoUFrameDecoder::Pop(TArray<uint8>& OutPayload, FString& Out
 bool FMtoUProtocol::ParseInit(
     const TArray<uint8>& Payload,
     FMtoUInitMessage& OutMessage,
-    FString& OutError)
+    FString& OutError,
+    FString* OutErrorCode)
 {
     OutMessage = FMtoUInitMessage();
     OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
     TSharedPtr<FJsonObject> Object;
     if (!ParseObject(Payload, Object, OutError))
     {
@@ -200,11 +205,19 @@ bool FMtoUProtocol::ParseInit(
     TSharedPtr<FJsonValue> VersionValue;
     int32 MessageVersion = 0;
     if (!GetTypedField(Object, TEXT("version"), EJson::Number, VersionValue, OutError)
-        || !GetExactInt(VersionValue, MessageVersion)
-        || MessageVersion != FMtoUProtocol::Version)
+        || !GetExactInt(VersionValue, MessageVersion))
+    {
+        OutError = TEXT("Field 'version' must be an integer JSON number.");
+        return false;
+    }
+    if (MessageVersion != FMtoUProtocol::Version)
     {
         OutError = FString::Printf(
             TEXT("Unsupported protocol version; expected %d."), FMtoUProtocol::Version);
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("PROTOCOL_VERSION_MISMATCH");
+        }
         return false;
     }
 

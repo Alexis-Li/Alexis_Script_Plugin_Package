@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -291,6 +292,28 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
                     _validate_unreal_plugin(component, errors, root, require_metadata=False)
 
 
+def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
+    protocol_root = root / "composite" / "MtoULiveLink" / "protocol"
+    generator_path = protocol_root / "generate_unreal_corpus.py"
+    if not generator_path.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("generate_mtou_unreal_corpus", generator_path)
+    if spec is None or spec.loader is None:
+        errors.append("cannot load MtoU conformance generator")
+        return
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        errors.extend(module.check_generated(
+            protocol_root / "conformance-v2.json",
+            root / "composite" / "MtoULiveLink" / "unreal" / "MtoULiveLink"
+            / "Source" / "MtoULiveLink" / "Private" / "Tests"
+            / "MtoUConformanceCorpus.inl",
+        ))
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append("invalid MtoU conformance corpus: {0}".format(exc))
+
+
 def _validate_nested_git(root: Path, errors: list[str]) -> None:
     root_git = root / ".git"
     for nested_git in root.rglob(".git"):
@@ -340,6 +363,7 @@ def validate(root: Path = ROOT) -> dict:
     if (root / "unreal" / "Plugins").is_dir():
         _validate_unreal(root, errors)
     _validate_composite(root, errors)
+    _validate_mtou_conformance(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}
 

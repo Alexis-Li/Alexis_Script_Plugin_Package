@@ -17,15 +17,58 @@
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+
+#include "MtoUConformanceCorpus.inl"
 
 namespace
 {
+FString FromUtf8(const TArray<uint8>& Bytes);
+
 TArray<uint8> Utf8(const FString& Text)
 {
     FTCHARToUTF8 Converted(*Text);
     TArray<uint8> Bytes;
     Bytes.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
     return Bytes;
+}
+
+bool JsonObjectFromBytes(const TArray<uint8>& Bytes, TSharedPtr<FJsonObject>& OutObject)
+{
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FromUtf8(Bytes));
+    return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
+}
+
+TArray<uint8> JsonBytes(const TSharedPtr<FJsonValue>& Value)
+{
+    FString Text;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
+    FJsonSerializer::Serialize(Value, TEXT(""), Writer);
+    return Utf8(Text);
+}
+
+TArray<uint8> HexBytes(const FString& Text)
+{
+    TArray<uint8> Bytes;
+    for (int32 Index = 0; Index + 1 < Text.Len(); Index += 2)
+    {
+        Bytes.Add(static_cast<uint8>(FCString::Strtoi(*Text.Mid(Index, 2), nullptr, 16)));
+    }
+    return Bytes;
+}
+
+bool ContainsKeywords(const FString& Diagnostic, const TArray<TSharedPtr<FJsonValue>>& Keywords)
+{
+    for (const TSharedPtr<FJsonValue>& Keyword : Keywords)
+    {
+        if (!Diagnostic.Contains(Keyword->AsString(), ESearchCase::IgnoreCase))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 FString FromUtf8(const TArray<uint8>& Bytes)
@@ -187,6 +230,208 @@ AMtoULiveLinkActor* AddBoundActor(UWorld& World)
     }
     return Actor;
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUConformanceCorpusTest,
+    "MtoULiveLink.Protocol.ConformanceCorpus",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    TArray<uint8> CorpusBytes;
+    CorpusBytes.Append(GMtoUConformanceCorpus, UE_ARRAY_COUNT(GMtoUConformanceCorpus));
+    TSharedPtr<FJsonObject> Corpus;
+    if (!JsonObjectFromBytes(CorpusBytes, Corpus))
+    {
+        AddError(TEXT("Generated conformance corpus must be valid JSON."));
+        return false;
+    }
+
+    int32 ApplicableCount = 0;
+    const TArray<TSharedPtr<FJsonValue>>& Cases = Corpus->GetArrayField(TEXT("cases"));
+    for (const TSharedPtr<FJsonValue>& CaseValue : Cases)
+    {
+        const TSharedPtr<FJsonObject> Case = CaseValue->AsObject();
+        bool bApplies = false;
+        for (const TSharedPtr<FJsonValue>& Host : Case->GetArrayField(TEXT("applies_to")))
+        {
+            bApplies |= Host->AsString() == TEXT("unreal");
+        }
+        if (!bApplies)
+        {
+            continue;
+        }
+        ++ApplicableCount;
+        const FString Id = Case->GetStringField(TEXT("id"));
+        const FString Operation = Case->GetStringField(TEXT("operation"));
+        const TSharedPtr<FJsonObject> Expected = Case->GetObjectField(TEXT("expected"));
+        const bool bExpectedAccepted = Expected->GetBoolField(TEXT("accepted"));
+        const bool bExpectedClose = Expected->GetBoolField(TEXT("close"));
+        const TArray<TSharedPtr<FJsonValue>>* Keywords = nullptr;
+        Expected->TryGetArrayField(TEXT("keywords"), Keywords);
+
+        if (Operation == TEXT("framing"))
+        {
+            FMtoUFrameDecoder Decoder;
+            TArray<uint8> Payload;
+            FString Error;
+            if (Case->HasField(TEXT("raw_hex")))
+            {
+                const TArray<uint8> Raw = HexBytes(Case->GetStringField(TEXT("raw_hex")));
+                Decoder.Append(Raw.GetData(), Raw.Num());
+                const EMtoUDecodeResult Result = Decoder.Pop(Payload, Error);
+                TestTrue(*FString::Printf(TEXT("%s acceptance"), *Id),
+                    (Result != EMtoUDecodeResult::Error) == bExpectedAccepted);
+                TestEqual(*FString::Printf(TEXT("%s close classification"), *Id),
+                    Result == EMtoUDecodeResult::Error, bExpectedClose);
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+                continue;
+            }
+            TArray<uint8> Stream;
+            for (const TSharedPtr<FJsonValue>& PayloadValue : Case->GetArrayField(TEXT("payloads")))
+            {
+                const TArray<uint8> Bytes = JsonBytes(PayloadValue);
+                Stream.Append(Prefix(Bytes.Num()));
+                Stream.Append(Bytes);
+            }
+            int32 Offset = 0;
+            if (Case->HasField(TEXT("chunk_sizes")))
+            {
+                for (const TSharedPtr<FJsonValue>& Size : Case->GetArrayField(TEXT("chunk_sizes")))
+                {
+                    const int32 Count = FMath::Min(static_cast<int32>(Size->AsNumber()), Stream.Num() - Offset);
+                    Decoder.Append(Stream.GetData() + Offset, Count);
+                    Offset += Count;
+                }
+            }
+            if (Offset < Stream.Num())
+            {
+                Decoder.Append(Stream.GetData() + Offset, Stream.Num() - Offset);
+            }
+            int32 MessageCount = 0;
+            while (Decoder.Pop(Payload, Error) == EMtoUDecodeResult::Message)
+            {
+                ++MessageCount;
+            }
+            TestEqual(*FString::Printf(TEXT("%s decoded message count"), *Id),
+                MessageCount, static_cast<int32>(Expected->GetNumberField(TEXT("message_count"))));
+            continue;
+        }
+
+        if (Operation == TEXT("init"))
+        {
+            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_hex"))
+                ? HexBytes(Case->GetStringField(TEXT("raw_hex")))
+                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            FMtoUInitMessage Message;
+            FString Error;
+            FString ErrorCode;
+            const bool bAccepted = FMtoUProtocol::ParseInit(Bytes, Message, Error, &ErrorCode);
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), !bAccepted, bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("frame"))
+        {
+            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
+                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
+                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            FMtoUFrameMessage Message;
+            FString Error;
+            bool bStructural = true;
+            bool bAccepted = FMtoUProtocol::ParseFrame(Bytes, Message, Error);
+            if (bAccepted && Case->HasField(TEXT("expected_counts")))
+            {
+                const TSharedPtr<FJsonObject> Counts = Case->GetObjectField(TEXT("expected_counts"));
+                bAccepted = FMtoUProtocol::ValidateFrame(
+                    Message,
+                    static_cast<int32>(Counts->GetNumberField(TEXT("transforms"))),
+                    static_cast<int32>(Counts->GetNumberField(TEXT("curves"))),
+                    Error,
+                    bStructural);
+            }
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id),
+                !bAccepted && bStructural, bExpectedClose);
+            if (!bAccepted && Keywords)
+            {
+                TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                    ContainsKeywords(Error, *Keywords));
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("ready") || Operation == TEXT("error"))
+        {
+            const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
+            TArray<uint8> PacketBytes;
+            if (Operation == TEXT("ready"))
+            {
+                auto Names = [&](const TCHAR* Field)
+                {
+                    TArray<FName> Result;
+                    for (const TSharedPtr<FJsonValue>& Value : Source->GetArrayField(Field))
+                    {
+                        Result.Add(FName(*Value->AsString()));
+                    }
+                    return Result;
+                };
+                TArray<FString> Remaps;
+                for (const TSharedPtr<FJsonValue>& Value : Source->GetArrayField(TEXT("bone_name_remaps")))
+                {
+                    Remaps.Add(Value->AsString());
+                }
+                PacketBytes = FMtoUProtocol::EncodeReady(
+                    Names(TEXT("missing_in_unreal")), Names(TEXT("missing_in_maya")), Remaps);
+            }
+            else
+            {
+                PacketBytes = FMtoUProtocol::EncodeError(
+                    Source->GetStringField(TEXT("code")),
+                    Source->GetStringField(TEXT("message")),
+                    Source->GetStringField(TEXT("details")));
+            }
+            FMtoUFrameDecoder Decoder;
+            TArray<uint8> Reply;
+            FString Error;
+            Decoder.Append(PacketBytes.GetData(), PacketBytes.Num());
+            TestTrue(*FString::Printf(TEXT("%s encoder produces one framed reply"), *Id),
+                Decoder.Pop(Reply, Error) == EMtoUDecodeResult::Message);
+            TSharedPtr<FJsonObject> Encoded;
+            TestTrue(*FString::Printf(TEXT("%s encoder produces JSON"), *Id),
+                JsonObjectFromBytes(Reply, Encoded));
+            if (Encoded.IsValid())
+            {
+                TestEqual(*FString::Printf(TEXT("%s reply type"), *Id),
+                    Encoded->GetStringField(TEXT("type")), Operation);
+                for (const TCHAR* Field : Operation == TEXT("ready")
+                    ? TArray<const TCHAR*>{TEXT("missing_in_unreal"), TEXT("missing_in_maya"), TEXT("bone_name_remaps")}
+                    : TArray<const TCHAR*>{TEXT("code"), TEXT("message"), TEXT("details")})
+                {
+                    TestTrue(*FString::Printf(TEXT("%s required field %s"), *Id, Field),
+                        Encoded->HasField(Field));
+                }
+            }
+        }
+    }
+    TestTrue(TEXT("Unreal exercised canonical conformance cases"), ApplicableCount > 0);
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUFramingTest,

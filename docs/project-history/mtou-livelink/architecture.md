@@ -246,7 +246,7 @@ remains the overall offset.
 - Endpoint: `127.0.0.1:54321`.
 - Concurrent clients: one.
 - Encoding: UTF-8 JSON preceded by an unsigned 64-bit, big-endian byte length.
-- Protocol version: `1`.
+- Protocol version: `2`.
 - Subject name: `MtoU_Character`.
 
 Message sequence:
@@ -271,8 +271,9 @@ still enforces three correctness invariants:
 - transform and curve numbers must be finite, never `NaN` or infinity.
 
 A structurally invalid message closes the connection. A frame containing a
-non-finite value is dropped, the exact bone or curve is reported, and later
-valid frames remain eligible for display.
+non-finite value, or a finite double outside the Unreal Live Link float range,
+is dropped, the exact bone or curve is reported, and later valid frames remain
+eligible for display.
 
 ## Unreal Skeleton Validation
 
@@ -437,6 +438,34 @@ and `details` fields. Ready replies report both Maya curves missing in Unreal
 and Unreal Morph Targets missing in Maya. Curve differences remain warnings,
 while skeleton differences remain blocking. Unreal now requires exactly one
 placed MtoU Binding Actor for a connection.
+
+### Protocol contract and conformance corpus
+
+Protocol v2 freezes the following wire fields. Every listed field is required;
+adapters ignore unknown fields so additive transport metadata remains
+forward-compatible. A structural or semantic field change requires protocol
+v3.
+
+| Message | Required fields | Contract role |
+| --- | --- | --- |
+| `init` | `type`, `version`, parent-first `bones`, `curves` | Maya character description |
+| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose |
+| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps` | Successful negotiation reply |
+| `error` | `type`, `code`, `message`, `details` | Stable failure reply |
+
+Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
+messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
+protocol version uses `PROTOCOL_VERSION_MISMATCH` and closes the connection. A
+non-finite or Unreal-float-range value in an otherwise structural frame drops
+only that frame and keeps the connection. An unusable connection-negotiation
+outcome sends its negotiation error and then closes.
+
+The machine-authoritative conformance corpus is
+`composite/MtoULiveLink/protocol/conformance-v2.json`. Maya repository tests
+read it directly. A Python-standard-library generator projects the same cases
+into a checked-in, test-only Unreal `.inl`; repository validation fails if that
+projection is stale. Neither shipped host component has a runtime dependency
+on the corpus or on its sibling host directory.
 
 The supplied `SK_C04_Last09.0013.ma` production scene confirmed automatic
 discovery of `|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl`,

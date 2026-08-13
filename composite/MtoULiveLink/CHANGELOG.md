@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Define the protocol v2 wire fields, stable parser error categories, and
+  connection-closing policy in one canonical cross-host conformance corpus.
+- Exercise applicable canonical cases through both Maya and Unreal adapters,
+  and fail repository validation when generated Unreal test data is stale.
 - Keep the Maya sender window fitted to its controls so moving the window no
   longer alternates between a clipped and fully visible bottom section.
 - Consolidate the bilingual README, changelog, license, and project rules at

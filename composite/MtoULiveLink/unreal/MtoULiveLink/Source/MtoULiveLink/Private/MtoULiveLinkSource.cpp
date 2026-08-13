@@ -415,12 +415,10 @@ uint32 FMtoULiveLinkSource::Run()
                     if (!bInitReceived)
                     {
                         FMtoUInitMessage Init;
-                        if (!FMtoUProtocol::ParseInit(Payload, Init, Error))
+                        FString ErrorCode;
+                        if (!FMtoUProtocol::ParseInit(Payload, Init, Error, &ErrorCode))
                         {
-                            const FString Code = Error.Contains(TEXT("protocol version"))
-                                ? TEXT("PROTOCOL_VERSION_MISMATCH")
-                                : TEXT("INVALID_MESSAGE");
-                            SendErrorAndDisconnect(Code, Error);
+                            SendErrorAndDisconnect(ErrorCode, Error);
                             break;
                         }
                         bInitReceived = true;

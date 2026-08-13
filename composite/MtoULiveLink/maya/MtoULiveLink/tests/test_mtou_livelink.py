@@ -1,5 +1,6 @@
 import errno
 import importlib.util
+import json
 import math
 import pathlib
 import struct
@@ -11,6 +12,10 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "MtoULiveLink
 SPEC = importlib.util.spec_from_file_location("MtoULiveLink", str(SCRIPT))
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+CORPUS = json.loads(
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v2.json")
+    .read_text(encoding="utf-8")
+)
 
 
 class LatestFrameTests(unittest.TestCase):
@@ -35,7 +40,8 @@ class SenderLifecycleTests(unittest.TestCase):
         class RuntimeErrorSocket(object):
             def __init__(self):
                 self.reply = MODULE.encode_message({
-                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": []
+                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": []
                 }) + runtime_error
 
             def settimeout(self, timeout):
@@ -69,7 +75,9 @@ class SenderLifecycleTests(unittest.TestCase):
         class BlockingSocket(object):
             def __init__(self):
                 self.sent = []
-                self._reply = MODULE.encode_message({"type": "ready"})
+                self._reply = MODULE.encode_message({
+                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": []})
 
             def settimeout(self, timeout):
                 pass
@@ -136,7 +144,9 @@ class SenderLifecycleTests(unittest.TestCase):
         class ReadySocket(object):
             def __init__(self):
                 self.sent = []
-                self._reply = MODULE.encode_message({"type": "ready"})
+                self._reply = MODULE.encode_message({
+                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": []})
 
             def settimeout(self, timeout):
                 pass
@@ -246,7 +256,9 @@ class SenderLifecycleTests(unittest.TestCase):
 
         class BlockingSendSocket(object):
             def __init__(self):
-                self._reply = MODULE.encode_message({"type": "ready"})
+                self._reply = MODULE.encode_message({
+                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": []})
                 self.closed = False
 
             def settimeout(self, timeout):
@@ -418,6 +430,80 @@ class ControllerLifecycleTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_canonical_conformance_cases_for_maya_adapter(self):
+        exercised = []
+        for case in CORPUS["cases"]:
+            if "maya" not in case["applies_to"]:
+                continue
+            exercised.append(case["id"])
+            with self.subTest(case=case["id"]):
+                self._assert_maya_conformance_case(case)
+        self.assertEqual(
+            [case["id"] for case in CORPUS["cases"] if "maya" in case["applies_to"]],
+            exercised,
+        )
+
+    def _assert_maya_conformance_case(self, case):
+        operation = case["operation"]
+        expected = case["expected"]
+        if operation == "framing":
+            if "raw_hex" in case:
+                raw = bytes.fromhex(case["raw_hex"])
+
+                class RawSocket(object):
+                    def recv(self, size):
+                        chunk, self.data = self.data[:size], self.data[size:]
+                        return chunk
+
+                sock = RawSocket()
+                sock.data = raw
+                with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                    MODULE.recv_message(sock)
+                return
+            packets = [MODULE.encode_message(payload) for payload in case["payloads"]]
+            stream = b"".join(packets)
+
+            class ChunkSocket(object):
+                def __init__(self, data, sizes):
+                    self.data = data
+                    self.sizes = list(sizes or [len(data)])
+
+                def recv(self, size):
+                    if not self.data:
+                        return b""
+                    limit = self.sizes.pop(0) if self.sizes else size
+                    count = min(size, limit, len(self.data))
+                    chunk, self.data = self.data[:count], self.data[count:]
+                    return chunk
+
+            sock = ChunkSocket(stream, case.get("chunk_sizes"))
+            decoded = [MODULE.recv_message(sock) for unused in packets]
+            self.assertEqual(case["payloads"], decoded)
+            self.assertEqual(expected["message_count"], len(decoded))
+            return
+        if operation == "init":
+            payload = case["payload"]
+            actual = MODULE.make_init_message(payload["bones"], payload["curves"])
+            actual.update({key: value for key, value in payload.items() if key == "future"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation == "frame":
+            payload = case["payload"]
+            actual = MODULE.make_frame_message(payload["transforms"], payload["curves"])
+            actual.update({key: value for key, value in payload.items() if key == "future"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation in ("ready", "error"):
+            if expected["accepted"]:
+                self.assertEqual(case["payload"], MODULE.validate_reply(case["payload"]))
+            else:
+                with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                    MODULE.validate_reply(case["payload"])
+            return
+        self.fail("Unsupported Maya conformance operation: " + operation)
+
     def test_protocol_v2_init_and_structured_diagnostics(self):
         message = MODULE.make_init_message([["root", -1]], ["Smile"])
         self.assertEqual(2, message["version"])
