@@ -29,23 +29,30 @@ class MayaHostTests(unittest.TestCase):
         cmds.file(new=True, force=True)
         cmds.currentUnit(linear="cm")
 
-    def _create_display(self, parent, entries="Clothes01:Clothes02"):
-        add_group = cmds.createNode("transform", name="Add_Ctrl_grp", parent=parent)
+    def _create_display(self, parent, entries="Clothes01:Clothes02", namespace=""):
+        prefix = namespace + ":" if namespace else ""
+        add_group = cmds.createNode(
+            "transform", name=prefix + "Add_Ctrl_grp", parent=parent)
         display_group = cmds.createNode(
-            "transform", name="Display_ctrl_grp", parent=add_group
+            "transform", name=prefix + "Display_ctrl_grp", parent=add_group
         )
-        display = cmds.createNode("transform", name="Display_ctrl", parent=display_group)
+        display = cmds.createNode(
+            "transform", name=prefix + "Display_ctrl", parent=display_group)
         cmds.addAttr(display, longName="clothes", attributeType="enum", enumName=entries)
         return display
 
-    def test_discovers_display_enum_and_visible_skinned_meshes(self):
+    def _create_character_group(self):
         group = cmds.createNode("transform", name="Group")
         motion = cmds.createNode("transform", name="MotionSystem", parent=group)
         display = self._create_display(motion)
-        geometry = cmds.createNode("transform", name="Geometry", parent=group)
-        high_mesh = cmds.createNode("transform", name="HighMesh", parent=geometry)
         root = cmds.joint(name="root")
         cmds.parent(root, group)
+        return group, root, display
+
+    def test_character_scene_discovers_display_and_visible_skinned_meshes(self):
+        group, root, display = self._create_character_group()
+        geometry = cmds.createNode("transform", name="Geometry", parent=group)
+        high_mesh = cmds.createNode("transform", name="HighMesh", parent=geometry)
         visible = cmds.polyCube(name="SM_C01_Clothes01")[0]
         hidden = cmds.polyCube(name="SM_C01_Clothes02")[0]
         cmds.parent(visible, hidden, high_mesh)
@@ -53,21 +60,25 @@ class MayaHostTests(unittest.TestCase):
         cmds.skinCluster(root, hidden, name="hiddenSkin")
         cmds.setAttr(hidden + ".visibility", False)
 
-        self.assertEqual(["|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl"],
-                         module._display_candidates("|Group|root"))
-        enum = module._enum_attributes(display)
-        self.assertEqual(["clothes"], [item["attribute"] for item in enum])
-        self.assertEqual("Clothes01", module._current_enum_label(enum[0]))
-        self.assertEqual(["|Group|Geometry|HighMesh|SM_C01_Clothes01"],
-                         module._visible_skinned_meshes(["|Group|root"]))
+        scene = module._CharacterScene.capture("|Group|root")
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+
+        self.assertEqual("Clothes01", snapshot.outfit)
+        self.assertEqual((("root", -1),), snapshot.bones)
+        self.assertEqual(
+            ("|Group|Geometry|HighMesh|SM_C01_Clothes01",),
+            snapshot.mesh_paths)
 
     def test_capture_rejects_character_without_visible_skinned_mesh(self):
-        root = cmds.joint(name="root")
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
         mesh = cmds.polyCube(name="hiddenBody")[0]
         cmds.skinCluster(root, mesh)
         cmds.setAttr(mesh + ".visibility", False)
-        with self.assertRaisesRegex(ValueError, "NO_VISIBLE_SKINNED_MESH"):
-            module._capture_subject(root)
+        with self.assertRaises(module._CharacterSceneError) as caught:
+            module._CharacterScene.capture(root)
+        self.assertEqual("NO_VISIBLE_SKINNED_MESH", caught.exception.code)
 
     def test_duplicate_bone_action_selects_every_conflicting_dag_path(self):
         root = cmds.joint(name="duplicateRoot")
@@ -80,15 +91,25 @@ class MayaHostTests(unittest.TestCase):
         cmds.joint(name="duplicateTip")
         paths = cmds.ls("duplicateTip", long=True, type="joint")
 
+        class FakeScene(object):
+            @staticmethod
+            def snapshot():
+                return module._CharacterSnapshot(
+                    1, "|duplicateRoot", "Clothes01", [], [], paths)
+
         controller = module._Controller()
-        controller._set_duplicate_paths(paths)
+        controller._scene = FakeScene()
         controller.select_duplicate_bones()
 
         self.assertEqual(sorted(paths), sorted(cmds.ls(selection=True, long=True)))
 
     def test_captures_evaluated_joints_and_blendshape_alias(self):
         cmds.namespace(add="Hero")
+        group = cmds.createNode("transform", name="Hero:Group")
+        motion = cmds.createNode("transform", name="Hero:MotionSystem", parent=group)
+        self._create_display(motion, namespace="Hero")
         root = cmds.joint(name="Hero:root", position=(1, 2, 3))
+        cmds.parent(root, group)
         cmds.joint(name="Hero:spine", position=(1, 5, 3))
         base = cmds.polyCube(name="body")[0]
         target = cmds.duplicate(base, name="smileTarget")[0]
@@ -98,17 +119,20 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(blendshape + ".Smile", 0.25)
         cmds.select(root, replace=True)
 
-        subject = module._capture_subject()
-        transforms, curves = module._sample_pose(subject)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        frame = scene.sample()
 
-        self.assertEqual(["root", "spine"], [bone["name"] for bone in subject["bones"]])
-        self.assertEqual([1.0, 3.0, 2.0], transforms[0][:3])
-        self.assertEqual([0.0, 0.0, 3.0], transforms[1][:3])
-        self.assertEqual(["Smile"], [curve["name"] for curve in subject["curves"]])
-        self.assertEqual([0.25], curves)
+        self.assertEqual((("root", -1), ("spine", 0)), snapshot.bones)
+        self.assertEqual((1.0, 3.0, 2.0), frame.transforms[0][:3])
+        self.assertEqual((0.0, 0.0, 3.0), frame.transforms[1][:3])
+        self.assertEqual(("Smile",), snapshot.curve_names)
+        self.assertEqual((0.25,), frame.curves)
 
     def test_same_alias_on_multiple_mesh_parts_streams_one_curve(self):
-        root = cmds.joint(name="root")
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
         for suffix in ("Face", "Teeth"):
             base = cmds.polyCube(name="body" + suffix)[0]
             target = cmds.duplicate(base, name="smile" + suffix)[0]
@@ -120,14 +144,17 @@ class MayaHostTests(unittest.TestCase):
             cmds.setAttr(blendshape + ".Smile", 0.25)
         cmds.select(root, replace=True)
 
-        subject = module._capture_subject()
-        _, curves = module._sample_pose(subject)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        frame = scene.sample()
 
-        self.assertEqual(["Smile"], [curve["name"] for curve in subject["curves"]])
-        self.assertEqual([0.25], curves)
+        self.assertEqual(("Smile",), snapshot.curve_names)
+        self.assertEqual((0.25,), frame.curves)
 
     def test_same_alias_with_conflicting_values_is_rejected(self):
-        root = cmds.joint(name="root")
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
         for suffix, value in (("Face", 0.25), ("Teeth", 0.5)):
             base = cmds.polyCube(name="body" + suffix)[0]
             target = cmds.duplicate(base, name="smile" + suffix)[0]
@@ -139,10 +166,12 @@ class MayaHostTests(unittest.TestCase):
             cmds.setAttr(blendshape + ".Smile", value)
         cmds.select(root, replace=True)
 
-        with self.assertRaisesRegex(
-            ValueError, "conflicting values for BlendShape alias Smile"
-        ):
-            module._sample_pose(module._capture_subject())
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        with self.assertRaises(module._CharacterSceneError) as caught:
+            scene.sample()
+        self.assertEqual("SAMPLING_FAILED", caught.exception.code)
+        self.assertIn("conflicting values for BlendShape alias Smile", caught.exception.details)
 
 
 if __name__ == "__main__":

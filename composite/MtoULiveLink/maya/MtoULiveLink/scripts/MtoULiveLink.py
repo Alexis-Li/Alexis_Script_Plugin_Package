@@ -486,6 +486,380 @@ def _sample_pose(subject):
     return transforms, curves
 
 
+class _CharacterSceneError(RuntimeError):
+    def __init__(self, code, message="", details="", context=None,
+                 duplicate_paths=None):
+        self._code = code
+        self._message = message or code
+        self._details = details or self._message
+        self._context = dict(context or {})
+        self._duplicate_paths = tuple(duplicate_paths or ())
+        super(_CharacterSceneError, self).__init__(self._message)
+
+    @property
+    def code(self):
+        return self._code
+
+    @property
+    def message(self):
+        return self._message
+
+    @property
+    def details(self):
+        return self._details
+
+    @property
+    def context(self):
+        return dict(self._context)
+
+    @property
+    def duplicate_paths(self):
+        return self._duplicate_paths
+
+
+class _CharacterSnapshot(object):
+    def __init__(self, revision, root, outfit, bones, curve_names,
+                 duplicate_paths=(), mesh_paths=()):
+        self._revision = int(revision)
+        self._root = root
+        self._outfit = outfit
+        self._bones = tuple((name, int(parent)) for name, parent in bones)
+        self._curve_names = tuple(curve_names)
+        self._duplicate_paths = tuple(duplicate_paths)
+        self._mesh_paths = tuple(mesh_paths)
+
+    @property
+    def revision(self):
+        return self._revision
+
+    @property
+    def root(self):
+        return self._root
+
+    @property
+    def outfit(self):
+        return self._outfit
+
+    @property
+    def bones(self):
+        return self._bones
+
+    @property
+    def curve_names(self):
+        return self._curve_names
+
+    @property
+    def duplicate_paths(self):
+        return self._duplicate_paths
+
+    @property
+    def mesh_paths(self):
+        return self._mesh_paths
+
+
+class _CharacterFrame(object):
+    def __init__(self, revision, transforms, curves):
+        self._revision = int(revision)
+        self._transforms = tuple(tuple(value for value in transform)
+                                 for transform in transforms)
+        self._curves = tuple(curves)
+
+    @property
+    def revision(self):
+        return self._revision
+
+    @property
+    def transforms(self):
+        return self._transforms
+
+    @property
+    def curves(self):
+        return self._curves
+
+
+class _CharacterSceneEvent(object):
+    def __init__(self, kind, snapshot=None, error=None):
+        self._kind = kind
+        self._snapshot = snapshot
+        self._error = error
+
+    @property
+    def kind(self):
+        return self._kind
+
+    @property
+    def snapshot(self):
+        return self._snapshot
+
+    @property
+    def error(self):
+        return self._error
+
+
+class _CharacterScene(object):
+    """Owns one configured, sampleable Maya character scene."""
+
+    def __init__(self, root, display, display_attribute, on_event):
+        self._root = root
+        self._display_path = display
+        self._display_attribute = display_attribute
+        self._on_event = on_event
+        self._subject = None
+        self._snapshot = None
+        self._callback_ids = []
+        self._refresh_generation = 0
+        self._refreshing = False
+        self._closed = False
+        self._terminal_error = None
+        self._cleanup_error = None
+
+    @classmethod
+    def capture(cls, root, display=None, display_attribute=None, on_event=None):
+        _require_maya()
+        scene = None
+        try:
+            root = cls._resolve_root(root)
+            display, display_attribute = cls._resolve_display(
+                root, display, display_attribute)
+            scene = cls(root, display, display_attribute, on_event)
+            scene._commit_capture(revision=1)
+            scene._register_callbacks()
+            return scene
+        except _CharacterSceneError:
+            if scene is not None:
+                scene.close()
+            raise
+        except (RuntimeError, ValueError) as exc:
+            if scene is not None:
+                scene.close()
+            raise cls._wrap_error("ROLE_SETUP_FAILED", exc)
+
+    @staticmethod
+    def _resolve_root(root):
+        matches = cmds.ls(root, long=True) or []
+        if len(matches) != 1 or cmds.nodeType(matches[0]) != "joint":
+            raise _CharacterSceneError(
+                "INVALID_CHARACTER_ROOT",
+                "Select exactly one deformation root joint before connecting.")
+        return matches[0]
+
+    @staticmethod
+    def _resolve_display(root, display, display_attribute):
+        if display is None:
+            candidates = _display_candidates(root)
+            if len(candidates) != 1:
+                raise _CharacterSceneError(
+                    "AMBIGUOUS_DISPLAY",
+                    "Unable to identify exactly one Display controller.",
+                    context={"display_candidates": tuple(candidates)})
+            display = candidates[0]
+        else:
+            try:
+                display = _long_transform(display)
+            except (RuntimeError, ValueError) as exc:
+                raise _CharacterScene._wrap_error("INVALID_DISPLAY", exc)
+        role_top = _top_level(root)
+        if display != role_top and not display.startswith(role_top + "|"):
+            raise _CharacterSceneError(
+                "INVALID_DISPLAY",
+                "The Display controller must be inside the character's top-level group.")
+        if _namespace(display) != _namespace(root):
+            raise _CharacterSceneError(
+                "INVALID_DISPLAY",
+                "The Display controller and character root must use the same namespace.")
+        attributes = _enum_attributes(display)
+        by_name = dict((item["attribute"], item) for item in attributes)
+        if display_attribute is None:
+            if len(attributes) != 1:
+                raise _CharacterSceneError(
+                    "AMBIGUOUS_DISPLAY_ATTRIBUTE",
+                    "Unable to identify exactly one Clothes enum attribute.",
+                    context={"attribute_candidates": tuple(sorted(by_name))})
+            display_attribute = attributes[0]["attribute"]
+        if display_attribute not in by_name:
+            raise _CharacterSceneError(
+                "INVALID_DISPLAY_ATTRIBUTE",
+                "The selected Display attribute is not a Clothes enum.",
+                context={"attribute_candidates": tuple(sorted(by_name))})
+        return display, display_attribute
+
+    @staticmethod
+    def _wrap_error(code, error):
+        if isinstance(error, _CharacterSceneError):
+            return error
+        return _CharacterSceneError(code, str(error), details=str(error))
+
+    def _display_record(self):
+        for record in _enum_attributes(self._display_path):
+            if record["attribute"] == self._display_attribute:
+                return record
+        raise _CharacterSceneError(
+            "INVALID_DISPLAY_ATTRIBUTE",
+            "The configured Clothes enum attribute is no longer available.")
+
+    def _capture_values(self, revision):
+        try:
+            subject = _capture_subject(self._root)
+            display = self._display_record()
+            outfit = _current_enum_label(display)
+        except (RuntimeError, ValueError) as exc:
+            code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
+            raise self._wrap_error(code, exc)
+        duplicates = duplicate_bone_paths(subject["bones"])
+        duplicate_paths = [path for name in sorted(duplicates)
+                           for path in duplicates[name]]
+        snapshot = _CharacterSnapshot(
+            revision,
+            self._root,
+            outfit,
+            [(bone["name"], bone["parent"]) for bone in subject["bones"]],
+            [curve["name"] for curve in subject["curves"]],
+            duplicate_paths,
+            subject["meshes"])
+        return subject, snapshot
+
+    def _commit_capture(self, revision):
+        subject, snapshot = self._capture_values(revision)
+        self._subject = subject
+        self._snapshot = snapshot
+
+    def _register_callbacks(self):
+        try:
+            self._callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
+                self._subject["bones"][0]["dag_path"].node(),
+                self._on_root_destroyed))
+            self._callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
+                _dag_path(self._display_path).node(), self._on_display_destroyed))
+            self._callback_ids.append(om.MNodeMessage.addAttributeChangedCallback(
+                _dag_path(self._display_path).node(), self._on_display_changed))
+        except (RuntimeError, ValueError) as exc:
+            self._remove_callbacks()
+            raise self._wrap_error("ROLE_SETUP_FAILED", exc)
+
+    def snapshot(self):
+        self._ensure_available()
+        return self._snapshot
+
+    def sample(self):
+        self._ensure_available()
+        revision = self._snapshot.revision
+        subject = self._subject
+        try:
+            transforms, curves = _sample_pose(subject)
+        except (RuntimeError, ValueError) as exc:
+            raise self._wrap_error("SAMPLING_FAILED", exc)
+        return _CharacterFrame(revision, transforms, curves)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._refresh_generation += 1
+        self._refreshing = False
+        self._remove_callbacks()
+        self._subject = None
+        if self._terminal_error is None:
+            self._terminal_error = _CharacterSceneError(
+                "CHARACTER_SCENE_CLOSED", "The character scene is closed.")
+
+    def _ensure_available(self):
+        if self._terminal_error is not None:
+            raise self._terminal_error
+        if self._closed:
+            raise _CharacterSceneError(
+                "CHARACTER_SCENE_CLOSED", "The character scene is closed.")
+        if self._refreshing:
+            raise _CharacterSceneError(
+                "CHARACTER_SCENE_REFRESHING", "The character scene is refreshing.")
+
+    def _remove_callbacks(self):
+        callback_ids, self._callback_ids = self._callback_ids, []
+        for callback_id in callback_ids:
+            try:
+                om.MMessage.removeCallback(callback_id)
+            except RuntimeError as exc:
+                if self._cleanup_error is None:
+                    self._cleanup_error = exc
+
+    def _emit(self, event):
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception as exc:
+            if cmds is not None:
+                try:
+                    cmds.warning(
+                        "MtoU_LiveLink character event callback failed: {0}".format(exc))
+                except Exception:
+                    pass
+
+    def _on_display_changed(self, message, plug, other_plug, client_data):
+        del other_plug, client_data
+        if self._closed or self._terminal_error is not None:
+            return
+        if not (message & om.MNodeMessage.kAttributeSet):
+            return
+        if plug.partialName(useLongNames=True) != self._display_attribute:
+            return
+        try:
+            if _current_enum_label(self._display_record()) == self._snapshot.outfit:
+                return
+        except _CharacterSceneError as error:
+            self._invalidate(error)
+            return
+        if not self._refreshing:
+            self._refreshing = True
+            self._emit(_CharacterSceneEvent(
+                "character_change_started", snapshot=self._snapshot))
+        self._refresh_generation += 1
+        generation = self._refresh_generation
+        cmds.evalDeferred(lambda: self._refresh_after_display_change(generation))
+
+    def _refresh_after_display_change(self, generation):
+        if self._closed or generation != self._refresh_generation:
+            return
+        try:
+            subject, candidate = self._capture_values(self._snapshot.revision + 1)
+        except _CharacterSceneError as error:
+            self._invalidate(error)
+            return
+        previous = self._snapshot
+        changed = (
+            candidate.outfit != previous.outfit
+            or candidate.bones != previous.bones
+            or candidate.curve_names != previous.curve_names
+            or candidate.duplicate_paths != previous.duplicate_paths)
+        if not changed:
+            candidate = _CharacterSnapshot(
+                previous.revision, candidate.root, candidate.outfit,
+                candidate.bones, candidate.curve_names, candidate.duplicate_paths,
+                candidate.mesh_paths)
+        self._subject = subject
+        self._snapshot = candidate
+        self._refreshing = False
+        self._emit(_CharacterSceneEvent("outfit_changed", snapshot=candidate))
+
+    def _on_root_destroyed(self, *unused):
+        self._invalidate(_CharacterSceneError(
+            "CHARACTER_ROOT_DESTROYED", "The character root was deleted or unloaded."))
+
+    def _on_display_destroyed(self, *unused):
+        self._invalidate(_CharacterSceneError(
+            "DISPLAY_DESTROYED", "The Display controller was deleted or unloaded."))
+
+    def _invalidate(self, error):
+        if self._closed or self._terminal_error is not None:
+            return
+        self._terminal_error = error
+        self._closed = True
+        self._refresh_generation += 1
+        self._refreshing = False
+        self._remove_callbacks()
+        self._subject = None
+        self._emit(_CharacterSceneEvent("character_invalidated", error=error))
+
+
 class _LatestFrame(object):
     def __init__(self):
         self._lock = threading.Lock()
@@ -674,12 +1048,14 @@ class _SenderWorker(threading.Thread):
 class _Controller(object):
     def __init__(self):
         self._worker = None
-        self._subject = None
-        self._role = None
+        self._scene = None
+        self._pending_root = None
+        self._capture_args = None
         self._connection_callback_ids = []
-        self._role_callback_ids = []
         self._script_jobs = []
         self._timer_id = None
+        self._session_revision = None
+        self._outfit_change_was_connected = False
         self._ready = False
         self._warning_shown = False
         self._session_error_shown = False
@@ -696,7 +1072,6 @@ class _Controller(object):
         self._status_text = None
         self._warning_checkbox = None
         self._duplicate_button = None
-        self._duplicate_paths = []
 
     def build_ui(self):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
@@ -762,154 +1137,150 @@ class _Controller(object):
             raise ValueError("请只选择一个 Display 曲线控制器。")
         return _long_transform(selected[0])
 
-    def _choose_enum(self, node, candidates):
-        if len(candidates) == 1:
-            return candidates[0]
-        if not candidates:
+    def _choose_enum(self, candidates):
+        labels = list(candidates)
+        if len(labels) == 1:
+            return labels[0]
+        if not labels:
             raise ValueError("所选控制器没有包含 Clothes 选项的 enum 属性。")
-        labels = [candidate["attribute"] for candidate in candidates]
         result = cmds.confirmDialog(
             title="选择服装属性", message="找到多个候选属性，请选择：",
             button=labels + ["取消"], defaultButton=labels[0], cancelButton="取消",
             dismissString="取消")
         if result == "取消":
             raise ValueError("已取消 Display 属性选择。")
-        return candidates[labels.index(result)]
+        return result
 
-    def _configure_display(self, node):
-        role_root = self._role["root"]
-        role_top = _top_level(role_root)
-        if node != role_top and not node.startswith(role_top + "|"):
-            raise ValueError("Display 控制器必须位于当前角色的同一顶层组内。")
-        if _namespace(node) != _namespace(role_root):
-            raise ValueError("Display 控制器与角色根骨骼的 namespace 不一致。")
-        display = self._choose_enum(node, _enum_attributes(node))
-        display["node"] = node
-        display["dag_path"] = _dag_path(node)
-        self._role["display"] = display
-        self._refresh_role_snapshot()
-        self._register_role_callbacks()
+    def _duplicate_paths(self):
+        if self._scene is None:
+            return ()
+        try:
+            return self._scene.snapshot().duplicate_paths
+        except _CharacterSceneError:
+            return ()
 
-    def _set_duplicate_paths(self, paths):
-        self._duplicate_paths = list(paths)
+    def _refresh_duplicate_button(self):
+        paths = self._duplicate_paths()
         if self._duplicate_button and cmds.control(self._duplicate_button, exists=True):
             cmds.button(
                 self._duplicate_button, edit=True,
-                label="选中重名骨骼（{0}）".format(len(self._duplicate_paths)),
-                enable=bool(self._duplicate_paths))
-
-    def _handle_duplicate_bones(self, error):
-        diagnostic = duplicate_bone_diagnostic(error)
-        self._set_duplicate_paths(diagnostic["duplicate_paths"])
-        self._set_connected(False, diagnostic["summary"])
-        self._show_error(diagnostic)
+                label="选中重名骨骼（{0}）".format(len(paths)),
+                enable=bool(paths))
 
     def select_duplicate_bones(self):
-        existing = [path for path in self._duplicate_paths if cmds.objExists(path)]
+        existing = [path for path in self._duplicate_paths() if cmds.objExists(path)]
         if not existing:
-            self._set_duplicate_paths([])
+            self._refresh_duplicate_button()
             self._set_connected(False, "重名骨骼已不存在，请重新设置角色")
             return
         cmds.select(existing, replace=True)
         self._set_connected(False, "已选中 {0} 个重名骨骼".format(len(existing)))
 
+    def _scene_diagnostic(self, error, default_code="ROLE_SETUP_FAILED"):
+        code = error.code if error.code in DIAGNOSTICS else default_code
+        diagnostic = make_diagnostic(
+            code, error.message, solution=error.message, details=error.details)
+        if error.duplicate_paths:
+            diagnostic["duplicate_paths"] = list(error.duplicate_paths)
+        return diagnostic
+
+    def _capture_scene(self, root, display=None, display_attribute=None):
+        try:
+            scene = _CharacterScene.capture(
+                root, display=display, display_attribute=display_attribute,
+                on_event=self._on_character_scene_event)
+        except _CharacterSceneError as error:
+            if error.code == "AMBIGUOUS_DISPLAY_ATTRIBUTE" and display is not None:
+                attribute = self._choose_enum(
+                    error.context.get("attribute_candidates", ()))
+                return self._capture_scene(root, display, attribute)
+            raise
+        self._scene = scene
+        self._pending_root = None
+        self._capture_args = (root, display, display_attribute)
+        self._render_snapshot(scene.snapshot())
+        return scene
+
+    def _render_snapshot(self, snapshot):
+        self._set_text(self._root_text, "角色根骨骼：" + snapshot.root)
+        self._set_text(self._outfit_text, "当前衣服：" + snapshot.outfit)
+        self._set_text(self._bone_text, "骨骼数：{0}".format(len(snapshot.bones)))
+        self._set_text(self._curve_text, "BlendShape 数：{0}".format(
+            len(snapshot.curve_names)))
+        self._refresh_duplicate_button()
+        self._refresh_fps()
+
     def set_role(self):
         _require_maya()
+        self._clear_role()
         try:
             root = _selected_root()
-            self._clear_role()
-            bones = build_hierarchy(root, _maya_children, allow_duplicates=True)
-            duplicates = duplicate_bone_paths(bones)
-            for bone in bones:
-                bone["dag_path"] = _dag_path(bone["path"])
-            self._role = {"root": root, "bones": bones, "display": None}
-            self._set_duplicate_paths([
-                path for name in sorted(duplicates) for path in duplicates[name]
-            ])
-            self._set_text(self._root_text, "角色根骨骼：" + root)
-            self._set_text(self._bone_text, "骨骼数：{0}".format(len(bones)))
-            candidates = _display_candidates(root)
-            if len(candidates) != 1:
-                raise ValueError(
-                    "无法唯一确定 Display_ctrl，请选择它并点击“手动选择 Display 控制器”。")
-            self._configure_display(candidates[0])
+            self._pending_root = root
+            snapshot = self._capture_scene(root).snapshot()
             status = "角色已设置，可以连接"
-            if duplicates:
+            if snapshot.duplicate_paths:
                 status += "（检测到 {0} 个重名骨骼，将由 UE 尝试映射）".format(
-                    len(self._duplicate_paths))
+                    len(snapshot.duplicate_paths))
             self._set_connected(False, status)
-        except DuplicateBoneNamesError as exc:
-            self._handle_duplicate_bones(exc)
+        except _CharacterSceneError as error:
+            if error.code == "AMBIGUOUS_DISPLAY":
+                self._pending_root = root
+                self._set_text(self._root_text, "角色根骨骼：" + root)
+                self._set_connected(False, error.message)
+            else:
+                self._pending_root = None
+                self._set_connected(False, error.message)
+            self._show_error(self._scene_diagnostic(error))
         except (RuntimeError, ValueError) as exc:
             self._set_connected(False, str(exc))
             code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
             self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
 
     def set_display_controller(self):
-        if not self._role:
+        root = self._pending_root
+        if root is None and self._scene is not None:
+            root = self._scene.snapshot().root
+        if not root:
             self._show_error(make_diagnostic(
                 "INTERNAL_ERROR", "请先选择根骨骼并设置角色。"))
             return
         try:
-            self._configure_display(self._selected_display())
+            self._clear_scene(keep_pending=True)
+            self._pending_root = root
+            self._capture_scene(root, display=self._selected_display())
             self._set_connected(False, "Display 控制器已设置，可以连接")
+        except _CharacterSceneError as error:
+            self._show_error(self._scene_diagnostic(error))
         except (RuntimeError, ValueError) as exc:
             code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
             self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
 
-    def _refresh_role_snapshot(self):
-        if not self._role or not self._role.get("display"):
+    def _on_character_scene_event(self, event):
+        if event.kind == "character_change_started":
+            self._outfit_change_was_connected = self._worker is not None
+            self.disconnect(status="衣服正在切换，正在刷新角色…")
             return
-        subject = _capture_subject(self._role["root"])
-        self._role["subject"] = subject
-        self._role["outfit"] = _current_enum_label(self._role["display"])
-        self._set_text(self._root_text, "角色根骨骼：" + self._role["root"])
-        self._set_text(self._outfit_text, "当前衣服：" + self._role["outfit"])
-        self._set_text(self._bone_text, "骨骼数：{0}".format(len(subject["bones"])))
-        self._set_text(self._curve_text, "BlendShape 数：{0}".format(len(subject["curves"])))
-        self._refresh_fps()
-
-    def _register_role_callbacks(self):
-        self._remove_callbacks(self._role_callback_ids)
-        self._role_callback_ids = []
-        if not self._role or not self._role.get("display"):
+        if event.kind == "outfit_changed":
+            self._render_snapshot(event.snapshot)
+            if self._outfit_change_was_connected:
+                status = (
+                    "衣服已切换为 {0}。请在 UE 删除旧 Actor，放置新 Binding 后重新连接。"
+                ).format(event.snapshot.outfit)
+            else:
+                status = "当前衣服已切换为 {0}。".format(event.snapshot.outfit)
+            self._outfit_change_was_connected = False
+            self._set_connected(False, status)
             return
-        self._role_callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
-            self._role["bones"][0]["dag_path"].node(), self._on_role_destroyed))
-        self._role_callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
-            self._role["display"]["dag_path"].node(), self._on_role_destroyed))
-        self._role_callback_ids.append(om.MNodeMessage.addAttributeChangedCallback(
-            self._role["display"]["dag_path"].node(), self._on_display_changed))
-
-    def _on_display_changed(self, message, plug, other_plug, client_data):
-        del other_plug, client_data
-        if not self._role or not self._role.get("display"):
-            return
-        if not (message & om.MNodeMessage.kAttributeSet):
-            return
-        if plug.partialName(useLongNames=True) != self._role["display"]["attribute"]:
-            return
-        previous = self._role.get("outfit")
-        current = _current_enum_label(self._role["display"])
-        if current == previous:
-            return
-        if self._worker is not None:
-            status = (
-                "衣服已从 {0} 切换为 {1}。"
-                "请在 UE 删除旧 Actor，放置新 Binding 后重新连接。"
-            ).format(previous, current)
-        else:
-            status = "当前衣服已切换为 {0}。".format(current)
-        self.disconnect(status=status)
-        cmds.evalDeferred(self._refresh_after_outfit_change)
-
-    def _refresh_after_outfit_change(self):
-        try:
-            self._refresh_role_snapshot()
-        except DuplicateBoneNamesError as exc:
-            self._handle_duplicate_bones(exc)
-        except (RuntimeError, ValueError) as exc:
-            self._set_connected(False, str(exc))
+        if event.kind == "character_invalidated":
+            was_connected = self._worker is not None
+            error = event.error
+            self.disconnect(status=error.message)
+            self._scene = None
+            self._pending_root = None
+            self._clear_scene_text()
+            if was_connected:
+                diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
+                cmds.evalDeferred(lambda: self._show_error(diagnostic, session=True))
 
     def _on_time_unit_changed(self, *unused):
         fps = self._refresh_fps()
@@ -935,14 +1306,19 @@ class _Controller(object):
         if self._worker is not None:
             return
         try:
-            if self._role is None:
-                self.set_role()
-            if not self._role or not self._role.get("display"):
+            if self._scene is None:
+                if self._capture_args is not None:
+                    self._capture_scene(*self._capture_args)
+                else:
+                    self.set_role()
+            if self._scene is None:
                 return
             fps = validate_frame_rate(frames_per_second(cmds.currentUnit(query=True, time=True)))
-            subject = _capture_subject(self._role["root"])
-        except DuplicateBoneNamesError as exc:
-            self._handle_duplicate_bones(exc)
+            snapshot = self._scene.snapshot()
+        except _CharacterSceneError as error:
+            diagnostic = self._scene_diagnostic(error, "INTERNAL_ERROR")
+            self._set_connected(False, diagnostic["summary"])
+            self._show_error(diagnostic)
             return
         except (RuntimeError, ValueError) as exc:
             code = str(exc) if str(exc) in DIAGNOSTICS else "INVALID_FRAME_RATE" \
@@ -952,9 +1328,9 @@ class _Controller(object):
             self._show_error(diagnostic)
             return
         init_message = make_init_message(
-            [[bone["name"], bone["parent"]] for bone in subject["bones"]],
-            [curve["name"] for curve in subject["curves"]])
-        self._subject = subject
+            [[name, parent] for name, parent in snapshot.bones],
+            list(snapshot.curve_names))
+        self._session_revision = snapshot.revision
         self._worker = _SenderWorker(init_message)
         self._ready = False
         self._warning_shown = False
@@ -1010,33 +1386,41 @@ class _Controller(object):
                 self._warning_shown = True
                 self._show_warning(warning)
         try:
-            transforms, curves = _sample_pose(self._subject)
-            worker.submit(make_frame_message(transforms, curves))
-        except (RuntimeError, ValueError) as exc:
-            diagnostic = make_diagnostic("SAMPLING_FAILED", str(exc), details=str(exc))
+            frame = self._scene.sample()
+            if frame.revision != self._session_revision:
+                raise _CharacterSceneError(
+                    "CHARACTER_REVISION_CHANGED",
+                    "The character description changed during this session.")
+            worker.submit(make_frame_message(list(frame.transforms), list(frame.curves)))
+        except _CharacterSceneError as error:
+            diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
             self.disconnect(status=diagnostic["summary"])
+            self._clear_scene(keep_capture=True)
             self._show_error(diagnostic, session=True)
 
     def _diagnostic_text(self, diagnostic=None):
         diagnostic = diagnostic or self._last_diagnostic
-        role = self._role or {}
-        subject = self._subject or role.get("subject") or {}
+        try:
+            snapshot = self._scene.snapshot() if self._scene is not None else None
+        except _CharacterSceneError:
+            snapshot = None
         warning = self._last_warning
         fps = self._refresh_fps()
         sections = [
             "摘要：{0}".format(diagnostic.get("summary", "—")),
             "解决办法：{0}".format(diagnostic.get("solution", "—")),
             "Error code: {0}".format(diagnostic.get("code", "—")),
-            "Maya root: {0}".format(role.get("root", "—")),
-            "Outfit: {0}".format(role.get("outfit", "—")),
+            "Maya root: {0}".format(snapshot.root if snapshot else "—"),
+            "Outfit: {0}".format(snapshot.outfit if snapshot else "—"),
             "FPS: {0}".format(format_fps(fps) if fps else "—"),
-            "Bones: {0}".format(len(subject.get("bones", []))),
-            "BlendShapes: {0}".format(len(subject.get("curves", []))),
+            "Bones: {0}".format(len(snapshot.bones) if snapshot else 0),
+            "BlendShapes: {0}".format(len(snapshot.curve_names) if snapshot else 0),
             "Maya only: {0}".format(", ".join(warning.get("missing_in_unreal", [])) or "—"),
             "Unreal only: {0}".format(", ".join(warning.get("missing_in_maya", [])) or "—"),
             "Bone name remaps: {0}".format(
                 ", ".join(warning.get("bone_name_remaps", [])) or "—"),
-            "Meshes:\n{0}".format("\n".join(subject.get("meshes", [])) or "—"),
+            "Meshes:\n{0}".format(
+                "\n".join(snapshot.mesh_paths) if snapshot and snapshot.mesh_paths else "—"),
             "Technical details:\n{0}".format(
                 diagnostic.get("details") or diagnostic.get("message") or "—"),
         ]
@@ -1070,8 +1454,9 @@ class _Controller(object):
                 ", ".join(warning["missing_in_unreal"]) or "None",
                 ", ".join(warning["missing_in_maya"]) or "None",
                 ", ".join(warning["bone_name_remaps"]) or "None"))
-        if warning["bone_name_remaps"] and self._duplicate_paths:
-            diagnostic["duplicate_paths"] = list(self._duplicate_paths)
+        duplicate_paths = self._duplicate_paths()
+        if warning["bone_name_remaps"] and duplicate_paths:
+            diagnostic["duplicate_paths"] = list(duplicate_paths)
         self._last_diagnostic = diagnostic
         buttons = ["确定", "查看详情"]
         if diagnostic.get("duplicate_paths"):
@@ -1105,15 +1490,6 @@ class _Controller(object):
     def _on_scene_change(self, *unused):
         self._clear_role()
 
-    def _on_role_destroyed(self, *unused):
-        was_connected = self._worker is not None
-        self._clear_role()
-        if was_connected:
-            diagnostic = make_diagnostic(
-                "SAMPLING_FAILED",
-                "角色根骨骼或 Display 控制器已被删除或卸载。")
-            cmds.evalDeferred(lambda: self._show_error(diagnostic, session=True))
-
     def _remove_callbacks(self, callback_ids):
         for callback_id in list(callback_ids):
             try:
@@ -1135,20 +1511,30 @@ class _Controller(object):
         if worker is not None:
             worker.stop()
             worker.join(1.0)
-        self._subject = None
+        self._session_revision = None
         self._ready = False
         self._set_connected(False, status)
 
-    def _clear_role(self):
-        self.disconnect(status="未设置角色")
-        self._remove_callbacks(self._role_callback_ids)
-        self._role_callback_ids = []
-        self._role = None
+    def _clear_scene_text(self):
         self._set_text(self._root_text, "角色根骨骼：—")
         self._set_text(self._outfit_text, "当前衣服：—")
         self._set_text(self._bone_text, "骨骼数：0")
         self._set_text(self._curve_text, "BlendShape 数：0")
-        self._set_duplicate_paths([])
+        self._refresh_duplicate_button()
+
+    def _clear_scene(self, keep_pending=False, keep_capture=False):
+        scene, self._scene = self._scene, None
+        if scene is not None:
+            scene.close()
+        if not keep_pending:
+            self._pending_root = None
+        if not keep_capture:
+            self._capture_args = None
+
+    def _clear_role(self):
+        self.disconnect(status="未设置角色")
+        self._clear_scene()
+        self._clear_scene_text()
 
     def close(self, *unused):
         self._clear_role()

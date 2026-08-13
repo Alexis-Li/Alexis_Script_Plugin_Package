@@ -27,6 +27,265 @@ class LatestFrameTests(unittest.TestCase):
         self.assertIsNone(slot.take())
 
 
+class CharacterSceneTests(unittest.TestCase):
+    def _capture(self, on_event=None, sample_side_effect=None):
+        removed = []
+        deferred = []
+        callbacks = {"destroyed": [], "changed": []}
+
+        class FakeDagPath(object):
+            def node(self):
+                return object()
+
+        class FakeNodeMessage(object):
+            kAttributeSet = 1
+
+            @staticmethod
+            def addNodeDestroyedCallback(node, callback):
+                del node
+                callbacks["destroyed"].append(callback)
+                return len(callbacks["destroyed"])
+
+            @staticmethod
+            def addAttributeChangedCallback(node, callback):
+                del node
+                callbacks["changed"].append(callback)
+                return 100 + len(callbacks["changed"])
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MNodeMessage": FakeNodeMessage,
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        fake_cmds = type("FakeCmds", (), {
+            "evalDeferred": staticmethod(deferred.append),
+            "warning": staticmethod(lambda message: None),
+        })
+        subject = {
+            "root": "|Group|root",
+            "bones": [
+                {"name": "root", "parent": -1, "path": "|Group|root",
+                 "dag_path": FakeDagPath()},
+                {"name": "spine", "parent": 0, "path": "|Group|root|spine",
+                 "dag_path": FakeDagPath()},
+            ],
+            "meshes": ["|Group|body"],
+            "curves": [{"name": "Smile", "plugs": ["face.Smile"]}],
+            "unit_scale": 1.0,
+        }
+        display = {"attribute": "clothes", "entries": ["Clothes01", "Clothes02"],
+                   "plug": "|Group|Display_ctrl.clothes"}
+        patches = [
+            mock.patch.object(MODULE, "cmds", fake_cmds),
+            mock.patch.object(MODULE, "om", fake_om),
+            mock.patch.object(MODULE._CharacterScene, "_resolve_root",
+                              return_value="|Group|root"),
+            mock.patch.object(MODULE._CharacterScene, "_resolve_display",
+                              return_value=("|Group|Display_ctrl", "clothes")),
+            mock.patch.object(MODULE, "_capture_subject", return_value=subject),
+            mock.patch.object(MODULE, "_enum_attributes", return_value=[display]),
+            mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes01"),
+            mock.patch.object(MODULE, "_dag_path", return_value=FakeDagPath()),
+            mock.patch.object(
+                MODULE, "_sample_pose",
+                side_effect=sample_side_effect
+                if sample_side_effect is not None
+                else lambda captured: ([[1, 2, 3]], [0.25])),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        scene = MODULE._CharacterScene.capture("|Group|root", on_event=on_event)
+        return scene, callbacks, deferred, removed, subject
+
+    def test_snapshot_and_frame_are_values_at_one_revision(self):
+        scene, _, _, _, _ = self._capture()
+
+        snapshot = scene.snapshot()
+        frame = scene.sample()
+
+        self.assertEqual(1, snapshot.revision)
+        self.assertEqual((('root', -1), ('spine', 0)), snapshot.bones)
+        self.assertEqual(("Smile",), snapshot.curve_names)
+        self.assertEqual(1, frame.revision)
+        self.assertEqual(((1, 2, 3),), frame.transforms)
+        self.assertEqual((0.25,), frame.curves)
+        with self.assertRaises(AttributeError):
+            snapshot.revision = 2
+
+    def test_display_change_pauses_sampling_and_coalesces_refresh(self):
+        events = []
+        scene, callbacks, deferred, _, _ = self._capture(events.append)
+
+        class FakePlug(object):
+            @staticmethod
+            def partialName(**kwargs):
+                del kwargs
+                return "clothes"
+
+        changed = callbacks["changed"][0]
+        with mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes02"):
+            changed(1, FakePlug(), None, None)
+            changed(1, FakePlug(), None, None)
+
+        self.assertEqual(["character_change_started"], [event.kind for event in events])
+        with self.assertRaises(MODULE._CharacterSceneError) as caught:
+            scene.sample()
+        self.assertEqual("CHARACTER_SCENE_REFRESHING", caught.exception.code)
+        self.assertEqual(2, len(deferred))
+
+        deferred[0]()
+        self.assertEqual(["character_change_started"], [event.kind for event in events])
+        deferred[1]()
+        self.assertEqual(
+            ["character_change_started", "outfit_changed"],
+            [event.kind for event in events])
+        self.assertEqual(1, scene.snapshot().revision)
+
+    def test_sampling_failure_does_not_terminate_scene(self):
+        scene, _, _, _, _ = self._capture(
+            sample_side_effect=[ValueError("bad pose"), ([[0]], [])])
+
+        with self.assertRaises(MODULE._CharacterSceneError) as caught:
+            scene.sample()
+        self.assertEqual("SAMPLING_FAILED", caught.exception.code)
+        self.assertEqual(1, scene.sample().revision)
+
+    def test_destroyed_character_keeps_terminal_reason_and_cleans_callbacks(self):
+        events = []
+        scene, callbacks, _, removed, _ = self._capture(events.append)
+
+        callbacks["destroyed"][0]()
+
+        self.assertEqual(["character_invalidated"], [event.kind for event in events])
+        for operation in (scene.snapshot, scene.sample):
+            with self.assertRaises(MODULE._CharacterSceneError) as caught:
+                operation()
+            self.assertEqual("CHARACTER_ROOT_DESTROYED", caught.exception.code)
+        self.assertEqual([1, 2, 101], removed)
+        scene.close()
+        self.assertEqual([1, 2, 101], removed)
+
+    def test_close_invalidates_deferred_refresh(self):
+        scene, callbacks, deferred, removed, _ = self._capture()
+
+        class FakePlug(object):
+            @staticmethod
+            def partialName(**kwargs):
+                del kwargs
+                return "clothes"
+
+        with mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes02"):
+            callbacks["changed"][0](1, FakePlug(), None, None)
+        scene.close()
+        deferred[0]()
+
+        self.assertEqual([1, 2, 101], removed)
+        with self.assertRaises(MODULE._CharacterSceneError) as caught:
+            scene.snapshot()
+        self.assertEqual("CHARACTER_SCENE_CLOSED", caught.exception.code)
+
+    def test_refresh_failure_enters_terminal_state(self):
+        events = []
+        scene, callbacks, deferred, removed, _ = self._capture(events.append)
+
+        class FakePlug(object):
+            @staticmethod
+            def partialName(**kwargs):
+                del kwargs
+                return "clothes"
+
+        with mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes02"):
+            callbacks["changed"][0](1, FakePlug(), None, None)
+        with mock.patch.object(
+                scene, "_capture_values",
+                side_effect=MODULE._CharacterSceneError(
+                    "NO_VISIBLE_SKINNED_MESH", "no visible mesh")):
+            deferred[0]()
+
+        self.assertEqual(
+            ["character_change_started", "character_invalidated"],
+            [event.kind for event in events])
+        with self.assertRaises(MODULE._CharacterSceneError) as caught:
+            scene.snapshot()
+        self.assertEqual("NO_VISIBLE_SKINNED_MESH", caught.exception.code)
+        self.assertEqual([1, 2, 101], removed)
+
+    def test_event_consumer_failure_does_not_break_scene(self):
+        scene, callbacks, _, _, _ = self._capture(
+            lambda event: (_ for _ in ()).throw(RuntimeError("consumer failed")))
+
+        class FakePlug(object):
+            @staticmethod
+            def partialName(**kwargs):
+                del kwargs
+                return "clothes"
+
+        with mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes02"):
+            callbacks["changed"][0](1, FakePlug(), None, None)
+
+        with self.assertRaises(MODULE._CharacterSceneError) as caught:
+            scene.sample()
+        self.assertEqual("CHARACTER_SCENE_REFRESHING", caught.exception.code)
+
+    def test_callback_registration_failure_rolls_back_registered_callback(self):
+        removed = []
+
+        class FakeDagPath(object):
+            def node(self):
+                return object()
+
+        class FailingNodeMessage(object):
+            calls = 0
+
+            @classmethod
+            def addNodeDestroyedCallback(cls, node, callback):
+                del node, callback
+                cls.calls += 1
+                if cls.calls == 2:
+                    raise RuntimeError("registration failed")
+                return 41
+
+            @staticmethod
+            def addAttributeChangedCallback(node, callback):
+                del node, callback
+                return 42
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MNodeMessage": FailingNodeMessage,
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        fake_cmds = object()
+        subject = {
+            "root": "|Group|root",
+            "bones": [{"name": "root", "parent": -1, "path": "|Group|root",
+                       "dag_path": FakeDagPath()}],
+            "meshes": ["|Group|body"],
+            "curves": [],
+            "unit_scale": 1.0,
+        }
+        display = {"attribute": "clothes", "entries": ["Clothes01"],
+                   "plug": "|Group|Display_ctrl.clothes"}
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE._CharacterScene, "_resolve_root",
+                               return_value="|Group|root"), \
+             mock.patch.object(MODULE._CharacterScene, "_resolve_display",
+                               return_value=("|Group|Display_ctrl", "clothes")), \
+             mock.patch.object(MODULE, "_capture_subject", return_value=subject), \
+             mock.patch.object(MODULE, "_enum_attributes", return_value=[display]), \
+             mock.patch.object(MODULE, "_current_enum_label", return_value="Clothes01"), \
+             mock.patch.object(MODULE, "_dag_path", return_value=FakeDagPath()):
+            with self.assertRaises(MODULE._CharacterSceneError) as caught:
+                MODULE._CharacterScene.capture("|Group|root")
+
+        self.assertEqual("ROLE_SETUP_FAILED", caught.exception.code)
+        self.assertEqual([41], removed)
+
+
 class SenderLifecycleTests(unittest.TestCase):
     def test_runtime_structured_error_is_preserved(self):
         worker = MODULE._SenderWorker({"type": "init"})
@@ -392,29 +651,32 @@ class ControllerLifecycleTests(unittest.TestCase):
             def removeCallback(callback_id):
                 removed.append(callback_id)
 
-        class FakeDagPath(object):
-            @staticmethod
-            def node():
-                return object()
-
         fake_om = type("FakeOpenMaya", (), {
             "MSceneMessage": FailingSceneMessage,
             "MNodeMessage": type("FakeNodeMessage", (), {}),
             "MTimerMessage": type("FakeTimerMessage", (), {}),
             "MMessage": FakeMessage,
         })
-        subject = {"root": "|root", "bones": [{"name": "root", "parent": -1,
-                                                      "dag_path": FakeDagPath()}],
-                   "curves": []}
+        snapshot = MODULE._CharacterSnapshot(
+            1, "|root", "Clothes01", [("root", -1)], [], [], [])
+
+        class FakeScene(object):
+            @staticmethod
+            def snapshot():
+                return snapshot
+
+            @staticmethod
+            def sample():
+                return MODULE._CharacterFrame(1, [], [])
+
         controller = MODULE._Controller()
-        controller._role = {"root": "|root", "display": {"plug": "Display_ctrl.clothes"}}
+        controller._scene = FakeScene()
         fake_cmds = type("FakeCmds", (), {
             "currentUnit": staticmethod(lambda **kwargs: "film"),
             "confirmDialog": staticmethod(lambda **kwargs: "确定"),
         })
         with mock.patch.object(MODULE, "cmds", fake_cmds), \
              mock.patch.object(MODULE, "om", fake_om), \
-             mock.patch.object(MODULE, "_capture_subject", return_value=subject), \
              mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
             controller.connect()
 
@@ -424,7 +686,7 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertEqual(1.0, worker.joined)
         self.assertEqual([101], removed)
         self.assertIsNone(controller._worker)
-        self.assertIsNone(controller._subject)
+        self.assertIsNone(controller._session_revision)
         self.assertIsNone(controller._timer_id)
         self.assertEqual([], controller._connection_callback_ids)
 

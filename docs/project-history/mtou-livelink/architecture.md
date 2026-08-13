@@ -110,17 +110,26 @@ The Maya side is one directly runnable Python file:
 It owns:
 
 - the small native Maya UI;
-- deformation-root selection and validation;
-- joint hierarchy and BlendShape discovery;
-- namespace normalization;
-- Maya-to-Unreal transform conversion;
-- Maya callback registration and cleanup;
+- a character-scene module that owns deformation-root and Display validation,
+  joint hierarchy and BlendShape discovery, namespace normalization,
+  Maya-to-Unreal transform conversion, pose sampling, and its Maya callbacks;
 - compact JSON message creation;
 - a single localhost TCP client and sender worker.
 
-The file exposes `run()` and declares the sole Maya runtime version. Pure helper
-functions remain importable outside Maya so the protocol and conversion logic
-can be tested without loading the host.
+The character-scene module presents one small interface: capture a completely
+configured character, read its immutable snapshot, sample a frame at the same
+snapshot revision, and close it idempotently. It emits semantic character
+change events rather than exposing Maya callback arguments. Display outfit
+changes pause the current revision immediately, coalesce Maya notifications,
+and atomically publish the refreshed snapshot after deferred scene evaluation.
+The UI controller supplies explicit user selections and renders results; it
+does not own DAG handles, curve plugs, character callbacks, or subject records.
+
+The file exposes `run()` and declares the sole Maya runtime version. The
+character-scene interface is the test surface for scene discovery, sampling,
+refresh, invalidation, and cleanup. Protocol and mathematical conversion
+helpers remain directly testable outside Maya, while host integration tests
+exercise the same character-scene interface in Maya 2022.
 
 ### Unreal plugin
 
