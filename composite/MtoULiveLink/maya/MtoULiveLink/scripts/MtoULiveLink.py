@@ -1045,20 +1045,285 @@ class _SenderWorker(threading.Thread):
                 self._set_status("disconnected", "Disconnected")
 
 
+class _StreamingSessionError(RuntimeError):
+    def __init__(self, code, message="", details="", recapture_scene=False):
+        self._code = code
+        self._message = message or code
+        self._details = details or self._message
+        self._recapture_scene = bool(recapture_scene)
+        super(_StreamingSessionError, self).__init__(self._message)
+
+    @property
+    def code(self):
+        return self._code
+
+    @property
+    def message(self):
+        return self._message
+
+    @property
+    def details(self):
+        return self._details
+
+    @property
+    def recapture_scene(self):
+        return self._recapture_scene
+
+
+def _copy_session_payload(value):
+    if isinstance(value, dict):
+        return {key: _copy_session_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return tuple(_copy_session_payload(item) for item in value)
+    return value
+
+
+class _StreamingSessionEvent(object):
+    def __init__(self, kind, warning=None, diagnostic=None, recapture_scene=False):
+        self._kind = kind
+        self._warning = _copy_session_payload(warning) if warning else None
+        self._diagnostic = _copy_session_payload(diagnostic) if diagnostic else None
+        self._recapture_scene = bool(recapture_scene)
+
+    @property
+    def kind(self):
+        return self._kind
+
+    @property
+    def warning(self):
+        return _copy_session_payload(self._warning) if self._warning else None
+
+    @property
+    def diagnostic(self):
+        return _copy_session_payload(self._diagnostic) if self._diagnostic else None
+
+    @property
+    def recapture_scene(self):
+        return self._recapture_scene
+
+
+class _StreamingSession(object):
+    """Owns one Maya-to-Unreal streaming connection lifecycle."""
+
+    def __init__(self, scene, fps, on_event):
+        self._scene = scene
+        self._fps = fps
+        self._on_event = on_event
+        self._worker = None
+        self._worker_started = False
+        self._callback_ids = []
+        self._timer_id = None
+        self._revision = None
+        self._phase = "starting"
+        self._outcome = None
+        self._terminal_event = None
+        self._cleanup_pending = False
+        self._cleaned = False
+        self._cleanup_error = None
+
+    @classmethod
+    def start(cls, scene, fps, on_event=None):
+        try:
+            fps = validate_frame_rate(fps)
+            snapshot = scene.snapshot()
+        except _CharacterSceneError as error:
+            raise _StreamingSessionError(
+                error.code, error.message, error.details, recapture_scene=True)
+        except (RuntimeError, ValueError) as exc:
+            raise _StreamingSessionError(
+                "INVALID_FRAME_RATE", str(exc), details=str(exc))
+        session = cls(scene, fps, on_event)
+        try:
+            session._start(snapshot)
+        except Exception as exc:
+            session._cleanup()
+            if isinstance(exc, _StreamingSessionError):
+                raise
+            raise _StreamingSessionError(
+                "INTERNAL_ERROR", str(exc), details=str(exc))
+        return session
+
+    def _start(self, snapshot):
+        init_message = make_init_message(
+            [[name, parent] for name, parent in snapshot.bones],
+            list(snapshot.curve_names))
+        self._worker = _SenderWorker(init_message)
+        self._revision = snapshot.revision
+        self._worker.start()
+        self._worker_started = True
+        for message in (
+                om.MSceneMessage.kBeforeNew,
+                om.MSceneMessage.kBeforeOpen,
+                om.MSceneMessage.kMayaExiting):
+            self._callback_ids.append(
+                om.MSceneMessage.addCallback(message, self._on_scene_change))
+        self._timer_id = om.MTimerMessage.addTimerCallback(
+            1.0 / self._fps, self._on_timer)
+        self._phase = "connecting"
+
+    def change_rate(self, fps):
+        if self._outcome is not None:
+            return
+        try:
+            fps = validate_frame_rate(fps)
+        except (RuntimeError, ValueError) as exc:
+            self._request_failure(
+                make_diagnostic("INVALID_FRAME_RATE", str(exc), details=str(exc)),
+                recapture_scene=False)
+            return
+        old_timer = self._timer_id
+        try:
+            new_timer = om.MTimerMessage.addTimerCallback(
+                1.0 / fps, self._on_timer)
+        except (RuntimeError, ValueError) as exc:
+            self._request_failure(
+                make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
+                recapture_scene=False)
+            return
+        if old_timer is not None:
+            try:
+                om.MMessage.removeCallback(old_timer)
+            except RuntimeError as exc:
+                self._remove_callback(new_timer)
+                self._request_failure(
+                    make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
+                    recapture_scene=False)
+                return
+        self._timer_id = new_timer
+        self._fps = fps
+
+    def stop(self):
+        if self._outcome is None:
+            self._outcome = "stopped"
+            self._terminal_event = _StreamingSessionEvent("stopped")
+            self._phase = "terminal"
+        elif self._cleaned:
+            return
+        self._finish_terminal()
+
+    def _on_scene_change(self, *unused):
+        self.stop()
+
+    def _on_timer(self, elapsed, last_time, client_data):
+        del elapsed, last_time, client_data
+        if self._outcome is not None or self._worker is None:
+            return
+        state, detail, warning, diagnostic = self._worker.status()
+        if state == "error":
+            del detail, warning
+            self._request_failure(
+                diagnostic or make_diagnostic("INTERNAL_ERROR", "Streaming failed."),
+                recapture_scene=False)
+            return
+        if state == "disconnected":
+            self._request_failure(
+                make_diagnostic(
+                    "STREAM_INTERRUPTED", detail or "Live Link connection ended.",
+                    details=detail or "The streaming worker disconnected unexpectedly."),
+                recapture_scene=False)
+            return
+        if state != "ready":
+            return
+        if self._phase == "connecting":
+            self._phase = "ready"
+            self._emit(_StreamingSessionEvent("ready", warning=warning))
+        try:
+            frame = self._scene.sample()
+        except _CharacterSceneError as error:
+            self._request_failure(
+                make_diagnostic(
+                    error.code if error.code in DIAGNOSTICS else "SAMPLING_FAILED",
+                    error.message, details=error.details),
+                recapture_scene=True)
+            return
+        if frame.revision != self._revision:
+            self._request_failure(
+                make_diagnostic(
+                    "SAMPLING_FAILED",
+                    "The character description changed during this session.",
+                    details="character scene revision changed from {0} to {1}".format(
+                        self._revision, frame.revision)),
+                recapture_scene=True)
+            return
+        self._worker.submit(make_frame_message(
+            list(frame.transforms), list(frame.curves)))
+
+    def _request_failure(self, diagnostic, recapture_scene):
+        if self._outcome is not None:
+            return
+        self._outcome = "failed"
+        self._phase = "terminal"
+        self._terminal_event = _StreamingSessionEvent(
+            "failed", diagnostic=diagnostic, recapture_scene=recapture_scene)
+        if not self._cleanup_pending:
+            self._cleanup_pending = True
+            cmds.evalDeferred(self._finish_terminal)
+
+    def _finish_terminal(self):
+        if self._cleaned:
+            return
+        self._cleanup_pending = False
+        self._cleanup()
+        self._cleaned = True
+        event, self._terminal_event = self._terminal_event, None
+        if event is not None:
+            self._emit(event)
+
+    def _cleanup(self):
+        if self._cleaned:
+            return
+        callback_ids, self._callback_ids = self._callback_ids, []
+        timer_id, self._timer_id = self._timer_id, None
+        for callback_id in callback_ids:
+            self._remove_callback(callback_id)
+        if timer_id is not None:
+            self._remove_callback(timer_id)
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception as exc:
+                self._record_cleanup_error(exc)
+            if self._worker_started:
+                try:
+                    worker.join(1.0)
+                except Exception as exc:
+                    self._record_cleanup_error(exc)
+        self._worker_started = False
+
+    def _remove_callback(self, callback_id):
+        try:
+            om.MMessage.removeCallback(callback_id)
+        except RuntimeError as exc:
+            self._record_cleanup_error(exc)
+
+    def _record_cleanup_error(self, error):
+        if self._cleanup_error is None:
+            self._cleanup_error = error
+
+    def _emit(self, event):
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception as exc:
+            if cmds is not None:
+                try:
+                    cmds.warning(
+                        "MtoU_LiveLink session event callback failed: {0}".format(exc))
+                except Exception:
+                    pass
+
+
 class _Controller(object):
     def __init__(self):
-        self._worker = None
+        self._session = None
         self._scene = None
         self._pending_root = None
         self._capture_args = None
-        self._connection_callback_ids = []
         self._script_jobs = []
-        self._timer_id = None
-        self._session_revision = None
         self._outfit_change_was_connected = False
-        self._ready = False
-        self._warning_shown = False
-        self._session_error_shown = False
+        self._pending_stop_status = None
         self._last_diagnostic = make_diagnostic("INTERNAL_ERROR", "暂无诊断信息")
         self._last_warning = {"missing_in_unreal": [], "missing_in_maya": [],
                               "bone_name_remaps": [],
@@ -1257,7 +1522,7 @@ class _Controller(object):
 
     def _on_character_scene_event(self, event):
         if event.kind == "character_change_started":
-            self._outfit_change_was_connected = self._worker is not None
+            self._outfit_change_was_connected = self._session is not None
             self.disconnect(status="衣服正在切换，正在刷新角色…")
             return
         if event.kind == "outfit_changed":
@@ -1272,7 +1537,7 @@ class _Controller(object):
             self._set_connected(False, status)
             return
         if event.kind == "character_invalidated":
-            was_connected = self._worker is not None
+            was_connected = self._session is not None
             error = event.error
             self.disconnect(status=error.message)
             self._scene = None
@@ -1285,25 +1550,21 @@ class _Controller(object):
     def _on_time_unit_changed(self, *unused):
         fps = self._refresh_fps()
         if fps is None:
-            if self._worker is not None:
-                diagnostic = make_diagnostic("INVALID_FRAME_RATE")
-                self.disconnect(status=diagnostic["summary"])
-                self._show_error(diagnostic, session=True)
+            if self._session is not None:
+                self._session.change_rate(0.0)
             return
         try:
             validate_frame_rate(fps)
-        except ValueError as exc:
-            if self._worker is not None:
-                diagnostic = make_diagnostic("INVALID_FRAME_RATE", str(exc), details=str(exc))
-                self.disconnect(status=diagnostic["summary"])
-                self._show_error(diagnostic, session=True)
+        except ValueError:
+            if self._session is not None:
+                self._session.change_rate(fps)
             return
-        if self._worker is not None:
-            self._restart_timer(fps)
+        if self._session is not None:
+            self._session.change_rate(fps)
 
     def connect(self):
         _require_maya()
-        if self._worker is not None:
+        if self._session is not None:
             return
         try:
             if self._scene is None:
@@ -1314,7 +1575,6 @@ class _Controller(object):
             if self._scene is None:
                 return
             fps = validate_frame_rate(frames_per_second(cmds.currentUnit(query=True, time=True)))
-            snapshot = self._scene.snapshot()
         except _CharacterSceneError as error:
             diagnostic = self._scene_diagnostic(error, "INTERNAL_ERROR")
             self._set_connected(False, diagnostic["summary"])
@@ -1327,76 +1587,56 @@ class _Controller(object):
             self._set_connected(False, diagnostic["summary"])
             self._show_error(diagnostic)
             return
-        init_message = make_init_message(
-            [[name, parent] for name, parent in snapshot.bones],
-            list(snapshot.curve_names))
-        self._session_revision = snapshot.revision
-        self._worker = _SenderWorker(init_message)
-        self._ready = False
-        self._warning_shown = False
-        self._session_error_shown = False
         self._last_warning = {"missing_in_unreal": [], "missing_in_maya": [],
                               "bone_name_remaps": [],
                               "has_warning": False}
         self._set_connected(False, "正在连接 Unreal…")
-        self._worker.start()
+        holder = {}
+
+        def on_event(event):
+            self._on_streaming_session_event(holder.get("session"), event)
+
         try:
-            self._connection_callback_ids.append(
-                om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeNew, self._on_scene_change))
-            self._connection_callback_ids.append(
-                om.MSceneMessage.addCallback(om.MSceneMessage.kBeforeOpen, self._on_scene_change))
-            self._connection_callback_ids.append(
-                om.MSceneMessage.addCallback(om.MSceneMessage.kMayaExiting, self._on_scene_change))
-            self._restart_timer(fps)
-        except Exception as exc:
-            diagnostic = make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc))
-            self.disconnect(status=diagnostic["summary"])
-            self._show_error(diagnostic, session=True)
+            session = _StreamingSession.start(self._scene, fps, on_event)
+        except _StreamingSessionError as error:
+            diagnostic = make_diagnostic(
+                error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
+                error.message, details=error.details)
+            if error.recapture_scene:
+                self._clear_scene(keep_capture=True)
+            self._set_connected(False, diagnostic["summary"])
+            self._show_error(diagnostic)
+            return
+        holder["session"] = session
+        self._session = session
 
-    def _restart_timer(self, fps):
-        timer_id, self._timer_id = self._timer_id, None
-        if timer_id is not None:
-            try:
-                om.MMessage.removeCallback(timer_id)
-            except RuntimeError:
-                pass
-        self._timer_id = om.MTimerMessage.addTimerCallback(1.0 / fps, self._on_timer)
-
-    def _on_timer(self, elapsed, last_time, client_data):
-        del elapsed, last_time, client_data
-        worker = self._worker
-        if worker is None:
+    def _on_streaming_session_event(self, session, event):
+        if session is None or self._session is not session:
             return
-        state, detail, warning, diagnostic = worker.status()
-        if state == "error":
-            diagnostic = diagnostic or make_diagnostic("INTERNAL_ERROR", detail)
-            self.disconnect(status=diagnostic["summary"])
-            self._show_error(diagnostic, session=True)
-            return
-        if state != "ready":
-            self._set_connected(False, "正在连接 Unreal…")
-            return
-        if not self._ready:
-            self._ready = True
+        if event.kind == "ready":
+            warning = event.warning or {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False}
             self._last_warning = warning
-            status = "已连接（有警告）" if warning["has_warning"] else "已连接"
-            self._set_connected(True, status)
-            if warning["has_warning"] and not self._warning_shown \
+            self._set_connected(
+                True, "已连接（有警告）" if warning["has_warning"] else "已连接")
+            if warning["has_warning"] \
                     and cmds.checkBox(self._warning_checkbox, query=True, value=True):
-                self._warning_shown = True
                 self._show_warning(warning)
-        try:
-            frame = self._scene.sample()
-            if frame.revision != self._session_revision:
-                raise _CharacterSceneError(
-                    "CHARACTER_REVISION_CHANGED",
-                    "The character description changed during this session.")
-            worker.submit(make_frame_message(list(frame.transforms), list(frame.curves)))
-        except _CharacterSceneError as error:
-            diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
-            self.disconnect(status=diagnostic["summary"])
-            self._clear_scene(keep_capture=True)
-            self._show_error(diagnostic, session=True)
+            return
+        self._session = None
+        if event.kind == "failed":
+            diagnostic = event.diagnostic or make_diagnostic("INTERNAL_ERROR")
+            self._last_diagnostic = diagnostic
+            if event.recapture_scene:
+                self._clear_scene(keep_capture=True)
+            self._set_connected(False, diagnostic["summary"])
+            self._show_error(diagnostic)
+            return
+        if event.kind == "stopped":
+            status = self._pending_stop_status or "已断开连接"
+            self._pending_stop_status = None
+            self._set_connected(False, status)
 
     def _diagnostic_text(self, diagnostic=None):
         diagnostic = diagnostic or self._last_diagnostic
@@ -1471,10 +1711,7 @@ class _Controller(object):
             self.show_diagnostics()
 
     def _show_error(self, diagnostic, session=False):
-        if session and self._session_error_shown:
-            return
-        if session:
-            self._session_error_shown = True
+        del session
         self._last_diagnostic = diagnostic
         buttons = ["确定", "查看详情"]
         if diagnostic.get("duplicate_paths"):
@@ -1490,30 +1727,14 @@ class _Controller(object):
     def _on_scene_change(self, *unused):
         self._clear_role()
 
-    def _remove_callbacks(self, callback_ids):
-        for callback_id in list(callback_ids):
-            try:
-                om.MMessage.removeCallback(callback_id)
-            except RuntimeError:
-                pass
-
     def disconnect(self, keep_error=False, status="已断开连接"):
         del keep_error
-        timer_id, self._timer_id = self._timer_id, None
-        if timer_id is not None:
-            try:
-                om.MMessage.removeCallback(timer_id)
-            except RuntimeError:
-                pass
-        self._remove_callbacks(self._connection_callback_ids)
-        self._connection_callback_ids = []
-        worker, self._worker = self._worker, None
-        if worker is not None:
-            worker.stop()
-            worker.join(1.0)
-        self._session_revision = None
-        self._ready = False
-        self._set_connected(False, status)
+        session = self._session
+        if session is None:
+            self._set_connected(False, status)
+            return
+        self._pending_stop_status = status
+        session.stop()
 
     def _clear_scene_text(self):
         self._set_text(self._root_text, "角色根骨骼：—")

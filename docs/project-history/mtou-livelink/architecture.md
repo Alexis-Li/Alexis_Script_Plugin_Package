@@ -113,6 +113,9 @@ It owns:
 - a character-scene module that owns deformation-root and Display validation,
   joint hierarchy and BlendShape discovery, namespace normalization,
   Maya-to-Unreal transform conversion, pose sampling, and its Maya callbacks;
+- a streaming-session module that owns one connection attempt, its sender
+  worker, sampling timer, connection-lifetime callbacks, fixed character
+  revision, state transitions, and idempotent cleanup;
 - compact JSON message creation;
 - a single localhost TCP client and sender worker.
 
@@ -125,11 +128,23 @@ and atomically publish the refreshed snapshot after deferred scene evaluation.
 The UI controller supplies explicit user selections and renders results; it
 does not own DAG handles, curve plugs, character callbacks, or subject records.
 
+Each streaming session borrows one character scene and exposes only start,
+frame-rate change, and stop operations. Starting is transactional: a session is
+returned only after its worker, scene callbacks, and sampling timer are all
+active. It reports ready, failed, and stopped outcomes as semantic events,
+defers failure cleanup out of Maya timer callbacks, and preserves the first
+terminal outcome when failure and user stop race. Scene sampling or revision
+failures require a fresh character capture; transport failures leave the
+configured character scene reusable. The UI controller renders these events
+but does not own worker, timer, connection callback, or negotiation state.
+
 The file exposes `run()` and declares the sole Maya runtime version. The
 character-scene interface is the test surface for scene discovery, sampling,
-refresh, invalidation, and cleanup. Protocol and mathematical conversion
+refresh, invalidation, and cleanup. The streaming-session interface is the test
+surface for startup rollback, negotiation state, sampling handoff, frame-rate
+changes, terminal races, and cleanup. Protocol and mathematical conversion
 helpers remain directly testable outside Maya, while host integration tests
-exercise the same character-scene interface in Maya 2022.
+exercise both interfaces in Maya 2022.
 
 ### Unreal plugin
 

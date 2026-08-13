@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 try:
     import maya.standalone
@@ -172,6 +173,47 @@ class MayaHostTests(unittest.TestCase):
             scene.sample()
         self.assertEqual("SAMPLING_FAILED", caught.exception.code)
         self.assertIn("conflicting values for BlendShape alias Smile", caught.exception.details)
+
+    def test_streaming_session_uses_real_maya_callbacks_and_timer_cleanup(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, mesh)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        events = []
+
+        class FakeWorker(object):
+            instance = None
+
+            def __init__(self, init_message):
+                self.init_message = init_message
+                self.stopped = False
+                self.joined = None
+                self.__class__.instance = self
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("connecting", "Connecting", None, None)
+
+            def stop(self):
+                self.stopped = True
+
+            def join(self, timeout):
+                self.joined = timeout
+
+        with mock.patch.object(module, "_SenderWorker", FakeWorker):
+            session = module._StreamingSession.start(scene, 24.0, events.append)
+            session.change_rate(30.0)
+            session.stop()
+            session.stop()
+
+        self.assertEqual(["stopped"], [event.kind for event in events])
+        self.assertTrue(FakeWorker.instance.stopped)
+        self.assertEqual(1.0, FakeWorker.instance.joined)
+        self.assertEqual(2, FakeWorker.instance.init_message["version"])
 
 
 if __name__ == "__main__":

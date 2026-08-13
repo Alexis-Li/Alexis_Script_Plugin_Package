@@ -286,6 +286,596 @@ class CharacterSceneTests(unittest.TestCase):
         self.assertEqual([41], removed)
 
 
+class StreamingSessionTests(unittest.TestCase):
+    def _runtime(self, timer_callbacks=None,
+                 deferred=None, removed=None, timer_factory=None):
+        timer_callbacks = timer_callbacks if timer_callbacks is not None else []
+        deferred = deferred if deferred is not None else []
+        removed = removed if removed is not None else []
+        if timer_factory is None:
+            def timer_factory(interval, callback):
+                del interval
+                timer_callbacks.append(callback)
+                return 20 + len(timer_callbacks)
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(timer_factory),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        fake_cmds = type("FakeCmds", (), {
+            "evalDeferred": staticmethod(deferred.append),
+            "warning": staticmethod(lambda message: None),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+        return fake_om, fake_cmds, scene
+
+    def test_start_and_stop_are_one_complete_session_lifecycle(self):
+        events = []
+        removed = []
+        registered = []
+
+        class FakeWorker(object):
+            def __init__(self, init_message):
+                self.init_message = init_message
+                self.started = False
+                self.stopped = False
+                self.joined = None
+
+            def start(self):
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+            def join(self, timeout):
+                self.joined = timeout
+
+        class FakeSceneMessage(object):
+            kBeforeNew = 1
+            kBeforeOpen = 2
+            kMayaExiting = 3
+
+            @staticmethod
+            def addCallback(message, callback):
+                registered.append((message, callback))
+                return 10 + message
+
+        class FakeTimerMessage(object):
+            @staticmethod
+            def addTimerCallback(interval, callback):
+                registered.append((interval, callback))
+                return 20
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": FakeSceneMessage,
+            "MTimerMessage": FakeTimerMessage,
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], ["Smile"])
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            session.stop()
+            session.stop()
+
+        self.assertEqual(["stopped"], [event.kind for event in events])
+        self.assertEqual([11, 12, 13, 20], removed)
+
+    def test_ready_is_emitted_once_and_each_tick_submits_a_scene_frame(self):
+        events = []
+        timer_callbacks = []
+
+        class FakeWorker(object):
+            instance = None
+
+            def __init__(self, init_message):
+                del init_message
+                self.submitted = []
+                self.__class__.instance = self
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("ready", "Connected", {
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "has_warning": False,
+                }, None)
+
+            def submit(self, frame):
+                self.submitted.append(frame)
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], ["Smile"])
+        scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [0.25])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            timer_callbacks[0](0.0, 0.0, None)
+            timer_callbacks[0](0.0, 0.0, None)
+            session.stop()
+
+        self.assertEqual(["ready", "stopped"], [event.kind for event in events])
+        self.assertEqual(2, scene.sample.call_count)
+        self.assertEqual(2, len(FakeWorker.instance.submitted))
+
+    def test_worker_failure_defers_cleanup_and_wins_over_later_stop(self):
+        events = []
+        deferred = []
+        removed = []
+        timer_callbacks = []
+        diagnostic = MODULE.make_diagnostic(
+            "STREAM_INTERRUPTED", "connection lost", details="socket closed")
+
+        class FakeWorker(object):
+            instance = None
+
+            def __init__(self, init_message):
+                del init_message
+                self.stop_count = 0
+                self.join_count = 0
+                self.__class__.instance = self
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("error", "connection lost", None, diagnostic)
+
+            def stop(self):
+                self.stop_count += 1
+
+            def join(self, timeout):
+                del timeout
+                self.join_count += 1
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        fake_cmds = type("FakeCmds", (), {
+            "evalDeferred": staticmethod(deferred.append),
+            "warning": staticmethod(lambda message: None),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            timer_callbacks[0](0.0, 0.0, None)
+            self.assertEqual([], events)
+            self.assertEqual([], removed)
+            session.stop()
+            deferred[0]()
+
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual("STREAM_INTERRUPTED", events[0].diagnostic["code"])
+        self.assertFalse(events[0].recapture_scene)
+        self.assertEqual([11, 12, 13, 20], removed)
+        self.assertEqual(1, FakeWorker.instance.stop_count)
+        self.assertEqual(1, FakeWorker.instance.join_count)
+
+    def test_sampling_failure_requires_scene_recapture(self):
+        events = []
+        deferred = []
+        timer_callbacks = []
+
+        class FakeWorker(object):
+            def __init__(self, init_message):
+                del init_message
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("ready", "Connected", {
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "has_warning": False,
+                }, None)
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        fake_cmds = type("FakeCmds", (), {
+            "evalDeferred": staticmethod(deferred.append),
+            "warning": staticmethod(lambda message: None),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+        scene.sample.side_effect = MODULE._CharacterSceneError(
+            "SAMPLING_FAILED", "bad pose", details="bad plug")
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+            MODULE._StreamingSession.start(scene, 24.0, events.append)
+            timer_callbacks[0](0.0, 0.0, None)
+            deferred[0]()
+
+        self.assertEqual(["ready", "failed"], [event.kind for event in events])
+        self.assertTrue(events[1].recapture_scene)
+        self.assertEqual("SAMPLING_FAILED", events[1].diagnostic["code"])
+
+    def test_change_rate_replaces_timer_and_invalid_rate_fails_session(self):
+        events = []
+        deferred = []
+        intervals = []
+        removed = []
+
+        class FakeWorker(object):
+            def __init__(self, init_message):
+                del init_message
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: intervals.append(interval) or (20 + len(intervals))),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        fake_cmds = type("FakeCmds", (), {
+            "evalDeferred": staticmethod(deferred.append),
+            "warning": staticmethod(lambda message: None),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            session.change_rate(30.0)
+            session.change_rate(120.0)
+            deferred[0]()
+
+        self.assertEqual([1.0 / 24.0, 1.0 / 30.0], intervals)
+        self.assertIn(21, removed)
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual("INVALID_FRAME_RATE", events[0].diagnostic["code"])
+
+    def test_change_rate_fails_and_removes_new_timer_when_old_timer_cannot_be_removed(self):
+        events = []
+        deferred = []
+        timers = []
+        removal_attempts = []
+        failed_once = [False]
+
+        def remove_callback(callback_id):
+            removal_attempts.append(callback_id)
+            if callback_id == 21 and not failed_once[0]:
+                failed_once[0] = True
+                raise RuntimeError("old timer removal failed")
+
+        fake_om, fake_cmds, scene = self._runtime(timers, deferred)
+        fake_om.MMessage.removeCallback = staticmethod(remove_callback)
+        worker = mock.Mock()
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            session.change_rate(30.0)
+            deferred[0]()
+
+        self.assertEqual(2, len(timers))
+        self.assertEqual([21, 22, 11, 12, 13, 21], removal_attempts)
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual("INTERNAL_ERROR", events[0].diagnostic["code"])
+
+    def test_event_payloads_copy_dicts_and_freeze_nested_sequences(self):
+        warning = {
+            "missing_in_unreal": ["Jaw"],
+            "missing_in_maya": [],
+            "bone_name_remaps": [["Root", "root"]],
+            "has_warning": True,
+        }
+        event = MODULE._StreamingSessionEvent("ready", warning=warning)
+        warning["missing_in_unreal"].append("Neck")
+        warning["bone_name_remaps"][0].append("extra")
+        first_read = event.warning
+        first_read["has_warning"] = False
+
+        self.assertEqual(("Jaw",), event.warning["missing_in_unreal"])
+        self.assertEqual((("Root", "root"),), event.warning["bone_name_remaps"])
+        self.assertTrue(event.warning["has_warning"])
+
+    def test_unexpected_worker_disconnect_is_stream_interrupted(self):
+        events = []
+        deferred = []
+        timers = []
+
+        class DisconnectedWorker(object):
+            def __init__(self, init_message):
+                del init_message
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("disconnected", "peer closed", None, None)
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om, fake_cmds, scene = self._runtime(timers, deferred)
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", DisconnectedWorker):
+            MODULE._StreamingSession.start(scene, 24.0, events.append)
+            timers[0](0.0, 0.0, None)
+            deferred[0]()
+
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual("STREAM_INTERRUPTED", events[0].diagnostic["code"])
+        self.assertFalse(events[0].recapture_scene)
+
+    def test_timer_start_failure_rolls_back_worker_and_callbacks(self):
+        removed = []
+        worker = mock.Mock()
+        worker.is_alive.return_value = False
+        fake_worker_type = mock.Mock(return_value=worker)
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: (_ for _ in ()).throw(
+                        RuntimeError("timer failed"))),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(removed.append),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", fake_worker_type):
+            with self.assertRaises(MODULE._StreamingSessionError) as caught:
+                MODULE._StreamingSession.start(scene, 24.0, None)
+
+        self.assertEqual("INTERNAL_ERROR", caught.exception.code)
+        self.assertEqual([11, 12, 13], removed)
+        worker.stop.assert_called_once_with()
+        worker.join.assert_called_once_with(1.0)
+
+    def test_worker_start_failure_preserves_original_error(self):
+        worker = mock.Mock()
+        worker.start.side_effect = RuntimeError("thread start failed")
+        fake_worker_type = mock.Mock(return_value=worker)
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+
+        with mock.patch.object(MODULE, "_SenderWorker", fake_worker_type):
+            with self.assertRaises(MODULE._StreamingSessionError) as caught:
+                MODULE._StreamingSession.start(scene, 24.0, None)
+
+        self.assertEqual("INTERNAL_ERROR", caught.exception.code)
+        self.assertEqual("thread start failed", caught.exception.details)
+        worker.stop.assert_called_once_with()
+        worker.join.assert_not_called()
+
+    def test_each_callback_registration_failure_rolls_back_prior_resources(self):
+        for failing_call in (1, 2, 3):
+            removed = []
+            calls = [0]
+            worker = mock.Mock()
+
+            def add_callback(message, callback):
+                del message, callback
+                calls[0] += 1
+                if calls[0] == failing_call:
+                    raise RuntimeError("callback failed")
+                return 10 + calls[0]
+
+            fake_om, fake_cmds, scene = self._runtime(removed=removed)
+            fake_om.MSceneMessage.addCallback = staticmethod(add_callback)
+            with self.subTest(failing_call=failing_call), \
+                 mock.patch.object(MODULE, "om", fake_om), \
+                 mock.patch.object(MODULE, "cmds", fake_cmds), \
+                 mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+                with self.assertRaises(MODULE._StreamingSessionError):
+                    MODULE._StreamingSession.start(scene, 24.0, None)
+
+            self.assertEqual(
+                [11 + offset for offset in range(failing_call - 1)], removed)
+            worker.stop.assert_called_once_with()
+            worker.join.assert_called_once_with(1.0)
+
+    def test_cleanup_failures_do_not_mask_terminal_event_or_skip_worker_join(self):
+        events = []
+        removal_attempts = []
+        worker = mock.Mock()
+        worker.stop.side_effect = RuntimeError("worker stop failed")
+
+        def remove_callback(callback_id):
+            removal_attempts.append(callback_id)
+            if callback_id == 11:
+                raise RuntimeError("callback removal failed")
+
+        fake_om, fake_cmds, scene = self._runtime()
+        fake_om.MMessage.removeCallback = staticmethod(remove_callback)
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            session.stop()
+
+        self.assertEqual([11, 12, 13, 21], removal_attempts)
+        worker.join.assert_called_once_with(1.0)
+        self.assertEqual(["stopped"], [event.kind for event in events])
+
+    def test_revision_change_fails_after_ready_and_requires_recapture(self):
+        events = []
+        timers = []
+        deferred = []
+        worker = mock.Mock()
+        worker.status.return_value = ("ready", "Connected", None, None)
+        fake_om, fake_cmds, scene = self._runtime(timers, deferred)
+        scene.sample.return_value = MODULE._CharacterFrame(8, [], [])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            MODULE._StreamingSession.start(scene, 24.0, events.append)
+            timers[0](0.0, 0.0, None)
+            deferred[0]()
+
+        self.assertEqual(["ready", "failed"], [event.kind for event in events])
+        self.assertEqual("SAMPLING_FAILED", events[1].diagnostic["code"])
+        self.assertTrue(events[1].recapture_scene)
+
+    def test_rate_timer_creation_failure_keeps_old_timer_until_terminal_cleanup(self):
+        events = []
+        deferred = []
+        removed = []
+        timer_calls = [0]
+
+        def timer_factory(interval, callback):
+            del interval, callback
+            timer_calls[0] += 1
+            if timer_calls[0] == 2:
+                raise RuntimeError("new timer failed")
+            return 20
+
+        fake_om, fake_cmds, scene = self._runtime(
+            deferred=deferred, removed=removed, timer_factory=timer_factory)
+        worker = mock.Mock()
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(scene, 24.0, events.append)
+            session.change_rate(30.0)
+            self.assertEqual([], removed)
+            deferred[0]()
+
+        self.assertEqual([11, 12, 13, 20], removed)
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual("INTERNAL_ERROR", events[0].diagnostic["code"])
+
+    def test_event_consumer_failure_does_not_break_frame_submission(self):
+        timers = []
+        warnings = []
+        worker = mock.Mock()
+        worker.status.return_value = ("ready", "Connected", None, None)
+        fake_om, fake_cmds, scene = self._runtime(timers)
+        fake_cmds.warning = staticmethod(warnings.append)
+        scene.sample.return_value = MODULE._CharacterFrame(7, [], [])
+
+        def reject_event(event):
+            del event
+            raise RuntimeError("consumer failed")
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(scene, 24.0, reject_event)
+            timers[0](0.0, 0.0, None)
+            session.stop()
+
+        worker.submit.assert_called_once()
+        self.assertEqual(2, len(warnings))
+
+    def test_late_timer_tick_after_stop_is_ignored(self):
+        timers = []
+        worker = mock.Mock()
+        fake_om, fake_cmds, scene = self._runtime(timers)
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(scene, 24.0, None)
+            session.stop()
+            timers[0](0.0, 0.0, None)
+
+        worker.status.assert_not_called()
+        scene.sample.assert_not_called()
+
+
 class SenderLifecycleTests(unittest.TestCase):
     def test_runtime_structured_error_is_preserved(self):
         worker = MODULE._SenderWorker({"type": "init"})
@@ -612,51 +1202,7 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertNotIn("height", create_call.kwargs)
         self.assertNotIn("widthHeight", create_call.kwargs)
 
-    def test_connect_rolls_back_worker_and_registered_callbacks_on_setup_error(self):
-        class FakeWorker(object):
-            instances = []
-
-            def __init__(self, init_message):
-                self.started = False
-                self.stopped = False
-                self.joined = None
-                self.__class__.instances.append(self)
-
-            def start(self):
-                self.started = True
-
-            def stop(self):
-                self.stopped = True
-
-            def join(self, timeout):
-                self.joined = timeout
-
-        class FailingSceneMessage(object):
-            kBeforeNew = 1
-            kBeforeOpen = 2
-            kMayaExiting = 3
-            calls = 0
-
-            @classmethod
-            def addCallback(cls, message, callback):
-                cls.calls += 1
-                if cls.calls == 2:
-                    raise RuntimeError("scene callback registration failed")
-                return 101
-
-        removed = []
-
-        class FakeMessage(object):
-            @staticmethod
-            def removeCallback(callback_id):
-                removed.append(callback_id)
-
-        fake_om = type("FakeOpenMaya", (), {
-            "MSceneMessage": FailingSceneMessage,
-            "MNodeMessage": type("FakeNodeMessage", (), {}),
-            "MTimerMessage": type("FakeTimerMessage", (), {}),
-            "MMessage": FakeMessage,
-        })
+    def test_connect_presents_session_start_failure_without_retaining_session(self):
         snapshot = MODULE._CharacterSnapshot(
             1, "|root", "Clothes01", [("root", -1)], [], [], [])
 
@@ -671,24 +1217,37 @@ class ControllerLifecycleTests(unittest.TestCase):
 
         controller = MODULE._Controller()
         controller._scene = FakeScene()
+        controller._show_error = mock.Mock()
+        controller._set_connected = mock.Mock()
         fake_cmds = type("FakeCmds", (), {
             "currentUnit": staticmethod(lambda **kwargs: "film"),
-            "confirmDialog": staticmethod(lambda **kwargs: "确定"),
         })
         with mock.patch.object(MODULE, "cmds", fake_cmds), \
-             mock.patch.object(MODULE, "om", fake_om), \
-             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+             mock.patch.object(MODULE, "om", object()), \
+             mock.patch.object(
+                 MODULE._StreamingSession, "start",
+                 side_effect=MODULE._StreamingSessionError(
+                     "INTERNAL_ERROR", "session setup failed")):
             controller.connect()
 
-        worker = FakeWorker.instances[0]
-        self.assertTrue(worker.started)
-        self.assertTrue(worker.stopped)
-        self.assertEqual(1.0, worker.joined)
-        self.assertEqual([101], removed)
-        self.assertIsNone(controller._worker)
-        self.assertIsNone(controller._session_revision)
-        self.assertIsNone(controller._timer_id)
-        self.assertEqual([], controller._connection_callback_ids)
+        self.assertIsNone(controller._session)
+        diagnostic = controller._show_error.call_args.args[0]
+        self.assertEqual("INTERNAL_ERROR", diagnostic["code"])
+
+    def test_stale_session_event_does_not_change_current_controller_state(self):
+        controller = MODULE._Controller()
+        current_session = object()
+        controller._session = current_session
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+        stale_event = MODULE._StreamingSessionEvent(
+            "failed", diagnostic=MODULE.make_diagnostic("STREAM_INTERRUPTED"))
+
+        controller._on_streaming_session_event(object(), stale_event)
+
+        self.assertIs(current_session, controller._session)
+        controller._set_connected.assert_not_called()
+        controller._show_error.assert_not_called()
 
 
 class ProtocolTests(unittest.TestCase):
