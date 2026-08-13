@@ -6,6 +6,11 @@
   connection-closing policy in one canonical cross-host conformance corpus.
 - Exercise applicable canonical cases through both Maya and Unreal adapters,
   and fail repository validation when generated Unreal test data is stale.
+- Isolate Maya character capture, scene revision, outfit refresh, and pose
+  sampling behind one character-scene interface.
+- Isolate each Maya streaming attempt behind a transactional session lifecycle
+  with frame-rate changes, first-terminal-outcome handling, and idempotent
+  cleanup of its worker, timer, and callbacks.
 - Keep the Maya sender window fitted to its controls so moving the window no
   longer alternates between a clipped and fully visible bottom section.
 - Consolidate the bilingual README, changelog, license, and project rules at

@@ -20,6 +20,10 @@ Editor 5.7.4 Live Link product.
 - **2026-08-12:** Released the protocol-v2 outfit-aware Maya workflow, Chinese
   status and diagnostics UI, exact scene-rate sampling, bidirectional
   BlendShape warnings, and the single Binding Actor connection rule.
+- **2026-08-13:** Consolidated connection negotiation, the cross-host protocol
+  contract, Maya character-scene ownership, and Maya streaming-session
+  lifecycle behind four focused interfaces without changing installation or
+  user workflow.
 
 ## Stable Records
 

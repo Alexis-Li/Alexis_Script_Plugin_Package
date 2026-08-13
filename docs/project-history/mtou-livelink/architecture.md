@@ -2,6 +2,7 @@
 
 Date: 2026-07-31
 Status: Implemented; stock-engine production acceptance completed 2026-08-11
+Last aligned with implementation: 2026-08-13
 
 ## Summary
 
@@ -95,7 +96,7 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both components share product version `0.1.0`. The composite project root owns
+Both components share product version `0.2.0`. The composite project root owns
 the matching English and Chinese READMEs, changelog, and license; host-specific
 tests stay beside the implementation they exercise.
 
@@ -181,22 +182,21 @@ Skeletal Mesh.
    FBX workflow.
 4. Drag the binding into the level and place the resulting actor wherever the
    Maya origin should appear.
-5. In the Maya animation scene, select the deformation skeleton root, including
-   a namespaced root such as `Hero:root`.
-6. Run `MtoULiveLink.py` and click **Connect**. Connect captures and validates
-   the currently selected root joint.
-7. Unreal validates the Maya skeleton against the placed binding actor's
-   Skeletal Mesh and returns `ready`. If no binding actor exists or validation
-   fails, Maya displays the returned error and disconnects.
+5. In the Maya animation scene, run `MtoULiveLink.py`, select the deformation
+   skeleton root (including a namespaced root such as `Hero:root`), and click
+   **Set Character**. Resolve Display discovery manually if Maya reports more
+   than one candidate.
+6. Confirm the captured outfit and scene frame rate, then click **Connect**.
+7. Unreal validates the captured Maya character snapshot against the binding
+   actor's Skeletal Mesh and returns `ready`. If no binding actor exists or
+   validation fails, Maya displays the returned error and disconnects.
 8. Pose, play, or scrub in Maya. Unreal updates the placed actor without
    changing its world transform.
 9. Click **Disconnect** when finished. No Animation Sequence is written.
 
-A placed binding actor is required before Maya connects. Multiple instances of
-the same binding may consume the one subject and keep independent world
-transforms. Simultaneously placed bindings that reference different skeletal
-hierarchies are outside the single-character scope and must not be reported as
-successfully linked.
+Exactly one placed binding actor is required before Maya connects. Multiple
+placed binding actors are rejected because the product has one character,
+target Skeletal Mesh, and Live Link subject per connection.
 
 ## Maya Sampling
 
@@ -232,10 +232,11 @@ invalidate an otherwise matching skeleton.
 
 ### Sampling and handoff
 
-A Maya-main-thread timer samples the evaluated pose 30 times per second while
-connected. Version 0.1.0 does not register per-joint or per-BlendShape dirty
-callbacks. The fixed polling rate is measured against the production character
-before adding another change-detection mechanism.
+A Maya-main-thread timer samples the evaluated pose at the Maya scene rate from
+1 through 60 fps, including supported fractional rates. A valid time-unit
+change replaces the timer without renegotiating the connection. The sender
+does not register per-joint or per-BlendShape dirty callbacks; polling remains
+the deliberate mechanism until production measurements justify another one.
 
 The sampled, serialized frame replaces any older unsent frame in a one-slot
 handoff to a sender thread. The worker touches no Maya API. Dropping stale
@@ -301,29 +302,33 @@ eligible for display.
 
 ## Unreal Skeleton Validation
 
-During `init`, Unreal requires a placed binding actor and compares the static
-Maya skeleton with its Skeletal Mesh. It compares normalized bone name to parent
-bone name, not array position. A link succeeds only when every Maya bone exists
-in the Unreal reference skeleton, every Unreal reference bone exists in the
-Maya skeleton, and every parent relationship matches.
+During `init`, Unreal requires exactly one placed binding actor and compares
+the static Maya skeleton with its Skeletal Mesh. It compares normalized bone
+name to parent bone name, not array position. A link succeeds when every bone
+and parent can be mapped uniquely and completely. Unreal importer-added numeric
+suffixes may map duplicate Maya short names only below an already mapped
+parent.
 
 The validation response lists missing bones, extra bones, and parent mismatches.
-No pose is applied to a mismatched actor. Retargeting, permissive subsets, and
-automatic bone-name maps are not part of version 0.1.0.
+It also reports successful bone-name mappings and both directions of Morph
+difference as warnings. No pose is applied to an unusable target. Retargeting,
+permissive skeleton subsets, and fuzzy name matching remain outside scope.
 
 ## UI
 
 ### Maya
 
-The native Maya window contains only:
+The native Maya window contains:
 
-- the connected root-joint path;
+- character setup and optional manual Display selection;
+- the captured root-joint path and current outfit;
+- scene frame rate, bone count, and BlendShape count;
 - **Connect** / **Disconnect**;
-- connection status;
-- the last actionable error.
+- connection status and warning preference;
+- actionable diagnostics and duplicate-bone selection.
 
 No host, port, subject, multi-character list, or automatic-import controls are
-shown because the first version has exactly one local endpoint and subject.
+shown because the product has exactly one local endpoint and subject.
 Repeated `run()` calls focus the existing window.
 
 ### Unreal
@@ -337,15 +342,18 @@ state as read-only diagnostics.
 
 ### Maya
 
-- **Connect** validates the selected root before opening the socket.
-- Connection registers lifecycle callbacks once and sends `init`; after
-  `ready`, it sends the current pose immediately.
+- **Set Character** captures the selected root, Display and outfit context, and
+  one immutable character snapshot revision.
+- **Connect** starts one transactional streaming session, registers its
+  lifecycle callbacks and timer, and sends `init`; after `ready`, it sends the
+  current pose immediately.
 - **Disconnect**, window close, root deletion, scene open/new, and Maya shutdown
   all remove lifecycle callbacks, stop the timer and worker, and close the
   socket.
-- A failed connection attempt leaves no callbacks or worker behind.
-- Version 0.1.0 does not detect bone rename, insertion, deletion, or reparenting
-  during a session. The user disconnects and reconnects after topology edits.
+- A failed connection attempt leaves no callbacks, timer, or worker behind.
+- Outfit changes refresh the character snapshot and disconnect the active
+  session. Sampling errors or a snapshot revision change require a fresh
+  character capture; transport failure leaves the captured character reusable.
 - Maya never modifies the scene as part of streaming.
 
 ### Unreal
@@ -368,7 +376,7 @@ contain 700 or more bones. The target is a visible Maya-to-Unreal update within
 actual production rig. Tests report achieved update rate, serialized frame
 size, and latency rather than rejecting a character because of its size.
 
-The first implementation uses a fixed 30 Hz polling timer, compact JSON, and
+The implementation uses a scene-rate polling timer, compact JSON, and
 newest-frame-wins queuing. Per-node dirty callbacks and a binary frame format
 are deliberately deferred. Either is introduced only if measurements on the
 production character show polling or JSON processing is the relevant
@@ -376,33 +384,33 @@ bottleneck.
 
 ## Verification
 
-### Pure Maya-side tests
+### Maya-side tests
 
-A small standard-library test module covers:
+Standard-library tests cover protocol conformance, hierarchy and transform
+conversion, character-scene capture and revision behavior, streaming-session
+startup rollback and terminal races, frame-rate timer replacement, worker
+shutdown, and dynamically sized messages. Maya 2022 host tests exercise real
+DAG, skinning, BlendShape, callback, and timer behavior through the same
+character-scene and streaming-session interfaces.
 
-- namespace stripping;
-- duplicate normalized names;
-- hierarchy construction;
-- length-prefix framing;
-- coordinate, quaternion, scale, and unit conversion;
-- finite-number validation;
-- dynamically sized messages with more than 700 bones.
-
-Run it first under repository Python, then under Maya 2022 `mayapy`.
+Run the pure suite under repository Python and the host suite under Maya 2022
+`mayapy`.
 
 ### Unreal Automation tests
 
 Development-only automation tests cover:
 
+- the Unreal-applicable canonical protocol conformance cases;
 - partial TCP frames and multiple messages in one receive buffer;
-- `init`/`ready` and protocol-version rejection;
+- `init`/`ready`, stable error categories, and connection-closing behavior;
 - dynamically sized skeleton and frame parsing;
 - transform- and curve-count mismatch;
 - `NaN` and infinity rejection;
-- order-independent skeleton hierarchy matching;
-- detailed missing, extra, and wrong-parent diagnostics;
+- connection negotiation, including parent-scoped importer suffix mappings and
+  bidirectional Morph differences;
 - preservation of actor world transform while root-bone motion changes;
-- clean source and socket shutdown.
+- end-to-end loopback socket flow, second-client rejection, bind failure, and
+  clean idempotent source shutdown.
 
 ### Build and repository verification
 

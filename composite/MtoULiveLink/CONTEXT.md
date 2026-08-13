@@ -4,6 +4,22 @@ MtoU Live Link connects one evaluated Maya character to one Unreal skeletal mesh
 
 ## Language
 
+**Character scene**:
+The currently captured Maya character: one deformation root together with the
+Display and outfit context that determines which evaluated meshes belong to it.
+_Avoid_: Role, Maya selection, character cache
+
+**Character snapshot**:
+A stable description of one character scene revision, including its outfit,
+ordered skeleton, and streamable curve names. Connection negotiation uses one
+snapshot and does not silently adopt topology changes during streaming.
+_Avoid_: Scene state, init payload, role data
+
+**Streaming session**:
+One connection attempt that negotiates a character snapshot with an Unreal
+target and, if usable, streams evaluated poses until disconnect or failure.
+_Avoid_: Worker, socket connection, sender thread
+
 **Connection negotiation**:
 The compatibility decision between one Maya character description and one Unreal target description before animation streaming begins. Its outcome includes blocking incompatibilities, usable differences, and any bone-name mapping required by the target.
 _Avoid_: Handshake validation, init handling
