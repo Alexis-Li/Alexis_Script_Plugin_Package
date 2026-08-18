@@ -37,6 +37,7 @@ void AMtoULiveLinkActor::SetConnectionStatus(const FString& InStatus)
 void AMtoULiveLinkActor::RefreshBinding()
 {
     SkeletalMeshComponent->SetSkeletalMeshAsset(Binding ? Binding->SkeletalMesh : nullptr);
+    SkeletalMeshComponent->SetUpdateAnimationInEditor(true);
     SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
     SkeletalMeshComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
     if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(SkeletalMeshComponent->GetAnimInstance()))

@@ -6,13 +6,17 @@
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/PlatformProcess.h"
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
+#include "LiveLinkInstance.h"
 #include "Misc/AutomationTest.h"
+#include "ReferenceSkeleton.h"
 #include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
@@ -20,6 +24,11 @@
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#include "LevelEditorViewport.h"
+#endif
 
 #include "MtoUConformanceCorpus.inl"
 
@@ -852,6 +861,11 @@ bool FMtoUWorldOffsetTest::RunTest(const FString& Parameters)
     AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>(
         AMtoULiveLinkActor::StaticClass(), PlacedTransform);
     TestNotNull(TEXT("binding actor is spawned"), Actor);
+    if (Actor)
+    {
+        TestTrue(TEXT("Live Link animation updates continuously in the editor"),
+            Actor->GetSkeletalMeshComponent()->GetUpdateAnimationInEditor());
+    }
 
     const FTransform StreamedRoot(FRotator(5.0, 15.0, 25.0), FVector(7.0, 8.0, 9.0));
     FMtoUFrameMessage Frame;
@@ -942,6 +956,12 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 
     UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
     TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
     AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
     TestNotNull(TEXT("placed binding actor is created"), Actor);
 
@@ -974,8 +994,22 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 
     FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("first Maya client connects"), Primary);
-    const TArray<uint8> Init = Packet(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[\"Missing\"]}"));
+    const USkeletalMesh* TestMesh = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has the two streamed bones"),
+        TestSkeleton && TestSkeleton->GetNum() >= 2);
+    const FString RootBoneName = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TestSkeleton->GetBoneName(0).ToString()
+        : TEXT("Bone01");
+    const FString ChildBoneName = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TestSkeleton->GetBoneName(1).ToString()
+        : TEXT("Bone02");
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"%s\",-1],[\"%s\",0]],\"curves\":[\"Missing\"]}"),
+        *RootBoneName,
+        *ChildBoneName));
     if (Primary)
     {
         TestTrue(TEXT("partial init prefix is sent"), SendBytes(*Primary, Init.GetData(), 3));
@@ -990,6 +1024,20 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready response reports the omitted morph curve"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
         && FromUtf8(Payload).Contains(TEXT("Missing")));
+#if WITH_EDITOR
+    if (GEditor)
+    {
+        const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+        for (const FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                TestTrue(TEXT("connected stream forces editor viewport realtime"),
+                    ViewportClient->HasRealtimeOverride(OverrideName));
+            }
+        }
+    }
+#endif
 
     FSocket* Second = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("second TCP client reaches listener"), Second);
@@ -1035,6 +1083,60 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             Animation->Transforms[0].GetTranslation().Equals(FVector(1.0, 2.0, 3.0)));
     }
 
+    USkeletalMeshComponent* SkeletalMeshComponent =
+        Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
+    TestNotNull(TEXT("binding actor exposes its skeletal mesh component"), SkeletalMeshComponent);
+    TestTrue(TEXT("editor skeletal mesh component tick is enabled"),
+        SkeletalMeshComponent && SkeletalMeshComponent->IsComponentTickEnabled());
+    TestTrue(TEXT("editor skeletal mesh component is registered"),
+        SkeletalMeshComponent && SkeletalMeshComponent->IsRegistered());
+    TestTrue(TEXT("editor world actors are initialized"),
+        World && World->AreActorsInitialized());
+    ULiveLinkInstance* LiveLinkInstance = SkeletalMeshComponent
+        ? Cast<ULiveLinkInstance>(SkeletalMeshComponent->GetAnimInstance())
+        : nullptr;
+    TestNotNull(TEXT("binding actor owns a Live Link animation instance"), LiveLinkInstance);
+    TestTrue(TEXT("Live Link animation evaluation is enabled"),
+        LiveLinkInstance && LiveLinkInstance->GetEnableLiveLinkEvaluation());
+
+    const TArray<uint8> NextValid = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[11,12,13,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.75]}"));
+    TestTrue(TEXT("next editor animation frame is sent"),
+        Primary && SendBytes(*Primary, NextValid.GetData(), NextValid.Num()));
+    bool bSecondFrameEvaluated = false;
+    bool bSubjectEvaluatedAfterSecondSend = false;
+    FVector LastCachedRoot = FVector::ZeroVector;
+    PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData SecondFrame;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), SecondFrame))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    SecondFrame.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                if (Animation->Transforms.IsValidIndex(0))
+                {
+                    bSubjectEvaluatedAfterSecondSend = true;
+                    LastCachedRoot = Animation->Transforms[0].GetTranslation();
+                    bSecondFrameEvaluated = LastCachedRoot.Equals(FVector(11.0, 12.0, 13.0));
+                }
+            }
+        }
+        return bSecondFrameEvaluated;
+    });
+    TestTrue(TEXT("Live Link subject remains evaluable after the second send"),
+        bSubjectEvaluatedAfterSecondSend);
+    if (!bSecondFrameEvaluated)
+    {
+        AddError(FString::Printf(
+            TEXT("Expected second cached root (11, 12, 13), got %s."),
+            *LastCachedRoot.ToString()));
+    }
+    TestTrue(TEXT("second frame reaches the Live Link subject cache"), bSecondFrameEvaluated);
+
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
     TestTrue(TEXT("structurally invalid frame is sent"),
@@ -1042,12 +1144,42 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("structural count mismatch closes the session"),
         Primary && WaitForClose(*Primary));
 
+    TestTrue(TEXT("disconnected session returns source to listening"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    const bool bDisconnectedFrameCleared = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData StaleFrame;
+        return !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+    });
+    TestTrue(TEXT("disconnect clears the last streamed pose"), bDisconnectedFrameCleared);
+#if WITH_EDITOR
+    if (GEditor)
+    {
+        const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+        for (const FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                TestFalse(TEXT("disconnect restores editor viewport realtime setting"),
+                    ViewportClient->HasRealtimeOverride(OverrideName));
+            }
+        }
+    }
+#endif
+
     DestroySocket(*SocketSubsystem, Primary);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
     {
         World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
     }
     return true;
 }

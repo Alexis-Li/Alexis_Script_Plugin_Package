@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Update Live Link animation continuously in Unreal Editor instead of waiting
+  for an unrelated property edit to refresh the binding actor, temporarily
+  forcing level viewports into realtime mode only while a stream is connected.
+- Cap Maya sampling to the scene frame rate when timer and time-change events
+  arrive together, preventing large character frames from flooding the TCP
+  stream and leaving Unreal visibly behind Maya.
+- Clear the last streamed Live Link frame when a Maya session disconnects so a
+  stale or malformed pose cannot remain applied across reconnection attempts.
 - Define the protocol v2 wire fields, stable parser error categories, and
   connection-closing policy in one canonical cross-host conformance corpus.
 - Exercise applicable canonical cases through both Maya and Unreal adapters,

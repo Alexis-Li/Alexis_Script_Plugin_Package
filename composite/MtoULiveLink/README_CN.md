@@ -43,8 +43,10 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
 4. 在 Maya 中调整姿势、播放或拖动时间轴。切换 Clothes 枚举后会
    自动断开；请在 UE 中替换新衣服的 Binding Actor，再手动重连。
 
-接收端会保留每个已放置 Actor 的变换，且不会创建 Animation Sequence。多个蒙皮
-网格部件上的同名 BlendShape 在求值一致时会合并为一条 Unreal 曲线发送；若数值
-不同，采样会停止并列出所有冲突的 Maya 插口。Maya 和 Unreal
-单方存在的 BlendShape 会作为不阻断连接的警告显示。协议版本 2 要求
-Maya 和 Unreal 两端都安装匹配的 0.2.0 组件。
+接收端会保留每个已放置 Actor 的变换，且不会创建 Animation Sequence。Binding
+Actor 会在 Unreal 编辑器中持续更新动画；连接期间，插件会临时强制关卡视口进入
+“实时”模式，并在断开连接后恢复各视口原先的设置。断开连接会清除最后一个传输帧，
+使模型回到参考姿势，而不是继续保留旧姿势。多个蒙皮网格部件上的同名 BlendShape 在求值
+一致时会合并为一条 Unreal 曲线发送；若数值不同，采样会停止并列出所有冲突的 Maya
+插口。Maya 和 Unreal 单方存在的 BlendShape 会作为不阻断连接的警告显示。协议版本
+2 要求 Maya 和 Unreal 两端都安装匹配的 0.2.0 组件。

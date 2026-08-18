@@ -41,6 +41,7 @@ public:
     virtual ~FMtoULiveLinkSource() override;
 
     virtual void ReceiveClient(ILiveLinkClient* InClient, FGuid InSourceGuid) override;
+    virtual void InitializeSettings(ULiveLinkSourceSettings* Settings) override;
     virtual void Update() override;
     virtual bool IsSourceStillValid() const override;
     virtual bool RequestSourceShutdown() override;

@@ -10,5 +10,9 @@ public class MtoULiveLink : ModuleRules
         {
             "Json", "LiveLinkAnimationCore", "LiveLinkInterface", "Sockets"
         });
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.Add("UnrealEd");
+        }
     }
 }

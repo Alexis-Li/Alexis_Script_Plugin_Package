@@ -302,6 +302,9 @@ class StreamingSessionTests(unittest.TestCase):
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
             }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(timer_factory),
             }),
@@ -355,8 +358,15 @@ class StreamingSessionTests(unittest.TestCase):
                 registered.append((interval, callback))
                 return 20
 
+        class FakeEventMessage(object):
+            @staticmethod
+            def addEventCallback(event, callback):
+                registered.append((event, callback))
+                return 30
+
         fake_om = type("FakeOpenMaya", (), {
             "MSceneMessage": FakeSceneMessage,
+            "MEventMessage": FakeEventMessage,
             "MTimerMessage": FakeTimerMessage,
             "MMessage": type("FakeMessage", (), {
                 "removeCallback": staticmethod(removed.append),
@@ -372,7 +382,7 @@ class StreamingSessionTests(unittest.TestCase):
             session.stop()
 
         self.assertEqual(["stopped"], [event.kind for event in events])
-        self.assertEqual([11, 12, 13, 20], removed)
+        self.assertEqual([11, 12, 13, 30, 20], removed)
 
     def test_ready_is_emitted_once_and_each_tick_submits_a_scene_frame(self):
         events = []
@@ -409,6 +419,9 @@ class StreamingSessionTests(unittest.TestCase):
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
             }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(
                     lambda interval, callback: timer_callbacks.append(callback) or 20),
@@ -423,7 +436,8 @@ class StreamingSessionTests(unittest.TestCase):
         scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [0.25])
 
         with mock.patch.object(MODULE, "om", fake_om), \
-             mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
+             mock.patch.object(MODULE, "_SenderWorker", FakeWorker), \
+             mock.patch.object(MODULE.time, "time", side_effect=[100.0, 100.05]):
             session = MODULE._StreamingSession.start(scene, 24.0, events.append)
             timer_callbacks[0](0.0, 0.0, None)
             timer_callbacks[0](0.0, 0.0, None)
@@ -432,6 +446,54 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(["ready", "stopped"], [event.kind for event in events])
         self.assertEqual(2, scene.sample.call_count)
         self.assertEqual(2, len(FakeWorker.instance.submitted))
+
+    def test_time_changed_event_streams_without_idle_timer_and_caps_burst(self):
+        time_callbacks = []
+        timer_callbacks = []
+        worker = mock.Mock()
+        worker.status.return_value = (
+            "ready", "Connected", {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False,
+            }, None)
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(
+                    lambda event, callback: time_callbacks.append(
+                        (event, callback)) or 30),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+        scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker), \
+             mock.patch.object(
+                 MODULE.time, "time",
+                 side_effect=[100.0, 100.001, 100.01, 100.05]):
+            session = MODULE._StreamingSession.start(scene, 30.0, None)
+            self.assertEqual(1, len(time_callbacks))
+            if time_callbacks:
+                self.assertEqual("timeChanged", time_callbacks[0][0])
+                for unused in range(4):
+                    time_callbacks[0][1](None)
+            session.stop()
+
+        self.assertEqual(2, scene.sample.call_count)
+        self.assertEqual(2, worker.submit.call_count)
 
     def test_worker_failure_defers_cleanup_and_wins_over_later_stop(self):
         events = []
@@ -468,6 +530,9 @@ class StreamingSessionTests(unittest.TestCase):
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
             }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(
                     lambda interval, callback: timer_callbacks.append(callback) or 20),
@@ -497,7 +562,7 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(["failed"], [event.kind for event in events])
         self.assertEqual("STREAM_INTERRUPTED", events[0].diagnostic["code"])
         self.assertFalse(events[0].recapture_scene)
-        self.assertEqual([11, 12, 13, 20], removed)
+        self.assertEqual([11, 12, 13, 30, 20], removed)
         self.assertEqual(1, FakeWorker.instance.stop_count)
         self.assertEqual(1, FakeWorker.instance.join_count)
 
@@ -529,6 +594,9 @@ class StreamingSessionTests(unittest.TestCase):
             "MSceneMessage": type("FakeSceneMessage", (), {
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
             }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(
@@ -583,6 +651,9 @@ class StreamingSessionTests(unittest.TestCase):
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
             }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(
                     lambda interval, callback: intervals.append(interval) or (20 + len(intervals))),
@@ -636,7 +707,7 @@ class StreamingSessionTests(unittest.TestCase):
             deferred[0]()
 
         self.assertEqual(2, len(timers))
-        self.assertEqual([21, 22, 11, 12, 13, 21], removal_attempts)
+        self.assertEqual([21, 22, 11, 12, 13, 30, 21], removal_attempts)
         self.assertEqual(["failed"], [event.kind for event in events])
         self.assertEqual("INTERNAL_ERROR", events[0].diagnostic["code"])
 
@@ -700,6 +771,9 @@ class StreamingSessionTests(unittest.TestCase):
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
                 "addCallback": staticmethod(lambda message, callback: 10 + message),
             }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
             "MTimerMessage": type("FakeTimerMessage", (), {
                 "addTimerCallback": staticmethod(
                     lambda interval, callback: (_ for _ in ()).throw(
@@ -719,7 +793,7 @@ class StreamingSessionTests(unittest.TestCase):
                 MODULE._StreamingSession.start(scene, 24.0, None)
 
         self.assertEqual("INTERNAL_ERROR", caught.exception.code)
-        self.assertEqual([11, 12, 13], removed)
+        self.assertEqual([11, 12, 13, 30], removed)
         worker.stop.assert_called_once_with()
         worker.join.assert_called_once_with(1.0)
 
@@ -786,7 +860,7 @@ class StreamingSessionTests(unittest.TestCase):
             session = MODULE._StreamingSession.start(scene, 24.0, events.append)
             session.stop()
 
-        self.assertEqual([11, 12, 13, 21], removal_attempts)
+        self.assertEqual([11, 12, 13, 30, 21], removal_attempts)
         worker.join.assert_called_once_with(1.0)
         self.assertEqual(["stopped"], [event.kind for event in events])
 
@@ -834,7 +908,7 @@ class StreamingSessionTests(unittest.TestCase):
             self.assertEqual([], removed)
             deferred[0]()
 
-        self.assertEqual([11, 12, 13, 20], removed)
+        self.assertEqual([11, 12, 13, 30, 20], removed)
         self.assertEqual(["failed"], [event.kind for event in events])
         self.assertEqual("INTERNAL_ERROR", events[0].diagnostic["code"])
 
@@ -1196,11 +1270,11 @@ class ControllerLifecycleTests(unittest.TestCase):
             controller.build_ui()
 
         create_call = fake_cmds.window.call_args_list[0]
-        self.assertEqual(MODULE.WINDOW_NAME, create_call.args[0])
-        self.assertEqual(430, create_call.kwargs["width"])
-        self.assertTrue(create_call.kwargs["resizeToFitChildren"])
-        self.assertNotIn("height", create_call.kwargs)
-        self.assertNotIn("widthHeight", create_call.kwargs)
+        self.assertEqual(MODULE.WINDOW_NAME, create_call[0][0])
+        self.assertEqual(430, create_call[1]["width"])
+        self.assertTrue(create_call[1]["resizeToFitChildren"])
+        self.assertNotIn("height", create_call[1])
+        self.assertNotIn("widthHeight", create_call[1])
 
     def test_connect_presents_session_start_failure_without_retaining_session(self):
         snapshot = MODULE._CharacterSnapshot(
@@ -1231,7 +1305,7 @@ class ControllerLifecycleTests(unittest.TestCase):
             controller.connect()
 
         self.assertIsNone(controller._session)
-        diagnostic = controller._show_error.call_args.args[0]
+        diagnostic = controller._show_error.call_args[0][0]
         self.assertEqual("INTERNAL_ERROR", diagnostic["code"])
 
     def test_stale_session_event_does_not_change_current_controller_state(self):

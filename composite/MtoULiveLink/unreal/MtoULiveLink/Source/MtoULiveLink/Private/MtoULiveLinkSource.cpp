@@ -13,9 +13,15 @@
 #include "Misc/ScopeLock.h"
 #include "ReferenceSkeleton.h"
 #include "Roles/LiveLinkAnimationRole.h"
+#include "LiveLinkSourceSettings.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "UObject/UObjectIterator.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#include "LevelEditorViewport.h"
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMtoULiveLinkSource, Log, All);
 
@@ -23,6 +29,34 @@ namespace
 {
 constexpr int32 ReceiveBufferSize = 64 * 1024;
 constexpr int32 IdleWaitMilliseconds = 5;
+
+#if WITH_EDITOR
+const FText RealtimeOverrideName = FText::FromString(TEXT("MtoU Live Link"));
+
+void SetEditorViewportRealtimeOverride(bool bEnable)
+{
+    if (!GEditor)
+    {
+        return;
+    }
+    for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+    {
+        if (!ViewportClient)
+        {
+            continue;
+        }
+        ViewportClient->RemoveRealtimeOverride(RealtimeOverrideName, false);
+        if (bEnable)
+        {
+            ViewportClient->AddRealtimeOverride(true, RealtimeOverrideName);
+        }
+    }
+}
+#else
+void SetEditorViewportRealtimeOverride(bool)
+{
+}
+#endif
 
 void CloseSocket(ISocketSubsystem& SocketSubsystem, FSocket*& Socket)
 {
@@ -110,6 +144,14 @@ void FMtoULiveLinkSource::ReceiveClient(ILiveLinkClient* InClient, FGuid InSourc
     SubjectKey = FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
 }
 
+void FMtoULiveLinkSource::InitializeSettings(ULiveLinkSourceSettings* Settings)
+{
+    if (Settings)
+    {
+        Settings->Mode = ELiveLinkSourceMode::Latest;
+    }
+}
+
 void FMtoULiveLinkSource::Update()
 {
     check(IsInGameThread());
@@ -119,6 +161,11 @@ void FMtoULiveLinkSource::Update()
     {
         if (DisconnectedSession == GameThreadSession)
         {
+            SetEditorViewportRealtimeOverride(false);
+            if (Client && SourceGuid.IsValid())
+            {
+                Client->ClearSubjectsFrames_AnyThread(SubjectKey);
+            }
             for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
             {
                 if (Actor.IsValid())
@@ -213,6 +260,7 @@ void FMtoULiveLinkSource::StopListener()
     SetStatus(TEXT("Stopped"));
     if (IsInGameThread())
     {
+        SetEditorViewportRealtimeOverride(false);
         for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
         {
             if (Actor.IsValid())
@@ -589,6 +637,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
     }
     Actor->SetConnectionStatus(TEXT("Connected"));
+    SetEditorViewportRealtimeOverride(true);
 
     Client->PushSubjectStaticData_AnyThread(
         SubjectKey,

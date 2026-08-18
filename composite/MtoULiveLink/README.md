@@ -48,8 +48,12 @@ Install the matching component in each host:
    session; replace the Unreal binding actor with the new outfit and reconnect.
 
 The receiver preserves each placed actor transform and does not create an
-Animation Sequence. Same-named BlendShapes on separate skinned mesh parts are
-sent as one Unreal curve when their evaluated values agree. If those values
-differ, sampling stops and identifies every conflicting Maya plug. Maya- and
-Unreal-only BlendShape names are non-blocking warnings. Protocol version 2
-requires matching Maya and Unreal 0.2.0 components.
+Animation Sequence. The binding actor updates its animation continuously in
+Unreal Editor. While connected, the plugin temporarily forces level viewports
+into realtime mode and restores each viewport's prior setting on disconnect.
+Disconnecting clears the last streamed frame so the mesh returns to its
+reference pose instead of retaining a stale pose. Same-named BlendShapes
+on separate skinned mesh parts are sent as one Unreal curve when their evaluated
+values agree. If those values differ, sampling stops and identifies every
+conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
+warnings. Protocol version 2 requires matching Maya and Unreal 0.2.0 components.

@@ -1114,6 +1114,7 @@ class _StreamingSession(object):
         self._callback_ids = []
         self._timer_id = None
         self._revision = None
+        self._last_sample_time = None
         self._phase = "starting"
         self._outcome = None
         self._terminal_event = None
@@ -1157,6 +1158,9 @@ class _StreamingSession(object):
                 om.MSceneMessage.kMayaExiting):
             self._callback_ids.append(
                 om.MSceneMessage.addCallback(message, self._on_scene_change))
+        self._callback_ids.append(
+            om.MEventMessage.addEventCallback(
+                "timeChanged", self._on_time_changed))
         self._timer_id = om.MTimerMessage.addTimerCallback(
             1.0 / self._fps, self._on_timer)
         self._phase = "connecting"
@@ -1206,6 +1210,13 @@ class _StreamingSession(object):
 
     def _on_timer(self, elapsed, last_time, client_data):
         del elapsed, last_time, client_data
+        self._sample_and_submit()
+
+    def _on_time_changed(self, *unused):
+        del unused
+        self._sample_and_submit()
+
+    def _sample_and_submit(self):
         if self._outcome is not None or self._worker is None:
             return
         state, detail, warning, diagnostic = self._worker.status()
@@ -1227,6 +1238,13 @@ class _StreamingSession(object):
         if self._phase == "connecting":
             self._phase = "ready"
             self._emit(_StreamingSessionEvent("ready", warning=warning))
+        now = time.time()
+        sample_interval = 1.0 / self._fps
+        if (self._last_sample_time is not None
+                and now >= self._last_sample_time
+                and now - self._last_sample_time < sample_interval):
+            return
+        self._last_sample_time = now
         try:
             frame = self._scene.sample()
         except _CharacterSceneError as error:
