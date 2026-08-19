@@ -239,9 +239,10 @@ bool FMtoUProtocol::ParseInit(
     {
         const TArray<TSharedPtr<FJsonValue>>* Record = nullptr;
         if (!(*BoneValues)[Index].IsValid() || (*BoneValues)[Index]->Type != EJson::Array
-            || !(*BoneValues)[Index]->TryGetArray(Record) || Record->Num() != 2)
+            || !(*BoneValues)[Index]->TryGetArray(Record) || Record->Num() != 3)
         {
-            OutError = FString::Printf(TEXT("Bone %d must be [name, parent_index]."), Index);
+            OutError = FString::Printf(
+                TEXT("Bone %d must be [name, parent_index, bind_local_transform]."), Index);
             return false;
         }
 
@@ -270,6 +271,46 @@ bool FMtoUProtocol::ParseInit(
         }
 
         OutMessage.Bones.Add({FName(*NameText), ParentIndex});
+
+        const TArray<TSharedPtr<FJsonValue>>* TransformValues = nullptr;
+        if (!(*Record)[2].IsValid() || (*Record)[2]->Type != EJson::Array
+            || !(*Record)[2]->TryGetArray(TransformValues) || TransformValues->Num() != 10)
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d bind local transform must contain ten numbers."), Index);
+            return false;
+        }
+        double Numbers[10];
+        for (int32 NumberIndex = 0; NumberIndex < 10; ++NumberIndex)
+        {
+            if (!GetNumber((*TransformValues)[NumberIndex], Numbers[NumberIndex])
+                || !FMath::IsFinite(Numbers[NumberIndex]))
+            {
+                OutError = FString::Printf(
+                    TEXT("Bone %d bind local transform value %d must be finite."),
+                    Index,
+                    NumberIndex);
+                return false;
+            }
+        }
+        const FQuat Rotation(Numbers[3], Numbers[4], Numbers[5], Numbers[6]);
+        if (!Rotation.IsNormalized())
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d bind local quaternion must be normalized and non-zero."), Index);
+            return false;
+        }
+        const FTransform BindTransform(
+            Rotation,
+            FVector(Numbers[0], Numbers[1], Numbers[2]),
+            FVector(Numbers[7], Numbers[8], Numbers[9]));
+        if (FMath::IsNearlyZero(BindTransform.ToMatrixWithScale().Determinant()))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d bind local transform must be invertible."), Index);
+            return false;
+        }
+        OutMessage.SourceBindLocalPose.Add(BindTransform);
     }
 
     TSet<FName> CurveNames;
@@ -519,4 +560,79 @@ FLiveLinkFrameDataStruct FMtoUProtocol::MakeFrameData(
     }
     Animation->WorldTime = FLiveLinkWorldTime();
     return FrameData;
+}
+
+FLiveLinkFrameDataStruct FMtoUProtocol::MakeRetargetedFrameData(
+    const FMtoUFrameMessage& Frame,
+    const TArray<int32>& AcceptedCurveIndices,
+    const TArray<FTransform>& SourceBindLocalPose,
+    const TArray<FTransform>& TargetRefLocalPose,
+    const TArray<int32>& BoneParents)
+{
+    const int32 BoneCount = Frame.Transforms.Num();
+    check(SourceBindLocalPose.Num() == BoneCount);
+    check(TargetRefLocalPose.Num() == BoneCount);
+    check(BoneParents.Num() == BoneCount);
+
+    TArray<FMatrix> SourceBindComponentPose;
+    TArray<FMatrix> SourceCurrentComponentPose;
+    TArray<FMatrix> TargetRefComponentPose;
+    TArray<FMatrix> TargetCurrentComponentPose;
+    SourceBindComponentPose.SetNumUninitialized(BoneCount);
+    SourceCurrentComponentPose.SetNumUninitialized(BoneCount);
+    TargetRefComponentPose.SetNumUninitialized(BoneCount);
+    TargetCurrentComponentPose.SetNumUninitialized(BoneCount);
+
+    for (int32 Index = 0; Index < BoneCount; ++Index)
+    {
+        const int32 ParentIndex = BoneParents[Index];
+        check(ParentIndex == INDEX_NONE || ParentIndex < Index);
+        const FMtoUTransform& SourceCurrent = Frame.Transforms[Index];
+        const FMatrix SourceCurrentLocal = FTransform(
+            SourceCurrent.Rotation,
+            SourceCurrent.Translation,
+            SourceCurrent.Scale).ToMatrixWithScale();
+        const FMatrix SourceBindLocal = SourceBindLocalPose[Index].ToMatrixWithScale();
+        const FMatrix TargetRefLocal = TargetRefLocalPose[Index].ToMatrixWithScale();
+
+        if (ParentIndex == INDEX_NONE)
+        {
+            SourceCurrentComponentPose[Index] = SourceCurrentLocal;
+            SourceBindComponentPose[Index] = SourceBindLocal;
+            TargetRefComponentPose[Index] = TargetRefLocal;
+        }
+        else
+        {
+            SourceCurrentComponentPose[Index] =
+                SourceCurrentLocal * SourceCurrentComponentPose[ParentIndex];
+            SourceBindComponentPose[Index] =
+                SourceBindLocal * SourceBindComponentPose[ParentIndex];
+            TargetRefComponentPose[Index] =
+                TargetRefLocal * TargetRefComponentPose[ParentIndex];
+        }
+
+        // Unreal matrices use row-vector composition. This maps the saved source
+        // bind component transform onto the target reference component transform,
+        // then applies the evaluated source component motion.
+        TargetCurrentComponentPose[Index] = TargetRefComponentPose[Index]
+            * SourceBindComponentPose[Index].Inverse()
+            * SourceCurrentComponentPose[Index];
+    }
+
+    FMtoUFrameMessage RetargetedFrame;
+    RetargetedFrame.Transforms.Reserve(BoneCount);
+    RetargetedFrame.Curves = Frame.Curves;
+    for (int32 Index = 0; Index < BoneCount; ++Index)
+    {
+        const int32 ParentIndex = BoneParents[Index];
+        const FMatrix TargetCurrentLocal = ParentIndex == INDEX_NONE
+            ? TargetCurrentComponentPose[Index]
+            : TargetCurrentComponentPose[Index]
+                * TargetCurrentComponentPose[ParentIndex].Inverse();
+        FTransform Transform(TargetCurrentLocal);
+        Transform.NormalizeRotation();
+        RetargetedFrame.Transforms.Add({
+            Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
+    }
+    return MakeFrameData(RetargetedFrame, AcceptedCurveIndices);
 }

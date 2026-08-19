@@ -46,7 +46,9 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
 接收端会保留每个已放置 Actor 的变换，且不会创建 Animation Sequence。Binding
 Actor 会在 Unreal 编辑器中持续更新动画；连接期间，插件会临时强制关卡视口进入
 “实时”模式，并在断开连接后恢复各视口原先的设置。断开连接会清除最后一个传输帧，
-使模型回到参考姿势，而不是继续保留旧姿势。多个蒙皮网格部件上的同名 BlendShape 在求值
+使模型回到参考姿势，而不是继续保留旧姿势。Maya 保存的 SkinCluster Bind Pose 与当前动画帧
+会分别处理，并映射到目标 Skeletal Mesh 的 Reference Pose；连接时无需让第 1 帧或当前帧为
+A Pose。多个蒙皮网格部件上的同名 BlendShape 在求值
 一致时会合并为一条 Unreal 曲线发送；若数值不同，采样会停止并列出所有冲突的 Maya
 插口。Maya 和 Unreal 单方存在的 BlendShape 会作为不阻断连接的警告显示。协议版本
-2 要求 Maya 和 Unreal 两端都安装匹配的 0.2.0 组件。
+3 要求 Maya 和 Unreal 两端都安装匹配的 0.3.0 组件。

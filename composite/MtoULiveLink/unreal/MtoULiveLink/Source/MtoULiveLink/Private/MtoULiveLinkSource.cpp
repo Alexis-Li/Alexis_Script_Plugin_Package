@@ -174,6 +174,9 @@ void FMtoULiveLinkSource::Update()
                 }
             }
             GameThreadSession = 0;
+            SourceBindLocalPose.Reset();
+            TargetRefLocalPose.Reset();
+            BoneParents.Reset();
         }
     }
 
@@ -631,6 +634,15 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
+    SourceBindLocalPose = Message.SourceBindLocalPose;
+    TargetRefLocalPose.Reset(ExpectedBoneCount);
+    BoneParents.Reset(ExpectedBoneCount);
+    const TArray<FTransform>& RefBonePose = Mesh->GetRefSkeleton().GetRefBonePose();
+    for (int32 Index = 0; Index < ExpectedBoneCount; ++Index)
+    {
+        TargetRefLocalPose.Add(RefBonePose[Outcome.TargetBoneIndices[Index]]);
+        BoneParents.Add(Message.Bones[Index].ParentIndex);
+    }
     AcceptedCurveIndices = Outcome.AcceptedCurveIndices;
     for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
     {
@@ -677,7 +689,12 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     }
     Client->PushSubjectFrameData_AnyThread(
         SubjectKey,
-        FMtoUProtocol::MakeFrameData(Frame->Message, AcceptedCurveIndices));
+        FMtoUProtocol::MakeRetargetedFrameData(
+            Frame->Message,
+            AcceptedCurveIndices,
+            SourceBindLocalPose,
+            TargetRefLocalPose,
+            BoneParents));
 }
 
 void FMtoULiveLinkSource::EnqueueErrorOnGameThread(

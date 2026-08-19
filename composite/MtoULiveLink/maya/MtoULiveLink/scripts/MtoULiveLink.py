@@ -10,13 +10,14 @@ import struct
 import threading
 import time
 
-__version__ = "0.2.0"
-PROTOCOL_VERSION = 2
+__version__ = "0.3.0"
+PROTOCOL_VERSION = 3
 MAX_PAYLOAD_SIZE = (2 ** 31) - 9
 HOST = "127.0.0.1"
 PORT = 54321
 SUBJECT_NAME = "MtoU_Character"
 CURVE_VALUE_TOLERANCE = 1.0e-6
+BIND_MATRIX_TOLERANCE = 1.0e-5
 MIN_FRAME_RATE = 1.0
 MAX_FRAME_RATE = 60.0
 TIME_UNIT_FPS = {
@@ -70,6 +71,9 @@ DIAGNOSTICS = {
     "SAMPLING_FAILED": (
         "Maya 动画采样失败",
         "请检查骨架、BlendShape 和当前服装是否在连接期间被修改。"),
+    "BIND_POSE_INVALID": (
+        "无法读取可靠的 Maya 绑定姿势",
+        "请检查 SkinCluster bindPreMatrix 与 bindPose/dagPose 是否完整且一致。"),
     "INTERNAL_ERROR": (
         "MtoU_LiveLink 发生内部错误",
         "请复制诊断详情并重新启动连接。"),
@@ -86,9 +90,11 @@ DIAGNOSTICS = {
 
 try:
     import maya.api.OpenMaya as om
+    import maya.api.OpenMayaAnim as oma
     import maya.cmds as cmds
 except ImportError:
     om = None
+    oma = None
     cmds = None
 
 
@@ -410,6 +416,90 @@ def _visible_skinned_meshes(bone_paths):
     return sorted(meshes)
 
 
+def _skin_clusters_for_meshes(mesh_paths):
+    skin_clusters = set()
+    for mesh_path in mesh_paths:
+        skin_clusters.update(
+            node for node in cmds.listHistory(mesh_path, pruneDagObjects=True) or []
+            if cmds.nodeType(node) == "skinCluster")
+    return sorted(skin_clusters)
+
+
+def _matrix_attr(plug):
+    value = cmds.getAttr(plug)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    return om.MMatrix(value)
+
+
+def _matrix_is_finite(matrix):
+    return all(math.isfinite(float(value)) for value in matrix)
+
+
+def _matrix_is_equivalent(left, right, tolerance=BIND_MATRIX_TOLERANCE):
+    return all(abs(float(a) - float(b)) <= tolerance for a, b in zip(left, right))
+
+
+class _BindPoseError(ValueError):
+    pass
+
+
+def _bind_world_candidates(subject):
+    candidates = dict((bone["path"], []) for bone in subject["bones"])
+    bone_paths = set(candidates)
+    for skin_cluster in _skin_clusters_for_meshes(subject["meshes"]):
+        selection = om.MSelectionList()
+        selection.add(skin_cluster)
+        function = oma.MFnSkinCluster(selection.getDependNode(0))
+        for influence in function.influenceObjects():
+            path = influence.fullPathName()
+            if path not in bone_paths:
+                continue
+            logical_index = function.indexForInfluenceObject(influence)
+            plug = "{0}.bindPreMatrix[{1}]".format(skin_cluster, logical_index)
+            candidates[path].append((plug, _matrix_attr(plug).inverse()))
+
+    for bone in subject["bones"]:
+        plug = bone["path"] + ".bindPose"
+        for source_plug in cmds.listConnections(
+                plug, source=True, destination=False, plugs=True) or []:
+            pose = source_plug.split(".", 1)[0]
+            if cmds.nodeType(pose) == "dagPose" and cmds.getAttr(pose + ".bindPose"):
+                candidates[bone["path"]].append((source_plug, _matrix_attr(source_plug)))
+    return candidates
+
+
+def _capture_bind_local_transforms(subject):
+    candidates = _bind_world_candidates(subject)
+    bind_world = []
+    for bone in subject["bones"]:
+        records = candidates[bone["path"]]
+        if not records:
+            raise _BindPoseError(
+                "bone {0} has no SkinCluster bindPreMatrix or bindPose/dagPose matrix".format(
+                    bone["path"]))
+        source, matrix = records[0]
+        if not _matrix_is_finite(matrix):
+            raise _BindPoseError(
+                "bone {0} has non-finite bind matrix from {1}".format(
+                    bone["path"], source))
+        for other_source, other_matrix in records[1:]:
+            if not _matrix_is_finite(other_matrix) \
+                    or not _matrix_is_equivalent(matrix, other_matrix):
+                raise _BindPoseError(
+                    "bone {0} has inconsistent bind matrices: {1} and {2}".format(
+                        bone["path"], source, other_source))
+        bind_world.append(matrix)
+
+    bind_local = []
+    for index, bone in enumerate(subject["bones"]):
+        matrix = bind_world[index]
+        if bone["parent"] >= 0:
+            matrix = matrix * bind_world[bone["parent"]].inverse()
+        bind_local.append(_sample_matrix(matrix, subject["unit_scale"]))
+    return bind_local
+
+
 def _discover_curve_plugs(bone_paths, visible_meshes=None):
     if visible_meshes is None:
         visible_meshes = _visible_skinned_meshes(bone_paths)
@@ -447,11 +537,14 @@ def _capture_subject(root=None):
     mesh_paths = _visible_skinned_meshes([bone["path"] for bone in bones])
     if not mesh_paths:
         raise ValueError("NO_VISIBLE_SKINNED_MESH")
-    return {"root": root, "bones": bones,
-            "meshes": mesh_paths,
-            "curves": _discover_curve_plugs(
-                [bone["path"] for bone in bones], mesh_paths),
-            "unit_scale": centimeters_per_unit(cmds.currentUnit(query=True, linear=True))}
+    subject = {"root": root, "bones": bones,
+               "meshes": mesh_paths,
+               "curves": _discover_curve_plugs(
+                   [bone["path"] for bone in bones], mesh_paths),
+               "unit_scale": centimeters_per_unit(
+                   cmds.currentUnit(query=True, linear=True))}
+    subject["bind_local_transforms"] = _capture_bind_local_transforms(subject)
+    return subject
 
 
 def _sample_matrix(matrix, unit_scale):
@@ -519,7 +612,7 @@ class _CharacterSceneError(RuntimeError):
 
 class _CharacterSnapshot(object):
     def __init__(self, revision, root, outfit, bones, curve_names,
-                 duplicate_paths=(), mesh_paths=()):
+                 duplicate_paths=(), mesh_paths=(), bind_local_transforms=()):
         self._revision = int(revision)
         self._root = root
         self._outfit = outfit
@@ -527,6 +620,10 @@ class _CharacterSnapshot(object):
         self._curve_names = tuple(curve_names)
         self._duplicate_paths = tuple(duplicate_paths)
         self._mesh_paths = tuple(mesh_paths)
+        self._bind_local_transforms = tuple(
+            tuple(value for value in transform) for transform in bind_local_transforms)
+        if len(self._bind_local_transforms) != len(self._bones):
+            raise ValueError("bind pose count must match skeleton bone count")
 
     @property
     def revision(self):
@@ -555,6 +652,10 @@ class _CharacterSnapshot(object):
     @property
     def mesh_paths(self):
         return self._mesh_paths
+
+    @property
+    def bind_local_transforms(self):
+        return self._bind_local_transforms
 
 
 class _CharacterFrame(object):
@@ -702,6 +803,8 @@ class _CharacterScene(object):
             subject = _capture_subject(self._root)
             display = self._display_record()
             outfit = _current_enum_label(display)
+        except _BindPoseError as exc:
+            raise self._wrap_error("BIND_POSE_INVALID", exc)
         except (RuntimeError, ValueError) as exc:
             code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
             raise self._wrap_error(code, exc)
@@ -715,7 +818,8 @@ class _CharacterScene(object):
             [(bone["name"], bone["parent"]) for bone in subject["bones"]],
             [curve["name"] for curve in subject["curves"]],
             duplicate_paths,
-            subject["meshes"])
+            subject["meshes"],
+            subject["bind_local_transforms"])
         return subject, snapshot
 
     def _commit_capture(self, revision):
@@ -834,7 +938,7 @@ class _CharacterScene(object):
             candidate = _CharacterSnapshot(
                 previous.revision, candidate.root, candidate.outfit,
                 candidate.bones, candidate.curve_names, candidate.duplicate_paths,
-                candidate.mesh_paths)
+                candidate.mesh_paths, candidate.bind_local_transforms)
         self._subject = subject
         self._snapshot = candidate
         self._refreshing = False
@@ -1145,9 +1249,16 @@ class _StreamingSession(object):
         return session
 
     def _start(self, snapshot):
+        if len(snapshot.bind_local_transforms) != len(snapshot.bones):
+            raise _StreamingSessionError(
+                "BIND_POSE_INVALID",
+                "The captured bind pose does not match the captured skeleton.")
+        bones = [
+            [name, parent, list(snapshot.bind_local_transforms[index])]
+            for index, (name, parent) in enumerate(snapshot.bones)
+        ]
         init_message = make_init_message(
-            [[name, parent] for name, parent in snapshot.bones],
-            list(snapshot.curve_names))
+            bones, list(snapshot.curve_names))
         self._worker = _SenderWorker(init_message)
         self._revision = snapshot.revision
         self._worker.start()

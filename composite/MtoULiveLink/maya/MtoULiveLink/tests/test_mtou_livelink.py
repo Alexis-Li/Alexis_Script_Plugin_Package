@@ -12,8 +12,24 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "MtoULiveLink
 SPEC = importlib.util.spec_from_file_location("MtoULiveLink", str(SCRIPT))
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+BIND_IDENTITY = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+
+
+def character_snapshot(revision, root, outfit, bones, curves,
+                       duplicate_paths=(), mesh_paths=()):
+    return MODULE._CharacterSnapshot(
+        revision,
+        root,
+        outfit,
+        bones,
+        curves,
+        duplicate_paths,
+        mesh_paths,
+        [BIND_IDENTITY for unused in bones],
+    )
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v2.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v3.json")
     .read_text(encoding="utf-8")
 )
 
@@ -73,6 +89,10 @@ class CharacterSceneTests(unittest.TestCase):
             "meshes": ["|Group|body"],
             "curves": [{"name": "Smile", "plugs": ["face.Smile"]}],
             "unit_scale": 1.0,
+            "bind_local_transforms": [
+                [0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+                [0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+            ],
         }
         display = {"attribute": "clothes", "entries": ["Clothes01", "Clothes02"],
                    "plug": "|Group|Display_ctrl.clothes"}
@@ -266,6 +286,7 @@ class CharacterSceneTests(unittest.TestCase):
             "meshes": ["|Group|body"],
             "curves": [],
             "unit_scale": 1.0,
+            "bind_local_transforms": [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]],
         }
         display = {"attribute": "clothes", "entries": ["Clothes01"],
                    "plug": "|Group|Display_ctrl.clothes"}
@@ -317,7 +338,7 @@ class StreamingSessionTests(unittest.TestCase):
             "warning": staticmethod(lambda message: None),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
         return fake_om, fake_cmds, scene
 
@@ -373,7 +394,7 @@ class StreamingSessionTests(unittest.TestCase):
             }),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], ["Smile"])
         with mock.patch.object(MODULE, "om", fake_om), \
              mock.patch.object(MODULE, "_SenderWorker", FakeWorker):
@@ -431,7 +452,7 @@ class StreamingSessionTests(unittest.TestCase):
             }),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], ["Smile"])
         scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [0.25])
 
@@ -475,7 +496,7 @@ class StreamingSessionTests(unittest.TestCase):
             }),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
         scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [])
 
@@ -546,7 +567,7 @@ class StreamingSessionTests(unittest.TestCase):
             "warning": staticmethod(lambda message: None),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
 
         with mock.patch.object(MODULE, "om", fake_om), \
@@ -611,7 +632,7 @@ class StreamingSessionTests(unittest.TestCase):
             "warning": staticmethod(lambda message: None),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
         scene.sample.side_effect = MODULE._CharacterSceneError(
             "SAMPLING_FAILED", "bad pose", details="bad plug")
@@ -667,7 +688,7 @@ class StreamingSessionTests(unittest.TestCase):
             "warning": staticmethod(lambda message: None),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
 
         with mock.patch.object(MODULE, "om", fake_om), \
@@ -784,7 +805,7 @@ class StreamingSessionTests(unittest.TestCase):
             }),
         })
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
 
         with mock.patch.object(MODULE, "om", fake_om), \
@@ -802,7 +823,7 @@ class StreamingSessionTests(unittest.TestCase):
         worker.start.side_effect = RuntimeError("thread start failed")
         fake_worker_type = mock.Mock(return_value=worker)
         scene = mock.Mock()
-        scene.snapshot.return_value = MODULE._CharacterSnapshot(
+        scene.snapshot.return_value = character_snapshot(
             7, "|root", "Clothes01", [("root", -1)], [])
 
         with mock.patch.object(MODULE, "_SenderWorker", fake_worker_type):
@@ -1277,7 +1298,7 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertNotIn("widthHeight", create_call[1])
 
     def test_connect_presents_session_start_failure_without_retaining_session(self):
-        snapshot = MODULE._CharacterSnapshot(
+        snapshot = character_snapshot(
             1, "|root", "Clothes01", [("root", -1)], [], [], [])
 
         class FakeScene(object):
@@ -1399,9 +1420,10 @@ class ProtocolTests(unittest.TestCase):
             return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v2_init_and_structured_diagnostics(self):
-        message = MODULE.make_init_message([["root", -1]], ["Smile"])
-        self.assertEqual(2, message["version"])
+    def test_protocol_v3_init_and_structured_diagnostics(self):
+        identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+        message = MODULE.make_init_message([["root", -1, identity]], ["Smile"])
+        self.assertEqual(3, message["version"])
         diagnostic = MODULE.make_diagnostic(
             "SKELETON_MISMATCH", "Skeleton differs", details="details"
         )

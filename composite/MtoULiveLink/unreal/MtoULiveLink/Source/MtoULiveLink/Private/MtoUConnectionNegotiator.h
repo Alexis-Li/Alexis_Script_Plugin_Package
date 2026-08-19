@@ -24,6 +24,7 @@ struct FMtoUNegotiationOutcome
 {
     bool bUsable = false;
     TArray<FName> PublishBoneNames;
+    TArray<int32> TargetBoneIndices;
     TArray<FString> BoneNameMappings;
     TArray<int32> AcceptedCurveIndices;
     TArray<FName> AcceptedCurveNames;

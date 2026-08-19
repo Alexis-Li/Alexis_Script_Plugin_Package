@@ -1,7 +1,7 @@
 # MtoU_LiveLink Development History
 
-MtoU_LiveLink 0.2.0 is a composite Maya 2022.4 and stock Unreal
-Editor 5.7.4 Live Link product.
+The current implementation is MtoU_LiveLink 0.3.0, a composite Maya 2022.4 and
+stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
 
 ## Timeline
 
@@ -24,6 +24,10 @@ Editor 5.7.4 Live Link product.
   contract, Maya character-scene ownership, and Maya streaming-session
   lifecycle behind four focused interfaces without changing installation or
   user workflow.
+- **2026-08-19:** Implemented and locally verified protocol v3 bind-pose
+  capture and source-bind-to-target-reference pose mapping, removing the need
+  to connect from frame 1 or an A Pose. Production-scene acceptance remains
+  pending for this revision.
 
 ## Stable Records
 

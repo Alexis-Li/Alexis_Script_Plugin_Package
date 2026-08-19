@@ -1,8 +1,9 @@
 # MtoU_LiveLink Architecture
 
 Date: 2026-07-31
-Status: Implemented; stock-engine production acceptance completed 2026-08-11
-Last aligned with implementation: 2026-08-13
+Status: Version 0.3.0 implemented and locally verified; unreleased
+Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
+Last aligned with implementation: 2026-08-19
 
 ## Summary
 
@@ -64,7 +65,7 @@ objects, delete groups, bake animation, or export FBX.
 - Persisting streamed frames or creating an Animation Sequence.
 - Replacing the existing animation FBX export workflow.
 - Multiple simultaneous Maya characters.
-- Skeleton retargeting or partial skeleton matching.
+- Retargeting between different bone hierarchies or partial skeleton matching.
 - Cross-machine or packaged-game streaming.
 - Cameras, lights, props, materials, textures, mesh topology, or rig topology.
 - Automatic reconnect after either host restarts.
@@ -96,7 +97,7 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both components share product version `0.2.0`. The composite project root owns
+Both components share product version `0.3.0`. The composite project root owns
 the matching English and Chinese READMEs, changelog, and license; host-specific
 tests stay beside the implementation they exercise.
 
@@ -271,13 +272,14 @@ remains the overall offset.
 - Endpoint: `127.0.0.1:54321`.
 - Concurrent clients: one.
 - Encoding: UTF-8 JSON preceded by an unsigned 64-bit, big-endian byte length.
-- Protocol version: `2`.
+- Protocol version: `3`.
 - Subject name: `MtoU_Character`.
 
 Message sequence:
 
 1. `init`: protocol version, an ordered list of bone records containing each
-   normalized name and parent index, and the ordered curve names.
+   normalized name, parent index, and source bind-local transform, plus the
+   ordered curve names.
 2. `ready` or `error`: Unreal accepts or rejects the protocol, placed binding,
    and skeleton hierarchy. An error closes the connection.
 3. `frame`: transforms in accepted bone order and an ordered numeric curve
@@ -311,8 +313,10 @@ parent.
 
 The validation response lists missing bones, extra bones, and parent mismatches.
 It also reports successful bone-name mappings and both directions of Morph
-difference as warnings. No pose is applied to an unusable target. Retargeting,
-permissive skeleton subsets, and fuzzy name matching remain outside scope.
+difference as warnings. No pose is applied to an unusable target. For a usable
+target, source component-space motion relative to Maya's saved bind pose is
+mapped onto the Skeletal Mesh reference pose before Live Link publication.
+Permissive skeleton subsets and fuzzy name matching remain outside scope.
 
 ## UI
 
@@ -362,8 +366,9 @@ state as read-only diagnostics.
 - A second Maya client is rejected with an actionable response.
 - Plugin shutdown and editor exit stop the listener, join its worker, unregister
   the source, and release sockets.
-- A disconnected actor keeps the last valid pose and displays a disconnected
-  state. Manual reconnect resumes updates.
+- A disconnected actor clears the last streamed frame, returns to the Skeletal
+  Mesh reference pose, and displays a disconnected state. Manual reconnect
+  resumes updates.
 - Protocol errors do not modify the Skeletal Mesh, binding asset, level actor
   transform, or other project content.
 - Port conflicts appear in the Live Link source status and Unreal log.
@@ -408,6 +413,8 @@ Development-only automation tests cover:
 - `NaN` and infinity rejection;
 - connection negotiation, including parent-scoped importer suffix mappings and
   bidirectional Morph differences;
+- bind-pose invariance and reference-pose mapping across different local axes,
+  parent-child motion, translation, and unit scale;
 - preservation of actor world transform while root-bone motion changes;
 - end-to-end loopback socket flow, second-client rejection, bind failure, and
   clean idempotent source shutdown.
@@ -471,34 +478,6 @@ and Unreal Morph Targets missing in Maya. Curve differences remain warnings,
 while skeleton differences remain blocking. Unreal now requires exactly one
 placed MtoU Binding Actor for a connection.
 
-### Protocol contract and conformance corpus
-
-Protocol v2 freezes the following wire fields. Every listed field is required;
-adapters ignore unknown fields so additive transport metadata remains
-forward-compatible. A structural or semantic field change requires protocol
-v3.
-
-| Message | Required fields | Contract role |
-| --- | --- | --- |
-| `init` | `type`, `version`, parent-first `bones`, `curves` | Maya character description |
-| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose |
-| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps` | Successful negotiation reply |
-| `error` | `type`, `code`, `message`, `details` | Stable failure reply |
-
-Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
-messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
-protocol version uses `PROTOCOL_VERSION_MISMATCH` and closes the connection. A
-non-finite or Unreal-float-range value in an otherwise structural frame drops
-only that frame and keeps the connection. An unusable connection-negotiation
-outcome sends its negotiation error and then closes.
-
-The machine-authoritative conformance corpus is
-`composite/MtoULiveLink/protocol/conformance-v2.json`. Maya repository tests
-read it directly. A Python-standard-library generator projects the same cases
-into a checked-in, test-only Unreal `.inl`; repository validation fails if that
-projection is stale. Neither shipped host component has a runtime dependency
-on the corpus or on its sibling host directory.
-
 The supplied `SK_C04_Last09.0013.ma` production scene confirmed automatic
 discovery of `|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl`,
 its `Mod` enum, current `Clothes09`, 30 fps, 860 transmitted joints, and 127
@@ -515,6 +494,58 @@ short names may connect when Unreal finds exactly one importer-renamed numeric
 suffix candidate below the already matched parent. Live Link publishes the
 actual Unreal bone name while preserving Maya transform order. The connection
 reports every remap as a warning; zero or multiple candidates remain blocking.
+
+## Protocol v3 Contract and Conformance Corpus
+
+Protocol v3 freezes the following wire fields. Every listed field is required;
+adapters ignore unknown fields so additive transport metadata remains
+forward-compatible. A structural or semantic field change requires a new
+protocol version.
+
+| Message | Required fields | Contract role |
+| --- | --- | --- |
+| `init` | `type`, `version`, parent-first `bones` with bind-local transforms, `curves` | Maya character description |
+| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose |
+| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps` | Successful negotiation reply |
+| `error` | `type`, `code`, `message`, `details` | Stable failure reply |
+
+Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
+messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
+protocol version uses `PROTOCOL_VERSION_MISMATCH` and closes the connection. A
+non-finite or Unreal-float-range value in an otherwise structural frame drops
+only that frame and keeps the connection. An unusable connection-negotiation
+outcome sends its negotiation error and then closes.
+
+The machine-authoritative conformance corpus is
+`composite/MtoULiveLink/protocol/conformance-v3.json`. Maya repository tests
+read it directly. A Python-standard-library generator projects the same cases
+into a checked-in, test-only Unreal `.inl`; repository validation fails if that
+projection is stale. Neither shipped host component has a runtime dependency
+on the corpus or on its sibling host directory.
+
+## Reference-Pose Mapping Revision
+
+Date: 2026-08-19
+
+Version 0.3.0 separates the Maya animation frame, Maya bind pose, and Unreal
+reference pose. Maya protocol v3 bone records carry a bind-local transform
+derived from the inverse of each SkinCluster `bindPreMatrix`. Bind-pose
+`dagPose.worldMatrix` data supplies hierarchy members that are not direct skin
+influences. Every available matrix for a joint must agree; a missing or
+inconsistent matrix rejects character capture instead of falling back to the
+current frame.
+
+Unreal aligns the target reference pose to Maya's negotiated bone order. For
+each bone, it builds source bind, source current, and target reference component
+matrices. With Unreal's row-vector composition, the target current component
+matrix is:
+
+`TargetRefComponent * inverse(SourceBindComponent) * SourceCurrentComponent`
+
+The mapped component pose is converted back to parent-local transforms for
+Live Link. Therefore `SourceCurrent == SourceBind` produces exactly the target
+reference pose, while arbitrary current animation remains independent of frame
+1 and of the pose visible when the user connects.
 
 ## Documentation and Packaging
 

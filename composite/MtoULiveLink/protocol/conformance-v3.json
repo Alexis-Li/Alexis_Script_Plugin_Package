@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "protocol_version": 2,
+  "protocol_version": 3,
   "cases": [
     {
       "id": "framing-partial-packet",
@@ -31,42 +31,42 @@
       "id": "init-basic",
       "operation": "init",
       "applies_to": ["maya", "unreal"],
-      "payload": {"type": "init", "version": 2, "bones": [["root", -1], ["jaw", 0]], "curves": ["Smile"]},
+      "payload": {"type": "init", "version": 3, "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]], ["jaw", 0, [0, 0, 10, 0, 0, 0, 1, 1, 1, 1]]], "curves": ["Smile"]},
       "expected": {"accepted": true, "close": false}
     },
     {
       "id": "init-utf8-duplicates-and-unknown-field",
       "operation": "init",
       "applies_to": ["maya", "unreal"],
-      "payload": {"type": "init", "version": 2, "bones": [["根", -1], ["臂", 0], ["臂", 0]], "curves": ["笑"], "future": {"ignored": true}},
+      "payload": {"type": "init", "version": 3, "bones": [["根", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]], ["臂", 0, [0, 0, 10, 0, 0, 0, 1, 1, 1, 1]], ["臂", 0, [0, 0, -10, 0, 0, 0, 1, 1, 1, 1]]], "curves": ["笑"], "future": {"ignored": true}},
       "expected": {"accepted": true, "close": false}
     },
     {
       "id": "init-version-mismatch",
       "operation": "init",
       "applies_to": ["unreal"],
-      "payload": {"type": "init", "version": 1, "bones": [["root", -1]], "curves": []},
+      "payload": {"type": "init", "version": 2, "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]], "curves": []},
       "expected": {"accepted": false, "error_code": "PROTOCOL_VERSION_MISMATCH", "close": true, "keywords": ["version"]}
     },
     {
       "id": "init-version-wrong-type",
       "operation": "init",
       "applies_to": ["unreal"],
-      "payload": {"type": "init", "version": "2", "bones": [["root", -1]], "curves": []},
+      "payload": {"type": "init", "version": "3", "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]], "curves": []},
       "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["version"]}
     },
     {
       "id": "init-missing-curves",
       "operation": "init",
       "applies_to": ["unreal"],
-      "payload": {"type": "init", "version": 2, "bones": [["root", -1]]},
+      "payload": {"type": "init", "version": 3, "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]]},
       "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["curves"]}
     },
     {
       "id": "init-parent-not-before-child",
       "operation": "init",
       "applies_to": ["unreal"],
-      "payload": {"type": "init", "version": 2, "bones": [["root", -1], ["jaw", 1]], "curves": []},
+      "payload": {"type": "init", "version": 3, "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]], ["jaw", 1, [0, 0, 10, 0, 0, 0, 1, 1, 1, 1]]], "curves": []},
       "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["parent"]}
     },
     {

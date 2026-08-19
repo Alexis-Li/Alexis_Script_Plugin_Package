@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Upgrade the protocol to v3 and transmit each joint's true Maya bind-local
+  transform from SkinCluster `bindPreMatrix` and bind-pose `dagPose` data.
+- Map evaluated source component-space motion from the Maya bind pose onto the
+  Unreal Skeletal Mesh reference pose, including differing local bone axes,
+  parent-child motion, translation, and unit scale.
+- Reject missing or inconsistent Maya bind matrices instead of substituting the
+  animation's current or first frame.
 - Update Live Link animation continuously in Unreal Editor instead of waiting
   for an unrelated property edit to refresh the binding actor, temporarily
   forcing level viewports into realtime mode only while a stream is connected.
@@ -10,7 +17,7 @@
   stream and leaving Unreal visibly behind Maya.
 - Clear the last streamed Live Link frame when a Maya session disconnects so a
   stale or malformed pose cannot remain applied across reconnection attempts.
-- Define the protocol v2 wire fields, stable parser error categories, and
+- Define the protocol v3 wire fields, stable parser error categories, and
   connection-closing policy in one canonical cross-host conformance corpus.
 - Exercise applicable canonical cases through both Maya and Unreal adapters,
   and fail repository validation when generated Unreal test data is stale.

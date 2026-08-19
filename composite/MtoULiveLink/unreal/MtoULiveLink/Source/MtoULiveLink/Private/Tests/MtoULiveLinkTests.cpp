@@ -105,6 +105,25 @@ TArray<uint8> Packet(const FString& Text)
     return Bytes;
 }
 
+FString TransformJson(const FTransform& Transform)
+{
+    const FVector Translation = Transform.GetTranslation();
+    const FQuat Rotation = Transform.GetRotation();
+    const FVector Scale = Transform.GetScale3D();
+    return FString::Printf(
+        TEXT("[%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g]"),
+        Translation.X,
+        Translation.Y,
+        Translation.Z,
+        Rotation.X,
+        Rotation.Y,
+        Rotation.Z,
+        Rotation.W,
+        Scale.X,
+        Scale.Y,
+        Scale.Z);
+}
+
 TSharedRef<FInternetAddr> LoopbackAddress(ISocketSubsystem& SocketSubsystem, uint16 Port)
 {
     TSharedRef<FInternetAddr> Address = SocketSubsystem.CreateInternetAddr();
@@ -238,6 +257,29 @@ AMtoULiveLinkActor* AddBoundActor(UWorld& World)
         Actor->SetBinding(Binding);
     }
     return Actor;
+}
+
+FMtoUFrameMessage FrameFromPose(const TArray<FTransform>& Pose)
+{
+    FMtoUFrameMessage Frame;
+    for (const FTransform& Transform : Pose)
+    {
+        Frame.Transforms.Add({
+            Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
+    }
+    return Frame;
+}
+
+TArray<FTransform> RetargetPose(
+    const TArray<FTransform>& CurrentPose,
+    const TArray<FTransform>& SourceBindPose,
+    const TArray<FTransform>& TargetRefPose,
+    const TArray<int32>& BoneParents)
+{
+    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
+        FrameFromPose(CurrentPose), {}, SourceBindPose, TargetRefPose, BoneParents);
+    const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
+    return Animation ? Animation->Transforms : TArray<FTransform>();
 }
 }
 
@@ -504,29 +546,37 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         {
             Bones += TEXT(",");
         }
-        Bones += FString::Printf(TEXT("[\"bone_%d\",%d]"), Index, Index - 1);
+        Bones += FString::Printf(
+            TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
 
     TestTrue(TEXT("701 parent-first bones are accepted"), FMtoUProtocol::ParseInit(Utf8(Valid), Message, Error));
     TestEqual(TEXT("all bones are retained"), Message.Bones.Num(), 701);
-    TestFalse(TEXT("protocol version 1 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":2"), TEXT("\"version\":1"))), Message, Error));
+    TestEqual(TEXT("all bind transforms are retained"), Message.SourceBindLocalPose.Num(), 701);
+    TestFalse(TEXT("protocol version 2 is rejected"),
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":2"))), Message, Error));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":2"), TEXT("\"version\":\"2\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":\"3\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"root\",0]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"other\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"child\",1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+    TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+    TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+    TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"@\",-1]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -543,28 +593,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"根\",-1]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"%s\",0]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1],[\"bad\\u0000tail\",0]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"root\",-1]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -682,6 +732,198 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("validated curve remains finite in Live Link data"),
             FMath::IsFinite(Animation->PropertyValues[0]));
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUBindPoseInvariantTest,
+    "MtoULiveLink.PoseRetargeting.BindPoseInvariant",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUBindPoseInvariantTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TArray<FTransform> SourceBindLocalPose = {
+        FTransform(FRotator(0.0, 20.0, 0.0), FVector(10.0, 0.0, 0.0)),
+        FTransform(FRotator(35.0, 0.0, 15.0), FVector(0.0, 8.0, 0.0)),
+    };
+    const TArray<FTransform> TargetRefLocalPose = {
+        FTransform(FRotator(0.0, -10.0, 0.0), FVector(2.0, 0.0, 0.0)),
+        FTransform(FRotator(-20.0, 5.0, 0.0), FVector(0.0, 12.0, 0.0)),
+    };
+    FMtoUFrameMessage SourceBindFrame;
+    for (const FTransform& Transform : SourceBindLocalPose)
+    {
+        SourceBindFrame.Transforms.Add({
+            Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
+    }
+
+    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
+        SourceBindFrame, {}, SourceBindLocalPose, TargetRefLocalPose, {INDEX_NONE, 0});
+    const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
+    TestNotNull(TEXT("retargeted animation data is built"), Animation);
+    if (!Animation)
+    {
+        return false;
+    }
+    TestEqual(TEXT("retargeted transform count"), Animation->Transforms.Num(), 2);
+    for (int32 Index = 0; Index < TargetRefLocalPose.Num(); ++Index)
+    {
+        TestTrue(
+            *FString::Printf(TEXT("source bind bone %d maps to target reference pose"), Index),
+            Animation->Transforms[Index].Equals(TargetRefLocalPose[Index]));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUIdenticalReferencePoseTest,
+    "MtoULiveLink.PoseRetargeting.IdenticalReferencePose",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUIdenticalReferencePoseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TArray<FTransform> ReferencePose = {
+        FTransform(FRotator(0.0, 15.0, 0.0), FVector(2.0, 3.0, 4.0)),
+        FTransform(FRotator(10.0, 0.0, 20.0), FVector(0.0, 8.0, 0.0)),
+    };
+    const TArray<FTransform> CurrentPose = {
+        FTransform(FRotator(5.0, 25.0, -3.0), FVector(7.0, 3.0, 4.0)),
+        FTransform(FRotator(15.0, -7.0, 30.0), FVector(0.0, 8.0, 0.0)),
+    };
+    const TArray<FTransform> Output = RetargetPose(
+        CurrentPose, ReferencePose, ReferencePose, {INDEX_NONE, 0});
+    TestEqual(TEXT("identical reference output count"), Output.Num(), CurrentPose.Num());
+    for (int32 Index = 0; Index < Output.Num(); ++Index)
+    {
+        TestTrue(*FString::Printf(TEXT("identical reference bone %d is unchanged"), Index),
+            Output[Index].Equals(CurrentPose[Index], 1.0e-3f));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDifferentReferenceAxisTest,
+    "MtoULiveLink.PoseRetargeting.DifferentReferenceAxis",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDifferentReferenceAxisTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FTransform SourceBind(FRotator(0.0, 0.0, 90.0));
+    const FTransform TargetRef(FRotator(90.0, 0.0, 0.0));
+    const FTransform Motion(FRotator(0.0, 30.0, 0.0), FVector(3.0, 4.0, 5.0));
+    const FTransform SourceCurrent(SourceBind.ToMatrixWithScale() * Motion.ToMatrixWithScale());
+    const FTransform Expected(TargetRef.ToMatrixWithScale() * Motion.ToMatrixWithScale());
+    const TArray<FTransform> Output = RetargetPose(
+        {SourceCurrent}, {SourceBind}, {TargetRef}, {INDEX_NONE});
+    TestEqual(TEXT("different-axis output count"), Output.Num(), 1);
+    TestTrue(TEXT("motion is transferred once in the target reference frame"),
+        Output.IsValidIndex(0) && Output[0].Equals(Expected, 1.0e-3f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUParentChildRetargetingTest,
+    "MtoULiveLink.PoseRetargeting.ParentAndChild",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUParentChildRetargetingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FTransform SourceBindParent(FRotator(0.0, 20.0, 0.0), FVector(1.0, 2.0, 3.0));
+    const FTransform SourceBindChild(FRotator(10.0, 0.0, 25.0), FVector(0.0, 8.0, 0.0));
+    const FTransform TargetRefParent(FRotator(0.0, -15.0, 5.0), FVector(4.0, 0.0, 2.0));
+    const FTransform TargetRefChild(FRotator(-20.0, 10.0, 0.0), FVector(0.0, 12.0, 0.0));
+    const FTransform ParentMotion(FRotator(5.0, 15.0, 10.0), FVector(7.0, 0.0, 0.0));
+    const FTransform ChildMotion(FRotator(-8.0, 12.0, 20.0), FVector(0.0, 2.0, 1.0));
+
+    const FMatrix SourceBindParentComponent = SourceBindParent.ToMatrixWithScale();
+    const FMatrix SourceBindChildComponent =
+        SourceBindChild.ToMatrixWithScale() * SourceBindParentComponent;
+    const FMatrix SourceCurrentParentComponent =
+        SourceBindParentComponent * ParentMotion.ToMatrixWithScale();
+    const FMatrix SourceCurrentChildComponent =
+        SourceBindChildComponent * ChildMotion.ToMatrixWithScale();
+    const TArray<FTransform> SourceCurrent = {
+        FTransform(SourceCurrentParentComponent),
+        FTransform(SourceCurrentChildComponent * SourceCurrentParentComponent.Inverse()),
+    };
+
+    const FMatrix ExpectedParentComponent =
+        TargetRefParent.ToMatrixWithScale() * ParentMotion.ToMatrixWithScale();
+    const FMatrix ExpectedChildComponent =
+        TargetRefChild.ToMatrixWithScale()
+        * TargetRefParent.ToMatrixWithScale()
+        * ChildMotion.ToMatrixWithScale();
+    const TArray<FTransform> Expected = {
+        FTransform(ExpectedParentComponent),
+        FTransform(ExpectedChildComponent * ExpectedParentComponent.Inverse()),
+    };
+    const TArray<FTransform> Output = RetargetPose(
+        SourceCurrent,
+        {SourceBindParent, SourceBindChild},
+        {TargetRefParent, TargetRefChild},
+        {INDEX_NONE, 0});
+    TestEqual(TEXT("parent-child output count"), Output.Num(), 2);
+    for (int32 Index = 0; Index < Output.Num(); ++Index)
+    {
+        TestTrue(*FString::Printf(TEXT("parent-child bone %d component motion maps"), Index),
+            Output[Index].Equals(Expected[Index], 1.0e-3f));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUTranslationRetargetingTest,
+    "MtoULiveLink.PoseRetargeting.Translation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUTranslationRetargetingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TArray<FTransform> SourceBind = {
+        FTransform(FQuat::Identity, FVector(10.0, 0.0, 0.0)),
+        FTransform(FQuat::Identity, FVector(0.0, 5.0, 0.0)),
+    };
+    const TArray<FTransform> TargetRef = {
+        FTransform(FQuat::Identity, FVector(-3.0, 0.0, 0.0)),
+        FTransform(FQuat::Identity, FVector(0.0, 9.0, 0.0)),
+    };
+    const TArray<FTransform> Current = {
+        FTransform(FQuat::Identity, FVector(12.0, 4.0, 0.0)),
+        FTransform(FQuat::Identity, FVector(1.0, 7.0, 0.0)),
+    };
+    const TArray<FTransform> Output = RetargetPose(
+        Current, SourceBind, TargetRef, {INDEX_NONE, 0});
+    TestTrue(TEXT("root translation delta is transferred"),
+        Output.IsValidIndex(0)
+        && Output[0].GetTranslation().Equals(FVector(-1.0, 4.0, 0.0), 1.0e-3f));
+    TestTrue(TEXT("non-root translation is reference-corrected"),
+        Output.IsValidIndex(1)
+        && Output[1].GetTranslation().Equals(FVector(1.0, 11.0, 0.0), 1.0e-3f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUUnitScaleRetargetingTest,
+    "MtoULiveLink.PoseRetargeting.UnitScale",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUUnitScaleRetargetingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FTransform SourceBind(FRotator(10.0, 20.0, 30.0), FVector(1.0, 2.0, 3.0));
+    const FTransform TargetRef(FRotator(-5.0, 15.0, 25.0), FVector(4.0, 5.0, 6.0));
+    const FTransform SourceCurrent(FRotator(20.0, 30.0, 40.0), FVector(7.0, 8.0, 9.0));
+    const TArray<FTransform> Output = RetargetPose(
+        {SourceCurrent}, {SourceBind}, {TargetRef}, {INDEX_NONE});
+    TestTrue(TEXT("unit scale remains unit scale"), Output.IsValidIndex(0)
+        && Output[0].GetScale3D().Equals(FVector::OneVector, 1.0e-3f));
+    const FTransform UniformScaleMotion(
+        FQuat::Identity, FVector::ZeroVector, FVector(1.25, 1.25, 1.25));
+    const FTransform UniformScaleCurrent(
+        SourceBind.ToMatrixWithScale() * UniformScaleMotion.ToMatrixWithScale());
+    const TArray<FTransform> UniformScaleOutput = RetargetPose(
+        {UniformScaleCurrent}, {SourceBind}, {TargetRef}, {INDEX_NONE});
+    TestTrue(TEXT("uniform animated scale is transferred"),
+        UniformScaleOutput.IsValidIndex(0)
+        && UniformScaleOutput[0].GetScale3D().Equals(FVector(1.25), 1.0e-3f));
     return true;
 }
 
@@ -840,6 +1082,30 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("numeric suffix remapping requires an already mapped parent"), RootRename.bUsable);
     TestTrue(TEXT("a root typo is reported as missing instead of fuzzy matched"),
         RootRename.MissingBones.Contains(TEXT("root")));
+
+    const FMtoUCharacterDescription SourceSiblingOrder = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("left_tip")), 1},
+            {FName(TEXT("right")), 0},
+        },
+        {},
+    };
+    const FMtoUTargetDescription TargetSiblingOrder = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("left_tip")), 2},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome SiblingOrder =
+        FMtoUConnectionNegotiator::Negotiate(SourceSiblingOrder, TargetSiblingOrder);
+    TestTrue(TEXT("different sibling array order remains usable"), SiblingOrder.bUsable);
+    TestTrue(TEXT("source order retains the aligned target bone indices"),
+        SiblingOrder.TargetBoneIndices == TArray<int32>({0, 2, 3, 1}));
     return true;
 }
 
@@ -975,7 +1241,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"Bone01\",-1],[\"Bone02\",0]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -1006,10 +1272,18 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     const FString ChildBoneName = TestSkeleton && TestSkeleton->GetNum() >= 2
         ? TestSkeleton->GetBoneName(1).ToString()
         : TEXT("Bone02");
+    const FString RootBind = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TransformJson(TestSkeleton->GetRefBonePose()[0])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
+    const FString ChildBind = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TransformJson(TestSkeleton->GetRefBonePose()[1])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":2,\"bones\":[[\"%s\",-1],[\"%s\",0]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
-        *ChildBoneName));
+        *RootBind,
+        *ChildBoneName,
+        *ChildBind));
     if (Primary)
     {
         TestTrue(TEXT("partial init prefix is sent"), SendBytes(*Primary, Init.GetData(), 3));
@@ -1048,6 +1322,39 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         FromUtf8(Payload).Contains(TEXT("already has a Maya client")));
     DestroySocket(*SocketSubsystem, Second);
 
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    const TArray<uint8> ReferencePoseFrame = Packet(FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s,%s],\"curves\":[0]}"),
+        *RootBind,
+        *ChildBind));
+    TestTrue(TEXT("target reference-pose diagnostic frame is sent"),
+        Primary && SendBytes(
+            *Primary, ReferencePoseFrame.GetData(), ReferencePoseFrame.Num()));
+    FLiveLinkSubjectFrameData ReferenceEvaluatedFrame;
+    const bool bReferenceEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), ReferenceEvaluatedFrame))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            ReferenceEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        return Animation && Animation->Transforms.Num() == 2;
+    });
+    TestTrue(TEXT("target reference-pose frame reaches Live Link"), bReferenceEvaluated);
+    if (bReferenceEvaluated && TestSkeleton)
+    {
+        const FLiveLinkAnimationFrameData* Animation =
+            ReferenceEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        TestTrue(TEXT("target reference-pose root remains undistorted"),
+            Animation->Transforms[0].Equals(TestSkeleton->GetRefBonePose()[0], 1.0e-3f));
+        TestTrue(TEXT("target reference-pose child remains undistorted"),
+            Animation->Transforms[1].Equals(TestSkeleton->GetRefBonePose()[1], 1.0e-3f));
+    }
+
     const TArray<uint8> NonFinite = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e400]}"));
     const TArray<uint8> Valid = Packet(
@@ -1059,7 +1366,6 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("combined invalid and valid frame packets are sent"),
         Primary && SendBytes(*Primary, Combined.GetData(), Combined.Num()));
 
-    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
     FLiveLinkSubjectFrameData EvaluatedFrame;
     const bool bEvaluated = PollUntil([&]()
     {
@@ -1072,7 +1378,9 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         }
         const FLiveLinkAnimationFrameData* Animation =
             EvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
-        return Animation && Animation->Transforms.IsValidIndex(0);
+        return Animation
+            && Animation->Transforms.IsValidIndex(0)
+            && Animation->Transforms[0].GetTranslation().Equals(FVector(1.0, 2.0, 3.0));
     });
     TestTrue(TEXT("following valid frame is evaluated after the non-finite frame"), bEvaluated);
     if (bEvaluated)

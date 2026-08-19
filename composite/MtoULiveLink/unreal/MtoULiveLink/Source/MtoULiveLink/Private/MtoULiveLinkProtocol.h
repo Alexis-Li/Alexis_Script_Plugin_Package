@@ -14,6 +14,7 @@ struct FMtoUTransform
 struct FMtoUInitMessage
 {
     TArray<FMtoUDescriptionBone> Bones;
+    TArray<FTransform> SourceBindLocalPose;
     TArray<FName> Curves;
 };
 
@@ -43,7 +44,7 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 2;
+    static constexpr int32 Version = 3;
     static bool ParseInit(
         const TArray<uint8>& Payload,
         FMtoUInitMessage& OutMessage,
@@ -70,4 +71,10 @@ public:
     static FLiveLinkFrameDataStruct MakeFrameData(
         const FMtoUFrameMessage& Frame,
         const TArray<int32>& AcceptedCurveIndices);
+    static FLiveLinkFrameDataStruct MakeRetargetedFrameData(
+        const FMtoUFrameMessage& Frame,
+        const TArray<int32>& AcceptedCurveIndices,
+        const TArray<FTransform>& SourceBindLocalPose,
+        const TArray<FTransform>& TargetRefLocalPose,
+        const TArray<int32>& BoneParents);
 };

@@ -72,8 +72,8 @@ class MayaHostTests(unittest.TestCase):
             snapshot.mesh_paths)
 
     def test_capture_rejects_character_without_visible_skinned_mesh(self):
-        group, root, unused_display = self._create_character_group()
-        del group, unused_display
+        unused_group, root, unused_display = self._create_character_group()
+        del unused_group, unused_display
         mesh = cmds.polyCube(name="hiddenBody")[0]
         cmds.skinCluster(root, mesh)
         cmds.setAttr(mesh + ".visibility", False)
@@ -130,6 +130,62 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual((0.0, 0.0, 3.0), frame.transforms[1][:3])
         self.assertEqual(("Smile",), snapshot.curve_names)
         self.assertEqual((0.25,), frame.curves)
+
+    def test_bind_pose_is_independent_of_current_frame_and_covers_non_influence_joint(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        cmds.select(root, replace=True)
+        cmds.joint(name="middle", position=(1, 5, 3))
+        child = cmds.joint(name="child", position=(1, 8, 3))
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, child, mesh, name="bodySkin")
+        cmds.setAttr(root + ".rotateZ", 30.0)
+        cmds.setAttr(child + ".rotateX", 20.0)
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        current = scene.sample()
+
+        self.assertEqual((0.0, 0.0, 0.0), snapshot.bind_local_transforms[0][:3])
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[1][:3], (1.0, 3.0, 5.0)):
+            self.assertAlmostEqual(expected, actual)
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[2][:3], (0.0, 0.0, 3.0)):
+            self.assertAlmostEqual(expected, actual)
+        self.assertNotEqual(snapshot.bind_local_transforms, current.transforms)
+        self.assertEqual("middle", snapshot.bones[1][0])
+
+    def test_inconsistent_skincluster_bind_matrices_are_rejected(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        first_mesh = cmds.polyCube(name="firstBody")[0]
+        second_mesh = cmds.polyCube(name="secondBody")[0]
+        cmds.skinCluster(root, first_mesh, name="firstSkin")
+        cmds.setAttr(root + ".translateX", 5.0)
+        cmds.skinCluster(
+            root, second_mesh, name="secondSkin", ignoreBindPose=True)
+
+        with self.assertRaises(module._CharacterSceneError) as caught:
+            module._CharacterScene.capture(root)
+
+        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
+        self.assertIn("inconsistent bind matrices", caught.exception.details)
+
+    def test_bone_without_saved_bind_matrix_is_rejected(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, mesh, name="bodySkin")
+        cmds.select(root, replace=True)
+        cmds.joint(name="addedAfterBind", position=(0, 5, 0))
+
+        with self.assertRaises(module._CharacterSceneError) as caught:
+            module._CharacterScene.capture(root)
+
+        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
+        self.assertIn("has no SkinCluster bindPreMatrix", caught.exception.details)
 
     def test_same_alias_on_multiple_mesh_parts_streams_one_curve(self):
         group, root, unused_display = self._create_character_group()
@@ -213,7 +269,8 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(2, FakeWorker.instance.init_message["version"])
+        self.assertEqual(3, FakeWorker.instance.init_message["version"])
+        self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
 
 
 if __name__ == "__main__":

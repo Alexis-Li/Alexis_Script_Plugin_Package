@@ -59,6 +59,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
 {
     FMtoUNegotiationOutcome Outcome;
     Outcome.PublishBoneNames.SetNum(Character.Bones.Num());
+    Outcome.TargetBoneIndices.Init(INDEX_NONE, Character.Bones.Num());
 
     TMap<FName, int32> MayaNameCounts;
     for (const FMtoUDescriptionBone& Bone : Character.Bones)
@@ -129,6 +130,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
             UsedUnreal.Add(UnrealIndex);
             AccountedUnreal.Add(UnrealIndex);
             Outcome.PublishBoneNames[MayaIndex] = Target.Bones[UnrealIndex].Name;
+            Outcome.TargetBoneIndices[MayaIndex] = UnrealIndex;
             if (Target.Bones[UnrealIndex].Name != MayaBone.Name)
             {
                 Outcome.BoneNameMappings.Add(FString::Printf(
@@ -198,6 +200,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     {
         Outcome.FailureCategory = TEXT("SKELETON_MISMATCH");
         Outcome.PublishBoneNames.Reset();
+        Outcome.TargetBoneIndices.Reset();
         Outcome.BoneNameMappings.Reset();
         return Outcome;
     }

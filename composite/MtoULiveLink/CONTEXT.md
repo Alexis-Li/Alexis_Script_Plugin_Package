@@ -11,8 +11,9 @@ _Avoid_: Role, Maya selection, character cache
 
 **Character snapshot**:
 A stable description of one character scene revision, including its outfit,
-ordered skeleton, and streamable curve names. Connection negotiation uses one
-snapshot and does not silently adopt topology changes during streaming.
+ordered skeleton, bind-local pose, and streamable curve names. Connection
+negotiation uses one snapshot and does not silently adopt topology changes
+during streaming.
 _Avoid_: Scene state, init payload, role data
 
 **Streaming session**:

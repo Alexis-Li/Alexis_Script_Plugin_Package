@@ -52,8 +52,11 @@ Animation Sequence. The binding actor updates its animation continuously in
 Unreal Editor. While connected, the plugin temporarily forces level viewports
 into realtime mode and restores each viewport's prior setting on disconnect.
 Disconnecting clears the last streamed frame so the mesh returns to its
-reference pose instead of retaining a stale pose. Same-named BlendShapes
+reference pose instead of retaining a stale pose. Maya's saved SkinCluster bind
+pose is kept separate from the current animation frame and mapped to the target
+Skeletal Mesh reference pose, so connecting does not require frame 1 or the
+current frame to be an A Pose. Same-named BlendShapes
 on separate skinned mesh parts are sent as one Unreal curve when their evaluated
 values agree. If those values differ, sampling stops and identifies every
 conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
-warnings. Protocol version 2 requires matching Maya and Unreal 0.2.0 components.
+warnings. Protocol version 3 requires matching Maya and Unreal 0.3.0 components.

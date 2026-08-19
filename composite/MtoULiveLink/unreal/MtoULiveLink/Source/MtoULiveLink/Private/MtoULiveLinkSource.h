@@ -86,6 +86,9 @@ private:
     uint64 GameThreadSession = 0;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
+    TArray<FTransform> SourceBindLocalPose;
+    TArray<FTransform> TargetRefLocalPose;
+    TArray<int32> BoneParents;
     TArray<int32> AcceptedCurveIndices;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
 };
