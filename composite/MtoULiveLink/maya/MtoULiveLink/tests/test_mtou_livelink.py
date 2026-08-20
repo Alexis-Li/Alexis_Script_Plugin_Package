@@ -17,7 +17,7 @@ BIND_IDENTITY = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
 
 
 def character_snapshot(revision, root, outfit, bones, curves,
-                       duplicate_paths=(), mesh_paths=()):
+                       duplicate_paths=(), mesh_paths=(), bind_conflict_count=0):
     return MODULE._CharacterSnapshot(
         revision,
         root,
@@ -27,6 +27,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
         duplicate_paths,
         mesh_paths,
         [BIND_IDENTITY for unused in bones],
+        bind_conflict_count,
     )
 CORPUS = json.loads(
     (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v3.json")
@@ -1297,6 +1298,63 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertNotIn("height", create_call[1])
         self.assertNotIn("widthHeight", create_call[1])
 
+    def test_diagnostic_details_only_include_error_specific_information(self):
+        snapshot = character_snapshot(
+            1, "|Group|root", "Clothes09", [("root", -1)], ["Smile"],
+            mesh_paths=["|Group|Geometry|body"])
+        scene = mock.Mock()
+        scene.snapshot.return_value = snapshot
+        controller = MODULE._Controller()
+        controller._scene = scene
+        controller._last_warning = {
+            "missing_in_unreal": ["MayaSmile"],
+            "missing_in_maya": ["UnrealSmile"],
+            "bone_name_remaps": ["arm -> arm_1"],
+            "has_warning": True,
+        }
+        diagnostic = MODULE.make_diagnostic(
+            "INTERNAL_ERROR", "socket worker failed", details="traceback line")
+
+        with mock.patch.object(controller, "_refresh_fps", return_value=30.0):
+            text = controller._diagnostic_text(diagnostic)
+
+        self.assertIn("MtoU_LiveLink \u53d1\u751f\u5185\u90e8\u9519\u8bef", text)
+        self.assertIn("INTERNAL_ERROR", text)
+        self.assertIn("traceback line", text)
+        self.assertNotIn("|Group|root", text)
+        self.assertNotIn("Clothes09", text)
+        self.assertNotIn("30 fps", text)
+        self.assertNotIn("MayaSmile", text)
+        self.assertNotIn("UnrealSmile", text)
+        self.assertNotIn("arm -> arm_1", text)
+        self.assertNotIn("|Group|Geometry|body", text)
+
+    def test_diagnostic_window_wraps_text_and_fills_resized_window(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.window.side_effect = [False, "diagnosticWindow"]
+        fake_cmds.formLayout.return_value = "diagnosticForm"
+        fake_cmds.scrollField.return_value = "diagnosticField"
+        fake_cmds.button.return_value = "copyButton"
+        controller = MODULE._Controller()
+        controller._diagnostic_text = mock.Mock(return_value="long diagnostic details")
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.show_diagnostics()
+
+        create_window = fake_cmds.window.call_args_list[1]
+        self.assertLessEqual(create_window[1]["widthHeight"][1], 400)
+        create_field = fake_cmds.scrollField.call_args_list[0]
+        self.assertTrue(create_field[1]["wordWrap"])
+        self.assertNotIn("height", create_field[1])
+        layout_edit = fake_cmds.formLayout.call_args_list[-1]
+        self.assertTrue(layout_edit[1]["edit"])
+        self.assertIn(
+            ("diagnosticField", "bottom", 6, "copyButton"),
+            layout_edit[1]["attachControl"])
+        self.assertIn(
+            ("copyButton", "bottom", 8),
+            layout_edit[1]["attachForm"])
+
     def test_connect_presents_session_start_failure_without_retaining_session(self):
         snapshot = character_snapshot(
             1, "|root", "Clothes01", [("root", -1)], [], [], [])
@@ -1343,6 +1401,45 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertIs(current_session, controller._session)
         controller._set_connected.assert_not_called()
         controller._show_error.assert_not_called()
+
+    def test_manual_display_setup_reports_resolved_bind_conflicts(self):
+        snapshot = character_snapshot(
+            1, "|root", "Clothes01", [("root", -1)], [],
+            bind_conflict_count=2)
+        scene = mock.Mock()
+        scene.snapshot.return_value = snapshot
+        controller = MODULE._Controller()
+        controller._pending_root = "|root"
+        controller._clear_scene = mock.Mock()
+        controller._selected_display = mock.Mock(return_value="|Display_ctrl")
+        controller._capture_scene = mock.Mock(return_value=scene)
+        controller._set_connected = mock.Mock()
+
+        controller.set_display_controller()
+
+        status = controller._set_connected.call_args[0][1]
+        self.assertIn("已按绑定姿势解析 2 处蒙皮绑定矩阵冲突", status)
+
+    def test_outfit_refresh_reports_resolved_bind_conflicts(self):
+        snapshot = character_snapshot(
+            2, "|root", "Clothes02", [("root", -1)], [],
+            bind_conflict_count=3)
+        controller = MODULE._Controller()
+        controller._render_snapshot = mock.Mock()
+        controller._set_connected = mock.Mock()
+
+        controller._on_character_scene_event(
+            MODULE._CharacterSceneEvent("outfit_changed", snapshot=snapshot))
+
+        status = controller._set_connected.call_args[0][1]
+        self.assertIn("已按绑定姿势解析 3 处蒙皮绑定矩阵冲突", status)
+
+    def test_bind_pose_diagnostic_describes_current_failure_causes(self):
+        diagnostic = MODULE.make_diagnostic("BIND_POSE_INVALID")
+
+        self.assertIn("非有限值", diagnostic["solution"])
+        self.assertIn("不可逆", diagnostic["solution"])
+        self.assertNotIn("完整且一致", diagnostic["solution"])
 
 
 class ProtocolTests(unittest.TestCase):

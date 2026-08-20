@@ -17,8 +17,10 @@
   different poses) from the joint-connected bind-pose `dagPose` — the pose Go
   to Bind Pose restores and typically the Skeletal Mesh export pose — falling
   back to the skin cluster with the most influences, and report the resolved
-  conflict count instead of rejecting the skeleton. Only non-finite bind
-  matrices are still rejected.
+  conflict count after every character capture instead of rejecting the
+  skeleton. Equally ranked candidates must agree, so a node name cannot choose
+  the bind pose. Non-finite or non-invertible matrices are rejected before
+  inversion.
 - Update Live Link animation continuously in Unreal Editor instead of waiting
   for an unrelated property edit to refresh the binding actor, temporarily
   forcing level viewports into realtime mode only while a stream is connected.
@@ -38,6 +40,8 @@
   cleanup of its worker, timer, and callbacks.
 - Keep the Maya sender window fitted to its controls so moving the window no
   longer alternates between a clipped and fully visible bottom section.
+- Simplify the Maya diagnostic-details window to error-specific information,
+  wrap long text, and keep its text area fitted to the resizable window.
 - Consolidate the bilingual README, changelog, license, and project rules at
   the composite root while keeping host tests beside their component code.
 - Keep packaged components limited to their host runtime files.

@@ -73,7 +73,7 @@ DIAGNOSTICS = {
         "请检查骨架、BlendShape 和当前服装是否在连接期间被修改。"),
     "BIND_POSE_INVALID": (
         "无法读取可靠的 Maya 绑定姿势",
-        "请检查 SkinCluster bindPreMatrix 与 bindPose/dagPose 是否完整且一致。"),
+        "请检查绑定矩阵是否包含非有限值、不可逆矩阵，或存在无法可靠决胜的冲突。"),
     "INTERNAL_ERROR": (
         "MtoU_LiveLink 发生内部错误",
         "请复制诊断详情并重新启动连接。"),
@@ -444,6 +444,60 @@ class _BindPoseError(ValueError):
     pass
 
 
+class _BindMatrixCandidate(object):
+    SKIN_CLUSTER = "skinCluster"
+    DAG_POSE = "dagPose"
+
+    def __init__(self, kind, source, matrix, influence_count=0):
+        self.kind = kind
+        self.source = source
+        self.matrix = matrix
+        self.influence_count = int(influence_count)
+
+
+def _matrix_inverse(matrix, bone_path, source):
+    if not _matrix_is_finite(matrix):
+        raise _BindPoseError(
+            "bone {0} has non-finite bind matrix from {1}".format(
+                bone_path, source))
+    determinant = float(matrix.det4x4())
+    if not math.isfinite(determinant) or determinant == 0.0:
+        raise _BindPoseError(
+            "bone {0} has non-invertible bind matrix from {1}".format(
+                bone_path, source))
+    inverse = matrix.inverse()
+    if not _matrix_is_finite(inverse):
+        raise _BindPoseError(
+            "bone {0} has non-finite inverse bind matrix from {1}".format(
+                bone_path, source))
+    return inverse
+
+
+def _highest_priority_bind_candidates(records):
+    dag_pose_records = [
+        record for record in records
+        if record.kind == _BindMatrixCandidate.DAG_POSE]
+    if dag_pose_records:
+        return dag_pose_records
+    largest_influence_count = max(record.influence_count for record in records)
+    return [record for record in records
+            if record.influence_count == largest_influence_count]
+
+
+def _select_bind_world_candidate(bone_path, records):
+    preferred = _highest_priority_bind_candidates(records)
+    selected = preferred[0]
+    if any(not _matrix_is_equivalent(selected.matrix, record.matrix)
+           for record in preferred[1:]):
+        sources = ", ".join(sorted(record.source for record in preferred))
+        raise _BindPoseError(
+            "bone {0} has conflicting equally ranked bind matrices: {1}".format(
+                bone_path, sources))
+    conflict = any(not _matrix_is_equivalent(selected.matrix, record.matrix)
+                   for record in records)
+    return selected.matrix, conflict
+
+
 def _bind_world_candidates(subject):
     candidates = dict((bone["path"], []) for bone in subject["bones"])
     bone_paths = set(candidates)
@@ -458,8 +512,11 @@ def _bind_world_candidates(subject):
                 continue
             logical_index = function.indexForInfluenceObject(influence)
             plug = "{0}.bindPreMatrix[{1}]".format(skin_cluster, logical_index)
-            candidates[path].append(
-                ((1, len(influences)), plug, _matrix_attr(plug).inverse()))
+            candidates[path].append(_BindMatrixCandidate(
+                _BindMatrixCandidate.SKIN_CLUSTER,
+                plug,
+                _matrix_inverse(_matrix_attr(plug), path, plug),
+                influence_count=len(influences)))
 
     for bone in subject["bones"]:
         plug = bone["path"] + ".bindPose"
@@ -469,7 +526,10 @@ def _bind_world_candidates(subject):
             if cmds.nodeType(pose) == "dagPose" and cmds.getAttr(pose + ".bindPose"):
                 # The joint-connected dagPose is the pose Go to Bind Pose
                 # restores and the most likely Skeletal Mesh export pose.
-                candidates[bone["path"]].append(((2, 0), pose_plug, _matrix_attr(pose_plug)))
+                matrix = _matrix_attr(pose_plug)
+                _matrix_inverse(matrix, bone["path"], pose_plug)
+                candidates[bone["path"]].append(_BindMatrixCandidate(
+                    _BindMatrixCandidate.DAG_POSE, pose_plug, matrix))
     return candidates
 
 
@@ -480,36 +540,35 @@ def _capture_bind_local_transforms(subject):
     conflicts = 0
     for index, bone in enumerate(subject["bones"]):
         records = candidates[bone["path"]]
-        finite = [record for record in records if _matrix_is_finite(record[2])]
-        if records and not finite:
-            raise _BindPoseError(
-                "bone {0} has no finite bind matrix".format(bone["path"]))
-        if finite:
+        if records:
             # Skin clusters can legitimately disagree when outfits were bound
             # at different poses; the joint-connected dagPose wins, otherwise
-            # the skin cluster with the most influences.
-            matrix = max(finite, key=lambda record: record[0])[2]
-            if any(not _matrix_is_equivalent(matrix, record[2]) for record in finite):
-                conflicts += 1
+            # the skin cluster with the most influences. Equally ranked
+            # candidates must agree so node naming cannot choose the pose.
+            matrix, conflict = _select_bind_world_candidate(bone["path"], records)
+            conflicts += int(conflict)
         elif bone["parent"] >= 0:
             # Bones with no stored bind data (for example corrective slider
             # joints added after binding) use their capture-time local offset
             # re-anchored to the parent's bind frame.
             parent = bone["parent"]
-            matrix = current_world[index] * current_world[parent].inverse() \
+            parent_inverse = _matrix_inverse(
+                current_world[parent], bone["path"],
+                "capture-time parent matrix")
+            matrix = current_world[index] * parent_inverse \
                 * bind_world[parent]
         else:
             matrix = current_world[index]
-        if not _matrix_is_finite(matrix):
-            raise _BindPoseError(
-                "bone {0} has non-finite bind or capture matrix".format(bone["path"]))
         bind_world.append(matrix)
 
+    bind_world_inverse = [
+        _matrix_inverse(matrix, bone["path"], "resolved bind world matrix")
+        for bone, matrix in zip(subject["bones"], bind_world)]
     bind_local = []
     for index, bone in enumerate(subject["bones"]):
         matrix = bind_world[index]
         if bone["parent"] >= 0:
-            matrix = matrix * bind_world[bone["parent"]].inverse()
+            matrix = matrix * bind_world_inverse[bone["parent"]]
         bind_local.append(_sample_matrix(matrix, subject["unit_scale"]))
     return bind_local, conflicts
 
@@ -1467,6 +1526,13 @@ class _StreamingSession(object):
                     pass
 
 
+def _bind_conflict_status(snapshot):
+    if not snapshot.bind_conflict_count:
+        return ""
+    return "（已按绑定姿势解析 {0} 处蒙皮绑定矩阵冲突）".format(
+        snapshot.bind_conflict_count)
+
+
 class _Controller(object):
     def __init__(self):
         self._session = None
@@ -1638,9 +1704,7 @@ class _Controller(object):
             if snapshot.duplicate_paths:
                 status += "（检测到 {0} 个重名骨骼，将由 UE 尝试映射）".format(
                     len(snapshot.duplicate_paths))
-            if snapshot.bind_conflict_count:
-                status += "（已按绑定姿势解析 {0} 处蒙皮绑定矩阵冲突）".format(
-                    snapshot.bind_conflict_count)
+            status += _bind_conflict_status(snapshot)
             self._set_connected(False, status)
         except _CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":
@@ -1667,8 +1731,10 @@ class _Controller(object):
         try:
             self._clear_scene(keep_pending=True)
             self._pending_root = root
-            self._capture_scene(root, display=self._selected_display())
-            self._set_connected(False, "Display 控制器已设置，可以连接")
+            snapshot = self._capture_scene(
+                root, display=self._selected_display()).snapshot()
+            status = "Display 控制器已设置，可以连接"
+            self._set_connected(False, status + _bind_conflict_status(snapshot))
         except _CharacterSceneError as error:
             self._show_error(self._scene_diagnostic(error))
         except (RuntimeError, ValueError) as exc:
@@ -1688,6 +1754,7 @@ class _Controller(object):
                 ).format(event.snapshot.outfit)
             else:
                 status = "当前衣服已切换为 {0}。".format(event.snapshot.outfit)
+            status += _bind_conflict_status(event.snapshot)
             self._outfit_change_was_connected = False
             self._set_connected(False, status)
             return
@@ -1795,41 +1862,41 @@ class _Controller(object):
 
     def _diagnostic_text(self, diagnostic=None):
         diagnostic = diagnostic or self._last_diagnostic
-        try:
-            snapshot = self._scene.snapshot() if self._scene is not None else None
-        except _CharacterSceneError:
-            snapshot = None
-        warning = self._last_warning
-        fps = self._refresh_fps()
+        summary = diagnostic.get("summary") or "—"
+        solution = diagnostic.get("solution") or "—"
+        details = diagnostic.get("details") or diagnostic.get("message") or ""
         sections = [
-            "摘要：{0}".format(diagnostic.get("summary", "—")),
-            "解决办法：{0}".format(diagnostic.get("solution", "—")),
+            "摘要：{0}".format(summary),
+            "解决办法：{0}".format(solution),
             "Error code: {0}".format(diagnostic.get("code", "—")),
-            "Maya root: {0}".format(snapshot.root if snapshot else "—"),
-            "Outfit: {0}".format(snapshot.outfit if snapshot else "—"),
-            "FPS: {0}".format(format_fps(fps) if fps else "—"),
-            "Bones: {0}".format(len(snapshot.bones) if snapshot else 0),
-            "BlendShapes: {0}".format(len(snapshot.curve_names) if snapshot else 0),
-            "Maya only: {0}".format(", ".join(warning.get("missing_in_unreal", [])) or "—"),
-            "Unreal only: {0}".format(", ".join(warning.get("missing_in_maya", [])) or "—"),
-            "Bone name remaps: {0}".format(
-                ", ".join(warning.get("bone_name_remaps", [])) or "—"),
-            "Meshes:\n{0}".format(
-                "\n".join(snapshot.mesh_paths) if snapshot and snapshot.mesh_paths else "—"),
-            "Technical details:\n{0}".format(
-                diagnostic.get("details") or diagnostic.get("message") or "—"),
         ]
+        if details and details not in (summary, solution):
+            sections.append("错误详情：\n{0}".format(details))
         return "\n\n".join(sections)
 
     def show_diagnostics(self, *unused):
         if cmds.window(DIAGNOSTIC_WINDOW_NAME, exists=True):
             cmds.deleteUI(DIAGNOSTIC_WINDOW_NAME)
-        cmds.window(DIAGNOSTIC_WINDOW_NAME, title="MtoU 诊断详情", widthHeight=(620, 520))
-        cmds.columnLayout(adjustableColumn=True, columnAttach=("both", 8), rowSpacing=6)
+        cmds.window(
+            DIAGNOSTIC_WINDOW_NAME, title="MtoU 诊断详情",
+            sizeable=True, widthHeight=(620, 360))
+        layout = cmds.formLayout()
         field = cmds.scrollField(
-            editable=False, wordWrap=False, text=self._diagnostic_text(), height=450)
-        cmds.button(label="复制详情", command=lambda *_: self._copy_text(cmds.scrollField(
-            field, query=True, text=True)))
+            editable=False, wordWrap=True, text=self._diagnostic_text())
+        copy_button = cmds.button(
+            label="复制详情", command=lambda *_: self._copy_text(
+                cmds.scrollField(field, query=True, text=True)))
+        cmds.formLayout(
+            layout, edit=True,
+            attachForm=[
+                (field, "top", 8),
+                (field, "left", 8),
+                (field, "right", 8),
+                (copy_button, "left", 8),
+                (copy_button, "right", 8),
+                (copy_button, "bottom", 8),
+            ],
+            attachControl=[(field, "bottom", 6, copy_button)])
         cmds.showWindow(DIAGNOSTIC_WINDOW_NAME)
 
     def _copy_text(self, value):

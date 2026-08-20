@@ -331,6 +331,11 @@ The native Maya window contains:
 - connection status and warning preference;
 - actionable diagnostics and duplicate-bone selection.
 
+The diagnostic-details window contains only the active error summary, solution,
+stable code, and error-specific details. It omits character and scene values
+already visible in the main window, wraps long lines, and expands its text area
+with the window.
+
 No host, port, subject, multi-character list, or automatic-import controls are
 shown because the product has exactly one local endpoint and subject.
 Repeated `run()` calls focus the existing window.
@@ -536,10 +541,13 @@ which holds the first bind pose — the pose Go to Bind Pose restores and
 typically the Skeletal Mesh export pose. When skin clusters disagree because
 outfits were bound at different poses, the joint-connected dagPose wins,
 otherwise the skin cluster with the most influences does, and the resolved
-conflict count is reported. Joints with no stored bind data, such as corrective
-slider joints added after binding, use their setup-time local offset anchored
-to the parent's bind frame. Only a non-finite matrix rejects character capture
-instead of falling back to the current frame.
+conflict count is reported after every character capture. Equally ranked
+candidates must contain equivalent matrices; a disagreement rejects capture
+instead of allowing skin-cluster naming to choose the bind pose. Joints with no
+stored bind data, such as corrective slider joints added after binding, use
+their setup-time local offset anchored to the parent's bind frame. Raw matrices
+are checked before inversion, and a non-finite or non-invertible matrix rejects
+character capture instead of falling back to the current frame.
 
 Unreal aligns the target reference pose to Maya's negotiated bone order. For
 each bone, it builds source bind, source current, and target reference component

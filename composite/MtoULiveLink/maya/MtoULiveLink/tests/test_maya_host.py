@@ -227,6 +227,70 @@ class MayaHostTests(unittest.TestCase):
         self.assertAlmostEqual(
             -0.2588, snapshot.bind_local_transforms[1][4], places=4)
 
+    def test_equal_size_conflicting_skin_clusters_without_dagpose_are_rejected(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        first_mesh = cmds.polyCube(name="firstBody")[0]
+        second_mesh = cmds.polyCube(name="secondBody")[0]
+        cmds.skinCluster(root, first_mesh, name="zFirstSkin")
+        cmds.setAttr(root + ".translateX", 5.0)
+        cmds.skinCluster(
+            root, second_mesh, name="aSecondSkin", ignoreBindPose=True)
+        for pose in cmds.ls(type="dagPose"):
+            cmds.delete(pose)
+
+        with self.assertRaises(module._CharacterSceneError) as caught:
+            module._CharacterScene.capture(root)
+
+        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
+        self.assertIn("equally ranked bind matrices", caught.exception.details)
+        self.assertIn("aSecondSkin.bindPreMatrix[0]", caught.exception.details)
+        self.assertIn("zFirstSkin.bindPreMatrix[0]", caught.exception.details)
+
+    def test_non_finite_bindpre_matrix_is_rejected_before_inverse(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, mesh, name="bodySkin")
+        original_matrix_attr = module._matrix_attr
+
+        def matrix_attr(plug):
+            if ".bindPreMatrix[" in plug:
+                values = [1.0, 0.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0, 0.0,
+                          0.0, 0.0, 1.0, 0.0,
+                          0.0, 0.0, 0.0, float("inf")]
+                return module.om.MMatrix(values)
+            return original_matrix_attr(plug)
+
+        with mock.patch.object(module, "_matrix_attr", side_effect=matrix_attr):
+            with self.assertRaises(module._CharacterSceneError) as caught:
+                module._CharacterScene.capture(root)
+
+        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
+        self.assertIn("non-finite bind matrix", caught.exception.details)
+        self.assertIn("bodySkin.bindPreMatrix[0]", caught.exception.details)
+
+    def test_non_invertible_bindpre_matrix_is_rejected_before_inverse(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, mesh, name="bodySkin")
+        original_matrix_attr = module._matrix_attr
+
+        def matrix_attr(plug):
+            if ".bindPreMatrix[" in plug:
+                return module.om.MMatrix([0.0] * 16)
+            return original_matrix_attr(plug)
+
+        with mock.patch.object(module, "_matrix_attr", side_effect=matrix_attr):
+            with self.assertRaises(module._CharacterSceneError) as caught:
+                module._CharacterScene.capture(root)
+
+        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
+        self.assertIn("non-invertible bind matrix", caught.exception.details)
+        self.assertIn("bodySkin.bindPreMatrix[0]", caught.exception.details)
+
     def test_ignore_bindpose_rebind_resolves_to_original_bind_pose(self):
         group, root, unused_display = self._create_character_group()
         del group, unused_display
