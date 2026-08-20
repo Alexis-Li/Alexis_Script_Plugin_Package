@@ -4,11 +4,21 @@
 
 - Upgrade the protocol to v3 and transmit each joint's true Maya bind-local
   transform from SkinCluster `bindPreMatrix` and bind-pose `dagPose` data.
+- Follow the joint `bindPose` attribute's downstream connection when reading
+  bind-pose `dagPose` matrices, so outfit bones that only influence hidden
+  meshes no longer fail role setup with `BIND_POSE_INVALID`.
+- Fall back to the character-setup-time pose for joints without any saved
+  bind data (for example corrective slider joints added after binding),
+  anchored to the parent's bind frame, instead of rejecting the skeleton.
 - Map evaluated source component-space motion from the Maya bind pose onto the
   Unreal Skeletal Mesh reference pose, including differing local bone axes,
   parent-child motion, translation, and unit scale.
-- Reject missing or inconsistent Maya bind matrices instead of substituting the
-  animation's current or first frame.
+- Resolve bind-matrix conflicts between skin clusters (outfits bound at
+  different poses) from the joint-connected bind-pose `dagPose` — the pose Go
+  to Bind Pose restores and typically the Skeletal Mesh export pose — falling
+  back to the skin cluster with the most influences, and report the resolved
+  conflict count instead of rejecting the skeleton. Only non-finite bind
+  matrices are still rejected.
 - Update Live Link animation continuously in Unreal Editor instead of waiting
   for an unrelated property edit to refresh the binding actor, temporarily
   forcing level viewports into realtime mode only while a stream is connected.

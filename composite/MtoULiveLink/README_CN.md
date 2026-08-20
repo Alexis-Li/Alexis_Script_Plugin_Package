@@ -48,7 +48,11 @@ Actor 会在 Unreal 编辑器中持续更新动画；连接期间，插件会临
 “实时”模式，并在断开连接后恢复各视口原先的设置。断开连接会清除最后一个传输帧，
 使模型回到参考姿势，而不是继续保留旧姿势。Maya 保存的 SkinCluster Bind Pose 与当前动画帧
 会分别处理，并映射到目标 Skeletal Mesh 的 Reference Pose；连接时无需让第 1 帧或当前帧为
-A Pose。多个蒙皮网格部件上的同名 BlendShape 在求值
+A Pose。未保存绑定数据的关节（例如绑定后添加的矫正滑杆关节）会使用设置角色时的姿势。
+各 SkinCluster 绑定矩阵不一致时（换装在不同姿势下绑定即会出现），会按关节所连的
+Bind Pose `dagPose`（即 Go to Bind Pose 恢复的姿势）解析，无 dagPose 时取 influence
+数最多的 SkinCluster，并在设置角色时显示已解析的冲突数量；仅含非有限值的绑定矩阵
+仍会被拒绝。多个蒙皮网格部件上的同名 BlendShape 在求值
 一致时会合并为一条 Unreal 曲线发送；若数值不同，采样会停止并列出所有冲突的 Maya
 插口。Maya 和 Unreal 单方存在的 BlendShape 会作为不阻断连接的警告显示。协议版本
 3 要求 Maya 和 Unreal 两端都安装匹配的 0.3.0 组件。

@@ -451,44 +451,58 @@ def _bind_world_candidates(subject):
         selection = om.MSelectionList()
         selection.add(skin_cluster)
         function = oma.MFnSkinCluster(selection.getDependNode(0))
-        for influence in function.influenceObjects():
+        influences = function.influenceObjects()
+        for influence in influences:
             path = influence.fullPathName()
             if path not in bone_paths:
                 continue
             logical_index = function.indexForInfluenceObject(influence)
             plug = "{0}.bindPreMatrix[{1}]".format(skin_cluster, logical_index)
-            candidates[path].append((plug, _matrix_attr(plug).inverse()))
+            candidates[path].append(
+                ((1, len(influences)), plug, _matrix_attr(plug).inverse()))
 
     for bone in subject["bones"]:
         plug = bone["path"] + ".bindPose"
-        for source_plug in cmds.listConnections(
-                plug, source=True, destination=False, plugs=True) or []:
-            pose = source_plug.split(".", 1)[0]
+        for pose_plug in cmds.listConnections(
+                plug, source=False, destination=True, plugs=True) or []:
+            pose = pose_plug.split(".", 1)[0]
             if cmds.nodeType(pose) == "dagPose" and cmds.getAttr(pose + ".bindPose"):
-                candidates[bone["path"]].append((source_plug, _matrix_attr(source_plug)))
+                # The joint-connected dagPose is the pose Go to Bind Pose
+                # restores and the most likely Skeletal Mesh export pose.
+                candidates[bone["path"]].append(((2, 0), pose_plug, _matrix_attr(pose_plug)))
     return candidates
 
 
 def _capture_bind_local_transforms(subject):
     candidates = _bind_world_candidates(subject)
+    current_world = [bone["dag_path"].inclusiveMatrix() for bone in subject["bones"]]
     bind_world = []
-    for bone in subject["bones"]:
+    conflicts = 0
+    for index, bone in enumerate(subject["bones"]):
         records = candidates[bone["path"]]
-        if not records:
+        finite = [record for record in records if _matrix_is_finite(record[2])]
+        if records and not finite:
             raise _BindPoseError(
-                "bone {0} has no SkinCluster bindPreMatrix or bindPose/dagPose matrix".format(
-                    bone["path"]))
-        source, matrix = records[0]
+                "bone {0} has no finite bind matrix".format(bone["path"]))
+        if finite:
+            # Skin clusters can legitimately disagree when outfits were bound
+            # at different poses; the joint-connected dagPose wins, otherwise
+            # the skin cluster with the most influences.
+            matrix = max(finite, key=lambda record: record[0])[2]
+            if any(not _matrix_is_equivalent(matrix, record[2]) for record in finite):
+                conflicts += 1
+        elif bone["parent"] >= 0:
+            # Bones with no stored bind data (for example corrective slider
+            # joints added after binding) use their capture-time local offset
+            # re-anchored to the parent's bind frame.
+            parent = bone["parent"]
+            matrix = current_world[index] * current_world[parent].inverse() \
+                * bind_world[parent]
+        else:
+            matrix = current_world[index]
         if not _matrix_is_finite(matrix):
             raise _BindPoseError(
-                "bone {0} has non-finite bind matrix from {1}".format(
-                    bone["path"], source))
-        for other_source, other_matrix in records[1:]:
-            if not _matrix_is_finite(other_matrix) \
-                    or not _matrix_is_equivalent(matrix, other_matrix):
-                raise _BindPoseError(
-                    "bone {0} has inconsistent bind matrices: {1} and {2}".format(
-                        bone["path"], source, other_source))
+                "bone {0} has non-finite bind or capture matrix".format(bone["path"]))
         bind_world.append(matrix)
 
     bind_local = []
@@ -497,7 +511,7 @@ def _capture_bind_local_transforms(subject):
         if bone["parent"] >= 0:
             matrix = matrix * bind_world[bone["parent"]].inverse()
         bind_local.append(_sample_matrix(matrix, subject["unit_scale"]))
-    return bind_local
+    return bind_local, conflicts
 
 
 def _discover_curve_plugs(bone_paths, visible_meshes=None):
@@ -543,7 +557,8 @@ def _capture_subject(root=None):
                    [bone["path"] for bone in bones], mesh_paths),
                "unit_scale": centimeters_per_unit(
                    cmds.currentUnit(query=True, linear=True))}
-    subject["bind_local_transforms"] = _capture_bind_local_transforms(subject)
+    subject["bind_local_transforms"], subject["bind_conflict_count"] = \
+        _capture_bind_local_transforms(subject)
     return subject
 
 
@@ -612,7 +627,8 @@ class _CharacterSceneError(RuntimeError):
 
 class _CharacterSnapshot(object):
     def __init__(self, revision, root, outfit, bones, curve_names,
-                 duplicate_paths=(), mesh_paths=(), bind_local_transforms=()):
+                 duplicate_paths=(), mesh_paths=(), bind_local_transforms=(),
+                 bind_conflict_count=0):
         self._revision = int(revision)
         self._root = root
         self._outfit = outfit
@@ -620,6 +636,7 @@ class _CharacterSnapshot(object):
         self._curve_names = tuple(curve_names)
         self._duplicate_paths = tuple(duplicate_paths)
         self._mesh_paths = tuple(mesh_paths)
+        self._bind_conflict_count = int(bind_conflict_count)
         self._bind_local_transforms = tuple(
             tuple(value for value in transform) for transform in bind_local_transforms)
         if len(self._bind_local_transforms) != len(self._bones):
@@ -656,6 +673,10 @@ class _CharacterSnapshot(object):
     @property
     def bind_local_transforms(self):
         return self._bind_local_transforms
+
+    @property
+    def bind_conflict_count(self):
+        return self._bind_conflict_count
 
 
 class _CharacterFrame(object):
@@ -819,7 +840,8 @@ class _CharacterScene(object):
             [curve["name"] for curve in subject["curves"]],
             duplicate_paths,
             subject["meshes"],
-            subject["bind_local_transforms"])
+            subject["bind_local_transforms"],
+            subject.get("bind_conflict_count", 0))
         return subject, snapshot
 
     def _commit_capture(self, revision):
@@ -938,7 +960,8 @@ class _CharacterScene(object):
             candidate = _CharacterSnapshot(
                 previous.revision, candidate.root, candidate.outfit,
                 candidate.bones, candidate.curve_names, candidate.duplicate_paths,
-                candidate.mesh_paths, candidate.bind_local_transforms)
+                candidate.mesh_paths, candidate.bind_local_transforms,
+                candidate.bind_conflict_count)
         self._subject = subject
         self._snapshot = candidate
         self._refreshing = False
@@ -1615,6 +1638,9 @@ class _Controller(object):
             if snapshot.duplicate_paths:
                 status += "（检测到 {0} 个重名骨骼，将由 UE 尝试映射）".format(
                     len(snapshot.duplicate_paths))
+            if snapshot.bind_conflict_count:
+                status += "（已按绑定姿势解析 {0} 处蒙皮绑定矩阵冲突）".format(
+                    snapshot.bind_conflict_count)
             self._set_connected(False, status)
         except _CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":

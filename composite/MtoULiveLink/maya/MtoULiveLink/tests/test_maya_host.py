@@ -157,7 +157,77 @@ class MayaHostTests(unittest.TestCase):
         self.assertNotEqual(snapshot.bind_local_transforms, current.transforms)
         self.assertEqual("middle", snapshot.bones[1][0])
 
-    def test_inconsistent_skincluster_bind_matrices_are_rejected(self):
+    def test_hidden_outfit_bone_reads_bind_matrix_from_dagpose(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        cmds.select(root, replace=True)
+        cmds.joint(name="spine", position=(0, 5, 0))
+        visible = cmds.polyCube(name="SM_C01_Clothes01")[0]
+        cmds.skinCluster(root, visible, name="visibleSkin")
+        cmds.select(root, replace=True)
+        skirt = cmds.joint(name="skirt", position=(0, -2, 0))
+        hidden = cmds.polyCube(name="SM_C01_Clothes02")[0]
+        cmds.skinCluster(skirt, hidden, name="hiddenSkin")
+        cmds.setAttr(hidden + ".visibility", False)
+        cmds.setAttr(skirt + ".rotateZ", 45.0)
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        current = scene.sample()
+
+        bones = [name for name, _ in snapshot.bones]
+        self.assertEqual(["root", "spine", "skirt"], bones)
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[2][:3], (0.0, 0.0, -2.0)):
+            self.assertAlmostEqual(expected, actual)
+        self.assertNotEqual(snapshot.bind_local_transforms, current.transforms)
+
+    def test_conflicting_bind_matrices_resolve_to_joint_dagpose(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        cmds.select(root, replace=True)
+        hand = cmds.joint(name="hand", position=(0, 5, 0))
+        first_mesh = cmds.polyCube(name="firstBody")[0]
+        second_mesh = cmds.polyCube(name="secondBody")[0]
+        cmds.skinCluster(root, hand, first_mesh, name="firstSkin")
+        cmds.setAttr(hand + ".rotateZ", 30.0)
+        cmds.skinCluster(root, hand, second_mesh, name="secondSkin")
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+
+        self.assertEqual(1, snapshot.bind_conflict_count)
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[1][3:7], (0.0, 0.0, 0.0, 1.0)):
+            self.assertAlmostEqual(expected, actual, places=5)
+
+    def test_conflicting_bind_matrices_prefer_largest_skin_cluster_without_dagpose(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        cmds.select(root, replace=True)
+        hand = cmds.joint(name="hand", position=(0, 5, 0))
+        first_mesh = cmds.polyCube(name="firstBody")[0]
+        second_mesh = cmds.polyCube(name="secondBody")[0]
+        cmds.skinCluster(root, hand, first_mesh, name="aSmallSkin")
+        cmds.setAttr(hand + ".rotateZ", 30.0)
+        cmds.select(root, replace=True)
+        cmds.joint(name="extra", position=(0, 1, 0))
+        cmds.skinCluster(
+            root, hand, "|Group|root|extra", second_mesh, name="bBigSkin")
+        for pose in cmds.ls(type="dagPose"):
+            cmds.delete(pose)
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+
+        self.assertEqual(1, snapshot.bind_conflict_count)
+        self.assertAlmostEqual(
+            -0.2588, snapshot.bind_local_transforms[1][4], places=4)
+
+    def test_ignore_bindpose_rebind_resolves_to_original_bind_pose(self):
         group, root, unused_display = self._create_character_group()
         del group, unused_display
         first_mesh = cmds.polyCube(name="firstBody")[0]
@@ -167,25 +237,59 @@ class MayaHostTests(unittest.TestCase):
         cmds.skinCluster(
             root, second_mesh, name="secondSkin", ignoreBindPose=True)
 
-        with self.assertRaises(module._CharacterSceneError) as caught:
-            module._CharacterScene.capture(root)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
 
-        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
-        self.assertIn("inconsistent bind matrices", caught.exception.details)
+        self.assertEqual(1, snapshot.bind_conflict_count)
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[0][:3], (0.0, 0.0, 0.0)):
+            self.assertAlmostEqual(expected, actual)
 
-    def test_bone_without_saved_bind_matrix_is_rejected(self):
+    def test_joint_added_after_bind_falls_back_to_capture_pose(self):
         group, root, unused_display = self._create_character_group()
         del group, unused_display
         mesh = cmds.polyCube(name="body")[0]
         cmds.skinCluster(root, mesh, name="bodySkin")
         cmds.select(root, replace=True)
-        cmds.joint(name="addedAfterBind", position=(0, 5, 0))
+        late = cmds.joint(name="addedAfterBind", position=(0, 5, 0))
+        cmds.setAttr(late + ".rotateZ", 20.0)
 
-        with self.assertRaises(module._CharacterSceneError) as caught:
-            module._CharacterScene.capture(root)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
 
-        self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
-        self.assertIn("has no SkinCluster bindPreMatrix", caught.exception.details)
+        self.assertEqual("addedAfterBind", snapshot.bones[1][0])
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[1][:3], (0.0, 0.0, 5.0)):
+            self.assertAlmostEqual(expected, actual)
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[0][:3], (0.0, 0.0, 0.0)):
+            self.assertAlmostEqual(expected, actual)
+
+    def test_late_joint_fallback_keeps_parent_bind_frame(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        cmds.select(root, replace=True)
+        spine = cmds.joint(name="spine", position=(0, 5, 0))
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, spine, mesh, name="bodySkin")
+        cmds.select(spine, replace=True)
+        late = cmds.joint(name="slider", position=(1, 0, 0))
+        cmds.setAttr(spine + ".rotateZ", 30.0)
+        cmds.setAttr(late + ".rotateX", 10.0)
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+
+        # spine deviates from its bind pose at capture; the fallback slider
+        # must anchor to spine's bind frame so its captured local offset
+        # stays its current local translation (1, -5, 0).
+        self.assertEqual("slider", snapshot.bones[2][0])
+        for actual, expected in zip(
+                snapshot.bind_local_transforms[2][:3], (1.0, 0.0, -5.0)):
+            self.assertAlmostEqual(expected, actual, places=5)
 
     def test_same_alias_on_multiple_mesh_parts_streams_one_curve(self):
         group, root, unused_display = self._create_character_group()

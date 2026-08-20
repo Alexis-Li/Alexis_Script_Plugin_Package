@@ -55,7 +55,13 @@ Disconnecting clears the last streamed frame so the mesh returns to its
 reference pose instead of retaining a stale pose. Maya's saved SkinCluster bind
 pose is kept separate from the current animation frame and mapped to the target
 Skeletal Mesh reference pose, so connecting does not require frame 1 or the
-current frame to be an A Pose. Same-named BlendShapes
+current frame to be an A Pose. Joints without saved bind data, such as corrective slider joints added
+after binding, use their pose at character setup time. Bind matrices that
+disagree across skin clusters, which happens when outfits were bound at
+different poses, are resolved from the bind-pose `dagPose` (the pose Go to Bind
+Pose restores) or the skin cluster with the most influences, and the resolved
+conflict count is shown at role setup. Only non-finite bind matrices are
+rejected. Same-named BlendShapes
 on separate skinned mesh parts are sent as one Unreal curve when their evaluated
 values agree. If those values differ, sampling stops and identifies every
 conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking

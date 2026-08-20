@@ -28,6 +28,11 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   capture and source-bind-to-target-reference pose mapping, removing the need
   to connect from frame 1 or an A Pose. Production-scene acceptance remains
   pending for this revision.
+- **2026-08-20:** Repaired protocol v3 bind-pose capture against production
+  rigs: read the downstream joint-to-dagPose bind connection, fall back to the
+  setup-time pose for joints without stored bind data, and resolve
+  skin-cluster bind-matrix conflicts from the joint-connected dagPose instead
+  of rejecting the skeleton.
 
 ## Stable Records
 

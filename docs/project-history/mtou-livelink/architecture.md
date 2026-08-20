@@ -531,9 +531,15 @@ Version 0.3.0 separates the Maya animation frame, Maya bind pose, and Unreal
 reference pose. Maya protocol v3 bone records carry a bind-local transform
 derived from the inverse of each SkinCluster `bindPreMatrix`. Bind-pose
 `dagPose.worldMatrix` data supplies hierarchy members that are not direct skin
-influences. Every available matrix for a joint must agree; a missing or
-inconsistent matrix rejects character capture instead of falling back to the
-current frame.
+influences; the joint `bindPose` attribute connects downstream to that dagPose,
+which holds the first bind pose — the pose Go to Bind Pose restores and
+typically the Skeletal Mesh export pose. When skin clusters disagree because
+outfits were bound at different poses, the joint-connected dagPose wins,
+otherwise the skin cluster with the most influences does, and the resolved
+conflict count is reported. Joints with no stored bind data, such as corrective
+slider joints added after binding, use their setup-time local offset anchored
+to the parent's bind frame. Only a non-finite matrix rejects character capture
+instead of falling back to the current frame.
 
 Unreal aligns the target reference pose to Maya's negotiated bone order. For
 each bone, it builds source bind, source current, and target reference component
