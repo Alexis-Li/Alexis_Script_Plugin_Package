@@ -441,5 +441,11 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
 
 
+    def test_playback_state_query_uses_maya_host_state_without_editing_scene(self):
+        current_time = cmds.currentTime(query=True)
+        with mock.patch.object(module.cmds, "play", return_value=True) as play:
+            self.assertTrue(module._maya_is_playing())
+        play.assert_called_once_with(query=True, state=True)
+        self.assertEqual(current_time, cmds.currentTime(query=True))
 if __name__ == "__main__":
     unittest.main()

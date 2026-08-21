@@ -42,10 +42,15 @@ Install the matching component in each host:
    Duplicates do not fail immediately: Unreal maps a uniquely numeric-suffixed
    imported bone below the already matched parent, warns on success, and rejects
    an ambiguous mapping.
-3. Confirm the displayed outfit and scene rate, then select **Connect**. The
-   stream samples at the exact Maya scene rate from 1 through 60 fps.
-4. Pose, play, or scrub in Maya. Changing the Clothes enum disconnects the
-   session; replace the Unreal binding actor with the new outfit and reconnect.
+3. Confirm the displayed outfit and scene rate, choose a playback transmission
+   cap (**Follow Scene**, **30 fps**, **20 fps**, or **15 fps**), then select
+   **Connect**. The default is **20 fps** and the choice is remembered in Maya
+   native option storage.
+4. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
+   paused posing and manual timeline changes continue at the scene rate, and
+   stopping playback submits the final pose immediately. Changing the Clothes
+   enum disconnects the session; replace the Unreal binding actor with the new
+   outfit and reconnect.
 
 **View Diagnostic Details** shows only the current error summary, solution,
 code, and relevant technical details. Long details wrap to the window width;

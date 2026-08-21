@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a remembered Maya Real-time Preview playback transmission cap with
+  Follow Scene, 30 fps, 20 fps, and 15 fps choices. Numeric caps apply only
+  while Maya is playing; paused posing and scrubbing stay at the scene rate,
+  playback stops submit the final pose, and changing the cap keeps the current
+  streaming session and character snapshot.
 - Upgrade the protocol to v3 and transmit each joint's true Maya bind-local
   transform from SkinCluster `bindPreMatrix` and bind-pose `dagPose` data.
 - Follow the joint `bindPose` attribute's downstream connection when reading

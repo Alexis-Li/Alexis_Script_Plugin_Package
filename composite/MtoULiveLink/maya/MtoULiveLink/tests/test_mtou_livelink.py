@@ -44,6 +44,156 @@ class LatestFrameTests(unittest.TestCase):
         self.assertIsNone(slot.take())
 
 
+
+class PlaybackCapPersistenceTests(unittest.TestCase):
+    def _option_var_cmds(self, stored=None):
+        state = {"stored": stored}
+
+        def option_var(**kwargs):
+            if "exists" in kwargs:
+                return state["stored"] is not None
+            if "query" in kwargs:
+                return state["stored"]
+            if "stringValue" in kwargs:
+                _, value = kwargs["stringValue"]
+                state["stored"] = value
+                return None
+            raise AssertionError("unexpected optionVar call: {0}".format(kwargs))
+
+        return type("FakeCmds", (), {"optionVar": staticmethod(option_var)}), state
+
+    def test_missing_and_invalid_values_fall_back_to_twenty_fps(self):
+        fake_cmds, state = self._option_var_cmds()
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            self.assertEqual(MODULE.DEFAULT_PLAYBACK_CAP, MODULE.load_playback_cap())
+            self.assertEqual(MODULE.DEFAULT_PLAYBACK_CAP, state["stored"])
+
+            state["stored"] = "120 fps"
+            self.assertEqual(MODULE.DEFAULT_PLAYBACK_CAP, MODULE.load_playback_cap())
+            self.assertEqual(MODULE.DEFAULT_PLAYBACK_CAP, state["stored"])
+
+    def test_valid_values_round_trip_through_native_option_storage(self):
+        fake_cmds, state = self._option_var_cmds("15 fps")
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            self.assertEqual("15 fps", MODULE.load_playback_cap())
+            self.assertEqual("15 fps", state["stored"])
+            MODULE.save_playback_cap("Follow Scene")
+            self.assertEqual("Follow Scene", state["stored"])
+
+
+class PlaybackSchedulingTests(unittest.TestCase):
+    def _runtime(self, state, intervals, callbacks, worker):
+        def timer_factory(interval, callback):
+            intervals.append(interval)
+            callbacks.append(callback)
+            return 20 + len(callbacks)
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(timer_factory),
+            }),
+            "MConditionMessage": type("FakeConditionMessage", (), {
+                "addConditionCallback": staticmethod(
+                    lambda condition, callback: 40),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+        scene.sample.return_value = MODULE._CharacterFrame(7, [[1, 2, 3]], [])
+        return fake_om, scene, lambda: state["playing"]
+
+    def test_playback_cap_applies_only_while_playing_and_stale_timer_is_ignored(self):
+        state = {"playing": False}
+        intervals = []
+        callbacks = []
+        worker = mock.Mock()
+        worker.status.return_value = (
+            "ready", "Connected", {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False,
+            }, None)
+        fake_om, scene, playback_state = self._runtime(
+            state, intervals, callbacks, worker)
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker), \
+             mock.patch.object(MODULE.time, "time", return_value=100.0):
+            session = MODULE._StreamingSession.start(
+                scene, 30.0, playback_cap="20 fps", playback_state=playback_state)
+            self.assertEqual([1.0 / 30.0], intervals)
+
+            state["playing"] = True
+            callbacks[0](0.0, 0.0, None)
+            self.assertEqual([1.0 / 30.0, 1.0 / 20.0], intervals)
+            self.assertEqual(1, scene.sample.call_count)
+
+            stale_callback = callbacks[0]
+            state["playing"] = False
+            callbacks[1](0.0, 0.0, None)
+            self.assertEqual([1.0 / 30.0, 1.0 / 20.0, 1.0 / 30.0], intervals)
+            self.assertEqual(2, scene.sample.call_count)
+
+            stale_callback(0.0, 0.0, None)
+            self.assertEqual(2, scene.sample.call_count)
+            session.stop()
+
+    def test_follow_scene_and_numeric_caps_never_exceed_scene_rate(self):
+        state = {"playing": True}
+        intervals = []
+        callbacks = []
+        worker = mock.Mock()
+        worker.status.return_value = (
+            "ready", "Connected", {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False,
+            }, None)
+        fake_om, scene, playback_state = self._runtime(
+            state, intervals, callbacks, worker)
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker):
+            session = MODULE._StreamingSession.start(
+                scene, 15.0, playback_cap="30 fps", playback_state=playback_state)
+            self.assertEqual([1.0 / 15.0], intervals)
+            session.change_cap("Follow Scene")
+            self.assertEqual([1.0 / 15.0, 1.0 / 15.0], intervals)
+            session.stop()
+    def test_cap_change_keeps_snapshot_and_submits_current_pose_immediately(self):
+        state = {"playing": True}
+        intervals = []
+        callbacks = []
+        worker = mock.Mock()
+        worker.status.return_value = (
+            "ready", "Connected", {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False,
+            }, None)
+        fake_om, scene, playback_state = self._runtime(
+            state, intervals, callbacks, worker)
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+             mock.patch.object(MODULE, "_SenderWorker", return_value=worker), \
+             mock.patch.object(MODULE.time, "time", return_value=100.0):
+            session = MODULE._StreamingSession.start(
+                scene, 30.0, playback_cap="20 fps", playback_state=playback_state)
+            self.assertEqual([1.0 / 20.0], intervals)
+            session.change_cap("15 fps")
+            self.assertEqual([1.0 / 20.0, 1.0 / 15.0], intervals)
+            self.assertEqual(1, scene.snapshot.call_count)
+            self.assertEqual(1, worker.submit.call_count)
+            session.stop()
+
 class CharacterSceneTests(unittest.TestCase):
     def _capture(self, on_event=None, sample_side_effect=None):
         removed = []
@@ -1298,6 +1448,46 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertNotIn("height", create_call[1])
         self.assertNotIn("widthHeight", create_call[1])
 
+    def test_main_window_offers_persisted_playback_caps(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.currentUnit.return_value = "film"
+        fake_cmds.control.return_value = True
+        stored = {"value": "15 fps"}
+
+        def option_var(**kwargs):
+            if "exists" in kwargs:
+                return True
+            if "query" in kwargs:
+                return stored["value"]
+            if "stringValue" in kwargs:
+                _, stored["value"] = kwargs["stringValue"]
+                return None
+            raise AssertionError("unexpected optionVar call: {0}".format(kwargs))
+
+        fake_cmds.optionVar.side_effect = option_var
+        controller = MODULE._Controller()
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.build_ui()
+
+        labels = [call.kwargs["label"] for call in fake_cmds.menuItem.call_args_list]
+        self.assertEqual(list(MODULE.PLAYBACK_CAP_CHOICES), labels)
+        self.assertEqual("15 fps", controller._playback_cap)
+        self.assertTrue(any(
+            call.kwargs.get("edit") and call.kwargs.get("value") == "15 fps"
+            for call in fake_cmds.optionMenu.call_args_list))
+
+    def test_changing_playback_cap_updates_existing_session_without_reconnect(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.control.return_value = True
+        controller = MODULE._Controller()
+        controller._playback_cap_menu = "capMenu"
+        controller._session = mock.Mock()
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller._on_playback_cap_changed("30 fps")
+
+        self.assertEqual("30 fps", controller._playback_cap)
+        controller._session.change_cap.assert_called_once_with("30 fps")
     def test_diagnostic_details_only_include_error_specific_information(self):
         snapshot = character_snapshot(
             1, "|Group|root", "Clothes09", [("root", -1)], ["Smile"],

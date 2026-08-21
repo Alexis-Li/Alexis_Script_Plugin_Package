@@ -20,6 +20,9 @@ CURVE_VALUE_TOLERANCE = 1.0e-6
 BIND_MATRIX_TOLERANCE = 1.0e-5
 MIN_FRAME_RATE = 1.0
 MAX_FRAME_RATE = 60.0
+PLAYBACK_CAP_OPTION_VAR = "MtoULiveLinkPlaybackCap"
+DEFAULT_PLAYBACK_CAP = "20 fps"
+PLAYBACK_CAP_CHOICES = ("Follow Scene", "30 fps", "20 fps", "15 fps")
 TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -96,6 +99,56 @@ except ImportError:
     om = None
     oma = None
     cmds = None
+
+
+def normalize_playback_cap(value):
+    if value is None:
+        return DEFAULT_PLAYBACK_CAP
+    text = str(value).strip().lower()
+    if text in ("follow scene", "follow_scene", "scene"):
+        return "Follow Scene"
+    for choice in PLAYBACK_CAP_CHOICES[1:]:
+        if text in (choice.lower(), choice.split()[0]):
+            return choice
+    return DEFAULT_PLAYBACK_CAP
+
+
+def playback_cap_fps(value):
+    value = normalize_playback_cap(value)
+    if value == "Follow Scene":
+        return None
+    return float(value.split()[0])
+
+
+def save_playback_cap(value):
+    value = normalize_playback_cap(value)
+    if cmds is not None:
+        try:
+            cmds.optionVar(stringValue=(PLAYBACK_CAP_OPTION_VAR, value))
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+    return value
+
+
+def load_playback_cap():
+    value = DEFAULT_PLAYBACK_CAP
+    if cmds is not None:
+        try:
+            if cmds.optionVar(exists=PLAYBACK_CAP_OPTION_VAR):
+                value = cmds.optionVar(query=PLAYBACK_CAP_OPTION_VAR)
+        except (AttributeError, RuntimeError, TypeError):
+            value = DEFAULT_PLAYBACK_CAP
+    value = normalize_playback_cap(value)
+    return save_playback_cap(value)
+
+
+def _maya_is_playing():
+    if cmds is None:
+        return False
+    try:
+        return bool(cmds.play(query=True, state=True))
+    except (AttributeError, RuntimeError, TypeError):
+        return False
 
 
 def normalize_name(path):
@@ -1291,14 +1344,19 @@ class _StreamingSessionEvent(object):
 class _StreamingSession(object):
     """Owns one Maya-to-Unreal streaming connection lifecycle."""
 
-    def __init__(self, scene, fps, on_event):
+    def __init__(self, scene, fps, on_event, playback_cap=DEFAULT_PLAYBACK_CAP,
+                 playback_state=None):
         self._scene = scene
-        self._fps = fps
+        self._scene_fps = fps
+        self._playback_cap = normalize_playback_cap(playback_cap)
+        self._playback_state = playback_state or _maya_is_playing
+        self._is_playing = self._read_playback_state()
         self._on_event = on_event
         self._worker = None
         self._worker_started = False
         self._callback_ids = []
         self._timer_id = None
+        self._timer_generation = 0
         self._revision = None
         self._last_sample_time = None
         self._phase = "starting"
@@ -1309,7 +1367,8 @@ class _StreamingSession(object):
         self._cleanup_error = None
 
     @classmethod
-    def start(cls, scene, fps, on_event=None):
+    def start(cls, scene, fps, on_event=None, playback_cap=DEFAULT_PLAYBACK_CAP,
+              playback_state=None):
         try:
             fps = validate_frame_rate(fps)
             snapshot = scene.snapshot()
@@ -1319,7 +1378,7 @@ class _StreamingSession(object):
         except (RuntimeError, ValueError) as exc:
             raise _StreamingSessionError(
                 "INVALID_FRAME_RATE", str(exc), details=str(exc))
-        session = cls(scene, fps, on_event)
+        session = cls(scene, fps, on_event, playback_cap, playback_state)
         try:
             session._start(snapshot)
         except Exception as exc:
@@ -1354,9 +1413,46 @@ class _StreamingSession(object):
         self._callback_ids.append(
             om.MEventMessage.addEventCallback(
                 "timeChanged", self._on_time_changed))
-        self._timer_id = om.MTimerMessage.addTimerCallback(
-            1.0 / self._fps, self._on_timer)
+        condition_message = getattr(om, "MConditionMessage", None)
+        if condition_message is not None:
+            self._callback_ids.append(
+                condition_message.addConditionCallback(
+                    "playingBack", self._on_playback_condition_changed))
+        self._timer_id = self._add_timer(self._effective_rate())
         self._phase = "connecting"
+
+    def _add_timer(self, fps):
+        self._timer_generation += 1
+        generation = self._timer_generation
+
+        def on_timer(*args):
+            self._on_timer(generation, *args)
+
+        return om.MTimerMessage.addTimerCallback(1.0 / fps, on_timer)
+
+    def _replace_timer(self, fps):
+        old_timer = self._timer_id
+        try:
+            new_timer = self._add_timer(fps)
+        except (RuntimeError, ValueError) as exc:
+            self._timer_generation += 1
+            self._request_failure(
+                make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
+                recapture_scene=False)
+            return False
+        if old_timer is not None:
+            try:
+                om.MMessage.removeCallback(old_timer)
+            except RuntimeError as exc:
+                self._remove_callback(new_timer)
+                self._timer_generation += 1
+                self._request_failure(
+                    make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
+                    recapture_scene=False)
+                return False
+        self._timer_id = new_timer
+        self._last_sample_time = None
+        return True
 
     def change_rate(self, fps):
         if self._outcome is not None:
@@ -1368,26 +1464,16 @@ class _StreamingSession(object):
                 make_diagnostic("INVALID_FRAME_RATE", str(exc), details=str(exc)),
                 recapture_scene=False)
             return
-        old_timer = self._timer_id
-        try:
-            new_timer = om.MTimerMessage.addTimerCallback(
-                1.0 / fps, self._on_timer)
-        except (RuntimeError, ValueError) as exc:
-            self._request_failure(
-                make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
-                recapture_scene=False)
+        self._scene_fps = fps
+        self._replace_timer(self._effective_rate())
+
+    def change_cap(self, playback_cap):
+        if self._outcome is not None:
             return
-        if old_timer is not None:
-            try:
-                om.MMessage.removeCallback(old_timer)
-            except RuntimeError as exc:
-                self._remove_callback(new_timer)
-                self._request_failure(
-                    make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)),
-                    recapture_scene=False)
-                return
-        self._timer_id = new_timer
-        self._fps = fps
+        self._playback_cap = normalize_playback_cap(playback_cap)
+        if not self._replace_timer(self._effective_rate()):
+            return
+        self._sample_and_submit(force=True)
 
     def stop(self):
         if self._outcome is None:
@@ -1401,15 +1487,53 @@ class _StreamingSession(object):
     def _on_scene_change(self, *unused):
         self.stop()
 
-    def _on_timer(self, elapsed, last_time, client_data):
-        del elapsed, last_time, client_data
+    def _on_timer(self, generation, *unused):
+        if generation != self._timer_generation:
+            return
+        self._update_playback_state()
         self._sample_and_submit()
 
     def _on_time_changed(self, *unused):
         del unused
+        self._update_playback_state()
         self._sample_and_submit()
 
-    def _sample_and_submit(self):
+    def _on_playback_condition_changed(self, *args):
+        playing = None
+        for value in args:
+            if isinstance(value, bool):
+                playing = value
+                break
+        self._update_playback_state(playing)
+
+    def _read_playback_state(self):
+        try:
+            return bool(self._playback_state())
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+
+    def _effective_rate(self):
+        cap = playback_cap_fps(self._playback_cap)
+        if not self._is_playing or cap is None:
+            return self._scene_fps
+        return min(self._scene_fps, cap)
+
+    def _update_playback_state(self, playing=None):
+        if self._outcome is not None:
+            return False
+        next_state = self._read_playback_state() if playing is None else bool(playing)
+        if next_state == self._is_playing:
+            return False
+        was_playing = self._is_playing
+        self._is_playing = next_state
+        self._last_sample_time = None
+        if not self._replace_timer(self._effective_rate()):
+            return True
+        if was_playing and not next_state:
+            self._sample_and_submit(force=True)
+        return True
+
+    def _sample_and_submit(self, force=False):
         if self._outcome is not None or self._worker is None:
             return
         state, detail, warning, diagnostic = self._worker.status()
@@ -1432,8 +1556,8 @@ class _StreamingSession(object):
             self._phase = "ready"
             self._emit(_StreamingSessionEvent("ready", warning=warning))
         now = time.time()
-        sample_interval = 1.0 / self._fps
-        if (self._last_sample_time is not None
+        sample_interval = 1.0 / self._effective_rate()
+        if (not force and self._last_sample_time is not None
                 and now >= self._last_sample_time
                 and now - self._last_sample_time < sample_interval):
             return
@@ -1483,6 +1607,7 @@ class _StreamingSession(object):
     def _cleanup(self):
         if self._cleaned:
             return
+        self._timer_generation += 1
         callback_ids, self._callback_ids = self._callback_ids, []
         timer_id, self._timer_id = self._timer_id, None
         for callback_id in callback_ids:
@@ -1550,6 +1675,8 @@ class _Controller(object):
         self._root_text = None
         self._outfit_text = None
         self._fps_text = None
+        self._playback_cap = DEFAULT_PLAYBACK_CAP
+        self._playback_cap_menu = None
         self._bone_text = None
         self._curve_text = None
         self._status_text = None
@@ -1566,6 +1693,12 @@ class _Controller(object):
         self._root_text = cmds.text(label="角色根骨骼：—", align="left")
         self._outfit_text = cmds.text(label="当前衣服：—", align="left")
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
+        self._playback_cap = load_playback_cap()
+        self._playback_cap_menu = cmds.optionMenu(
+            label="播放传输上限", changeCommand=self._on_playback_cap_changed)
+        for choice in PLAYBACK_CAP_CHOICES:
+            cmds.menuItem(label=choice)
+        cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
         self._bone_text = cmds.text(label="骨骼数：0", align="left")
         self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
         cmds.button(label="设置角色（请先选择根骨骼）", command=lambda *_: self.set_role())
@@ -1613,6 +1746,14 @@ class _Controller(object):
             unit = cmds.currentUnit(query=True, time=True)
             self._set_text(self._fps_text, "场景帧率：{0}（不受支持）".format(unit))
             return None
+
+    def _on_playback_cap_changed(self, value, *unused):
+        del unused
+        self._playback_cap = save_playback_cap(value)
+        if self._playback_cap_menu and cmds.control(self._playback_cap_menu, exists=True):
+            cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
+        if self._session is not None:
+            self._session.change_cap(self._playback_cap)
 
     def _selected_display(self):
         selected = cmds.ls(selection=True, long=True) or []
@@ -1819,7 +1960,8 @@ class _Controller(object):
             self._on_streaming_session_event(holder.get("session"), event)
 
         try:
-            session = _StreamingSession.start(self._scene, fps, on_event)
+            session = _StreamingSession.start(
+                self._scene, fps, on_event, playback_cap=self._playback_cap)
         except _StreamingSessionError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
