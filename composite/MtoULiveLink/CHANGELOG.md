@@ -13,6 +13,11 @@
   publish a partial final frame, failed timer or disk-space checks restore Maya
   state and close temporary files, recapture stops active replay first, and
   completed metadata is restricted to the exact owned frame range and paths.
+- Harden Cached Playback lifecycle: manual stop holds the last sent frame and
+  reopens ordered transport for repeat replay, transport failures retain a
+  completed cache for reconnect, incompatible failures and disconnects remove
+  owned cache files, and stale session callbacks cannot affect a newer UI
+  session. Add an explicit **停止回放** control and cached-state status.
 - Add a remembered Maya Real-time Preview playback transmission cap with
   Follow Scene, 30 fps, 20 fps, and 15 fps choices. Numeric caps apply only
   while Maya is playing; paused posing and scrubbing stay at the scene rate,

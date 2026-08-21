@@ -2111,12 +2111,19 @@ class _CachedPlaybackSession(object):
                 self._invalidate_incompatible_cache(error)
             raise
         if revision is not None and not self._cache.compatible_with(revision):
-            self._cache.delete()
-            self._cache = None
-            raise _CachedPlaybackSessionError(
+            error = _CachedPlaybackSessionError(
                 "CACHED_PLAYBACK_INCOMPATIBLE",
                 "The completed cache does not match the current character snapshot.")
+            self._invalidate_incompatible_cache(error)
+            raise error
         self._pause_streaming()
+        begin_replay = getattr(self._streaming_session, "begin_cached_replay", None)
+        if begin_replay is not None:
+            try:
+                begin_replay()
+            except (_StreamingSessionError, RuntimeError, TypeError, ValueError) as exc:
+                raise _CachedPlaybackSessionError(
+                    "CACHED_PLAYBACK_NOT_READY", str(exc), details=str(exc))
         self._remove_replay_timer()
         self._replay_index = 0
         self._replay_interval = 1.0 / self._cache.scene_fps
@@ -2135,13 +2142,13 @@ class _CachedPlaybackSession(object):
                 "CACHED_PLAYBACK_NO_CACHE",
                 "The cached frame file is incomplete or invalid.",
                 details=str(error))
+        self._phase = "replaying"
         try:
             self._submit_cached(first)
         except Exception as exc:
             self._handle_transport_failure(exc)
             return
         self._replay_index = 1
-        self._phase = "replaying"
         self._replay_due = self._clock() + self._replay_interval
         self._emit(_CachedPlaybackSessionEvent(
             "replay_started", current_frame=1,
@@ -2170,6 +2177,8 @@ class _CachedPlaybackSession(object):
             metadata=self._cache.metadata if self._cache else None))
 
     def _handle_transport_failure(self, error):
+        if self._closed or self._phase != "replaying":
+            return
         self._remove_replay_timer()
         self._clear_replay_iterator()
         self._phase = "transport_failed"
@@ -2186,8 +2195,17 @@ class _CachedPlaybackSession(object):
                 pass
 
     def on_transport_failure(self, diagnostic=None):
-        self._handle_transport_failure(diagnostic or make_diagnostic(
-            "STREAM_INTERRUPTED", "The streaming connection ended."))
+        if self._closed:
+            return
+        diagnostic = diagnostic or make_diagnostic(
+            "STREAM_INTERRUPTED", "The streaming connection ended.")
+        if self.is_capturing:
+            message = diagnostic.get("message") or diagnostic.get("summary")
+            details = diagnostic.get("details") or message
+            self._capture_failure(_CachedPlaybackSessionError(
+                "STREAM_INTERRUPTED", message, details))
+            return
+        self._handle_transport_failure(diagnostic)
 
     def tick(self, now=None):
         if self._phase != "replaying" or self._replay_iterator is None:
@@ -2702,6 +2720,18 @@ class _StreamingSession(object):
             begin_ordered()
         self._last_sample_time = None
 
+    def begin_cached_replay(self):
+        if self._outcome is not None or self._worker is None or not self.is_ready:
+            raise _StreamingSessionError(
+                "CACHED_PLAYBACK_NOT_READY",
+                "Cached Playback requires a ready streaming session.")
+        if not self._paused_for_cached:
+            self.pause_for_cached()
+            return
+        begin_ordered = getattr(self._worker, "begin_ordered", None)
+        if begin_ordered is not None:
+            begin_ordered()
+
     def submit_cached(self, frame_message):
         if not self.is_ready:
             raise _StreamingSessionError(
@@ -2969,6 +2999,7 @@ class _Controller(object):
         self._cached_mode_button = None
         self._capture_button = None
         self._replay_button = None
+        self._stop_replay_button = None
         self._cancel_capture_button = None
         self._cache_text = None
         self._cached_playback = None
@@ -3011,6 +3042,9 @@ class _Controller(object):
         self._replay_button = cmds.button(
             label="再次回放", enable=False,
             command=lambda *_: self._replay_cached_playback())
+        self._stop_replay_button = cmds.button(
+            label="停止回放", enable=False,
+            command=lambda *_: self._stop_cached_replay())
         self._cancel_capture_button = cmds.button(
             label="取消捕获", enable=False,
             command=lambda *_: self._cancel_cached_capture())
@@ -3098,13 +3132,20 @@ class _Controller(object):
     def _update_mode_controls(self):
         ready = self._session_ready()
         realtime = self._mode == REALTIME_MODE
-        capturing = bool(self._cached_playback and self._cached_playback.is_capturing)
+        capturing = bool(
+            self._cached_playback
+            and getattr(self._cached_playback, "is_capturing", False))
+        replaying = bool(
+            self._cached_playback
+            and getattr(self._cached_playback, "is_replaying", False))
         self._set_enabled(self._playback_cap_menu, realtime and not capturing)
         self._set_enabled(self._capture_button, not realtime and ready and not capturing)
         self._set_enabled(
             self._replay_button,
-            not realtime and ready and not capturing and bool(self._cached_cache),
+            not realtime and ready and not capturing and not replaying
+            and bool(self._cached_cache),
         )
+        self._set_enabled(self._stop_replay_button, not realtime and replaying)
         self._set_enabled(self._cancel_capture_button, capturing)
         self._set_enabled(self._realtime_mode_button, not capturing)
         self._set_enabled(self._cached_mode_button, not capturing)
@@ -3130,10 +3171,18 @@ class _Controller(object):
                 "请先完成角色设置并连接 Unreal。")
         if (self._cached_playback is None
                 or self._cached_playback._streaming_session is not self._session):
-            self._cached_playback = _CachedPlaybackSession(
+            session_holder = {}
+
+            def on_event(event):
+                self._on_cached_playback_event(
+                    session_holder.get("session"), event)
+
+            session = _CachedPlaybackSession(
                 self._scene, self._session,
-                on_event=self._on_cached_playback_event,
+                on_event=on_event,
                 cache=self._cached_cache)
+            session_holder["session"] = session
+            self._cached_playback = session
         return self._cached_playback
 
     def _on_mode_changed(self, mode):
@@ -3151,7 +3200,9 @@ class _Controller(object):
             try:
                 self._ensure_cached_playback().enter_cached_mode()
                 self._mode = CACHED_MODE
-                self._set_connected(True, "已连接，缓存播放模式")
+                self._set_connected(
+                    True,
+                    "缓存播放模式：实时采样已暂停，Unreal 保留最近姿势；回放时显示缓存")
             except _CachedPlaybackSessionError as error:
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
@@ -3224,11 +3275,22 @@ class _Controller(object):
         finally:
             self._update_mode_controls()
 
+    def _stop_cached_replay(self):
+        if self._mode != CACHED_MODE or self._cached_playback is None:
+            return
+        self._cached_playback.stop_replay()
+        self._update_mode_controls()
+
     def _cancel_cached_capture(self):
         if self._cached_playback is not None:
             self._cached_playback.cancel_capture()
 
-    def _on_cached_playback_event(self, event):
+    def _on_cached_playback_event(self, session, event=None):
+        if event is None:
+            event = session
+            session = self._cached_playback
+        if session is not None and session is not self._cached_playback:
+            return
         if self._cached_playback is not None:
             self._cached_cache = self._cached_playback.cache
             if self._cached_cache is None:
@@ -3243,12 +3305,12 @@ class _Controller(object):
             self._set_text(self._status_text, "状态：缓存完成，正在回放…")
         elif event.kind == "replay_started":
             self._set_connected(
-                True, "缓存播放：{0}/{1}".format(
+                True, "缓存播放（仅显示已捕获缓存）：{0}/{1}".format(
                     event.current_frame, event.total_frames))
         elif event.kind == "replay_progress":
             self._set_text(
                 self._status_text,
-                "状态：缓存播放 {0}/{1}".format(
+                "状态：缓存播放（仅显示已捕获缓存） {0}/{1}".format(
                     event.current_frame, event.total_frames))
         elif event.kind == "replay_completed":
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
@@ -3538,9 +3600,17 @@ class _Controller(object):
             return
         cached_playback = self._cached_playback
         if cached_playback is not None:
-            cached_playback.stop_replay()
-            if cached_playback.cache is not None:
+            if event.kind == "failed" and event.recapture_scene:
+                cached_playback.close(delete_cache=True)
+                self._cached_cache = None
+                self._update_cache_text()
+            elif event.kind == "failed":
+                cached_playback.on_transport_failure(event.diagnostic)
                 self._cached_cache = cached_playback.cache
+            else:
+                cached_playback.stop_replay()
+                if cached_playback.cache is not None:
+                    self._cached_cache = cached_playback.cache
         self._cached_playback = None
         self._session = None
         self._mode = REALTIME_MODE
@@ -3661,6 +3731,7 @@ class _Controller(object):
 
     def disconnect(self, keep_error=False, status="已断开连接"):
         del keep_error
+        self._discard_cached_playback()
         session = self._session
         if session is None:
             self._set_connected(False, status)

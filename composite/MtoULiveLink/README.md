@@ -61,12 +61,15 @@ Install the matching component in each host:
    be canceled. The tool estimates temporary-disk usage before writing frames,
    asks for confirmation above 1 GiB, and rejects a range when free space is
    insufficient; failed or canceled capture removes its partial cache.
-6. Use **再次回放** to replay the completed cache without recapturing. Switch
-   back to **实时预览** to stop replay and immediately submit Maya's current
-   pose. Cached Playback creates no Unreal asset; the completed cache is kept
-   only for the compatible Maya session and is removed when replaced, cancelled,
-   the scene or character changes, the tool closes, or Maya exits. Startup
-   removes only valid MtoU-owned cache remnants older than 24 hours.
+6. While replaying, the status explicitly says that Unreal is showing the
+   captured cache rather than the current Maya pose. Use **停止回放** to hold
+   the last frame sent and retain the cache, or **再次回放** to replay it
+   without recapturing. Switch back to **实时预览** to stop replay and
+   immediately submit Maya's current pose. Cached Playback creates no Unreal
+   asset; the completed cache is kept only for the compatible Maya session and
+   is removed when replaced, canceled, disconnected, the scene or character
+   changes, the tool closes, or Maya exits. Startup removes only valid
+   MtoU-owned cache remnants older than 24 hours.
 
 **View Diagnostic Details** shows only the current error summary, solution,
 code, and relevant technical details. Long details wrap to the window width;

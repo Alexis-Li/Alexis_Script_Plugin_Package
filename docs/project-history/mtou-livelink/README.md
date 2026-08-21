@@ -43,6 +43,13 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   finalization, owned-path validation, stale-cleanup filtering, and controller
   cache-state cleanup are covered by deterministic tests. Maya 2022 host tests
   pass; the external C01 stock-engine production gate remains pending.
+- **2026-08-21:** Completed Issue #7 Cached Playback lifecycle hardening:
+  manual stop and repeat replay preserve ordered delivery, transport failure
+  retains a completed cache for compatible reconnect, disconnect and
+  incompatible lifecycle paths delete owned files, and stale cached-session
+  events cannot affect a newer controller state. Deterministic tests cover the
+  terminal and cleanup paths; the external C01 stock-engine production gate
+  remains pending.
 
 ## Stable Records
 

@@ -604,15 +604,29 @@ frames, and retains a completed cache across replay stop, completion, and
 compatible reconnects. No Unreal-side cache player, persistent Unreal asset,
 or protocol-version change was added.
 
+Issue #7 hardens the lifecycle around that seam. Cached mode reports that
+live sampling is paused and that Unreal holds the recent live pose until
+replay starts; active replay explicitly reports that Unreal is showing
+captured data. The UI exposes an explicit replay stop and reopens the
+sender's ordered mode before every new replay after a stop. Transport failure
+is distinct from an intentional disconnect: an active replay stops with its
+diagnostic while a completed cache remains available for a later compatible
+connection; incompatible character or scene failures and normal disconnect,
+close, and exit paths delete owned files. Cached-session callbacks carry their
+originating session identity, so a late terminal event cannot change a newer
+controller state.
+
 Deterministic Maya-side tests cover inclusive capture and exact ordering,
 atomic completion, timeline restoration, cancellation, stale cleanup, ready
 connection and revision guards, ordered replay timing, and retention across
 mode switches. Issue #6 additionally validates cancellation after the final
 progress callback, timer and disk-usage failure cleanup, recapture while
 replaying, exact range completion, and exact MtoU-owned metadata/frame paths.
-The external C01 production fixture remains required for the stock-engine
-321-frame production gate; automated pure/host checks do not claim that fixture
-has passed.
+Issue #7 adds coverage for terminal transport failures, ordered-mode restart,
+manual disconnect cleanup, explicit cached-state messaging, and stale session
+events. The external C01 production fixture remains required for the
+stock-engine 321-frame production gate; automated pure/host checks do not
+claim that fixture has passed.
 
 ## Documentation and Packaging
 

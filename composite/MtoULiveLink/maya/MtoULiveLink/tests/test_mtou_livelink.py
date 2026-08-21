@@ -1592,7 +1592,9 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.resumed = 0
             self.submitted = []
             self.ended = 0
+            self.begun = 0
             self.stopped = 0
+            self.fail_submit = False
 
         def pause_for_cached(self):
             self.paused += 1
@@ -1601,7 +1603,12 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.resumed += 1
 
         def submit_cached(self, frame):
+            if self.fail_submit:
+                raise RuntimeError("transport failed")
             self.submitted.append(frame)
+
+        def begin_cached_replay(self):
+            self.begun += 1
 
         def end_cached_replay(self):
             self.ended += 1
@@ -1781,6 +1788,77 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual(first_capture_count + 1, len(stream.submitted))
         session.close()
 
+    def test_replay_reopens_ordered_transport_after_manual_stop(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        session.capture_and_replay(scene_fps=2.0)
+        session.stop_replay()
+        begun_before_replay = stream.begun
+
+        session.replay()
+
+        self.assertGreater(stream.begun, begun_before_replay)
+        self.assertEqual("replaying", session.phase)
+        session.close()
+
+    def test_first_replay_frame_transport_failure_has_terminal_outcome(self):
+        events = []
+        session, unused_timeline, stream, unused_scene = self._session(events)
+        session.begin_capture(scene_fps=2.0)
+        for unused_frame in range(3):
+            session.capture_step()
+        stream.fail_submit = True
+
+        session.capture_step()
+
+        self.assertEqual("transport_failed", session.phase)
+        self.assertIsNotNone(session.cache)
+        self.assertEqual(1, stream.stopped)
+        self.assertIn("transport_failed", [event.kind for event in events])
+        session.close()
+
+    def test_cache_revision_mismatch_resumes_streaming_after_invalidation(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        session.capture_and_replay(scene_fps=2.0)
+        session.stop_replay()
+        session.cache._metadata["snapshot_revision"] = 8
+
+        with self.assertRaises(MODULE._CachedPlaybackSessionError) as caught:
+            session.replay()
+
+        self.assertEqual("CACHED_PLAYBACK_INCOMPATIBLE", caught.exception.code)
+        self.assertIsNone(session.cache)
+        self.assertEqual("idle", session.phase)
+        self.assertEqual(1, stream.resumed)
+        session.close()
+
+    def test_completed_cache_replays_after_transport_reconnect(self):
+        first, unused_timeline, first_stream, unused_scene = self._session()
+        cache = first.capture_and_replay(scene_fps=2.0)
+        first.on_transport_failure(MODULE.make_diagnostic("STREAM_INTERRUPTED"))
+        first.close(delete_cache=False)
+
+        second, unused_timeline, second_stream, unused_scene = self._session()
+        second._cache = cache
+        second.replay()
+
+        self.assertEqual([0.0], [
+            frame["transforms"][0][0] for frame in second_stream.submitted
+        ])
+        second.close()
+
+    def test_three_capture_stop_cycles_leave_only_the_current_cache(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            session._temp_dir = directory
+            for unused_cycle in range(3):
+                session.capture_and_replay(scene_fps=2.0)
+                session.stop_replay()
+                self.assertIsNotNone(session.cache)
+
+            self.assertEqual(2, len(list(pathlib.Path(directory).iterdir())))
+            session.close()
+            self.assertEqual([], list(pathlib.Path(directory).iterdir()))
+
     def test_large_cache_confirmation_and_space_rejection_restore_state(self):
         session, timeline, stream, unused_scene = self._session()
         with mock.patch.object(MODULE, "CACHE_CONFIRMATION_BYTES", 1):
@@ -1903,6 +1981,19 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual("CACHED_PLAYBACK_INCOMPATIBLE", caught.exception.code)
         session.close()
 
+    def test_transport_failure_after_stop_does_not_overwrite_terminal_outcome(self):
+        events = []
+        session, unused_timeline, stream, unused_scene = self._session(events)
+        session.capture_and_replay(scene_fps=2.0)
+        session.stop_replay()
+
+        session.on_transport_failure(MODULE.make_diagnostic("STREAM_INTERRUPTED"))
+
+        self.assertEqual("stopped", session.phase)
+        self.assertEqual(0, stream.stopped)
+        self.assertEqual(1, [event.kind for event in events].count("replay_stopped"))
+        session.close()
+
 class ControllerLifecycleTests(unittest.TestCase):
     def test_main_window_always_fits_its_controls(self):
         fake_cmds = mock.MagicMock()
@@ -1990,7 +2081,72 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertEqual(["实时预览", "缓存播放"], radio_labels)
         self.assertIn("捕获并回放", button_labels)
         self.assertIn("再次回放", button_labels)
+        self.assertIn("停止回放", button_labels)
         self.assertIn("取消捕获", button_labels)
+
+    def test_cached_mode_status_identifies_cached_unreal_state(self):
+        class ReadySession(object):
+            is_ready = True
+
+        cached = mock.Mock()
+        cached.is_capturing = False
+        controller = MODULE._Controller()
+        controller._session = ReadySession()
+        controller._cached_playback = cached
+        controller._ensure_cached_playback = mock.Mock(return_value=cached)
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+
+        controller._on_mode_changed(MODULE.CACHED_MODE)
+
+        status = controller._set_connected.call_args[0][1]
+        self.assertIn("实时采样已暂停", status)
+        self.assertIn("回放时显示缓存", status)
+
+    def test_disconnecting_discards_cached_state_before_stopping_session(self):
+        controller = MODULE._Controller()
+        controller._session = mock.Mock()
+        controller._discard_cached_playback = mock.Mock()
+        controller._set_connected = mock.Mock()
+
+        controller.disconnect()
+
+        controller._discard_cached_playback.assert_called_once_with()
+        controller._session.stop.assert_called_once_with()
+
+    def test_stale_cached_session_event_does_not_change_current_controller_state(self):
+        controller = MODULE._Controller()
+        current_session = object()
+        controller._cached_playback = current_session
+        controller._set_connected = mock.Mock()
+        controller._set_text = mock.Mock()
+        controller._update_mode_controls = mock.Mock()
+
+        controller._on_cached_playback_event(
+            object(), MODULE._CachedPlaybackSessionEvent("replay_completed"))
+
+        self.assertIs(current_session, controller._cached_playback)
+        controller._set_connected.assert_not_called()
+        controller._set_text.assert_not_called()
+
+    def test_transport_failure_is_forwarded_to_cached_session_before_detach(self):
+        controller = MODULE._Controller()
+        session = object()
+        cached = mock.Mock()
+        cached.cache = object()
+        controller._session = session
+        controller._cached_playback = cached
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+        diagnostic = MODULE.make_diagnostic("STREAM_INTERRUPTED")
+
+        controller._on_streaming_session_event(
+            session, MODULE._StreamingSessionEvent("failed", diagnostic=diagnostic))
+
+        cached.on_transport_failure.assert_called_once_with(diagnostic)
+        cached.stop_replay.assert_not_called()
+        self.assertIsNone(controller._session)
+        self.assertIs(cached.cache, controller._cached_cache)
 
     def test_deleted_cached_playback_clears_controller_cache_state(self):
         class EmptyCachedPlayback(object):
