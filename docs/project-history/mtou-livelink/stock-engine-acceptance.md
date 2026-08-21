@@ -91,7 +91,8 @@ and rejected cases.
 The final gate consists of:
 
 ```powershell
-mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -v
+python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p test_mtou_livelink.py -v
+mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p maya_host_tests.py -v
 python -m unittest discover -s tests -v
 python tools/validate_repository.py
 ruff check composite/MtoULiveLink/maya/MtoULiveLink/scripts composite/MtoULiveLink/maya/MtoULiveLink/tests

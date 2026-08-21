@@ -424,8 +424,10 @@ shutdown, and dynamically sized messages. Maya 2022 host tests exercise real
 DAG, skinning, BlendShape, callback, and timer behavior through the same
 character-scene and streaming-session interfaces.
 
-Run the pure suite under repository Python and the host suite under Maya 2022
-`mayapy`.
+Run the pure suite under repository Python with
+`python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p test_mtou_livelink.py -q`,
+and the host suite under Maya 2022 `mayapy` with
+`mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p maya_host_tests.py -q`.
 
 ### Unreal Automation tests
 
