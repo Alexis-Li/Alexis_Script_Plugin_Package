@@ -1492,11 +1492,11 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceBindErrorTest,
-    "MtoULiveLink.Source.BindErrorStatus",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceBindRecoveryTest,
+    "MtoULiveLink.Source.BindRecovery",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FMtoUSourceBindErrorTest::RunTest(const FString& Parameters)
+bool FMtoUSourceBindRecoveryTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
@@ -1517,8 +1517,9 @@ bool FMtoUSourceBindErrorTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("second source reports an actionable bind failure"), WaitForStatus(Second, TEXT("bind")));
     TestTrue(TEXT("first source retains exclusive ownership"), WaitForStatus(First, TEXT("Listening on")));
     TestTrue(TEXT("bind-failed second source remains displayable"), Second->IsSourceStillValid());
-    Second->StopListener();
     First->StopListener();
+    TestTrue(TEXT("second source listens after the port is released"), WaitForStatus(Second, TEXT("Listening on")));
+    Second->StopListener();
     return true;
 }
 

@@ -18,6 +18,8 @@
   completed cache for reconnect, incompatible failures and disconnects remove
   owned cache files, and stale session callbacks cannot affect a newer UI
   session. Add an explicit **停止回放** control and cached-state status.
+- Retry the Unreal listener when another local process temporarily owns port
+  54321, so it starts listening automatically after the port is released.
 - Add a remembered Maya Real-time Preview playback transmission cap with
   Follow Scene, 30 fps, 20 fps, and 15 fps choices. Numeric caps apply only
   while Maya is playing; paused posing and scrubbing stay at the scene rate,

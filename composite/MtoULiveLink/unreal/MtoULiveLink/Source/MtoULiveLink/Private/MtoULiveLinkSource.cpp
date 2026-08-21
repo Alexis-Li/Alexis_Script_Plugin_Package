@@ -29,6 +29,7 @@ namespace
 {
 constexpr int32 ReceiveBufferSize = 64 * 1024;
 constexpr int32 IdleWaitMilliseconds = 5;
+constexpr int32 BindRetryMilliseconds = 100;
 
 #if WITH_EDITOR
 const FText RealtimeOverrideName = FText::FromString(TEXT("MtoU Live Link"));
@@ -283,32 +284,50 @@ uint32 FMtoULiveLinkSource::Run()
         return 1;
     }
 
-    FSocket* ListenSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoU_LiveLink listener"));
-    FSocket* ClientSocket = nullptr;
-    if (!ListenSocket)
-    {
-        SetStatus(TEXT("Failed to create the MtoU_LiveLink listener socket."));
-        return 1;
-    }
-
     TSharedRef<FInternetAddr> Address = SocketSubsystem->CreateInternetAddr();
     bool bValidAddress = false;
     Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
     Address->SetPort(ConfiguredPort);
-    if (!bValidAddress
-        || !ListenSocket->Bind(*Address)
-        || !ListenSocket->Listen(1)
-        || !ListenSocket->SetNonBlocking(true))
+    FSocket* ListenSocket = nullptr;
+    bool bLoggedBindError = false;
+    while (!bStopRequested.Load())
     {
+        ListenSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoU_LiveLink listener"));
+        if (!ListenSocket)
+        {
+            SetStatus(TEXT("Failed to create the MtoU_LiveLink listener socket."));
+            return 1;
+        }
+        if (bValidAddress
+            && ListenSocket->Bind(*Address)
+            && ListenSocket->Listen(1)
+            && ListenSocket->SetNonBlocking(true))
+        {
+            break;
+        }
+        const ESocketErrors ErrorCode = SocketSubsystem->GetLastErrorCode();
         const FString Error = FString::Printf(
             TEXT("Failed to bind MtoU_LiveLink to 127.0.0.1:%u: %s"),
             ConfiguredPort,
-            SocketSubsystem->GetSocketError(SocketSubsystem->GetLastErrorCode()));
-        UE_LOG(LogMtoULiveLinkSource, Error, TEXT("%s"), *Error);
+            SocketSubsystem->GetSocketError(ErrorCode));
+        if (!bLoggedBindError || ErrorCode != SE_EADDRINUSE)
+        {
+            UE_LOG(LogMtoULiveLinkSource, Error, TEXT("%s"), *Error);
+        }
         SetStatus(Error);
         CloseSocket(*SocketSubsystem, ListenSocket);
-        return 1;
+        if (ErrorCode != SE_EADDRINUSE)
+        {
+            return 1;
+        }
+        bLoggedBindError = true;
+        FPlatformProcess::Sleep(BindRetryMilliseconds / 1000.0f);
     }
+    if (!ListenSocket)
+    {
+        return 0;
+    }
+    FSocket* ClientSocket = nullptr;
 
     TSharedRef<FInternetAddr> BoundAddress = SocketSubsystem->CreateInternetAddr();
     ListenSocket->GetAddress(*BoundAddress);
