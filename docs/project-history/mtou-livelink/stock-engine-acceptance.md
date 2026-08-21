@@ -33,6 +33,45 @@ timeline restoration, cancellation cleanup, disk-space rejection, and exact
 cache finalization. This is implementation evidence only; it does not replace
 the pending stock-engine C01 run across all 321 display frames.
 
+## Issue #8 C01 Validation Attempt
+
+Date: 2026-08-21
+Status: Blocked by the C01 Real-time Preview performance gate; Issue #8 remains
+open.
+
+The unchanged `C01_Body_IdleStand02_ChangeClothes.ma` scene was opened in Maya
+2022.4 with its `SK_C01.ma` reference resolved and the `SK_C01_Clothes_09.fbx`
+derived Skeletal Mesh loaded in stock Unreal Editor 5.7.4. The Playback Range
+was 0–320 inclusive at 30 fps. The reference and source scene were used
+read-only; no production asset was copied into the repository or release
+package, and the temporary Unreal level was not saved.
+
+Evidence that passed in this attempt:
+
+- Maya captured 1,399 bones and 108 curves for `Clothes09`; the connection
+  reached the green ready state and Unreal visibly displayed the C01 actor.
+- Cached Playback completed exactly 321 frames. Its completed metadata reported
+  range 0–320, 30 fps, and 321 frames; the JSON-lines frame file contained 321
+  records, with 1,399 transforms and 108 curves in both the first and final
+  records. Replay reached the UI's completed final-frame state in Unreal.
+- The repository test, Maya 2022 host test, repository, lint, structural,
+  packaging-preview, stock Unreal build, and Unreal Automation checks listed
+  below passed independently of the external fixture run.
+
+The blocking measurement was taken over the same C01 playback range with the
+20 fps cap selected: disconnected Maya advanced 162 frames in 5.025 seconds
+(32.24 fps), while connected Maya advanced 82 frames in 5.016 seconds
+(16.35 fps). The connected/disconnected ratio was therefore 50.7%, below the
+required 90% (at least 29.02 fps for this baseline). This preserves the known
+slow-connected-playback baseline instead of claiming a performance pass.
+
+The following Issue #8 gates were not marked passed because this first hard
+failure made a full acceptance run unnecessary: separate Unreal update-rate
+and paused-pose latency instrumentation, the 2-minute warm-up plus 20-minute
+Private Bytes run, three reconnect-cycle memory measurement, exact replay
+wall-clock and adjacent-send timestamp capture, and three full capture/replay
+residue cycles. They remain required before Issue #8 can close.
+
 ## Resolved Production Blocker
 
 The scene contains 23 groups where separate skinned mesh parts expose the same
