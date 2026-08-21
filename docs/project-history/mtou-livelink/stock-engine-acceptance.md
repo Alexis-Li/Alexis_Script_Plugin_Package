@@ -27,10 +27,11 @@ without modifying or saving either source scene.
 This C01 fixture has not yet passed the complete stock-engine acceptance gate.
 The C04 results and measurements below remain valid historical evidence for the
 files actually tested on 2026-08-11; they must not be reported as C01 results.
-The Cached Playback happy path is covered by deterministic Maya-side
-capture/replay tests, including ordered delivery and timeline restoration. This
-is implementation evidence only; it does not replace the pending stock-engine
-C01 run across all 321 display frames.
+The Cached Playback happy path and capture-safety guards are covered by
+deterministic Maya-side capture/replay tests, including ordered delivery,
+timeline restoration, cancellation cleanup, disk-space rejection, and exact
+cache finalization. This is implementation evidence only; it does not replace
+the pending stock-engine C01 run across all 321 display frames.
 
 ## Resolved Production Blocker
 

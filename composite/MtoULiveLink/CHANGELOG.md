@@ -9,6 +9,10 @@
   order at the captured scene rate. Completed caches can be replayed again,
   remain temporary, and are cleaned up on replacement, cancellation, scene or
   character changes, tool close, Maya exit, and qualifying stale startup cleanup.
+- Harden Cached Playback capture cleanup: progress-time cancellation cannot
+  publish a partial final frame, failed timer or disk-space checks restore Maya
+  state and close temporary files, recapture stops active replay first, and
+  completed metadata is restricted to the exact owned frame range and paths.
 - Add a remembered Maya Real-time Preview playback transmission cap with
   Follow Scene, 30 fps, 20 fps, and 15 fps choices. Numeric caps apply only
   while Maya is playing; paused posing and scrubbing stay at the scene rate,

@@ -1215,6 +1215,10 @@ class _PlaybackCache(object):
                 metadata = json.load(stream)
         except (OSError, ValueError, TypeError) as exc:
             raise _PlaybackCacheError("invalid cache metadata: {0}".format(exc))
+        cache_id = metadata.get("cache_id") if isinstance(metadata, dict) else None
+        expected_metadata_name = CACHE_FILE_PREFIX + str(cache_id) + CACHE_METADATA_SUFFIX
+        if os.path.basename(metadata_path) != expected_metadata_name:
+            raise _PlaybackCacheError("cache metadata filename is not owned by MtoU")
         cls._validate_metadata(metadata, require_complete=True)
         frames_file = metadata.get("frames_file")
         if not frames_file:
@@ -1233,8 +1237,16 @@ class _PlaybackCache(object):
             raise _PlaybackCacheError("cache metadata has an unknown owner")
         if int(metadata.get("format_version", -1)) != CACHE_FORMAT_VERSION:
             raise _PlaybackCacheError("unsupported cache format")
-        if require_complete and not metadata.get("completed"):
+        cache_id = metadata.get("cache_id")
+        if not isinstance(cache_id, str) or not _PlaybackCache._TOKEN_PATTERN.match(cache_id):
+            raise _PlaybackCacheError("cache metadata has an invalid cache id")
+        expected_frames_name = CACHE_FILE_PREFIX + cache_id + CACHE_FRAMES_SUFFIX
+        if metadata.get("frames_file", expected_frames_name) != expected_frames_name:
+            raise _PlaybackCacheError("cache frame filename is not owned by MtoU")
+        if require_complete and metadata.get("completed") is not True:
             raise _PlaybackCacheError("cache is not complete")
+        if require_complete and metadata.get("completion_state") != "complete":
+            raise _PlaybackCacheError("cache completion state is invalid")
         for name in ("snapshot_revision", "capture_start", "capture_end",
                      "frame_count", "scene_fps", "capture_time"):
             if name not in metadata:
@@ -1243,6 +1255,10 @@ class _PlaybackCache(object):
             raise _PlaybackCacheError("cache capture range is invalid")
         if int(metadata["frame_count"]) < 0:
             raise _PlaybackCacheError("cache frame count is invalid")
+        if (require_complete
+                and int(metadata["frame_count"])
+                != int(metadata["capture_end"]) - int(metadata["capture_start"]) + 1):
+            raise _PlaybackCacheError("cache frame count does not cover the capture range")
 
     @staticmethod
     def serialized_frame_size(frame_message):
@@ -1334,6 +1350,14 @@ class _PlaybackCache(object):
             if self.completed:
                 return self
             raise _PlaybackCacheError("cache is already finalized")
+        expected_frames = (
+            int(self._metadata["capture_end"])
+            - int(self._metadata["capture_start"])
+            + 1)
+        if int(self._metadata["frame_count"]) != expected_frames:
+            self.delete()
+            raise _PlaybackCacheError(
+                "cache frame count does not cover the capture range")
         try:
             self._writer.flush()
             self._writer.close()
@@ -1361,12 +1385,17 @@ class _PlaybackCache(object):
             stream = open(self._frames_path, "r", encoding="utf-8")
         except OSError as exc:
             raise _PlaybackCacheError(str(exc))
+        expected_frames = self.frame_count
 
         def frames():
+            seen_frames = 0
             with stream:
                 for line in stream:
                     if not line.strip():
                         continue
+                    if seen_frames >= expected_frames:
+                        raise _PlaybackCacheError(
+                            "cached frame file contains too many frames")
                     try:
                         frame = json.loads(line)
                     except (TypeError, ValueError) as exc:
@@ -1374,7 +1403,11 @@ class _PlaybackCache(object):
                             "invalid cached frame: {0}".format(exc))
                     if not isinstance(frame, dict) or frame.get("type") != "frame":
                         raise _PlaybackCacheError("cached frame is not a protocol-v3 frame")
+                    seen_frames += 1
                     yield frame
+                if seen_frames != expected_frames:
+                    raise _PlaybackCacheError(
+                        "cached frame file does not contain the complete sequence")
 
         return frames()
 
@@ -1428,6 +1461,10 @@ class _PlaybackCache(object):
                 continue
             token = metadata.get("cache_id")
             if not isinstance(token, str) or not cls._TOKEN_PATTERN.match(token):
+                continue
+            if name not in (
+                    CACHE_FILE_PREFIX + token + CACHE_METADATA_SUFFIX,
+                    CACHE_FILE_PREFIX + token + CACHE_PARTIAL_METADATA_SUFFIX):
                 continue
             base = os.path.join(directory, CACHE_FILE_PREFIX + token)
             owned_paths = [
@@ -1568,6 +1605,7 @@ class _CachedPlaybackSession(object):
         self._capture_progress_callback = None
         self._capture_confirmation_callback = None
         self._capture_estimated_size = None
+        self._capture_large_cache_confirmed = False
         self._replay_iterator = None
         self._replay_index = 0
         self._replay_due = None
@@ -1710,12 +1748,18 @@ class _CachedPlaybackSession(object):
             self._capture_cancel_requested = True
 
     def _disk_free_bytes(self):
-        usage = self._disk_usage(self._temp_dir)
-        if hasattr(usage, "free"):
-            return int(usage.free)
-        if isinstance(usage, (tuple, list)) and len(usage) >= 3:
-            return int(usage[2])
-        return int(usage)
+        try:
+            usage = self._disk_usage(self._temp_dir)
+            if hasattr(usage, "free"):
+                return int(usage.free)
+            if isinstance(usage, (tuple, list)) and len(usage) >= 3:
+                return int(usage[2])
+            return int(usage)
+        except (OSError, TypeError, ValueError) as exc:
+            raise _CachedPlaybackSessionError(
+                "CACHED_PLAYBACK_SPACE",
+                "Unable to determine available temporary-disk space.",
+                details=str(exc))
 
     @staticmethod
     def _invoke_progress(callback, event):
@@ -1814,6 +1858,8 @@ class _CachedPlaybackSession(object):
                 raise _CachedPlaybackSessionError("INVALID_FRAME_RATE", str(exc))
         scene_fps = validate_frame_rate(scene_fps)
         self.enter_cached_mode()
+        if self.is_replaying:
+            self.stop_replay()
         if self._cache is not None:
             self._cache.delete()
             self._cache = None
@@ -1841,13 +1887,21 @@ class _CachedPlaybackSession(object):
         self._capture_progress_callback = progress
         self._capture_confirmation_callback = confirm_large_cache
         self._capture_estimated_size = None
+        self._capture_large_cache_confirmed = False
         self._capture_cancel_requested = False
         self._phase = "capturing"
         self._emit(_CachedPlaybackSessionEvent(
             "capture_started", current_frame=0, total_frames=total_frames,
             metadata={"capture_start": start_frame, "capture_end": end_frame,
                       "scene_fps": scene_fps, "snapshot_revision": revision}))
-        self._add_capture_timer()
+        try:
+            self._add_capture_timer()
+        except (RuntimeError, TypeError, ValueError) as exc:
+            error = _CachedPlaybackSessionError(
+                "INTERNAL_ERROR", str(exc), details=str(exc))
+            failure = self._capture_failure(error)
+            if failure is not None:
+                raise failure
         return self
 
     def _capture_failure(self, error):
@@ -1891,23 +1945,31 @@ class _CachedPlaybackSession(object):
                         frame.revision, self._capture_revision))
             frame_message = make_frame_message(
                 list(frame.transforms), list(frame.curves))
+            frame_size = _PlaybackCache.serialized_frame_size(frame_message)
             if self._capture_estimated_size is None:
-                self._capture_estimated_size = _PlaybackCache.serialized_frame_size(frame_message)
-                estimated_total = self._capture_estimated_size * self._capture_total_frames
-                free_bytes = self._disk_free_bytes()
-                if estimated_total > free_bytes:
-                    raise _CachedPlaybackSessionError(
-                        "CACHED_PLAYBACK_SPACE",
-                        "The temporary directory does not have enough free space.",
-                        "estimated {0} bytes, free {1} bytes".format(
-                            estimated_total, free_bytes))
-                if (estimated_total > CACHE_CONFIRMATION_BYTES
-                        and not self._invoke_confirmation(
-                            self._capture_confirmation_callback,
-                            estimated_total, self._capture_total_frames)):
+                self._capture_estimated_size = frame_size
+            else:
+                self._capture_estimated_size = max(self._capture_estimated_size, frame_size)
+            estimated_total = self._capture_estimated_size * self._capture_total_frames
+            frames_written = frame_number - self._capture_start
+            remaining_estimate = self._capture_estimated_size * (
+                self._capture_total_frames - frames_written)
+            free_bytes = self._disk_free_bytes()
+            if remaining_estimate > free_bytes:
+                raise _CachedPlaybackSessionError(
+                    "CACHED_PLAYBACK_SPACE",
+                    "The temporary directory does not have enough free space.",
+                    "estimated remaining {0} bytes, free {1} bytes".format(
+                        remaining_estimate, free_bytes))
+            if (estimated_total > CACHE_CONFIRMATION_BYTES
+                    and not self._capture_large_cache_confirmed):
+                if not self._invoke_confirmation(
+                        self._capture_confirmation_callback,
+                        estimated_total, self._capture_total_frames):
                     raise _CachedPlaybackSessionError(
                         "CACHED_PLAYBACK_CANCELLED",
                         "Large cache confirmation was declined.")
+                self._capture_large_cache_confirmed = True
             self._capture_cache.append(frame_message)
             offset = frame_number - self._capture_start + 1
             event = _CachedPlaybackSessionEvent(
@@ -1918,6 +1980,13 @@ class _CachedPlaybackSession(object):
                 })
             self._emit(event)
             self._invoke_progress(self._capture_progress_callback, event)
+            if self._capture_cancel_requested:
+                error = _CachedPlaybackSessionError(
+                    "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
+                failure = self._capture_failure(error)
+                if failure is not None and raise_errors:
+                    raise failure
+                return True
             self._capture_next_frame += 1
             if frame_number < self._capture_end:
                 return True
@@ -1994,15 +2063,40 @@ class _CachedPlaybackSession(object):
         except RuntimeError:
             pass
 
+    def _clear_replay_iterator(self):
+        iterator, self._replay_iterator = self._replay_iterator, None
+        if iterator is None:
+            return
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            try:
+                close()
+            except (RuntimeError, TypeError):
+                pass
+
     def _invalidate_incompatible_cache(self, error):
         self._remove_replay_timer()
-        self._replay_iterator = None
+        self._clear_replay_iterator()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
         self._phase = "idle"
         diagnostic = make_diagnostic(
             "CACHED_PLAYBACK_INCOMPATIBLE", error.message, details=error.details)
+        self._emit(_CachedPlaybackSessionEvent("failed", diagnostic=diagnostic))
+        self._resume_streaming()
+
+    def _invalidate_corrupt_cache(self, error):
+        self._remove_replay_timer()
+        self._clear_replay_iterator()
+        if self._cache is not None:
+            self._cache.delete()
+        self._cache = None
+        self._phase = "idle"
+        diagnostic = make_diagnostic(
+            "CACHED_PLAYBACK_NO_CACHE",
+            "The cached frame file is incomplete or invalid.",
+            details=str(error))
         self._emit(_CachedPlaybackSessionEvent("failed", diagnostic=diagnostic))
         self._resume_streaming()
 
@@ -2024,17 +2118,23 @@ class _CachedPlaybackSession(object):
                 "The completed cache does not match the current character snapshot.")
         self._pause_streaming()
         self._remove_replay_timer()
-        self._replay_iterator = self._cache.iter_frames()
         self._replay_index = 0
         self._replay_interval = 1.0 / self._cache.scene_fps
         try:
+            self._replay_iterator = self._cache.iter_frames()
             first = next(self._replay_iterator)
         except StopIteration:
-            self._replay_iterator = None
+            self._clear_replay_iterator()
             self._phase = "completed"
             self._emit(_CachedPlaybackSessionEvent(
                 "replay_completed", metadata=self._cache.metadata))
             return
+        except _PlaybackCacheError as error:
+            self._invalidate_corrupt_cache(error)
+            raise _CachedPlaybackSessionError(
+                "CACHED_PLAYBACK_NO_CACHE",
+                "The cached frame file is incomplete or invalid.",
+                details=str(error))
         try:
             self._submit_cached(first)
         except Exception as exc:
@@ -2062,7 +2162,7 @@ class _CachedPlaybackSession(object):
 
     def _finish_replay(self):
         self._remove_replay_timer()
-        self._replay_iterator = None
+        self._clear_replay_iterator()
         self._phase = "completed"
         self._emit(_CachedPlaybackSessionEvent(
             "replay_completed", current_frame=self._replay_index,
@@ -2071,7 +2171,7 @@ class _CachedPlaybackSession(object):
 
     def _handle_transport_failure(self, error):
         self._remove_replay_timer()
-        self._replay_iterator = None
+        self._clear_replay_iterator()
         self._phase = "transport_failed"
         diagnostic = error if isinstance(error, dict) else make_diagnostic(
             "STREAM_INTERRUPTED", str(error), details=str(error))
@@ -2114,6 +2214,9 @@ class _CachedPlaybackSession(object):
         except StopIteration:
             self._finish_replay()
             return False
+        except _PlaybackCacheError as error:
+            self._invalidate_corrupt_cache(error)
+            return False
         except Exception as exc:
             self._handle_transport_failure(exc)
             return False
@@ -2131,7 +2234,7 @@ class _CachedPlaybackSession(object):
         if self._phase != "replaying":
             return
         self._remove_replay_timer()
-        self._replay_iterator = None
+        self._clear_replay_iterator()
         self._phase = "stopped"
         discard = getattr(self._streaming_session, "end_cached_replay", None)
         if discard is not None:
@@ -2149,7 +2252,7 @@ class _CachedPlaybackSession(object):
         self._capture_cancel_requested = True
         self._remove_capture_timer()
         self._remove_replay_timer()
-        self._replay_iterator = None
+        self._clear_replay_iterator()
         self._restore_capture_frame()
         if delete_cache:
             if self._capture_cache is not None:
@@ -3126,9 +3229,11 @@ class _Controller(object):
             self._cached_playback.cancel_capture()
 
     def _on_cached_playback_event(self, event):
-        if self._cached_playback is not None and self._cached_playback.cache is not None:
+        if self._cached_playback is not None:
             self._cached_cache = self._cached_playback.cache
-            if self._cached_cache.completed:
+            if self._cached_cache is None:
+                self._update_cache_text()
+            elif self._cached_cache.completed:
                 self._update_cache_text(self._cached_cache)
         if event.kind == "capture_started":
             self._set_text(self._status_text, "状态：正在捕获缓存…")

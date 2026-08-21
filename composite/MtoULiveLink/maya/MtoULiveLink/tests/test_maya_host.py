@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -439,6 +440,77 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(1.0, FakeWorker.instance.joined)
         self.assertEqual(3, FakeWorker.instance.init_message["version"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
+
+    def test_cached_capture_uses_real_playback_range_and_restores_after_cancel(self):
+        cmds.playbackOptions(min=10, max=12)
+        cmds.currentTime(11, edit=True)
+        playing = {"value": True}
+
+        def play(**kwargs):
+            if "state" in kwargs:
+                playing["value"] = bool(kwargs["state"])
+
+        with mock.patch.object(
+                module, "_maya_is_playing", side_effect=lambda: playing["value"]), \
+                mock.patch.object(module.cmds, "play", side_effect=play):
+            timeline = module._MayaTimeline()
+            self.assertTrue(timeline.is_playing())
+            original_frame = timeline.current_frame()
+            snapshot = module._CharacterSnapshot(
+                1, "|root", "Clothes01", [("root", -1)], [],
+                bind_local_transforms=[(0.0,) * 10])
+
+            class FakeScene(object):
+                @staticmethod
+                def snapshot():
+                    return snapshot
+
+                @staticmethod
+                def sample():
+                    value = float(cmds.currentTime(query=True))
+                    return module._CharacterFrame(1, [[value] * 10], [])
+
+            class FakeStream(object):
+                is_ready = True
+                revision = 1
+
+                def __init__(self):
+                    self.resumed = 0
+
+                def pause_for_cached(self):
+                    pass
+
+                def resume_from_cached(self):
+                    self.resumed += 1
+
+                def submit_cached(self, unused_frame):
+                    pass
+
+                def end_cached_replay(self):
+                    pass
+
+            stream = FakeStream()
+            progress = []
+
+            def cancel_after_two(current, total):
+                progress.append((current, total))
+                if current == 2:
+                    session.cancel_capture()
+
+            with tempfile.TemporaryDirectory() as directory:
+                session = module._CachedPlaybackSession(
+                    FakeScene(), stream, timeline=timeline, temp_dir=directory,
+                    clock=lambda: 0.0,
+                    disk_usage=lambda unused: (1, 1, 1 << 40), timer_api=None)
+                self.assertIsNone(session.capture_and_replay(
+                    scene_fps=24.0, progress=cancel_after_two))
+                self.assertEqual([(1, 3), (2, 3)], progress)
+                self.assertFalse(timeline.is_playing())
+                self.assertEqual(original_frame, timeline.current_frame())
+                self.assertEqual(1, stream.resumed)
+                self.assertIsNone(session.cache)
+                session.close()
+            self.assertFalse(playing["value"])
 
 
     def test_playback_state_query_uses_maya_host_state_without_editing_scene(self):

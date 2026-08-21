@@ -607,9 +607,12 @@ or protocol-version change was added.
 Deterministic Maya-side tests cover inclusive capture and exact ordering,
 atomic completion, timeline restoration, cancellation, stale cleanup, ready
 connection and revision guards, ordered replay timing, and retention across
-mode switches. The external C01 production fixture remains required for the
-stock-engine 321-frame production gate; automated pure/host checks do not claim
-that fixture has passed.
+mode switches. Issue #6 additionally validates cancellation after the final
+progress callback, timer and disk-usage failure cleanup, recapture while
+replaying, exact range completion, and exact MtoU-owned metadata/frame paths.
+The external C01 production fixture remains required for the stock-engine
+321-frame production gate; automated pure/host checks do not claim that fixture
+has passed.
 
 ## Documentation and Packaging
 

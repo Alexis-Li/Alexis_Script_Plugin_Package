@@ -38,6 +38,11 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   ordered no-drop protocol-v3 replay, repeat replay, lifecycle cleanup, and
   deterministic cached-session tests. The C01 stock-engine production gate
   remains a separate external acceptance task.
+- **2026-08-21:** Completed Issue #6 capture safety: cancellation races,
+  timer and disk-usage failures, recapture during replay, exact range
+  finalization, owned-path validation, stale-cleanup filtering, and controller
+  cache-state cleanup are covered by deterministic tests. Maya 2022 host tests
+  pass; the external C01 stock-engine production gate remains pending.
 
 ## Stable Records
 

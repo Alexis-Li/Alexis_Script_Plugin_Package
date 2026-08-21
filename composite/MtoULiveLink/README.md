@@ -56,7 +56,11 @@ Install the matching component in each host:
    and disables the real-time cap. **捕获并回放** samples the current Maya
    Playback Range inclusively, writes protocol-v3 frames incrementally to the
    user's system temporary directory, restores the original current frame,
-   and replays every captured frame once at the recorded scene rate.
+   and replays every captured frame once at the recorded scene rate. Capture
+   shows current/total progress, stops Maya playback before sampling, and can
+   be canceled. The tool estimates temporary-disk usage before writing frames,
+   asks for confirmation above 1 GiB, and rejects a range when free space is
+   insufficient; failed or canceled capture removes its partial cache.
 6. Use **再次回放** to replay the completed cache without recapturing. Switch
    back to **实时预览** to stop replay and immediately submit Maya's current
    pose. Cached Playback creates no Unreal asset; the completed cache is kept
