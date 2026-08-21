@@ -2,6 +2,7 @@
 
 Date: 2026-08-11
 Status: Passed for stock Unreal Editor 5.7.4
+Record type: Historical acceptance evidence; current production fixture differs
 
 ## Scope
 
@@ -9,6 +10,27 @@ This acceptance used the supplied Maya 2022 binding scene
 `SK_C04_Last09.0013.ma` and its normal-workflow export
 `SK_C04_Clothes_09.fbx`. The third-party-modified Unreal Engine 5.7 build was
 excluded by direction and has no compatibility claim.
+
+## Current Production Fixture
+
+The production fixture selected on 2026-08-20 for the next acceptance run is:
+
+- animation scene: `C01_Body_IdleStand02_ChangeClothes.ma`;
+- referenced binding scene: `SK_C01.ma`;
+- Unreal import source: `SK_C01_Clothes_09.fbx`.
+
+The animation scene is Maya 2022 ASCII at 30 fps, uses playback frames 0 through
+320 inclusive, and references `SK_C01.ma` as `SK_C01RN` in the `SK_C01`
+namespace. Acceptance must resolve that reference to the supplied binding scene
+without modifying or saving either source scene.
+
+This C01 fixture has not yet passed the complete stock-engine acceptance gate.
+The C04 results and measurements below remain valid historical evidence for the
+files actually tested on 2026-08-11; they must not be reported as C01 results.
+The Cached Playback happy path is covered by deterministic Maya-side
+capture/replay tests, including ordered delivery and timeline restoration. This
+is implementation evidence only; it does not replace the pending stock-engine
+C01 run across all 321 display frames.
 
 ## Resolved Production Blocker
 

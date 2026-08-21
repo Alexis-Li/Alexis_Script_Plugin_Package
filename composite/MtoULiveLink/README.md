@@ -51,6 +51,18 @@ Install the matching component in each host:
    stopping playback submits the final pose immediately. Changing the Clothes
    enum disconnects the session; replace the Unreal binding actor with the new
    outfit and reconnect.
+5. Use the mutually exclusive **实时预览** and **缓存播放** mode controls for
+   review. Cached Playback requires a ready connection, pauses live sampling,
+   and disables the real-time cap. **捕获并回放** samples the current Maya
+   Playback Range inclusively, writes protocol-v3 frames incrementally to the
+   user's system temporary directory, restores the original current frame,
+   and replays every captured frame once at the recorded scene rate.
+6. Use **再次回放** to replay the completed cache without recapturing. Switch
+   back to **实时预览** to stop replay and immediately submit Maya's current
+   pose. Cached Playback creates no Unreal asset; the completed cache is kept
+   only for the compatible Maya session and is removed when replaced, cancelled,
+   the scene or character changes, the tool closes, or Maya exits. Startup
+   removes only valid MtoU-owned cache remnants older than 24 hours.
 
 **View Diagnostic Details** shows only the current error summary, solution,
 code, and relevant technical details. Long details wrap to the window width;

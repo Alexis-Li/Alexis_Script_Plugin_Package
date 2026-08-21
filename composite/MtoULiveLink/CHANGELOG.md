@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add Cached Playback with mutually exclusive **实时预览** and **缓存播放** Maya
+  modes. Ready connections can capture the inclusive Playback Range into an
+  incrementally written, atomically finalized system-temporary cache, restore
+  Maya's original current frame, and replay every protocol-v3 frame once in
+  order at the captured scene rate. Completed caches can be replayed again,
+  remain temporary, and are cleaned up on replacement, cancellation, scene or
+  character changes, tool close, Maya exit, and qualifying stale startup cleanup.
 - Add a remembered Maya Real-time Preview playback transmission cap with
   Follow Scene, 30 fps, 20 fps, and 15 fps choices. Numeric caps apply only
   while Maya is playing; paused posing and scrubbing stay at the scene rate,

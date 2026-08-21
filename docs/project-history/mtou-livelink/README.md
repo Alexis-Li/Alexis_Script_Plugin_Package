@@ -33,6 +33,11 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   setup-time pose for joints without stored bind data, and resolve
   skin-cluster bind-matrix conflicts from the joint-connected dagPose instead
   of rejecting the skeleton.
+- **2026-08-21:** Implemented Issue #5 Cached Playback: mutually exclusive
+  Maya modes, incremental temporary cache storage, timeline-safe capture,
+  ordered no-drop protocol-v3 replay, repeat replay, lifecycle cleanup, and
+  deterministic cached-session tests. The C01 stock-engine production gate
+  remains a separate external acceptance task.
 
 ## Stable Records
 

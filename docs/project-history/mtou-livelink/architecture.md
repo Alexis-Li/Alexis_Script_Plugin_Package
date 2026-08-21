@@ -3,7 +3,9 @@
 Date: 2026-07-31
 Status: Version 0.3.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
-Last aligned with implementation: 2026-08-19
+Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
+pending a complete rerun
+Last aligned with implementation: 2026-08-21
 
 ## Summary
 
@@ -40,6 +42,25 @@ export script bakes. Unreal never needs to understand Maya controls or
 constraints. The Live Link tool must not execute, modify, or replace either MEL
 script, and it must not disconnect attributes, merge namespaces, reparent
 objects, delete groups, bake animation, or export FBX.
+
+## Current Production Acceptance Fixture
+
+The production fixture selected on 2026-08-20 consists of:
+
+- `C01_Body_IdleStand02_ChangeClothes.ma`, the Maya 2022 animation scene at
+  30 fps with playback frames 0 through 320 inclusive;
+- `SK_C01.ma`, the binding scene referenced by that animation scene as
+  `SK_C01RN` in the `SK_C01` namespace;
+- `SK_C01_Clothes_09.fbx`, the skeleton-and-mesh export from the binding scene
+  used to create the Unreal Skeletal Mesh.
+
+Acceptance resolves the animation scene's reference to the supplied binding
+scene without saving either Maya file, imports the unchanged FBX into Unreal,
+and exercises the negotiated character scene over all 321 display frames. The
+fixture is external test data and must not be copied into the repository or a
+release package. The stock-engine C04 acceptance remains the historical
+baseline until this C01 fixture completes the same gate; its bone counts, frame
+sizes, timings, and latency measurements are not C01 claims.
 
 ## Goals
 
@@ -483,7 +504,7 @@ and Unreal Morph Targets missing in Maya. Curve differences remain warnings,
 while skeleton differences remain blocking. Unreal now requires exactly one
 placed MtoU Binding Actor for a connection.
 
-The supplied `SK_C04_Last09.0013.ma` production scene confirmed automatic
+The then-current `SK_C04_Last09.0013.ma` production scene confirmed automatic
 discovery of `|Group|MotionSystem|Add_Ctrl_grp|Display_ctrl_grp|Display_ctrl`,
 its `Mod` enum, current `Clothes09`, 30 fps, 860 transmitted joints, and 127
 unique visible-mesh BlendShape curves. The supplied multi-outfit
@@ -560,6 +581,35 @@ The mapped component pose is converted back to parent-local transforms for
 Live Link. Therefore `SourceCurrent == SourceBind` produces exactly the target
 reference pose, while arbitrary current animation remains independent of frame
 1 and of the pose visible when the user connects.
+
+## Cached Playback Revision
+
+Date: 2026-08-21
+
+Cached Playback is implemented entirely in the Maya component behind two
+focused internal seams: `_PlaybackCache` owns incrementally written temporary
+files, metadata, atomic completion, ordered iteration, replacement, stale
+removal, and idempotent deletion; `_CachedPlaybackSession` owns connection
+readiness, character-snapshot revision checks, Playback Range capture,
+timeline restoration, progress/cancellation, and ordered replay. The existing
+`_StreamingSession` pauses its timer and callbacks without renegotiating the
+character snapshot, then switches its sender to an ordered queue. The live
+newest-frame slot remains unchanged for Real-time Preview.
+
+The cache is a JSON-lines frame file plus JSON metadata in the current user's
+system temporary directory. A partial cache is never replayable; metadata is
+published only after the frame file is atomically finalized. Replay uses the
+captured scene rate, sends the first frame immediately, never skips late
+frames, and retains a completed cache across replay stop, completion, and
+compatible reconnects. No Unreal-side cache player, persistent Unreal asset,
+or protocol-version change was added.
+
+Deterministic Maya-side tests cover inclusive capture and exact ordering,
+atomic completion, timeline restoration, cancellation, stale cleanup, ready
+connection and revision guards, ordered replay timing, and retention across
+mode switches. The external C01 production fixture remains required for the
+stock-engine 321-frame production gate; automated pure/host checks do not claim
+that fixture has passed.
 
 ## Documentation and Packaging
 
