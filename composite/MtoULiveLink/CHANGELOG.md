@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compact the Maya window layout: give the connection indicator its own top
+  row above parallel **动画** and **模型** toggle buttons (selected green,
+  unselected dark gray), regroup role/outfit/frame-rate texts on the left with
+  bone and BlendShape counts on the right, show **实时预览** and **缓存播放**
+  as a matching toggle pair, and lay out the four cached-playback transport
+  buttons in a single row.
 - Fix bone-only Model connections (**传递 BS** disabled): Live Link Static
   Data now publishes no property names and the ready reply reports an accepted
   morph count of zero, matching the frames that carry no PropertyValues, even

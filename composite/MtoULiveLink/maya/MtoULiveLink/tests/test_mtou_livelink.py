@@ -2082,15 +2082,11 @@ class ControllerLifecycleTests(unittest.TestCase):
                 mock.patch.object(MODULE, "om", mock.MagicMock()):
             controller.build_ui()
 
-        radio_labels = [
-            call[1]["label"] for call in fake_cmds.radioButton.call_args_list
-            if "label" in call[1]]
-        button_labels = [call[1]["label"] for call in fake_cmds.button.call_args_list]
-        self.assertEqual(["动画", "模型", "实时预览", "缓存播放"], radio_labels)
-        self.assertIn("捕获并回放", button_labels)
-        self.assertIn("再次回放", button_labels)
-        self.assertIn("停止回放", button_labels)
-        self.assertIn("取消捕获", button_labels)
+        button_labels = [call[1]["label"] for call in fake_cmds.button.call_args_list
+                         if "label" in call[1]]
+        for label in ("动画", "模型", "实时预览", "缓存播放", "捕获并回放",
+                      "再次回放", "停止回放", "取消捕获"):
+            self.assertIn(label, button_labels)
 
     def test_cached_mode_status_identifies_cached_unreal_state(self):
         class ReadySession(object):
@@ -2346,17 +2342,19 @@ class WorkflowTests(unittest.TestCase):
         fake_cmds.currentUnit.return_value = "film"
         fake_cmds.control.return_value = True
         counter = itertools.count()
-        for name in ("text", "optionMenu", "radioButton", "button", "checkBox",
+        for name in ("text", "optionMenu", "button", "checkBox",
                      "menuItem", "scriptJob"):
             getattr(fake_cmds, name).side_effect = (
                 lambda *args, __name=name, **kwargs:
                     "{0}-{1}".format(__name, next(counter)))
         return fake_cmds
 
-    def _radio_buttons(self, fake_cmds):
-        return [(call[1]["label"], call[1].get("select"))
-                for call in fake_cmds.radioButton.call_args_list
-                if "label" in call[1]]
+    def _toggle_buttons(self, fake_cmds):
+        toggle_labels = ("动画", "模型", "实时预览", "缓存播放")
+        return [(call[1]["label"],
+                 call[1].get("backgroundColor") == MODULE.TOGGLE_ON_BACKGROUND)
+                for call in fake_cmds.button.call_args_list
+                if call[1].get("label") in toggle_labels]
 
     def test_startup_defaults_to_animation_workflow(self):
         fake_cmds = self._fake_ui_cmds()
@@ -2370,7 +2368,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(
             [("动画", True), ("模型", False),
              ("实时预览", True), ("缓存播放", False)],
-            self._radio_buttons(fake_cmds))
+            self._toggle_buttons(fake_cmds))
 
     def test_build_ui_offers_blendshapes_toggle_defaulting_on(self):
         fake_cmds = self._fake_ui_cmds()
@@ -2385,6 +2383,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("传递 BS", checkbox_labels)
         self.assertIn("连接成功后弹出差异警告", checkbox_labels)
         self.assertTrue(controller._blendshapes_enabled)
+
+    def test_workflow_and_mode_toggles_swap_background_colors_on_selection(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+
+        def last_background(control):
+            edits = [call[1]["backgroundColor"]
+                     for call in fake_cmds.button.call_args_list
+                     if call[0][:1] == (control,) and "backgroundColor" in call[1]]
+            return edits[-1] if edits else None
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
+            controller.build_ui()
+            self.assertEqual(MODULE.TOGGLE_ON_BACKGROUND,
+                             last_background(controller._animation_workflow_button))
+            self.assertEqual(MODULE.TOGGLE_OFF_BACKGROUND,
+                             last_background(controller._model_workflow_button))
+
+            controller._session = mock.Mock()
+            controller._set_connected = mock.Mock()
+            controller._show_error = mock.Mock()
+            controller._ensure_cached_playback = mock.Mock(
+                return_value=mock.Mock())
+            controller._on_mode_changed(MODULE.CACHED_MODE)
+            self.assertEqual(MODULE.TOGGLE_OFF_BACKGROUND,
+                             last_background(controller._realtime_mode_button))
+            self.assertEqual(MODULE.TOGGLE_ON_BACKGROUND,
+                             last_background(controller._cached_mode_button))
+            controller._on_workflow_changed(MODULE.WORKFLOW_MODEL)
+
+        self.assertEqual(
+            MODULE.TOGGLE_OFF_BACKGROUND,
+            last_background(controller._animation_workflow_button))
+        self.assertEqual(
+            MODULE.TOGGLE_ON_BACKGROUND,
+            last_background(controller._model_workflow_button))
+        self.assertEqual(MODULE.TOGGLE_ON_BACKGROUND,
+                         last_background(controller._realtime_mode_button))
+        self.assertEqual(MODULE.TOGGLE_OFF_BACKGROUND,
+                         last_background(controller._cached_mode_button))
 
     def test_model_workflow_hides_cached_playback_and_shows_blendshape_toggle(self):
         fake_cmds = self._fake_ui_cmds()

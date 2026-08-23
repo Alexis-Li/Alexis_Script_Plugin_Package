@@ -42,6 +42,8 @@ CACHE_CONFIRMATION_BYTES = 1 << 30
 CACHE_STALE_SECONDS = 24 * 60 * 60
 REALTIME_MODE = "realtime"
 CACHED_MODE = "cached"
+TOGGLE_ON_BACKGROUND = (0.16, 0.55, 0.24)
+TOGGLE_OFF_BACKGROUND = (0.26, 0.26, 0.26)
 TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -3045,7 +3047,6 @@ class _Controller(object):
         self._playback_cap = DEFAULT_PLAYBACK_CAP
         self._playback_cap_menu = None
         self._mode = REALTIME_MODE
-        self._mode_collection = None
         self._realtime_mode_button = None
         self._cached_mode_button = None
         self._capture_button = None
@@ -3056,11 +3057,8 @@ class _Controller(object):
         self._cached_playback = None
         self._cached_cache = None
         self._maya_exit_callback = None
-        self._mode_change_guard = False
         self._workflow = WORKFLOW_ANIMATION
         self._blendshapes_enabled = True
-        self._workflow_change_guard = False
-        self._workflow_collection = None
         self._animation_workflow_button = None
         self._model_workflow_button = None
         self._bs_checkbox = None
@@ -3073,34 +3071,53 @@ class _Controller(object):
     def build_ui(self):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
                     sizeable=False, width=430, resizeToFitChildren=True)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=7, columnAttach=("both", 10))
-        cmds.text(label="MtoU Live Link", align="center", font="boldLabelFont", height=26)
-        self._workflow_collection = cmds.radioCollection()
-        self._animation_workflow_button = cmds.radioButton(
-            label="动画", select=True,
-            changeCommand=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
-        self._model_workflow_button = cmds.radioButton(
-            label="模型", select=False,
-            changeCommand=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
-        self._light = cmds.text(label="●  未连接", align="left", backgroundColor=(0.55, 0.08, 0.08),
-                                height=28)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnAttach=("both", 10))
+        cmds.text(label="", height=6)
+        self._light = cmds.text(label="●  未连接", align="left",
+                                backgroundColor=(0.55, 0.08, 0.08), height=28)
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
+                       columnAttach2=("both", "both"))
+        self._animation_workflow_button = cmds.button(
+            label="动画", height=30,
+            backgroundColor=TOGGLE_ON_BACKGROUND,
+            command=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
+        self._model_workflow_button = cmds.button(
+            label="模型", height=30,
+            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            command=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
+        cmds.setParent("..")
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(250, 160),
+                       adjustableColumn=1, columnAttach2=("both", "both"))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
         self._root_text = cmds.text(label="角色根骨骼：—", align="left")
         self._outfit_text = cmds.text(label="当前衣服：—", align="left")
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
+        cmds.setParent("..")
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
+        self._bone_text = cmds.text(label="骨骼数：0", align="left")
+        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        cmds.setParent("..")
+        cmds.setParent("..")
         self._playback_cap = load_playback_cap()
         self._playback_cap_menu = cmds.optionMenu(
             label="播放传输上限", changeCommand=self._on_playback_cap_changed)
         for choice in PLAYBACK_CAP_CHOICES:
             cmds.menuItem(label=choice)
         cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
-        self._mode_collection = cmds.radioCollection()
-        self._realtime_mode_button = cmds.radioButton(
-            label="实时预览", select=True,
-            changeCommand=lambda *_: self._on_mode_changed(REALTIME_MODE))
-        self._cached_mode_button = cmds.radioButton(
-            label="缓存播放", select=False,
-            changeCommand=lambda *_: self._on_mode_changed(CACHED_MODE))
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
+                       columnAttach2=("both", "both"))
+        self._realtime_mode_button = cmds.button(
+            label="实时预览", height=28,
+            backgroundColor=TOGGLE_ON_BACKGROUND,
+            command=lambda *_: self._on_mode_changed(REALTIME_MODE))
+        self._cached_mode_button = cmds.button(
+            label="缓存播放", height=28,
+            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            command=lambda *_: self._on_mode_changed(CACHED_MODE))
+        cmds.setParent("..")
         self._cache_text = cmds.text(label="缓存：无", align="left", wordWrap=True)
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(103, 103, 102, 102),
+                       columnAttach4=("both", "both", "both", "both"))
         self._capture_button = cmds.button(
             label="捕获并回放", enable=False,
             command=lambda *_: self._capture_cached_playback())
@@ -3113,8 +3130,7 @@ class _Controller(object):
         self._cancel_capture_button = cmds.button(
             label="取消捕获", enable=False,
             command=lambda *_: self._cancel_cached_capture())
-        self._bone_text = cmds.text(label="骨骼数：0", align="left")
-        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        cmds.setParent("..")
         cmds.button(label="设置角色（请先选择根骨骼）", command=lambda *_: self.set_role())
         cmds.button(
             label="手动选择 Display 控制器",
@@ -3189,21 +3205,20 @@ class _Controller(object):
             return bool(ready)
         return getattr(session, "_phase", None) == "ready"
 
-    def _update_mode_selection(self):
-        if self._mode_change_guard:
+    def _apply_toggle_background(self, control, selected):
+        if not self._control_exists(control):
             return
-        self._mode_change_guard = True
         try:
-            if self._control_exists(self._realtime_mode_button):
-                cmds.radioButton(
-                    self._realtime_mode_button, edit=True,
-                    select=self._mode == REALTIME_MODE)
-            if self._control_exists(self._cached_mode_button):
-                cmds.radioButton(
-                    self._cached_mode_button, edit=True,
-                    select=self._mode == CACHED_MODE)
-        finally:
-            self._mode_change_guard = False
+            cmds.button(control, edit=True, backgroundColor=(
+                TOGGLE_ON_BACKGROUND if selected else TOGGLE_OFF_BACKGROUND))
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+
+    def _update_mode_selection(self):
+        self._apply_toggle_background(
+            self._realtime_mode_button, self._mode == REALTIME_MODE)
+        self._apply_toggle_background(
+            self._cached_mode_button, self._mode == CACHED_MODE)
 
     def _update_mode_controls(self):
         ready = self._session_ready()
@@ -3229,6 +3244,8 @@ class _Controller(object):
 
     def _update_workflow_controls(self):
         animation = self._workflow == WORKFLOW_ANIMATION
+        self._apply_toggle_background(self._animation_workflow_button, animation)
+        self._apply_toggle_background(self._model_workflow_button, not animation)
         for control in (self._realtime_mode_button, self._cached_mode_button,
                         self._cache_text, self._capture_button,
                         self._replay_button, self._stop_replay_button,
@@ -3237,31 +3254,16 @@ class _Controller(object):
         self._set_visible(self._bs_checkbox, not animation)
 
     def _on_workflow_changed(self, workflow):
-        if self._workflow_change_guard or workflow == self._workflow:
-            return
-        if workflow not in WORKFLOWS:
+        if workflow == self._workflow or workflow not in WORKFLOWS:
             return
         self._workflow = workflow
-        self._workflow_change_guard = True
-        try:
-            # Switching workflows disconnects and clears Animation cached
-            # playback while retaining the captured root, Display control, and
-            # current outfit. The Maya scene is never edited here. The guard
-            # keeps the radioButton edit-select below from re-entering this
-            # changeCommand.
-            self.disconnect(status="已切换到{0}工作流，请重新连接".format(
-                "模型" if workflow == WORKFLOW_MODEL else "动画"))
-            self._mode = REALTIME_MODE
-            if self._control_exists(self._animation_workflow_button):
-                cmds.radioButton(
-                    self._animation_workflow_button, edit=True,
-                    select=self._workflow == WORKFLOW_ANIMATION)
-            if self._control_exists(self._model_workflow_button):
-                cmds.radioButton(
-                    self._model_workflow_button, edit=True,
-                    select=self._workflow == WORKFLOW_MODEL)
-        finally:
-            self._workflow_change_guard = False
+        # Switching workflows disconnects and clears Animation cached
+        # playback while retaining the captured root, Display control, and
+        # current outfit. The Maya scene is never edited here.
+        self.disconnect(status="已切换到{0}工作流，请重新连接".format(
+            "模型" if workflow == WORKFLOW_MODEL else "动画"))
+        self._mode = REALTIME_MODE
+        self._update_mode_controls()
         self._update_workflow_controls()
 
     def _on_blendshapes_toggled(self):
@@ -3313,8 +3315,6 @@ class _Controller(object):
         return self._cached_playback
 
     def _on_mode_changed(self, mode):
-        if self._mode_change_guard:
-            return
         if mode == CACHED_MODE and self._workflow != WORKFLOW_ANIMATION:
             return
         if mode == CACHED_MODE:
