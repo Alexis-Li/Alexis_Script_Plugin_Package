@@ -756,7 +756,11 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         TargetRefLocalPose.Add(RefBonePose[Outcome.TargetBoneIndices[Index]]);
         BoneParents.Add(Message.Bones[Index].ParentIndex);
     }
-    AcceptedCurveIndices = bModelWorkflow && !Message.bBlendshapesEnabled
+    // A bone-only session streams no Morph values at all. StaticData, the
+    // ready reply, and the per-frame accepted indices must all agree on the
+    // empty accepted set even though Maya still sends the full curve manifest.
+    const bool bBoneOnlySession = bModelWorkflow && !Message.bBlendshapesEnabled;
+    AcceptedCurveIndices = bBoneOnlySession
         ? TArray<int32>()
         : Outcome.AcceptedCurveIndices;
     for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
@@ -765,13 +769,13 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     }
     if (bModelWorkflow)
     {
-        Actor->ShowGeneratedPreview(!Message.bBlendshapesEnabled);
+        Actor->ShowGeneratedPreview(bBoneOnlySession);
     }
     else
     {
         Actor->ShowDriverMesh();
     }
-    Actor->SetConnectionStatus(bModelWorkflow && !Message.bBlendshapesEnabled
+    Actor->SetConnectionStatus(bBoneOnlySession
         ? TEXT("Connected: bone-only diagnostic; not valid for model acceptance")
         : bPartialMorphCoverage
             ? TEXT("Connected: partial Morph coverage")
@@ -781,7 +785,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     Client->PushSubjectStaticData_AnyThread(
         SubjectKey,
         ULiveLinkAnimationRole::StaticClass(),
-        FMtoUProtocol::MakeStaticData(Message, Outcome.AcceptedCurveNames));
+        FMtoUProtocol::MakeStaticData(
+            Message,
+            bBoneOnlySession ? TArray<FName>() : Outcome.AcceptedCurveNames));
 
     FMtoUOutgoing Reply;
     Reply.SessionId = SessionId;
@@ -791,7 +797,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         Outcome.BoneNameMappings,
         Message.Workflow,
         TargetMorphCount,
-        Outcome.AcceptedCurveNames.Num());
+        bBoneOnlySession ? 0 : Outcome.AcceptedCurveNames.Num());
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;

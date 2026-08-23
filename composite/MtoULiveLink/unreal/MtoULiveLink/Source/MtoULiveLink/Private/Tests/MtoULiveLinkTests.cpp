@@ -1718,11 +1718,17 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
         Actor && Actor->HasReadyGeneratedPreview());
 
+    const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+
     FSocket* BoneOnlyClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("bone-only model client connects"), BoneOnlyClient);
     SkeletalMeshComponent->SetMorphTarget(FName(TEXT("Unaccepted")), 0.75f);
+    // Real Maya always sends the complete curve manifest even with BS
+    // transmission disabled, so mimic that instead of an empty manifest.
     const TArray<uint8> BoneOnlyInit = DriverInitPacket(
-        FMtoUWorkflows::Model, false, TEXT("[]"));
+        FMtoUWorkflows::Model,
+        false,
+        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\"]"));
     TestTrue(TEXT("bone-only model init is sent"), BoneOnlyClient
         && SendBytes(*BoneOnlyClient, BoneOnlyInit.GetData(), BoneOnlyInit.Num()));
     Payload.Reset();
@@ -1733,10 +1739,40 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
         && Actor
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-only ready reports zero accepted Morphs despite the full manifest"),
+        FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
     TestTrue(TEXT("bone-only result is visibly excluded from model acceptance"),
         Actor && Actor->GetConnectionStatus().Contains(TEXT("not valid for model acceptance")));
     TestEqual(TEXT("bone-only connection clears every Generated Morph"),
         SkeletalMeshComponent->GetMorphTarget(FName(TEXT("Unaccepted"))), 0.0f);
+
+    const TArray<uint8> BoneOnlyFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75]}"));
+    TestTrue(TEXT("bone-only manifest frame is sent"), BoneOnlyClient
+        && SendBytes(*BoneOnlyClient, BoneOnlyFrame.GetData(), BoneOnlyFrame.Num()));
+    FLiveLinkSubjectFrameData BoneOnlyEvaluatedFrame;
+    const bool bBoneOnlyFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            BoneOnlyEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* BoneOnlyStatic = bBoneOnlyFrameEvaluated
+        ? BoneOnlyEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* BoneOnlyAnimation = bBoneOnlyFrameEvaluated
+        ? BoneOnlyEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("bone-only session keeps StaticData, Ready, and FrameData consistent"),
+        BoneOnlyStatic
+        && BoneOnlyStatic->PropertyNames.IsEmpty()
+        && BoneOnlyAnimation
+        && BoneOnlyAnimation->Transforms.Num() == 2
+        && !BoneOnlyAnimation->Transforms[0].ContainsNaN()
+        && BoneOnlyAnimation->PropertyValues.IsEmpty());
     DestroySocket(*SocketSubsystem, BoneOnlyClient);
     TestTrue(TEXT("source returns to listening after bone-only disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
@@ -1792,7 +1828,6 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75]}"));
     TestTrue(TEXT("partial Model frame is sent"), PartialClient
         && SendBytes(*PartialClient, PartialFrame.GetData(), PartialFrame.Num()));
-    const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
     FLiveLinkSubjectFrameData PartialEvaluatedFrame;
     const bool bPartialFrameEvaluated = PollUntil([&]()
     {

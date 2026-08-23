@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix bone-only Model connections (**传递 BS** disabled): Live Link Static
+  Data now publishes no property names and the ready reply reports an accepted
+  morph count of zero, matching the frames that carry no PropertyValues, even
+  though Maya still sends the complete curve manifest.
 - Project the complete Driver LOD0 Morph library onto the cross-topology
   Generated Preview with nearest-triangle barycentric correspondence, using
   only public stock-UE 5.7.4 APIs. Refresh remains all-or-nothing and reports
