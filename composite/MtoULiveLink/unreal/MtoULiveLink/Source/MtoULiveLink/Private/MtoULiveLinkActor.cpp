@@ -31,6 +31,9 @@ void AMtoULiveLinkActor::PostLoad()
     GeneratedPreviewMesh = nullptr;
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
     PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
         ? TEXT("Level loaded. Run Refresh Preview.")
         : FString();
@@ -44,6 +47,9 @@ void AMtoULiveLinkActor::PostDuplicate(bool bDuplicateForPIE)
     GeneratedPreviewMesh = nullptr;
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
     PreviewDiagnostics = TEXT("Actor duplicated or reloaded. Run Refresh Preview.");
     ShowDriverMesh();
     RefreshBinding();
@@ -77,6 +83,9 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
         ? EMtoUPreviewState::Dirty
         : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
     PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
         ? TEXT("Run Refresh Preview to prepare the current Binding inputs.")
         : FString();
@@ -100,6 +109,9 @@ void AMtoULiveLinkActor::BeginPreviewBuild()
     PreviewState = EMtoUPreviewState::Building;
     PreviewBuildStage = EMtoUPreviewBuildStage::Preflight;
     PreviewDiagnostics = TEXT("Preparing Generated Preview.");
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
 }
 
 void AMtoULiveLinkActor::SetPreviewBuildStage(EMtoUPreviewBuildStage Stage)
@@ -119,9 +131,12 @@ void AMtoULiveLinkActor::CompletePreviewBuild(
     }
 
     GeneratedPreviewMesh = Mesh;
+    bPreviewBuildHasWarning = bHasWarning;
     PreviewState = bHasWarning ? EMtoUPreviewState::Warning : EMtoUPreviewState::Ready;
     PreviewBuildStage = EMtoUPreviewBuildStage::Validation;
     PreviewDiagnostics = Diagnostics;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
 }
 
@@ -133,6 +148,9 @@ void AMtoULiveLinkActor::FailPreviewBuild(
     PreviewState = EMtoUPreviewState::Error;
     PreviewBuildStage = Stage;
     PreviewDiagnostics = Diagnostics;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
 }
 
 void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
@@ -141,6 +159,9 @@ void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
     PreviewDiagnostics = Diagnostics;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+    bPreviewBuildHasWarning = false;
 }
 
 void AMtoULiveLinkActor::ReleaseGeneratedPreview()
@@ -166,9 +187,24 @@ void AMtoULiveLinkActor::ShowGeneratedPreview(bool bBoneOnlyDiagnostic)
         return;
     }
     SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
+    SkeletalMeshComponent->ClearMorphTargets();
     if (bBoneOnlyDiagnostic)
     {
         ConnectionStatus = TEXT("Connected: bone-only diagnostic; not valid for model acceptance");
+    }
+}
+
+void AMtoULiveLinkActor::SetModelDiagnostics(
+    const FString& Diagnostics,
+    EMtoUModelDiagnosticLevel Level)
+{
+    ModelDiagnostics = Diagnostics;
+    ModelDiagnosticLevel = Level;
+    if (GeneratedPreviewMesh)
+    {
+        PreviewState = bPreviewBuildHasWarning || Level == EMtoUModelDiagnosticLevel::Partial
+            ? EMtoUPreviewState::Warning
+            : EMtoUPreviewState::Ready;
     }
 }
 

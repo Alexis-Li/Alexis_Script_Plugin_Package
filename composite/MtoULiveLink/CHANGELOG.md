@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Project the complete Driver LOD0 Morph library onto the cross-topology
+  Generated Preview with nearest-triangle barycentric correspondence, using
+  only public stock-UE 5.7.4 APIs. Refresh remains all-or-nothing and reports
+  Morph counts, sparse deltas, and projection timing. BlendShape-enabled Model
+  negotiation now rejects an empty Maya/Preview intersection, warns in yellow
+  for partial coverage with both difference lists, and streams only accepted
+  values; full coverage is ready and non-accepted Morphs remain zero.
 - Add explicit stock-UE 5.7.4 transient Skin Preview preparation. A Binding
   keeps its legacy Skeletal Mesh field as **Driver Skeletal Mesh** and adds one
   optional **Preview Static Mesh**; the actor's **Refresh Preview** command
@@ -12,7 +19,7 @@
   PostEdit, Reimport, and source rebuilds. Repeated/failed Refresh, replacement,
   actor/world/editor teardown, and level reload release stale transient data.
   Model with **传递 BS** disabled can use the result only as a visibly labelled
-  bone-only diagnostic; BlendShape-enabled Model remains unavailable.
+  bone-only diagnostic that is not valid for model acceptance.
 - Add top-level Maya **动画** and **模型** workflow buttons (startup always
   defaults to **动画**). Switching workflows disconnects, clears Animation
   cached playback, and retains the captured root, Display controller, and

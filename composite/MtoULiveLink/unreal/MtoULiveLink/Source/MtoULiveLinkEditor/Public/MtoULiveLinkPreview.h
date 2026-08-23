@@ -13,9 +13,13 @@ struct MTOULIVELINKEDITOR_API FMtoUPreviewPreparationResult
     EMtoUPreviewBuildStage FailureStage = EMtoUPreviewBuildStage::None;
     TArray<EMtoUPreviewBuildStage> CompletedStages;
     int32 VertexCount = 0;
+    int32 TriangleCount = 0;
     int32 LowConfidenceVertexCount = 0;
+    int32 MorphTargetCount = 0;
+    int64 SparseMorphDeltaCount = 0;
     double ClosestTransferMilliseconds = 0.0;
     double InpaintTransferMilliseconds = 0.0;
+    double MorphProjectionMilliseconds = 0.0;
     FString Diagnostics;
 };
 

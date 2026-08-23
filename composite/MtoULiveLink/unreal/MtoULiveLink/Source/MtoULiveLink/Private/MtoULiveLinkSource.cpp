@@ -165,7 +165,7 @@ void FMtoULiveLinkSource::Update()
             SetEditorViewportRealtimeOverride(false);
             if (Client && SourceGuid.IsValid())
             {
-                Client->ClearSubjectsFrames_AnyThread(SubjectKey);
+                Client->RemoveSubject_AnyThread(SubjectKey);
             }
             for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
             {
@@ -667,6 +667,54 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
+    const auto JoinNames = [](const TArray<FName>& Names)
+    {
+        TArray<FString> Text;
+        Text.Reserve(Names.Num());
+        for (const FName Name : Names)
+        {
+            Text.Add(Name.ToString());
+        }
+        return Text.IsEmpty() ? FString(TEXT("none")) : FString::Join(Text, TEXT(", "));
+    };
+    const bool bPartialMorphCoverage = bModelWorkflow
+        && Message.bBlendshapesEnabled
+        && (!Outcome.MayaOnlyMorphNames.IsEmpty() || !Outcome.UnrealOnlyMorphNames.IsEmpty());
+    if (bModelWorkflow)
+    {
+        const int32 AcceptedCount = Message.bBlendshapesEnabled
+            ? Outcome.AcceptedCurveNames.Num()
+            : 0;
+        const bool bEmptyRequiredIntersection = Message.bBlendshapesEnabled
+            && Outcome.AcceptedCurveIndices.IsEmpty();
+        const EMtoUModelDiagnosticLevel DiagnosticLevel = bEmptyRequiredIntersection
+            ? EMtoUModelDiagnosticLevel::Error
+            : Message.bBlendshapesEnabled
+                ? (bPartialMorphCoverage
+                    ? EMtoUModelDiagnosticLevel::Partial
+                    : EMtoUModelDiagnosticLevel::Full)
+                : EMtoUModelDiagnosticLevel::BoneOnly;
+        const FString Indicator = bEmptyRequiredIntersection
+            ? TEXT("ERROR: No accepted Preview Morphs.")
+            : Message.bBlendshapesEnabled
+                ? (bPartialMorphCoverage
+                    ? TEXT("YELLOW: Partial Preview Morph coverage.")
+                    : TEXT("Full Preview Morph coverage."))
+                : TEXT("ORANGE: Bone-only diagnostic; not valid for model acceptance.");
+        Actor->SetModelDiagnostics(
+            FString::Printf(
+                TEXT("%s\nMaya current BlendShape count: %d\nGenerated Preview Morph total: %d\nAccepted count: %d\nMaya-only count: %d (%s)\nUE-only count: %d (%s)"),
+                *Indicator,
+                Message.Curves.Num(),
+                TargetMorphCount,
+                AcceptedCount,
+                Outcome.MayaOnlyMorphNames.Num(),
+                *JoinNames(Outcome.MayaOnlyMorphNames),
+                Outcome.UnrealOnlyMorphNames.Num(),
+                *JoinNames(Outcome.UnrealOnlyMorphNames)),
+            DiagnosticLevel);
+    }
+
     if (bModelWorkflow
         && Message.bBlendshapesEnabled
         && Outcome.AcceptedCurveIndices.IsEmpty())
@@ -708,7 +756,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         TargetRefLocalPose.Add(RefBonePose[Outcome.TargetBoneIndices[Index]]);
         BoneParents.Add(Message.Bones[Index].ParentIndex);
     }
-    AcceptedCurveIndices = Outcome.AcceptedCurveIndices;
+    AcceptedCurveIndices = bModelWorkflow && !Message.bBlendshapesEnabled
+        ? TArray<int32>()
+        : Outcome.AcceptedCurveIndices;
     for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
     {
         Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
@@ -723,7 +773,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     }
     Actor->SetConnectionStatus(bModelWorkflow && !Message.bBlendshapesEnabled
         ? TEXT("Connected: bone-only diagnostic; not valid for model acceptance")
-        : TEXT("Connected"));
+        : bPartialMorphCoverage
+            ? TEXT("Connected: partial Morph coverage")
+            : TEXT("Connected"));
     SetEditorViewportRealtimeOverride(true);
 
     Client->PushSubjectStaticData_AnyThread(

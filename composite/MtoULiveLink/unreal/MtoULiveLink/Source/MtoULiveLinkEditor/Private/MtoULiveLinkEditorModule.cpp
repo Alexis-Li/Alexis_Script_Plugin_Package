@@ -12,6 +12,7 @@
 #include "Subsystems/ImportSubsystem.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "MtoULiveLinkEditor"
 
@@ -80,6 +81,44 @@ public:
                             });
                     }
                     return FReply::Handled();
+                })
+            ];
+
+        DetailBuilder.EditCategory("MtoU Preview")
+            .AddCustomRow(LOCTEXT("ModelDiagnosticsFilter", "Model diagnostics"))
+            .NameContent()
+            [
+                SNew(STextBlock)
+                .Text(LOCTEXT("ModelDiagnostics", "Model diagnostics"))
+            ]
+            .ValueContent()
+            .MinDesiredWidth(400.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Actor]()
+                {
+                    return Actor.IsValid()
+                        ? FText::FromString(Actor->GetModelDiagnostics())
+                        : FText::GetEmpty();
+                })
+                .ColorAndOpacity_Lambda([Actor]()
+                {
+                    if (!Actor.IsValid())
+                    {
+                        return FSlateColor::UseForeground();
+                    }
+                    switch (Actor->GetModelDiagnosticLevel())
+                    {
+                    case EMtoUModelDiagnosticLevel::Partial:
+                        return FSlateColor(FLinearColor::Yellow);
+                    case EMtoUModelDiagnosticLevel::BoneOnly:
+                        return FSlateColor(FLinearColor(1.0f, 0.5f, 0.0f));
+                    case EMtoUModelDiagnosticLevel::Error:
+                        return FSlateColor(FLinearColor::Red);
+                    default:
+                        return FSlateColor::UseForeground();
+                    }
                 })
             ];
     }

@@ -2,6 +2,9 @@
 
 #include "MtoULiveLinkBinding.h"
 
+#include "Animation/MorphTarget.h"
+#include "Distance/DistPoint3Triangle3.h"
+#include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicBoneAttribute.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
@@ -10,6 +13,7 @@
 #include "GeometryScript/GeometryScriptTypes.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "Operations/TransferBoneWeights.h"
+#include "Rendering/SkeletalMeshModel.h"
 #include "SkeletalMeshAttributes.h"
 #include "UDynamicMesh.h"
 
@@ -19,6 +23,12 @@ namespace
 {
 constexpr double InpaintSearchRadiusFraction = 0.05;
 constexpr double InpaintNormalThresholdRadians = UE_DOUBLE_PI / 6.0;
+
+struct FMorphCorrespondence
+{
+    FIndex3i DriverTriangle = FIndex3i::Invalid();
+    FVector3d Barycentric = FVector3d::Zero();
+};
 
 void ObserveStage(
     FMtoUPreviewPreparationResult& Result,
@@ -115,6 +125,195 @@ bool TransferWeights(
     OutMatchedVertices = MoveTemp(Transfer.MatchedVertices);
     return bSucceeded;
 }
+
+bool BuildMorphCorrespondence(
+    const FDynamicMesh3& Driver,
+    const FDynamicMesh3& Preview,
+    TArray<FMorphCorrespondence>& OutCorrespondence,
+    FString& OutError)
+{
+    if (Driver.TriangleCount() == 0 || Preview.VertexCount() == 0)
+    {
+        OutError = TEXT("Morph projection requires non-empty Driver triangles and Preview vertices.");
+        return false;
+    }
+
+    const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
+    OutCorrespondence.SetNum(Preview.MaxVertexID());
+    for (const int32 PreviewVertexID : Preview.VertexIndicesItr())
+    {
+        double DistanceSquared = 0.0;
+        const int32 TriangleID = DriverSpatial.FindNearestTriangle(
+            Preview.GetVertex(PreviewVertexID), DistanceSquared);
+        if (!Driver.IsTriangle(TriangleID))
+        {
+            OutError = FString::Printf(
+                TEXT("No Driver-surface triangle was found for Preview vertex %d."),
+                PreviewVertexID);
+            return false;
+        }
+
+        const FIndex3i Triangle = Driver.GetTriangle(TriangleID);
+        FDistPoint3Triangle3d Distance(
+            Preview.GetVertex(PreviewVertexID),
+            FTriangle3d(
+                Driver.GetVertex(Triangle.A),
+                Driver.GetVertex(Triangle.B),
+                Driver.GetVertex(Triangle.C)));
+        Distance.GetSquared();
+        OutCorrespondence[PreviewVertexID] = {Triangle, Distance.TriangleBaryCoords};
+    }
+    return true;
+}
+
+bool GeneratePreviewMorphs(
+    const USkeletalMesh& DriverAsset,
+    const FDynamicMesh3& DriverMesh,
+    const UDynamicMesh& PreviewDynamic,
+    const TArray<FMorphCorrespondence>& Correspondence,
+    USkeletalMesh& Generated,
+    int32& OutMorphCount,
+    int64& OutSparseDeltaCount,
+    FString& OutError)
+{
+    const FSkeletalMeshModel* DriverModel = DriverAsset.GetImportedModel();
+    if (!DriverModel || !DriverModel->LODModels.IsValidIndex(0))
+    {
+        OutError = TEXT("Morph projection requires the public Driver LOD0 imported vertex map.");
+        return false;
+    }
+
+    const FSkeletalMeshLODModel& DriverLOD = DriverModel->LODModels[0];
+    const FDynamicMesh3& PreviewMesh = PreviewDynamic.GetMeshRef();
+    for (const TObjectPtr<UMorphTarget>& DriverMorph : DriverAsset.GetMorphTargets())
+    {
+        if (!DriverMorph || !DriverMorph->HasDataForLOD(0))
+        {
+            OutError = FString::Printf(
+                TEXT("Driver Morph '%s' has no usable LOD0 data."),
+                DriverMorph ? *DriverMorph->GetName() : TEXT("<null>"));
+            return false;
+        }
+
+        TArray<FVector3f> DriverPointDeltas;
+        DriverPointDeltas.SetNumZeroed(DriverMesh.MaxVertexID());
+        TBitArray<> AssignedDriverPoints(false, DriverMesh.MaxVertexID());
+        for (const FMorphTargetDelta& Delta : DriverMorph->GetMorphTargetDeltas(0))
+        {
+            if (!DriverLOD.MeshToImportVertexMap.IsValidIndex(Delta.SourceIdx))
+            {
+                OutError = FString::Printf(
+                    TEXT("Driver Morph '%s' references invalid LOD0 vertex %u."),
+                    *DriverMorph->GetName(), Delta.SourceIdx);
+                return false;
+            }
+            const int32 DriverPointID = DriverLOD.MeshToImportVertexMap[Delta.SourceIdx];
+            if (!DriverMesh.IsVertex(DriverPointID))
+            {
+                OutError = FString::Printf(
+                    TEXT("Driver Morph '%s' cannot map LOD0 vertex %u to source geometry."),
+                    *DriverMorph->GetName(), Delta.SourceIdx);
+                return false;
+            }
+            if (AssignedDriverPoints[DriverPointID]
+                && !DriverPointDeltas[DriverPointID].Equals(Delta.PositionDelta, 1.0e-4f))
+            {
+                OutError = FString::Printf(
+                    TEXT("Driver Morph '%s' has inconsistent position deltas across a source seam."),
+                    *DriverMorph->GetName());
+                return false;
+            }
+            AssignedDriverPoints[DriverPointID] = true;
+            DriverPointDeltas[DriverPointID] = Delta.PositionDelta;
+        }
+
+        TArray<FVector3f> PreviewPointDeltas;
+        PreviewPointDeltas.SetNumZeroed(PreviewMesh.MaxVertexID());
+        for (const int32 PreviewVertexID : PreviewMesh.VertexIndicesItr())
+        {
+            if (!Correspondence.IsValidIndex(PreviewVertexID))
+            {
+                OutError = FString::Printf(
+                    TEXT("Morph correspondence is missing Preview vertex %d."), PreviewVertexID);
+                return false;
+            }
+            const FMorphCorrespondence& Mapping = Correspondence[PreviewVertexID];
+            if (!DriverMesh.IsVertex(Mapping.DriverTriangle.A)
+                || !DriverMesh.IsVertex(Mapping.DriverTriangle.B)
+                || !DriverMesh.IsVertex(Mapping.DriverTriangle.C))
+            {
+                OutError = FString::Printf(
+                    TEXT("Morph correspondence for Preview vertex %d is invalid."), PreviewVertexID);
+                return false;
+            }
+            PreviewPointDeltas[PreviewVertexID] =
+                DriverPointDeltas[Mapping.DriverTriangle.A] * Mapping.Barycentric.X
+                + DriverPointDeltas[Mapping.DriverTriangle.B] * Mapping.Barycentric.Y
+                + DriverPointDeltas[Mapping.DriverTriangle.C] * Mapping.Barycentric.Z;
+        }
+
+        UDynamicMesh* MorphMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+        MorphMesh->SetMesh(FDynamicMesh3(PreviewMesh));
+        int32 ProjectedDeltaCount = 0;
+        MorphMesh->EditMesh([&PreviewPointDeltas, &ProjectedDeltaCount](FDynamicMesh3& Mesh)
+        {
+            for (const int32 VertexID : Mesh.VertexIndicesItr())
+            {
+                const FVector3f Delta = PreviewPointDeltas[VertexID];
+                if (!Delta.IsNearlyZero())
+                {
+                    Mesh.SetVertex(VertexID, Mesh.GetVertex(VertexID) + FVector3d(Delta));
+                    ++ProjectedDeltaCount;
+                }
+            }
+        });
+        if (ProjectedDeltaCount == 0)
+        {
+            OutError = FString::Printf(
+                TEXT("Driver Morph '%s' projected to no usable Preview deltas."),
+                *DriverMorph->GetName());
+            return false;
+        }
+
+        FGeometryScriptCopyMorphTargetToAssetOptions MorphOptions;
+        MorphOptions.bOverwriteExistingTarget = true;
+        MorphOptions.bEmitTransaction = false;
+        MorphOptions.bDeferMeshPostEditChange = true;
+        FGeometryScriptMeshWriteLOD MorphLOD;
+        MorphLOD.LODIndex = 0;
+        EGeometryScriptOutcomePins MorphOutcome = EGeometryScriptOutcomePins::Failure;
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMorphTargetToSkeletalMesh(
+            MorphMesh,
+            &Generated,
+            DriverMorph->GetFName(),
+            MorphOptions,
+            MorphLOD,
+            MorphOutcome);
+        if (MorphOutcome != EGeometryScriptOutcomePins::Success)
+        {
+            OutError = FString::Printf(
+                TEXT("Generated Morph '%s' failed the public Geometry Scripting write."),
+                *DriverMorph->GetName());
+            return false;
+        }
+        ++OutMorphCount;
+    }
+
+    if (OutMorphCount > 0)
+    {
+        Generated.PostEditChange();
+        for (const TObjectPtr<UMorphTarget>& GeneratedMorph : Generated.GetMorphTargets())
+        {
+            if (!GeneratedMorph || !GeneratedMorph->HasDataForLOD(0))
+            {
+                OutError = TEXT("Generated Preview contains an invalid Morph Target after build.");
+                return false;
+            }
+            OutSparseDeltaCount += GeneratedMorph->GetNumDeltasForLOD(0);
+        }
+    }
+    return OutMorphCount == DriverAsset.GetMorphTargets().Num();
+}
 }
 
 FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
@@ -207,6 +406,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         return Result;
     }
     Result.VertexCount = InpaintTarget.VertexCount();
+    Result.TriangleCount = InpaintTarget.TriangleCount();
     for (const int32 VertexID : InpaintTarget.VertexIndicesItr())
     {
         if (!InpaintMatches.IsValidIndex(VertexID) || !InpaintMatches[VertexID])
@@ -218,6 +418,16 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     Result.CompletedStages.Add(EMtoUPreviewBuildStage::WeightTransfer);
 
     ObserveStage(Result, EMtoUPreviewBuildStage::SkeletalMeshBuild, OnStage);
+    TArray<FMorphCorrespondence> MorphCorrespondence;
+    const double MorphStart = FPlatformTime::Seconds();
+    if (!BuildMorphCorrespondence(
+            DriverDynamic->GetMeshRef(),
+            PreviewDynamic->GetMeshRef(),
+            MorphCorrespondence,
+            Result.Diagnostics))
+    {
+        return Result;
+    }
     USkeletalMesh* Generated = NewObject<USkeletalMesh>(&Owner, NAME_None, RF_Transient);
     Generated->SetSkeleton(Driver->GetSkeleton());
     Generated->SetRefSkeleton(Driver->GetRefSkeleton());
@@ -250,6 +460,20 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.Diagnostics = TEXT("Transient Generated Preview Skeletal Mesh build failed.");
         return Result;
     }
+    if (!GeneratePreviewMorphs(
+            *Driver,
+            DriverDynamic->GetMeshRef(),
+            *PreviewDynamic,
+            MorphCorrespondence,
+            *Generated,
+            Result.MorphTargetCount,
+            Result.SparseMorphDeltaCount,
+            Result.Diagnostics))
+    {
+        return Result;
+    }
+    Result.MorphProjectionMilliseconds =
+        (FPlatformTime::Seconds() - MorphStart) * 1000.0;
     Result.CompletedStages.Add(EMtoUPreviewBuildStage::SkeletalMeshBuild);
 
     ObserveStage(Result, EMtoUPreviewBuildStage::Validation, OnStage);
@@ -257,7 +481,8 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         || !Generated->HasAnyFlags(RF_Transient)
         || !Generated->HasMeshDescription(0)
         || Generated->GetRefSkeleton().GetNum() != Driver->GetRefSkeleton().GetNum()
-        || Generated->GetMaterials().Num() != Preview->GetStaticMaterials().Num())
+        || Generated->GetMaterials().Num() != Preview->GetStaticMaterials().Num()
+        || Generated->GetMorphTargets().Num() != Driver->GetMorphTargets().Num())
     {
         Result.Diagnostics = TEXT("Generated Preview failed transient ownership or mesh validation.");
         return Result;
@@ -267,11 +492,15 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     Result.GeneratedPreview = Generated;
     Result.bSucceeded = true;
     Result.Diagnostics = FString::Printf(
-        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices; Closest %.3f ms, Inpaint %.3f ms."),
+        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) in %.3f ms."),
         Result.LowConfidenceVertexCount,
         Result.VertexCount,
+        Result.TriangleCount,
         Result.ClosestTransferMilliseconds,
-        Result.InpaintTransferMilliseconds);
+        Result.InpaintTransferMilliseconds,
+        Result.MorphTargetCount,
+        Result.SparseMorphDeltaCount,
+        Result.MorphProjectionMilliseconds);
     return Result;
 }
 

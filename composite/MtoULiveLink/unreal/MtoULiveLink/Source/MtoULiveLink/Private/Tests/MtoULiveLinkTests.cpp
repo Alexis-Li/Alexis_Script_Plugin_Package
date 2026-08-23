@@ -6,6 +6,7 @@
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 
+#include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
@@ -123,6 +124,21 @@ FString TransformJson(const FTransform& Transform)
         Scale.X,
         Scale.Y,
         Scale.Z);
+}
+
+bool AddUniformMorph(USkeletalMesh& Mesh, FName Name, const FVector3f& PositionDelta)
+{
+    UMorphTarget* Morph = NewObject<UMorphTarget>(&Mesh, Name, RF_Transient);
+    FMorphTargetLODModel& LODModel = Morph->GetMorphLODModels().AddDefaulted_GetRef();
+    FMorphTargetDelta& Delta = LODModel.Vertices.AddDefaulted_GetRef();
+    Delta.SourceIdx = 0;
+    Delta.PositionDelta = PositionDelta;
+    LODModel.NumVertices = 1;
+    LODModel.NumBaseMeshVerts = 1;
+    LODModel.SectionIndices.Add(0);
+    const bool bRegistered = Mesh.RegisterMorphTarget(Morph, false);
+    Mesh.InitMorphTargets();
+    return bRegistered;
 }
 
 TSharedRef<FInternetAddr> LoopbackAddress(ISocketSubsystem& SocketSubsystem, uint16 Port)
@@ -1632,7 +1648,10 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
-    auto DriverInitPacket = [&](const FString& Workflow, bool bBlendshapes)
+    auto DriverInitPacket = [&](
+        const FString& Workflow,
+        bool bBlendshapes,
+        const FString& CurvesJson)
     {
         const USkeletalMesh* TestMesh = Actor
             ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
@@ -1647,18 +1666,20 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
         const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
         return Packet(FString::Printf(
-            TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[]}"),
+            TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
             *Workflow,
             bBlendshapes ? TEXT("true") : TEXT("false"),
             *RootBoneName,
             *RootBind,
             *ChildBoneName,
-            *ChildBind));
+            *ChildBind,
+            *CurvesJson));
     };
 
     FSocket* ModelClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("model client connects"), ModelClient);
-    const TArray<uint8> ModelInit = DriverInitPacket(FMtoUWorkflows::Model, true);
+    const TArray<uint8> ModelInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[]"));
     TestTrue(TEXT("model init is sent"), ModelClient
         && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     TArray<uint8> Payload;
@@ -1680,13 +1701,18 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         WaitForStatus(Source, TEXT("Listening on")));
 
     USkeletalMesh* GeneratedPreview = Actor && VisibleTargetBefore
-        ? NewObject<USkeletalMesh>(
-            Actor, USkeletalMesh::StaticClass(), NAME_None, RF_Transient, VisibleTargetBefore)
+        ? DuplicateObject<USkeletalMesh>(VisibleTargetBefore, Actor)
         : nullptr;
     if (GeneratedPreview && VisibleTargetBefore)
     {
+        GeneratedPreview->ClearFlags(RF_Public | RF_Standalone);
+        GeneratedPreview->SetFlags(RF_Transient);
         GeneratedPreview->SetSkeleton(VisibleTargetBefore->GetSkeleton());
         GeneratedPreview->SetRefSkeleton(VisibleTargetBefore->GetRefSkeleton());
+        TestTrue(TEXT("test Generated Preview has accepted and non-accepted Morphs"),
+            AddUniformMorph(*GeneratedPreview, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f))
+            && AddUniformMorph(*GeneratedPreview, FName(TEXT("Unaccepted")), FVector3f(0.0f, 1.0f, 0.0f))
+            && AddUniformMorph(*GeneratedPreview, FName(TEXT("NeverAccepted")), FVector3f(0.0f, 0.0f, 1.0f)));
         Actor->CompletePreviewBuild(GeneratedPreview, false, TEXT("test preview"));
     }
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
@@ -1694,7 +1720,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
 
     FSocket* BoneOnlyClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("bone-only model client connects"), BoneOnlyClient);
-    const TArray<uint8> BoneOnlyInit = DriverInitPacket(FMtoUWorkflows::Model, false);
+    SkeletalMeshComponent->SetMorphTarget(FName(TEXT("Unaccepted")), 0.75f);
+    const TArray<uint8> BoneOnlyInit = DriverInitPacket(
+        FMtoUWorkflows::Model, false, TEXT("[]"));
     TestTrue(TEXT("bone-only model init is sent"), BoneOnlyClient
         && SendBytes(*BoneOnlyClient, BoneOnlyInit.GetData(), BoneOnlyInit.Num()));
     Payload.Reset();
@@ -1707,6 +1735,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
     TestTrue(TEXT("bone-only result is visibly excluded from model acceptance"),
         Actor && Actor->GetConnectionStatus().Contains(TEXT("not valid for model acceptance")));
+    TestEqual(TEXT("bone-only connection clears every Generated Morph"),
+        SkeletalMeshComponent->GetMorphTarget(FName(TEXT("Unaccepted"))), 0.0f);
     DestroySocket(*SocketSubsystem, BoneOnlyClient);
     TestTrue(TEXT("source returns to listening after bone-only disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
@@ -1716,14 +1746,15 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
 
     FSocket* BlendshapeClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("BlendShape-enabled model client connects"), BlendshapeClient);
-    const TArray<uint8> BlendshapeInit = DriverInitPacket(FMtoUWorkflows::Model, true);
+    const TArray<uint8> BlendshapeInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[]"));
     TestTrue(TEXT("BlendShape-enabled model init is sent"), BlendshapeClient
         && SendBytes(*BlendshapeClient, BlendshapeInit.GetData(), BlendshapeInit.Num()));
     Payload.Reset();
     TestTrue(TEXT("BlendShape-enabled model workflow receives rejection"),
         BlendshapeClient
         && ReceivePacket(*BlendshapeClient, Payload, [&]() { Source->Update(); }));
-    TestTrue(TEXT("Skin-only Generated Preview remains unavailable with BS enabled"),
+    TestTrue(TEXT("zero Morph intersection remains unavailable with BS enabled"),
         FromUtf8(Payload).Contains(TEXT("PREVIEW_MORPH_MISMATCH")));
     TestTrue(TEXT("BlendShape rejection closes the session"),
         BlendshapeClient && WaitForClose(*BlendshapeClient));
@@ -1731,9 +1762,108 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source returns to listening after BlendShape rejection"),
         WaitForStatus(Source, TEXT("Listening on")));
 
+    FSocket* PartialClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("partial Morph model client connects"), PartialClient);
+    const TArray<uint8> PartialInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        true,
+        TEXT("[\"OtherOutfit\",\"Accepted\",\"Unaccepted\"]"));
+    TestTrue(TEXT("partial Morph model init is sent"), PartialClient
+        && SendBytes(*PartialClient, PartialInit.GetData(), PartialInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("partial Morph intersection produces ready response"),
+        PartialClient && ReceivePacket(*PartialClient, Payload, [&]() { Source->Update(); }));
+    const FString PartialReply = FromUtf8(Payload);
+    TestTrue(TEXT("partial ready reports v4 Morph counts and both differences"),
+        PartialReply.Contains(TEXT("\"target_morph_count\":3"))
+        && PartialReply.Contains(TEXT("\"accepted_morph_count\":2"))
+        && PartialReply.Contains(TEXT("OtherOutfit"))
+        && PartialReply.Contains(TEXT("NeverAccepted")));
+    TestTrue(TEXT("partial Model coverage is visibly yellow-warning quality"),
+        Actor && Actor->GetPreviewState() == EMtoUPreviewState::Warning
+        && Actor->GetConnectionStatus().Contains(TEXT("partial Morph coverage")));
+    TestTrue(TEXT("Model diagnostics report all five requested counts"),
+        Actor && Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 3"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Generated Preview Morph total: 3"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Accepted count: 2"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Maya-only count: 1"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("UE-only count: 1")));
+    const TArray<uint8> PartialFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75]}"));
+    TestTrue(TEXT("partial Model frame is sent"), PartialClient
+        && SendBytes(*PartialClient, PartialFrame.GetData(), PartialFrame.Num()));
+    const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    FLiveLinkSubjectFrameData PartialEvaluatedFrame;
+    const bool bPartialFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            PartialEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* PartialStatic = bPartialFrameEvaluated
+        ? PartialEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* PartialAnimation = bPartialFrameEvaluated
+        ? PartialEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("another-outfit value is excluded and only accepted values are published"),
+        PartialStatic
+        && PartialStatic->PropertyNames == TArray<FName>({
+            FName(TEXT("Accepted")), FName(TEXT("Unaccepted"))})
+        && PartialAnimation
+        && PartialAnimation->Transforms.Num() == 2
+        && !PartialAnimation->Transforms[0].ContainsNaN()
+        && PartialAnimation->PropertyValues == TArray<float>({0.25f, 0.75f}));
+    float PartialAcceptedValue = 0.0f;
+    float PartialUnacceptedValue = 0.0f;
+    const bool bPartialValueApplied = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        return SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("Accepted")), 0.0f, PartialAcceptedValue)
+            && FMath::IsNearlyEqual(PartialAcceptedValue, 0.25f)
+            && SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("Unaccepted")), 0.0f, PartialUnacceptedValue)
+            && FMath::IsNearlyEqual(PartialUnacceptedValue, 0.75f);
+    });
+    TestTrue(TEXT("bone and multiple accepted Morph values apply to the displayed Preview"),
+        bPartialValueApplied);
+    float NeverAcceptedValue = 0.0f;
+    TestTrue(TEXT("non-accepted Generated Morph remains zero"),
+        !SkeletalMeshComponent->GetCurveValue(
+            FName(TEXT("NeverAccepted")), 0.0f, NeverAcceptedValue)
+        || FMath::IsNearlyZero(NeverAcceptedValue));
+    DestroySocket(*SocketSubsystem, PartialClient);
+    TestTrue(TEXT("source returns to listening after partial Model disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* FullClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("full Morph model client connects"), FullClient);
+    const TArray<uint8> FullInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        true,
+        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\"]"));
+    TestTrue(TEXT("full Morph model init is sent"), FullClient
+        && SendBytes(*FullClient, FullInit.GetData(), FullInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("full Morph intersection produces ready response"),
+        FullClient && ReceivePacket(*FullClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("full ready reports complete accepted intersection"),
+        FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":3"))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":3")));
+    DestroySocket(*SocketSubsystem, FullClient);
+    TestTrue(TEXT("source returns to listening after full Model disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
     FSocket* AnimationClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("animation client connects"), AnimationClient);
-    const TArray<uint8> AnimationInit = DriverInitPacket(FMtoUWorkflows::Animation, true);
+    const TArray<uint8> AnimationInit = DriverInitPacket(
+        FMtoUWorkflows::Animation, true, TEXT("[]"));
     TestTrue(TEXT("animation init is sent"), AnimationClient
         && SendBytes(*AnimationClient, AnimationInit.GetData(), AnimationInit.Num()));
     Payload.Reset();

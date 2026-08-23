@@ -40,6 +40,8 @@ asset material assignment.
 
 Protocol automation accepts a ready Generated Preview only as a visibly marked
 bone-only Model diagnostic when BlendShapes are disabled. BlendShape-enabled
-Model negotiation remains unavailable until Morph generation in Issue #12.
-Final visual-quality thresholds and production garment sign-off remain outside
-this gate by its stated non-goals.
+Model negotiation was intentionally unavailable at this gate; Preview Morph
+generation and accepted-only streaming are recorded separately in the
+[Issue #12 acceptance](preview-morph-transfer-acceptance.md). Final
+visual-quality thresholds and production garment sign-off remain outside this
+gate by its stated non-goals.

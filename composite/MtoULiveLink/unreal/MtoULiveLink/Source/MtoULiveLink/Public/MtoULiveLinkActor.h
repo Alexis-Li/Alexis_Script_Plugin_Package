@@ -31,6 +31,16 @@ enum class EMtoUPreviewBuildStage : uint8
     Validation
 };
 
+UENUM()
+enum class EMtoUModelDiagnosticLevel : uint8
+{
+    None,
+    Full,
+    Partial,
+    BoneOnly,
+    Error
+};
+
 UCLASS()
 class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
 {
@@ -58,6 +68,8 @@ public:
     EMtoUPreviewState GetPreviewState() const { return PreviewState; }
     EMtoUPreviewBuildStage GetPreviewBuildStage() const { return PreviewBuildStage; }
     const FString& GetPreviewDiagnostics() const { return PreviewDiagnostics; }
+    const FString& GetModelDiagnostics() const { return ModelDiagnostics; }
+    EMtoUModelDiagnosticLevel GetModelDiagnosticLevel() const { return ModelDiagnosticLevel; }
 
     void BeginPreviewBuild();
     void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
@@ -67,6 +79,9 @@ public:
     void ReleaseGeneratedPreview();
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+    void SetModelDiagnostics(
+        const FString& Diagnostics,
+        EMtoUModelDiagnosticLevel Level);
     void NotifyBindingInputsChanged();
     void NotifySourceAssetChanged(const UObject* Asset, const FString& Reason);
 
@@ -96,6 +111,12 @@ private:
     UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
     FString PreviewDiagnostics;
 
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    FString ModelDiagnostics;
+
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    EMtoUModelDiagnosticLevel ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+
     UPROPERTY(VisibleAnywhere, Transient, Category = "MtoU_LiveLink")
     FString ConnectionStatus = TEXT("Disconnected");
 
@@ -104,4 +125,5 @@ private:
     FDelegateHandle DriverMeshChangedHandle;
     FDelegateHandle PreviewMeshChangedHandle;
     FDelegateHandle PreviewMeshBuiltHandle;
+    bool bPreviewBuildHasWarning = false;
 };

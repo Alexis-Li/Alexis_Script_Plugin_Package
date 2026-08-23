@@ -54,12 +54,17 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   gate with public Geometry APIs, same-topology and local-retopology fixed
   inputs, transactional actor-owned lifecycle automation, and no persistent
   asset fallback.
+- **2026-08-23:** Completed the Issue #12 technical Preview Morph Transfer gate
+  on stock UE 5.7.4 with cross-topology barycentric projection, accepted-only
+  v4 streaming, double-layer/seam stress automation, and transactional transient
+  lifecycle evidence.
 
 ## Stable Records
 
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
+- [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)
 
 ## Current Project
 

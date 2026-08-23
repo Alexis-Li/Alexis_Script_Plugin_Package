@@ -6,12 +6,14 @@
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
 
+#include "Animation/MorphTarget.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/PoseableMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
+#include "DynamicMeshEditor.h"
 #include "Editor.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -24,6 +26,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
 #include "SkeletalMeshAttributes.h"
 #include "StaticMeshAttributes.h"
@@ -35,7 +38,11 @@
 
 namespace
 {
-UStaticMesh* MakePreview(USkeletalMesh& Driver, UObject& Outer, bool bLocalRetopology = false)
+UStaticMesh* MakePreview(
+    USkeletalMesh& Driver,
+    UObject& Outer,
+    bool bLocalRetopology = false,
+    bool bDoubleLayer = false)
 {
     UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(&Outer);
     FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
@@ -50,13 +57,25 @@ UStaticMesh* MakePreview(USkeletalMesh& Driver, UObject& Outer, bool bLocalRetop
     }
     if (bLocalRetopology)
     {
-        DynamicMesh->EditMesh([](UE::Geometry::FDynamicMesh3& Mesh)
+        DynamicMesh->EditMesh([bDoubleLayer](UE::Geometry::FDynamicMesh3& Mesh)
         {
             for (const int32 TriangleID : Mesh.TriangleIndicesItr())
             {
                 UE::Geometry::FDynamicMesh3::FPokeTriangleInfo PokeInfo;
                 Mesh.PokeTriangle(TriangleID, PokeInfo);
                 break;
+            }
+            if (bDoubleLayer)
+            {
+                const UE::Geometry::FDynamicMesh3 OuterLayer(Mesh);
+                UE::Geometry::FDynamicMeshEditor Editor(&Mesh);
+                UE::Geometry::FMeshIndexMappings Mappings;
+                Editor.AppendMesh(
+                    &OuterLayer,
+                    Mappings,
+                    [](int32, const FVector3d& Position) { return Position * 0.9; },
+                    nullptr,
+                    true);
             }
         });
     }
@@ -75,6 +94,49 @@ UStaticMesh* MakePreview(USkeletalMesh& Driver, UObject& Outer, bool bLocalRetop
     UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
         DynamicMesh, Preview, WriteOptions, WriteLOD, WriteOutcome, false);
     return WriteOutcome == EGeometryScriptOutcomePins::Success ? Preview : nullptr;
+}
+
+bool AddUniformMorph(USkeletalMesh& Driver, FName Name, const FVector3f& PositionDelta)
+{
+    FSkeletalMeshModel* ImportedModel = Driver.GetImportedModel();
+    if (!ImportedModel || !ImportedModel->LODModels.IsValidIndex(0))
+    {
+        return false;
+    }
+
+    const FSkeletalMeshLODModel& LODModel = ImportedModel->LODModels[0];
+    TArray<FMorphTargetDelta> Deltas;
+    Deltas.Reserve(LODModel.NumVertices);
+    for (uint32 VertexIndex = 0; VertexIndex < LODModel.NumVertices; ++VertexIndex)
+    {
+        FMorphTargetDelta& Delta = Deltas.AddDefaulted_GetRef();
+        Delta.SourceIdx = VertexIndex;
+        Delta.PositionDelta = PositionDelta;
+    }
+    UMorphTarget* Morph = NewObject<UMorphTarget>(
+        &Driver, Name, RF_Transient);
+    Morph->PopulateDeltas(Deltas, 0, LODModel.Sections, false, false, 0.0f);
+    return Driver.RegisterMorphTarget(Morph, false);
+}
+
+USkeletalMesh* MakeMorphDriver(UObject& Outer)
+{
+    USkeletalMesh* Base = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    USkeletalMesh* Driver = Base
+        ? DuplicateObject<USkeletalMesh>(Base, &Outer)
+        : nullptr;
+    if (!Driver
+        || !AddUniformMorph(*Driver, FName(TEXT("Corrective")), FVector3f(2.0f, 0.0f, 0.0f))
+        || !AddUniformMorph(*Driver, FName(TEXT("CorrectiveNegative")), FVector3f(-2.0f, 0.0f, 0.0f))
+        || !AddUniformMorph(*Driver, FName(TEXT("Left")), FVector3f(0.0f, 1.5f, 0.0f))
+        || !AddUniformMorph(*Driver, FName(TEXT("Right")), FVector3f(0.0f, -1.5f, 0.0f))
+        || !AddUniformMorph(*Driver, FName(TEXT("Stress")), FVector3f(0.0f, 0.0f, 0.75f)))
+    {
+        return nullptr;
+    }
+    Driver->InitMorphTargets();
+    return Driver;
 }
 }
 
@@ -462,6 +524,141 @@ bool FMtoUPreviewLocalRetopologyTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("a representative non-root bone pose deforms the preview"),
         bRepresentativeBoneMovesPreview);
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewMorphProjectionTest,
+    "MtoULiveLink.Editor.Preview.MorphProjection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewMorphProjectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUPreviewMorphWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage, true, true) : nullptr;
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUPreviewMorphWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+
+    const FMtoUPreviewPreparationResult Result = Actor
+        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        : FMtoUPreviewPreparationResult();
+    AddInfo(Result.Diagnostics);
+    const TMap<FName, FVector3f> ExpectedDeltas = {
+        {FName(TEXT("Corrective")), FVector3f(2.0f, 0.0f, 0.0f)},
+        {FName(TEXT("CorrectiveNegative")), FVector3f(-2.0f, 0.0f, 0.0f)},
+        {FName(TEXT("Left")), FVector3f(0.0f, 1.5f, 0.0f)},
+        {FName(TEXT("Right")), FVector3f(0.0f, -1.5f, 0.0f)},
+        {FName(TEXT("Stress")), FVector3f(0.0f, 0.0f, 0.75f)},
+    };
+    TestEqual(TEXT("Refresh generates the complete Driver Morph library"),
+        Result.MorphTargetCount, ExpectedDeltas.Num());
+    TestTrue(TEXT("acceptance diagnostics report Preview triangle count"),
+        Result.TriangleCount > 0);
+
+    bool bDirectionAndAmplitudePreserved = Result.GeneratedPreview != nullptr;
+    const FSkeletalMeshModel* GeneratedModel = Result.GeneratedPreview
+        ? Result.GeneratedPreview->GetImportedModel()
+        : nullptr;
+    const FSkeletalMeshLODModel* GeneratedLOD = GeneratedModel
+        && GeneratedModel->LODModels.IsValidIndex(0)
+        ? &GeneratedModel->LODModels[0]
+        : nullptr;
+    const FMeshDescription* GeneratedDescription = Result.GeneratedPreview
+        ? Result.GeneratedPreview->GetMeshDescription(0)
+        : nullptr;
+    bool bHasSplitPosition = false;
+    if (GeneratedDescription)
+    {
+        const TVertexAttributesConstRef<FVector3f> Positions =
+            GeneratedDescription->GetVertexPositions();
+        for (const FVertexID A : GeneratedDescription->Vertices().GetElementIDs())
+        {
+            for (const FVertexID B : GeneratedDescription->Vertices().GetElementIDs())
+            {
+                if (A < B && Positions[A].Equals(Positions[B]))
+                {
+                    bHasSplitPosition = true;
+                }
+            }
+        }
+    }
+    bool bSeamsRemainContinuous = GeneratedLOD && bHasSplitPosition;
+    for (const TPair<FName, FVector3f>& Expected : ExpectedDeltas)
+    {
+        UMorphTarget* GeneratedMorph = Result.GeneratedPreview
+            ? Result.GeneratedPreview->FindMorphTarget(Expected.Key)
+            : nullptr;
+        bDirectionAndAmplitudePreserved &= GeneratedMorph != nullptr;
+        if (!GeneratedMorph)
+        {
+            continue;
+        }
+        for (const FMorphTargetDelta& Delta : GeneratedMorph->GetMorphTargetDeltas(0))
+        {
+            bDirectionAndAmplitudePreserved &= Delta.PositionDelta.Equals(
+                Expected.Value, 1.0e-3f)
+                && !Delta.PositionDelta.ContainsNaN();
+        }
+        bDirectionAndAmplitudePreserved &= GeneratedMorph->GetNumDeltasForLOD(0) > 0;
+        bSeamsRemainContinuous &= GeneratedLOD
+            && GeneratedMorph->GetNumDeltasForLOD(0) == static_cast<int32>(GeneratedLOD->NumVertices);
+    }
+    TestTrue(TEXT("positive/negative and left/right Morphs preserve direction and amplitude"),
+        bDirectionAndAmplitudePreserved);
+    TestTrue(TEXT("dense UV seam duplicates receive continuous projected deltas"),
+        bSeamsRemainContinuous);
+    TestTrue(TEXT("double-layer thickness geometry is retained"),
+        Result.VertexCount == 50 && Result.TriangleCount == 28);
+
+    UMorphTarget* Corrective = Result.GeneratedPreview
+        ? Result.GeneratedPreview->FindMorphTarget(FName(TEXT("Corrective")))
+        : nullptr;
+    const TConstArrayView<FMorphTargetDelta> CorrectiveDeltas = Corrective
+        ? Corrective->GetMorphTargetDeltas(0)
+        : TConstArrayView<FMorphTargetDelta>();
+    TestTrue(TEXT("representative Morph has linear visual progression from weight 0 to 1"),
+        !CorrectiveDeltas.IsEmpty()
+        && (CorrectiveDeltas[0].PositionDelta * 0.5f).Equals(FVector3f(1.0f, 0.0f, 0.0f))
+        && CorrectiveDeltas[0].PositionDelta.Equals(FVector3f(2.0f, 0.0f, 0.0f)));
+
+    Actor->SetBinding(Binding);
+    FMtoUPreviewPreparationResult FirstRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TWeakObjectPtr<USkeletalMesh> FirstLibrary = FirstRefresh.GeneratedPreview;
+    FMtoUPreviewPreparationResult SecondRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TWeakObjectPtr<USkeletalMesh> SecondLibrary = SecondRefresh.GeneratedPreview;
+    TestTrue(TEXT("repeated Refresh replaces the complete transient Morph library"),
+        FirstRefresh.bSucceeded && SecondRefresh.bSucceeded
+        && FirstLibrary != SecondLibrary
+        && FirstRefresh.MorphTargetCount == SecondRefresh.MorphTargetCount
+        && FirstRefresh.SparseMorphDeltaCount == SecondRefresh.SparseMorphDeltaCount);
+    FirstRefresh = FMtoUPreviewPreparationResult();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestFalse(TEXT("repeated Refresh releases the previous transient Morph library"),
+        FirstLibrary.IsValid());
+
+    Driver->GetMorphTargets().Add(NewObject<UMorphTarget>(
+        Driver, FName(TEXT("BrokenRequired")), RF_Transient));
+    FMtoUPreviewPreparationResult FailedRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    SecondRefresh = FMtoUPreviewPreparationResult();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("one required Morph failure transactionally discards and hides the preview"),
+        !FailedRefresh.bSucceeded
+        && FailedRefresh.GeneratedPreview == nullptr
+        && FailedRefresh.FailureStage == EMtoUPreviewBuildStage::SkeletalMeshBuild
+        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && !Actor->HasReadyGeneratedPreview()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+        && !SecondLibrary.IsValid());
 
     if (World)
     {
