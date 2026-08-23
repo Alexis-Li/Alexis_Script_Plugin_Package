@@ -1,5 +1,6 @@
 import errno
 import importlib.util
+import itertools
 import json
 import math
 import pathlib
@@ -30,7 +31,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
         bind_conflict_count,
     )
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v3.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v4.json")
     .read_text(encoding="utf-8")
 )
 
@@ -1136,7 +1137,8 @@ class SenderLifecycleTests(unittest.TestCase):
             def __init__(self):
                 self.reply = MODULE.encode_message({
                     "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
-                    "bone_name_remaps": []
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0,
                 }) + runtime_error
 
             def settimeout(self, timeout):
@@ -1172,7 +1174,8 @@ class SenderLifecycleTests(unittest.TestCase):
                 self.sent = []
                 self._reply = MODULE.encode_message({
                     "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
-                    "bone_name_remaps": []})
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0})
 
             def settimeout(self, timeout):
                 pass
@@ -1241,7 +1244,8 @@ class SenderLifecycleTests(unittest.TestCase):
                 self.sent = []
                 self._reply = MODULE.encode_message({
                     "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
-                    "bone_name_remaps": []})
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0})
 
             def settimeout(self, timeout):
                 pass
@@ -1353,7 +1357,8 @@ class SenderLifecycleTests(unittest.TestCase):
             def __init__(self):
                 self._reply = MODULE.encode_message({
                     "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
-                    "bone_name_remaps": []})
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0})
                 self.closed = False
 
             def settimeout(self, timeout):
@@ -2001,7 +2006,8 @@ class ControllerLifecycleTests(unittest.TestCase):
         fake_cmds.control.return_value = True
 
         controller = MODULE._Controller()
-        with mock.patch.object(MODULE, "cmds", fake_cmds):
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
             controller.build_ui()
 
         create_call = fake_cmds.window.call_args_list[0]
@@ -2029,7 +2035,8 @@ class ControllerLifecycleTests(unittest.TestCase):
 
         fake_cmds.optionVar.side_effect = option_var
         controller = MODULE._Controller()
-        with mock.patch.object(MODULE, "cmds", fake_cmds):
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
             controller.build_ui()
 
         labels = [call[1]["label"] for call in fake_cmds.menuItem.call_args_list]
@@ -2071,14 +2078,15 @@ class ControllerLifecycleTests(unittest.TestCase):
 
         fake_cmds.optionVar.side_effect = option_var
         controller = MODULE._Controller()
-        with mock.patch.object(MODULE, "cmds", fake_cmds):
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
             controller.build_ui()
 
         radio_labels = [
             call[1]["label"] for call in fake_cmds.radioButton.call_args_list
             if "label" in call[1]]
         button_labels = [call[1]["label"] for call in fake_cmds.button.call_args_list]
-        self.assertEqual(["实时预览", "缓存播放"], radio_labels)
+        self.assertEqual(["动画", "模型", "实时预览", "缓存播放"], radio_labels)
         self.assertIn("捕获并回放", button_labels)
         self.assertIn("再次回放", button_labels)
         self.assertIn("停止回放", button_labels)
@@ -2332,6 +2340,282 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertNotIn("完整且一致", diagnostic["solution"])
 
 
+class WorkflowTests(unittest.TestCase):
+    def _fake_ui_cmds(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.currentUnit.return_value = "film"
+        fake_cmds.control.return_value = True
+        counter = itertools.count()
+        for name in ("text", "optionMenu", "radioButton", "button", "checkBox",
+                     "menuItem", "scriptJob"):
+            getattr(fake_cmds, name).side_effect = (
+                lambda *args, __name=name, **kwargs:
+                    "{0}-{1}".format(__name, next(counter)))
+        return fake_cmds
+
+    def _radio_buttons(self, fake_cmds):
+        return [(call[1]["label"], call[1].get("select"))
+                for call in fake_cmds.radioButton.call_args_list
+                if "label" in call[1]]
+
+    def test_startup_defaults_to_animation_workflow(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
+            controller.build_ui()
+
+        self.assertEqual(MODULE.WORKFLOW_ANIMATION, controller._workflow)
+        self.assertEqual(
+            [("动画", True), ("模型", False),
+             ("实时预览", True), ("缓存播放", False)],
+            self._radio_buttons(fake_cmds))
+
+    def test_build_ui_offers_blendshapes_toggle_defaulting_on(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
+            controller.build_ui()
+
+        checkbox_labels = [call[1]["label"]
+                           for call in fake_cmds.checkBox.call_args_list]
+        self.assertIn("传递 BS", checkbox_labels)
+        self.assertIn("连接成功后弹出差异警告", checkbox_labels)
+        self.assertTrue(controller._blendshapes_enabled)
+
+    def test_model_workflow_hides_cached_playback_and_shows_blendshape_toggle(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+        visibility = {}
+
+        def set_visible(control, **kwargs):
+            visibility[control] = kwargs["visible"]
+
+        fake_cmds.control.side_effect = lambda control, **kwargs: (
+            set_visible(control, **kwargs) if "visible" in kwargs else True)
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", mock.MagicMock()):
+            controller.build_ui()
+            animation_visibility = dict(visibility)
+            visibility.clear()
+            controller._on_workflow_changed(MODULE.WORKFLOW_MODEL)
+            model_visibility = dict(visibility)
+            model_workflow = controller._workflow
+            visibility.clear()
+            controller._on_workflow_changed(MODULE.WORKFLOW_ANIMATION)
+            back_visibility = dict(visibility)
+
+        self.assertEqual(MODULE.WORKFLOW_MODEL, model_workflow)
+        self.assertEqual(MODULE.WORKFLOW_ANIMATION, controller._workflow)
+        for state in (animation_visibility, back_visibility):
+            self.assertTrue(state[controller._capture_button])
+            self.assertTrue(state[controller._realtime_mode_button])
+            self.assertFalse(state[controller._bs_checkbox])
+        self.assertFalse(model_visibility[controller._capture_button])
+        self.assertFalse(model_visibility[controller._replay_button])
+        self.assertFalse(model_visibility[controller._stop_replay_button])
+        self.assertFalse(model_visibility[controller._cancel_capture_button])
+        self.assertFalse(model_visibility[controller._cache_text])
+        self.assertFalse(model_visibility[controller._realtime_mode_button])
+        self.assertFalse(model_visibility[controller._cached_mode_button])
+        self.assertTrue(model_visibility[controller._bs_checkbox])
+
+    def test_switching_workflow_disconnects_and_clears_cached_playback(self):
+        controller = MODULE._Controller()
+        session = mock.Mock()
+        cached = mock.Mock()
+        controller._session = session
+        controller._cached_playback = cached
+        controller._mode = MODULE.CACHED_MODE
+        snapshot = character_snapshot(
+            3, "|Group|root", "Clothes01", [("root", -1)], ["Smile"])
+        scene = mock.Mock()
+        scene.snapshot.return_value = snapshot
+        controller._scene = scene
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+
+        controller._on_workflow_changed(MODULE.WORKFLOW_MODEL)
+
+        self.assertEqual(MODULE.WORKFLOW_MODEL, controller._workflow)
+        self.assertEqual(MODULE.REALTIME_MODE, controller._mode)
+        session.stop.assert_called_once_with()
+        cached.close.assert_called_once_with(delete_cache=True)
+        self.assertIs(scene, controller._scene)
+        self.assertIs(snapshot, controller._scene.snapshot())
+        self.assertEqual("Clothes01", controller._scene.snapshot().outfit)
+        self.assertEqual("|Group|root", controller._scene.snapshot().root)
+
+    def test_switching_back_to_animation_keeps_model_disconnected_state(self):
+        controller = MODULE._Controller()
+        controller._workflow = MODULE.WORKFLOW_MODEL
+        controller._set_connected = mock.Mock()
+
+        controller._on_workflow_changed(MODULE.WORKFLOW_ANIMATION)
+
+        self.assertEqual(MODULE.WORKFLOW_ANIMATION, controller._workflow)
+
+    def test_toggling_blendshapes_while_connected_requires_new_negotiation(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+        controller._bs_checkbox = "bsCheckBox"
+        controller._session = mock.Mock()
+        controller._blendshapes_enabled = True
+
+        fake_cmds.checkBox.side_effect = None
+        fake_cmds.checkBox.return_value = False
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller._on_blendshapes_toggled()
+
+        self.assertFalse(controller._blendshapes_enabled)
+        controller._session.stop.assert_called_once_with()
+
+    def test_toggling_blendshapes_while_disconnected_keeps_state_only(self):
+        fake_cmds = self._fake_ui_cmds()
+        controller = MODULE._Controller()
+        controller._bs_checkbox = "bsCheckBox"
+
+        fake_cmds.checkBox.side_effect = None
+        fake_cmds.checkBox.return_value = False
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller._on_blendshapes_toggled()
+
+        self.assertFalse(controller._blendshapes_enabled)
+
+    def test_connect_sends_selected_workflow_and_blendshape_choice(self):
+        started = []
+
+        class FakeScene(object):
+            snapshot = staticmethod(lambda: character_snapshot(
+                1, "|root", "Clothes01", [("root", -1)], []))
+
+            sample = staticmethod(lambda: MODULE._CharacterFrame(1, [], []))
+
+        def record_start(*args, **kwargs):
+            del args
+            started.append(kwargs)
+            return mock.Mock()
+
+        controller = MODULE._Controller()
+        controller._scene = FakeScene()
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+        fake_cmds = type("FakeCmds", (), {
+            "currentUnit": staticmethod(lambda **kwargs: "film"),
+        })
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "om", object()), \
+                mock.patch.object(MODULE._StreamingSession, "start",
+                                  side_effect=record_start):
+            controller.connect()
+            controller._session = None
+            controller._workflow = MODULE.WORKFLOW_MODEL
+            controller.connect()
+
+        self.assertEqual(2, len(started))
+        self.assertEqual(MODULE.WORKFLOW_ANIMATION, started[0]["workflow"])
+        self.assertTrue(started[0]["blendshapes_enabled"])
+        self.assertEqual(MODULE.WORKFLOW_MODEL, started[1]["workflow"])
+        self.assertTrue(started[1]["blendshapes_enabled"])
+
+    def test_streaming_session_init_carries_protocol_v4_workflow_fields(self):
+        captured = {}
+        worker = mock.Mock()
+        worker.status.return_value = ("connecting", "Connecting", None, None)
+
+        def worker_factory(init_message):
+            captured["init"] = init_message
+            return worker
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MConditionMessage": type("FakeConditionMessage", (), {
+                "addConditionCallback": staticmethod(
+                    lambda condition, callback: 40),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        timer_callbacks = []
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            7, "|root", "Clothes01", [("root", -1)], ["Smile"])
+
+        with mock.patch.object(MODULE, "om", fake_om), \
+                mock.patch.object(MODULE, "_SenderWorker",
+                                  side_effect=worker_factory):
+            session = MODULE._StreamingSession.start(
+                scene, 24.0, None, workflow=MODULE.WORKFLOW_MODEL,
+                blendshapes_enabled=False)
+            session.stop()
+
+        init_message = captured["init"]
+        self.assertEqual(4, init_message["version"])
+        self.assertEqual(MODULE.WORKFLOW_MODEL, init_message["workflow"])
+        self.assertFalse(init_message["blendshapes_enabled"])
+        self.assertEqual(["Smile"], init_message["curves"])
+        self.assertEqual(MODULE.WORKFLOW_MODEL, session.workflow)
+        self.assertFalse(session.blendshapes_enabled)
+
+    def test_invalid_streaming_workflow_is_rejected_before_worker_start(self):
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            7, "|root", "Clothes01", [("root", -1)], [])
+
+        with self.assertRaises(MODULE._StreamingSessionError) as caught:
+            MODULE._StreamingSession.start(
+                scene, 24.0, None, workflow="preview")
+
+        self.assertEqual("INVALID_MESSAGE", caught.exception.code)
+
+    def test_clothes_change_disconnects_session_and_refreshes_outfit_manifest(self):
+        controller = MODULE._Controller()
+        session = mock.Mock()
+        controller._session = session
+        controller._outfit_change_was_connected = True
+        before = character_snapshot(
+            1, "|root", "Clothes01", [("root", -1)], ["OldSmile"])
+        after = character_snapshot(
+            2, "|root", "Clothes02", [("root", -1)], ["NewSmile"])
+        scene = mock.Mock()
+        scene.snapshot.return_value = before
+        controller._scene = scene
+        controller._render_snapshot = mock.Mock()
+        controller._set_connected = mock.Mock()
+
+        controller._on_character_scene_event(
+            MODULE._CharacterSceneEvent("character_change_started", snapshot=before))
+
+        session.stop.assert_called_once_with()
+
+        controller._on_character_scene_event(
+            MODULE._CharacterSceneEvent("outfit_changed", snapshot=after))
+
+        self.assertIs(scene, controller._scene)
+        self.assertEqual("|root", controller._scene.snapshot().root)
+        controller._render_snapshot.assert_called_once()
+        rendered = controller._render_snapshot.call_args[0][0]
+        self.assertEqual("Clothes02", rendered.outfit)
+        self.assertEqual(("NewSmile",), rendered.curve_names)
+        status = controller._set_connected.call_args[0][1]
+        self.assertIn("Clothes02", status)
+
+
 class ProtocolTests(unittest.TestCase):
     def test_canonical_conformance_cases_for_maya_adapter(self):
         exercised = []
@@ -2386,7 +2670,9 @@ class ProtocolTests(unittest.TestCase):
             return
         if operation == "init":
             payload = case["payload"]
-            actual = MODULE.make_init_message(payload["bones"], payload["curves"])
+            actual = MODULE.make_init_message(
+                payload["bones"], payload["curves"],
+                payload["workflow"], payload["blendshapes_enabled"])
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(MODULE.encode_message(actual))
@@ -2407,16 +2693,30 @@ class ProtocolTests(unittest.TestCase):
             return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v3_init_and_structured_diagnostics(self):
+    def test_protocol_v4_init_and_structured_diagnostics(self):
         identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
         message = MODULE.make_init_message([["root", -1, identity]], ["Smile"])
-        self.assertEqual(3, message["version"])
+        self.assertEqual(4, message["version"])
+        self.assertEqual("animation", message["workflow"])
+        self.assertTrue(message["blendshapes_enabled"])
+        model_message = MODULE.make_init_message(
+            [["root", -1, identity]], ["Smile"], MODULE.WORKFLOW_MODEL, False)
+        self.assertEqual("model", model_message["workflow"])
+        self.assertFalse(model_message["blendshapes_enabled"])
+        with self.assertRaisesRegex(ValueError, "workflow"):
+            MODULE.make_init_message([["root", -1, identity]], [], "preview", True)
         diagnostic = MODULE.make_diagnostic(
             "SKELETON_MISMATCH", "Skeleton differs", details="details"
         )
         self.assertEqual("SKELETON_MISMATCH", diagnostic["code"])
         self.assertEqual("骨架与 Unreal Skeletal Mesh 不匹配", diagnostic["summary"])
         self.assertIn("UE", diagnostic["solution"])
+        for code in ("PREVIEW_NOT_READY", "PREVIEW_BUILD_FAILED",
+                     "PREVIEW_MORPH_MISMATCH"):
+            preview_diagnostic = MODULE.make_diagnostic(code)
+            self.assertEqual(code, preview_diagnostic["code"])
+            self.assertNotEqual(
+                "MtoU_LiveLink 发生内部错误", preview_diagnostic["summary"])
 
     def test_maya_time_units_keep_exact_animation_frame_rates(self):
         expected = {

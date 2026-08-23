@@ -21,6 +21,7 @@
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -449,7 +450,12 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     Remaps.Add(Value->AsString());
                 }
                 PacketBytes = FMtoUProtocol::EncodeReady(
-                    Names(TEXT("missing_in_unreal")), Names(TEXT("missing_in_maya")), Remaps);
+                    Names(TEXT("missing_in_unreal")),
+                    Names(TEXT("missing_in_maya")),
+                    Remaps,
+                    Source->GetStringField(TEXT("workflow")),
+                    static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
             }
             else
             {
@@ -471,12 +477,34 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 TestEqual(*FString::Printf(TEXT("%s reply type"), *Id),
                     Encoded->GetStringField(TEXT("type")), Operation);
-                for (const TCHAR* Field : Operation == TEXT("ready")
-                    ? TArray<const TCHAR*>{TEXT("missing_in_unreal"), TEXT("missing_in_maya"), TEXT("bone_name_remaps")}
-                    : TArray<const TCHAR*>{TEXT("code"), TEXT("message"), TEXT("details")})
+                TArray<const TCHAR*> RequiredFields;
+                if (Operation == TEXT("ready"))
+                {
+                    RequiredFields = {
+                        TEXT("missing_in_unreal"), TEXT("missing_in_maya"),
+                        TEXT("bone_name_remaps"), TEXT("workflow"),
+                        TEXT("target_morph_count"), TEXT("accepted_morph_count")};
+                }
+                else
+                {
+                    RequiredFields = {TEXT("code"), TEXT("message"), TEXT("details")};
+                }
+                for (const TCHAR* Field : RequiredFields)
                 {
                     TestTrue(*FString::Printf(TEXT("%s required field %s"), *Id, Field),
                         Encoded->HasField(Field));
+                }
+                if (Operation == TEXT("ready"))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s echoes workflow"), *Id),
+                        Encoded->GetStringField(TEXT("workflow")),
+                        Source->GetStringField(TEXT("workflow")));
+                    TestEqual(*FString::Printf(TEXT("%s echoes target morph count"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("target_morph_count"))),
+                        static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))));
+                    TestEqual(*FString::Printf(TEXT("%s echoes accepted morph count"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("accepted_morph_count"))),
+                        static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
                 }
             }
         }
@@ -550,33 +578,59 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
+    FString ErrorCode;
 
     TestTrue(TEXT("701 parent-first bones are accepted"), FMtoUProtocol::ParseInit(Utf8(Valid), Message, Error));
     TestEqual(TEXT("all bones are retained"), Message.Bones.Num(), 701);
     TestEqual(TEXT("all bind transforms are retained"), Message.SourceBindLocalPose.Num(), 701);
+    TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
+    TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":2"))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":4"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+    TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
+    ErrorCode.Reset();
+    TestFalse(TEXT("protocol-v3 clients are rejected"),
+        FMtoUProtocol::ParseInit(Utf8(
+            TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
+    TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":\"3\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":4"), TEXT("\"version\":\"4\""))), Message, Error));
+    TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
+    TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
+    TestFalse(TEXT("an unknown workflow value is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\""), TEXT("\"workflow\":\"preview\""))), Message, Error));
+    TestFalse(TEXT("a non-string workflow type is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\""), TEXT("\"workflow\":7"))), Message, Error));
+    TestTrue(TEXT("model workflow is accepted"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\",\"blendshapes_enabled\":true"),
+        TEXT("\"workflow\":\"model\",\"blendshapes_enabled\":false"))), Message, Error));
+    TestTrue(TEXT("model workflow is retained"), Message.Workflow == FMtoUWorkflows::Model);
+    TestFalse(TEXT("blendshape transmission choice is retained as disabled"), Message.bBlendshapesEnabled);
+    TestFalse(TEXT("a missing blendshapes_enabled field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT(",\"blendshapes_enabled\":true"), TEXT(""))), Message, Error));
+    TestTrue(TEXT("missing blendshapes diagnostic identifies the field"), Error.Contains(TEXT("blendshapes_enabled")));
+    TestFalse(TEXT("a non-boolean blendshapes_enabled type is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -593,28 +647,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -639,7 +693,10 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TArray<uint8> Ready = FMtoUProtocol::EncodeReady(
         {FName(TEXT("Blink_R"))},
         {FName(TEXT("Corrective"))},
-        {TEXT("hair_7/tip -> tip1")});
+        {TEXT("hair_7/tip -> tip1")},
+        FMtoUWorkflows::Animation,
+        5,
+        2);
     Decoder.Append(Ready.GetData(), Ready.Num());
     TestTrue(TEXT("ready reply is framed"), Decoder.Pop(ReplyPayload, Error) == EMtoUDecodeResult::Message);
     TestTrue(TEXT("ready reply names missing curve"), FromUtf8(ReplyPayload).Contains(TEXT("Blink_R")));
@@ -647,6 +704,26 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         FromUtf8(ReplyPayload).Contains(TEXT("Corrective")));
     TestTrue(TEXT("ready reply reports bone name remapping"),
         FromUtf8(ReplyPayload).Contains(TEXT("tip1")));
+    TSharedPtr<FJsonObject> ReadyJson;
+    TestTrue(TEXT("ready reply is valid JSON"), JsonObjectFromBytes(ReplyPayload, ReadyJson));
+    if (ReadyJson.IsValid())
+    {
+        TestEqual(TEXT("ready reply echoes the negotiated workflow"),
+            ReadyJson->GetStringField(TEXT("workflow")), FString(TEXT("animation")));
+        TestEqual(TEXT("ready reply reports the target morph count"),
+            static_cast<int32>(ReadyJson->GetNumberField(TEXT("target_morph_count"))), 5);
+        TestEqual(TEXT("ready reply reports the accepted morph count"),
+            static_cast<int32>(ReadyJson->GetNumberField(TEXT("accepted_morph_count"))), 2);
+    }
+    TArray<uint8> ModelReady = FMtoUProtocol::EncodeReady({}, {}, {}, FMtoUWorkflows::Model, 12, 7);
+    Decoder.Append(ModelReady.GetData(), ModelReady.Num());
+    TArray<uint8> ModelReplyPayload;
+    TestTrue(TEXT("model ready reply is framed"),
+        Decoder.Pop(ModelReplyPayload, Error) == EMtoUDecodeResult::Message);
+    TestTrue(TEXT("model ready reply echoes the model workflow"),
+        FromUtf8(ModelReplyPayload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(ModelReplyPayload).Contains(TEXT("\"target_morph_count\":12"))
+        && FromUtf8(ModelReplyPayload).Contains(TEXT("\"accepted_morph_count\":7")));
     TArray<uint8> Failure = FMtoUProtocol::EncodeError(
         TEXT("SKELETON_MISMATCH"), TEXT("bad skeleton"), TEXT("Missing in Unreal: jaw"));
     Decoder.Append(Failure.GetData(), Failure.Num());
@@ -1241,7 +1318,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -1279,7 +1356,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -1298,6 +1375,10 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready response reports the omitted morph curve"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
         && FromUtf8(Payload).Contains(TEXT("Missing")));
+    TestTrue(TEXT("ready response echoes the animation workflow and morph counts"),
+        FromUtf8(Payload).Contains(TEXT("\"workflow\":\"animation\""))
+        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":0"))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
 #if WITH_EDITOR
     if (GEditor)
     {
@@ -1479,6 +1560,141 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 #endif
 
     DestroySocket(*SocketSubsystem, Primary);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUWorkflowNegotiationTest,
+    "MtoULiveLink.Workflow.Negotiation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    USkeletalMeshComponent* SkeletalMeshComponent =
+        Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
+    const USkeletalMesh* VisibleTargetBefore =
+        SkeletalMeshComponent ? SkeletalMeshComponent->GetSkeletalMeshAsset() : nullptr;
+    TestNotNull(TEXT("animation binding shows its Driver Skeletal Mesh"), VisibleTargetBefore);
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    auto DriverInitPacket = [&](const FString& Workflow, bool bBlendshapes)
+    {
+        const USkeletalMesh* TestMesh = Actor
+            ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+            : nullptr;
+        const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+        if (!TestSkeleton || TestSkeleton->GetNum() < 2)
+        {
+            return TArray<uint8>();
+        }
+        const FString RootBoneName = TestSkeleton->GetBoneName(0).ToString();
+        const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
+        const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
+        const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[]}"),
+            *Workflow,
+            bBlendshapes ? TEXT("true") : TEXT("false"),
+            *RootBoneName,
+            *RootBind,
+            *ChildBoneName,
+            *ChildBind));
+    };
+
+    FSocket* ModelClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), ModelClient);
+    const TArray<uint8> ModelInit = DriverInitPacket(FMtoUWorkflows::Model, true);
+    TestTrue(TEXT("model init is sent"), ModelClient
+        && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("model workflow receives a framed rejection"), ModelClient && ReceivePacket(
+        *ModelClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("model workflow refuses a missing Generated Preview"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("PREVIEW_NOT_READY")));
+    TestTrue(TEXT("model refusal closes the session"), ModelClient && WaitForClose(*ModelClient));
+    DestroySocket(*SocketSubsystem, ModelClient);
+
+    TestTrue(TEXT("model rejection leaves no visible target change"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
+    TestTrue(TEXT("model rejection keeps the actor disconnected from streaming"),
+        Actor && !Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && !Actor->HasReadyGeneratedPreview());
+    TestTrue(TEXT("source returns to listening after model rejection"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* AnimationClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("animation client connects"), AnimationClient);
+    const TArray<uint8> AnimationInit = DriverInitPacket(FMtoUWorkflows::Animation, true);
+    TestTrue(TEXT("animation init is sent"), AnimationClient
+        && SendBytes(*AnimationClient, AnimationInit.GetData(), AnimationInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("animation workflow produces ready response"), AnimationClient && ReceivePacket(
+        *AnimationClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("animation workflow selects the Driver Skeletal Mesh"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"animation\""))
+        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":0")));
+    TestTrue(TEXT("animation connection marks the actor connected"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+
+    DestroySocket(*SocketSubsystem, AnimationClient);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)

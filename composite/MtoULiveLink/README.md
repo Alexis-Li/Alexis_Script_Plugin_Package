@@ -46,22 +46,34 @@ Install the matching component in each host:
    cap (**Follow Scene**, **30 fps**, **20 fps**, or **15 fps**), then select
    **Connect**. The default is **20 fps** and the choice is remembered in Maya
    native option storage.
-4. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
+4. Pick the top-level workflow with the **动画** and **模型** buttons; startup
+   always defaults to **动画**. Switching workflows disconnects the current
+   session and clears Animation cached playback while retaining the captured
+   root, Display controller, and current outfit; the Maya scene is never
+   edited. The **模型** workflow shows the same role, Display/outfit, frame
+   rate, transmission-cap, connection-state, and diagnostic controls plus a
+   default-on **传递 BS** toggle, and hides the cached-playback controls.
+   Connecting in **模型** requires a ready Generated Preview Skeletal Mesh on
+   the Unreal binding actor; otherwise the connection is refused with
+   `PREVIEW_NOT_READY` and the visible target is unchanged.
+5. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
    paused posing and manual timeline changes continue at the scene rate, and
    stopping playback submits the final pose immediately. Changing the Clothes
-   enum disconnects the session; replace the Unreal binding actor with the new
-   outfit and reconnect.
-5. Use the mutually exclusive **实时预览** and **缓存播放** mode controls for
-   review. Cached Playback requires a ready connection, pauses live sampling,
-   and disables the real-time cap. **捕获并回放** samples the current Maya
-   Playback Range inclusively, writes protocol-v3 frames incrementally to the
-   user's system temporary directory, restores the original current frame,
-   and replays every captured frame once at the recorded scene rate. Capture
-   shows current/total progress, stops Maya playback before sampling, and can
-   be canceled. The tool estimates temporary-disk usage before writing frames,
-   asks for confirmation above 1 GiB, and rejects a range when free space is
-   insufficient; failed or canceled capture removes its partial cache.
-6. While replaying, the status explicitly says that Unreal is showing the
+   enum or the **传递 BS** toggle while connected disconnects the session;
+   replace the Unreal binding actor after an outfit change and reconnect for a
+   fresh negotiation.
+6. In the **动画** workflow, use the mutually exclusive **实时预览** and
+   **缓存播放** mode controls for review. Cached Playback requires a ready
+   connection, pauses live sampling, and disables the real-time cap.
+   **捕获并回放** samples the current Maya Playback Range inclusively, writes
+   protocol-v4 frames incrementally to the user's system temporary directory,
+   restores the original current frame, and replays every captured frame once
+   at the recorded scene rate. Capture shows current/total progress, stops
+   Maya playback before sampling, and can be canceled. The tool estimates
+   temporary-disk usage before writing frames, asks for confirmation above
+   1 GiB, and rejects a range when free space is insufficient; failed or
+   canceled capture removes its partial cache.
+7. While replaying, the status explicitly says that Unreal is showing the
    captured cache rather than the current Maya pose. Use **停止回放** to hold
    the last frame sent and retain the cache, or **再次回放** to replay it
    without recapturing. Switch back to **实时预览** to stop replay and
@@ -95,4 +107,11 @@ before inversion. Same-named BlendShapes
 on separate skinned mesh parts are sent as one Unreal curve when their evaluated
 values agree. If those values differ, sampling stops and identifies every
 conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
-warnings. Protocol version 3 requires matching Maya and Unreal 0.3.0 components.
+warnings in the Animation workflow. Protocol version 4 requires matching Maya
+and Unreal components installed together: `init` carries the selected
+**动画**/**模型** workflow and the **传递 BS** choice, and `ready` echoes the
+workflow with target and accepted Morph counts. Protocol-v3 clients are
+rejected with a normal version-mismatch error. The Model workflow additionally
+uses the stable `PREVIEW_NOT_READY`, `PREVIEW_BUILD_FAILED`, and
+`PREVIEW_MORPH_MISMATCH` errors; this release refuses Model connections until
+an explicit Unreal Refresh produces a ready Generated Preview Skeletal Mesh.

@@ -545,7 +545,7 @@ only that frame and keeps the connection. An unusable connection-negotiation
 outcome sends its negotiation error and then closes.
 
 The machine-authoritative conformance corpus is
-`composite/MtoULiveLink/protocol/conformance-v3.json`. Maya repository tests
+`composite/MtoULiveLink/protocol/conformance-v4.json`. Maya repository tests
 read it directly. A Python-standard-library generator projects the same cases
 into a checked-in, test-only Unreal `.inl`; repository validation fails if that
 projection is stale. Neither shipped host component has a runtime dependency

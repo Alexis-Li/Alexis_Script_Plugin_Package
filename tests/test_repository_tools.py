@@ -41,7 +41,7 @@ class RepositoryToolTests(unittest.TestCase):
         spec.loader.exec_module(module)
         invalid = {
             "schema_version": 1,
-            "protocol_version": 3,
+            "protocol_version": 4,
             "cases": [
                 {
                     "id": "duplicate",

@@ -221,6 +221,29 @@ bool FMtoUProtocol::ParseInit(
         return false;
     }
 
+    FString Workflow;
+    if (!GetStringField(Object, TEXT("workflow"), Workflow, OutError))
+    {
+        OutError = TEXT("Field 'workflow' must be a string.");
+        return false;
+    }
+    if (!FMtoUWorkflows::IsValid(Workflow))
+    {
+        OutError = TEXT("Field 'workflow' must be 'animation' or 'model'.");
+        return false;
+    }
+
+    TSharedPtr<FJsonValue> BlendshapesValue;
+    bool bBlendshapesEnabled = false;
+    if (!GetTypedField(Object, TEXT("blendshapes_enabled"), EJson::Boolean, BlendshapesValue, OutError)
+        || !BlendshapesValue->TryGetBool(bBlendshapesEnabled))
+    {
+        OutError = TEXT("Field 'blendshapes_enabled' must be a JSON boolean.");
+        return false;
+    }
+    OutMessage.Workflow = Workflow;
+    OutMessage.bBlendshapesEnabled = bBlendshapesEnabled;
+
     const TArray<TSharedPtr<FJsonValue>>* BoneValues = nullptr;
     const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
     if (!GetArrayField(Object, TEXT("bones"), BoneValues, OutError)
@@ -483,7 +506,10 @@ bool FMtoUProtocol::ValidateFrame(
 TArray<uint8> FMtoUProtocol::EncodeReady(
     const TArray<FName>& MissingInUnreal,
     const TArray<FName>& MissingInMaya,
-    const TArray<FString>& BoneNameRemaps)
+    const TArray<FString>& BoneNameRemaps,
+    const FString& Workflow,
+    int32 TargetMorphCount,
+    int32 AcceptedMorphCount)
 {
     auto EncodeNames = [](const TArray<FName>& Names)
     {
@@ -506,6 +532,9 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
         RemapValues.Add(MakeShared<FJsonValueString>(Remap));
     }
     Object->SetArrayField(TEXT("bone_name_remaps"), RemapValues);
+    Object->SetStringField(TEXT("workflow"), Workflow);
+    Object->SetNumberField(TEXT("target_morph_count"), TargetMorphCount);
+    Object->SetNumberField(TEXT("accepted_morph_count"), AcceptedMorphCount);
     return EncodeObject(Object);
 }
 

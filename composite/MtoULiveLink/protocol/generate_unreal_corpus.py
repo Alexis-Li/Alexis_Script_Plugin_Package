@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORPUS_PATH = HERE / "conformance-v3.json"
+CORPUS_PATH = HERE / "conformance-v4.json"
 OUTPUT_PATH = (
     HERE.parent
     / "unreal"
@@ -39,8 +39,8 @@ def validate_corpus(corpus: object) -> list[str]:
         return ["corpus must be a JSON object"]
     if corpus.get("schema_version") != 1:
         errors.append("schema_version must equal 1")
-    if corpus.get("protocol_version") != 3:
-        errors.append("protocol_version must equal 3")
+    if corpus.get("protocol_version") != 4:
+        errors.append("protocol_version must equal 4")
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["cases must be a non-empty array"]

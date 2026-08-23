@@ -438,7 +438,9 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(3, FakeWorker.instance.init_message["version"])
+        self.assertEqual(4, FakeWorker.instance.init_message["version"])
+        self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
+        self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
 
     def test_cached_capture_uses_real_playback_range_and_restores_after_cancel(self):

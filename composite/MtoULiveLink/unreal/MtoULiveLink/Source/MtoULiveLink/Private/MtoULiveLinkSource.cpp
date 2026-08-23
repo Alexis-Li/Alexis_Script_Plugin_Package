@@ -608,8 +608,8 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             Details);
         return;
     }
-    USkeletalMesh* Mesh = Binding->SkeletalMesh;
-    if (!Mesh)
+    USkeletalMesh* DriverMesh = Binding->SkeletalMesh;
+    if (!DriverMesh)
     {
         const FString Details = FString::Printf(
             TEXT("%s binding has no Skeletal Mesh."), *Actor->GetName());
@@ -621,11 +621,38 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
+    const bool bModelWorkflow = Message.Workflow == FMtoUWorkflows::Model;
+    if (bModelWorkflow && !Actor->HasReadyGeneratedPreview())
+    {
+        // Model preview must refuse without changing the visible target until
+        // an explicit Refresh produces a ready Generated Preview.
+        const FString Details = FString::Printf(
+            TEXT("%s has no ready Generated Preview Skeletal Mesh. Run Refresh Preview in Unreal before connecting in the Model workflow."),
+            *Actor->GetName());
+        Actor->SetConnectionStatus(TEXT("Preview not ready"));
+        EnqueueErrorOnGameThread(
+            TEXT("PREVIEW_NOT_READY"),
+            TEXT("The Model workflow requires a ready Generated Preview Skeletal Mesh."),
+            Details);
+        return;
+    }
+
+    // Animation drives the bound Driver Skeletal Mesh. Once a Generated
+    // Preview exists, the Model workflow negotiates against its projected
+    // Morph library instead of the Driver's own library.
+    USkeletalMesh* Mesh = DriverMesh;
+    if (bModelWorkflow)
+    {
+        Mesh = Actor->GetGeneratedPreviewMesh();
+    }
+    FMtoUTargetDescription Target = DescribeTarget(*Mesh);
+    const int32 TargetMorphCount = Target.MorphTargetNames.Num();
+
     FMtoUCharacterDescription Character;
     Character.Bones = Message.Bones;
     Character.CurveNames = Message.Curves;
     FMtoUNegotiationOutcome Outcome =
-        FMtoUConnectionNegotiator::Negotiate(Character, DescribeTarget(*Mesh));
+        FMtoUConnectionNegotiator::Negotiate(Character, Target);
     if (!Outcome.bUsable)
     {
         const FString Details = FString::Printf(
@@ -636,6 +663,25 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         EnqueueErrorOnGameThread(
             Outcome.FailureCategory,
             TEXT("The Maya and Unreal skeletons do not match."),
+            Details);
+        return;
+    }
+
+    if (bModelWorkflow
+        && Message.bBlendshapesEnabled
+        && Outcome.AcceptedCurveIndices.IsEmpty())
+    {
+        // BS transmission with zero accepted Preview Morphs is blocking; the
+        // user must fix the pairing or explicitly disable BS transmission.
+        const FString Details = FString::Printf(
+            TEXT("%s has no Morph Target intersection between Maya and the generated preview.\nMaya-only: %d, Unreal-only: %d."),
+            *Actor->GetName(),
+            Outcome.MayaOnlyMorphNames.Num(),
+            Outcome.UnrealOnlyMorphNames.Num());
+        Actor->SetConnectionStatus(TEXT("Preview morph mismatch"));
+        EnqueueErrorOnGameThread(
+            TEXT("PREVIEW_MORPH_MISMATCH"),
+            TEXT("Model preview with BS transmission requires at least one accepted Morph Target."),
             Details);
         return;
     }
@@ -680,7 +726,10 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     Reply.Packet = FMtoUProtocol::EncodeReady(
         Outcome.MayaOnlyMorphNames,
         Outcome.UnrealOnlyMorphNames,
-        Outcome.BoneNameMappings);
+        Outcome.BoneNameMappings,
+        Message.Workflow,
+        TargetMorphCount,
+        Outcome.AcceptedCurveNames.Num());
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;

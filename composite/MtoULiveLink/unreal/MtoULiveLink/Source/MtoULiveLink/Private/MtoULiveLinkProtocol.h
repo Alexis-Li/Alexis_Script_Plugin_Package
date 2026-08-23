@@ -16,6 +16,18 @@ struct FMtoUInitMessage
     TArray<FMtoUDescriptionBone> Bones;
     TArray<FTransform> SourceBindLocalPose;
     TArray<FName> Curves;
+    FString Workflow;
+    bool bBlendshapesEnabled = false;
+};
+
+struct FMtoUWorkflows
+{
+    static constexpr TCHAR Animation[] = TEXT("animation");
+    static constexpr TCHAR Model[] = TEXT("model");
+    static bool IsValid(const FString& Workflow)
+    {
+        return Workflow == Animation || Workflow == Model;
+    }
 };
 
 struct FMtoUFrameMessage
@@ -44,7 +56,7 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 3;
+    static constexpr int32 Version = 4;
     static bool ParseInit(
         const TArray<uint8>& Payload,
         FMtoUInitMessage& OutMessage,
@@ -60,7 +72,10 @@ public:
     static TArray<uint8> EncodeReady(
         const TArray<FName>& MissingInUnreal,
         const TArray<FName>& MissingInMaya,
-        const TArray<FString>& BoneNameRemaps);
+        const TArray<FString>& BoneNameRemaps,
+        const FString& Workflow,
+        int32 TargetMorphCount,
+        int32 AcceptedMorphCount);
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,

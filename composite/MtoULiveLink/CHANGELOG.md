@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Add top-level Maya **动画** and **模型** workflow buttons (startup always
+  defaults to **动画**). Switching workflows disconnects, clears Animation
+  cached playback, and retains the captured root, Display controller, and
+  current outfit without editing the Maya scene. The Model workflow shows the
+  role, Display/outfit, frame rate, transmission-cap, connection-state, and
+  diagnostic controls plus a default-on **传递 BS** toggle, and hides the
+  cached-playback controls.
+- Upgrade the protocol to v4: `init` requires `workflow` (`animation` or
+  `model`) and `blendshapes_enabled`, `ready` echoes the workflow and reports
+  `target_morph_count` and `accepted_morph_count`, and protocol-v3 clients are
+  rejected with a normal `PROTOCOL_VERSION_MISMATCH` response. Add the stable
+  Model-preview error codes `PREVIEW_NOT_READY`, `PREVIEW_BUILD_FAILED`, and
+  `PREVIEW_MORPH_MISMATCH`. Both workflows keep one subject, one localhost
+  port, and one session; Animation continues to drive the Driver Skeletal
+  Mesh while Model connections refuse until a ready Generated Preview exists.
+- Changing the Clothes enum or the **传递 BS** toggle while connected now
+  disconnects the session and requires a fresh negotiation.
+
 - Add Cached Playback with mutually exclusive **实时预览** and **缓存播放** Maya
   modes. Ready connections can capture the inclusive Playback Range into an
   incrementally written, atomically finalized system-temporary cache, restore

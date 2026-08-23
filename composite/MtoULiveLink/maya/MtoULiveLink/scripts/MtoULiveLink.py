@@ -16,7 +16,10 @@ import time
 import uuid
 
 __version__ = "0.3.0"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
+WORKFLOW_ANIMATION = "animation"
+WORKFLOW_MODEL = "model"
+WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
 MAX_PAYLOAD_SIZE = (2 ** 31) - 9
 HOST = "127.0.0.1"
 PORT = 54321
@@ -120,6 +123,15 @@ DIAGNOSTICS = {
     "CACHED_PLAYBACK_INCOMPATIBLE": (
         "缓存与当前角色快照不兼容",
         "请为当前角色和服装重新捕获缓存。"),
+    "PREVIEW_NOT_READY": (
+        "模型预览尚未生成，无法连接模型工作流",
+        "请先在 UE 中对该 Binding Actor 执行 Refresh Preview 生成预览，再重新连接。"),
+    "PREVIEW_BUILD_FAILED": (
+        "模型预览生成失败",
+        "请按诊断详情修复输入后，在 UE 中重新执行 Refresh Preview。"),
+    "PREVIEW_MORPH_MISMATCH": (
+        "Maya 与模型预览的 BlendShape 没有交集",
+        "请确认当前服装与 UE Binding 一致并重新生成预览；也可关闭“传递 BS”进行仅骨骼对比。"),
 }
 
 try:
@@ -298,8 +310,18 @@ def convert_transform(translation, quaternion, scale, unit_scale):
     return [tx, tz, ty, -qx, -qz, -qy, qw, sx, sz, sy]
 
 
-def make_init_message(bones, curves):
-    return {"type": "init", "version": PROTOCOL_VERSION, "bones": bones, "curves": curves}
+def make_init_message(bones, curves, workflow=WORKFLOW_ANIMATION,
+                      blendshapes_enabled=True):
+    if workflow not in WORKFLOWS:
+        raise ValueError("workflow must be 'animation' or 'model'")
+    return {
+        "type": "init",
+        "version": PROTOCOL_VERSION,
+        "workflow": workflow,
+        "blendshapes_enabled": bool(blendshapes_enabled),
+        "bones": bones,
+        "curves": curves,
+    }
 
 
 def make_frame_message(transforms, curves):
@@ -343,6 +365,9 @@ def validate_reply(reply):
             "missing_in_unreal": list,
             "missing_in_maya": list,
             "bone_name_remaps": list,
+            "workflow": str,
+            "target_morph_count": (int, float),
+            "accepted_morph_count": (int, float),
         },
         "error": {"code": str, "message": str, "details": str},
     }
@@ -356,6 +381,12 @@ def validate_reply(reply):
             raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
         if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
             raise ValueError("protocol reply field '{0}' must contain strings".format(name))
+    if reply_type == "ready":
+        for name in ("target_morph_count", "accepted_morph_count"):
+            value = reply[name]
+            if isinstance(value, bool) or not float(value).is_integer():
+                raise ValueError(
+                    "protocol reply field '{0}' must be an integer count".format(name))
     return reply
 
 
@@ -2580,13 +2611,21 @@ class _StreamingSession(object):
     """Owns one Maya-to-Unreal streaming connection lifecycle."""
 
     def __init__(self, scene, fps, on_event, playback_cap=DEFAULT_PLAYBACK_CAP,
-                 playback_state=None):
+                 playback_state=None, workflow=WORKFLOW_ANIMATION,
+                 blendshapes_enabled=True):
+        if workflow not in WORKFLOWS:
+            raise _StreamingSessionError(
+                "INVALID_MESSAGE",
+                "workflow must be 'animation' or 'model'.",
+                "requested workflow: {0}".format(workflow))
         self._scene = scene
         self._scene_fps = fps
         self._playback_cap = normalize_playback_cap(playback_cap)
         self._playback_state = playback_state or _maya_is_playing
         self._is_playing = self._read_playback_state()
         self._on_event = on_event
+        self._workflow = workflow
+        self._blendshapes_enabled = bool(blendshapes_enabled)
         self._worker = None
         self._worker_started = False
         self._callback_ids = []
@@ -2607,6 +2646,14 @@ class _StreamingSession(object):
         return self._revision
 
     @property
+    def workflow(self):
+        return self._workflow
+
+    @property
+    def blendshapes_enabled(self):
+        return self._blendshapes_enabled
+
+    @property
     def is_ready(self):
         if self._outcome is not None or self._worker is None:
             return False
@@ -2617,7 +2664,8 @@ class _StreamingSession(object):
 
     @classmethod
     def start(cls, scene, fps, on_event=None, playback_cap=DEFAULT_PLAYBACK_CAP,
-              playback_state=None):
+              playback_state=None, workflow=WORKFLOW_ANIMATION,
+              blendshapes_enabled=True):
         try:
             fps = validate_frame_rate(fps)
             snapshot = scene.snapshot()
@@ -2627,7 +2675,8 @@ class _StreamingSession(object):
         except (RuntimeError, ValueError) as exc:
             raise _StreamingSessionError(
                 "INVALID_FRAME_RATE", str(exc), details=str(exc))
-        session = cls(scene, fps, on_event, playback_cap, playback_state)
+        session = cls(scene, fps, on_event, playback_cap, playback_state,
+                      workflow, blendshapes_enabled)
         try:
             session._start(snapshot)
         except Exception as exc:
@@ -2648,7 +2697,9 @@ class _StreamingSession(object):
             for index, (name, parent) in enumerate(snapshot.bones)
         ]
         init_message = make_init_message(
-            bones, list(snapshot.curve_names))
+            bones, list(snapshot.curve_names),
+            workflow=self._workflow,
+            blendshapes_enabled=self._blendshapes_enabled)
         self._worker = _SenderWorker(init_message)
         self._revision = snapshot.revision
         self._worker.start()
@@ -3006,6 +3057,13 @@ class _Controller(object):
         self._cached_cache = None
         self._maya_exit_callback = None
         self._mode_change_guard = False
+        self._workflow = WORKFLOW_ANIMATION
+        self._blendshapes_enabled = True
+        self._workflow_change_guard = False
+        self._workflow_collection = None
+        self._animation_workflow_button = None
+        self._model_workflow_button = None
+        self._bs_checkbox = None
         self._bone_text = None
         self._curve_text = None
         self._status_text = None
@@ -3017,6 +3075,13 @@ class _Controller(object):
                     sizeable=False, width=430, resizeToFitChildren=True)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=7, columnAttach=("both", 10))
         cmds.text(label="MtoU Live Link", align="center", font="boldLabelFont", height=26)
+        self._workflow_collection = cmds.radioCollection()
+        self._animation_workflow_button = cmds.radioButton(
+            label="动画", select=True,
+            changeCommand=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
+        self._model_workflow_button = cmds.radioButton(
+            label="模型", select=False,
+            changeCommand=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
         self._light = cmds.text(label="●  未连接", align="left", backgroundColor=(0.55, 0.08, 0.08),
                                 height=28)
         self._root_text = cmds.text(label="角色根骨骼：—", align="left")
@@ -3063,11 +3128,15 @@ class _Controller(object):
         cmds.setParent("..")
         self._warning_checkbox = cmds.checkBox(
             label="连接成功后弹出差异警告", value=True)
+        self._bs_checkbox = cmds.checkBox(
+            label="传递 BS", value=True,
+            changeCommand=lambda *_: self._on_blendshapes_toggled())
         cmds.button(label="查看诊断详情", command=lambda *_: self.show_diagnostics())
         self._status_text = cmds.text(label="状态：未设置角色", align="left", wordWrap=True,
                                       height=38)
         self._refresh_fps()
         self._update_mode_controls()
+        self._update_workflow_controls()
         self._script_jobs.append(cmds.scriptJob(
             event=["timeUnitChanged", self._on_time_unit_changed], parent=WINDOW_NAME))
         self._script_jobs.append(cmds.scriptJob(
@@ -3096,6 +3165,13 @@ class _Controller(object):
         if self._control_exists(control):
             try:
                 cmds.control(control, edit=True, enable=bool(enabled))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
+    def _set_visible(self, control, visible):
+        if self._control_exists(control):
+            try:
+                cmds.control(control, edit=True, visible=bool(visible))
             except (AttributeError, RuntimeError, TypeError):
                 pass
 
@@ -3151,6 +3227,56 @@ class _Controller(object):
         self._set_enabled(self._cached_mode_button, not capturing)
         self._update_mode_selection()
 
+    def _update_workflow_controls(self):
+        animation = self._workflow == WORKFLOW_ANIMATION
+        for control in (self._realtime_mode_button, self._cached_mode_button,
+                        self._cache_text, self._capture_button,
+                        self._replay_button, self._stop_replay_button,
+                        self._cancel_capture_button):
+            self._set_visible(control, animation)
+        self._set_visible(self._bs_checkbox, not animation)
+
+    def _on_workflow_changed(self, workflow):
+        if self._workflow_change_guard or workflow == self._workflow:
+            return
+        if workflow not in WORKFLOWS:
+            return
+        self._workflow = workflow
+        self._workflow_change_guard = True
+        try:
+            # Switching workflows disconnects and clears Animation cached
+            # playback while retaining the captured root, Display control, and
+            # current outfit. The Maya scene is never edited here. The guard
+            # keeps the radioButton edit-select below from re-entering this
+            # changeCommand.
+            self.disconnect(status="已切换到{0}工作流，请重新连接".format(
+                "模型" if workflow == WORKFLOW_MODEL else "动画"))
+            self._mode = REALTIME_MODE
+            if self._control_exists(self._animation_workflow_button):
+                cmds.radioButton(
+                    self._animation_workflow_button, edit=True,
+                    select=self._workflow == WORKFLOW_ANIMATION)
+            if self._control_exists(self._model_workflow_button):
+                cmds.radioButton(
+                    self._model_workflow_button, edit=True,
+                    select=self._workflow == WORKFLOW_MODEL)
+        finally:
+            self._workflow_change_guard = False
+        self._update_workflow_controls()
+
+    def _on_blendshapes_toggled(self):
+        value = True
+        if self._bs_checkbox and cmds.control(self._bs_checkbox, exists=True):
+            try:
+                value = bool(cmds.checkBox(self._bs_checkbox, query=True, value=True))
+            except (AttributeError, RuntimeError, TypeError):
+                value = True
+        if value == self._blendshapes_enabled:
+            return
+        self._blendshapes_enabled = value
+        if self._session is not None:
+            self.disconnect(status="传递 BS 已切换，请重新连接")
+
     def _update_cache_text(self, cache=None):
         cache = cache or self._cached_cache
         if cache is None:
@@ -3165,7 +3291,8 @@ class _Controller(object):
                 start, end, cache.frame_count, cache.scene_fps, capture_time))
 
     def _ensure_cached_playback(self):
-        if self._session is None or self._scene is None:
+        if self._workflow != WORKFLOW_ANIMATION or self._session is None \
+                or self._scene is None:
             raise _CachedPlaybackSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "请先完成角色设置并连接 Unreal。")
@@ -3187,6 +3314,8 @@ class _Controller(object):
 
     def _on_mode_changed(self, mode):
         if self._mode_change_guard:
+            return
+        if mode == CACHED_MODE and self._workflow != WORKFLOW_ANIMATION:
             return
         if mode == CACHED_MODE:
             if not self._session_ready():
@@ -3568,7 +3697,9 @@ class _Controller(object):
 
         try:
             session = _StreamingSession.start(
-                self._scene, fps, on_event, playback_cap=self._playback_cap)
+                self._scene, fps, on_event, playback_cap=self._playback_cap,
+                workflow=self._workflow,
+                blendshapes_enabled=self._blendshapes_enabled)
         except _StreamingSessionError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
