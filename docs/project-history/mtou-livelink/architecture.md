@@ -523,19 +523,23 @@ suffix candidate below the already matched parent. Live Link publishes the
 actual Unreal bone name while preserving Maya transform order. The connection
 reports every remap as a warning; zero or multiple candidates remain blocking.
 
-## Protocol v3 Contract and Conformance Corpus
+## Protocol v4 Contract and Conformance Corpus
 
-Protocol v3 freezes the following wire fields. Every listed field is required;
+Protocol v4 freezes the following wire fields. Every listed field is required;
 adapters ignore unknown fields so additive transport metadata remains
 forward-compatible. A structural or semantic field change requires a new
 protocol version.
 
 | Message | Required fields | Contract role |
 | --- | --- | --- |
-| `init` | `type`, `version`, parent-first `bones` with bind-local transforms, `curves` | Maya character description |
-| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose |
-| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps` | Successful negotiation reply |
+| `init` | `type`, `version`, `workflow`, `blendshapes_enabled`, parent-first `bones` with bind-local transforms, `curves` | Maya character description and selected streaming mode |
+| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose carrying the full curve manifest |
+| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps`, `workflow`, `target_morph_count`, `accepted_morph_count` | Successful negotiation reply |
 | `error` | `type`, `code`, `message`, `details` | Stable failure reply |
+
+When `blendshapes_enabled` is false, Maya still sends the complete `curves`
+manifest, while the ready reply's `accepted_morph_count` and the published
+Live Link property list both stay empty so the session remains consistent.
 
 Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
 messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
