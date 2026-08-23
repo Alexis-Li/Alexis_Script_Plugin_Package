@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add explicit stock-UE 5.7.4 transient Skin Preview preparation. A Binding
+  keeps its legacy Skeletal Mesh field as **Driver Skeletal Mesh** and adds one
+  optional **Preview Static Mesh**; the actor's **Refresh Preview** command
+  builds an actor-owned LOD0 Generated Preview through public Geometry APIs,
+  reports five observable stages, and never creates a Content Browser asset or
+  `.uasset`.
+- Add transient preview lifecycle states and invalidation for Binding edits,
+  PostEdit, Reimport, and source rebuilds. Repeated/failed Refresh, replacement,
+  actor/world/editor teardown, and level reload release stale transient data.
+  Model with **传递 BS** disabled can use the result only as a visibly labelled
+  bone-only diagnostic; BlendShape-enabled Model remains unavailable.
 - Add top-level Maya **动画** and **模型** workflow buttons (startup always
   defaults to **动画**). Switching workflows disconnects, clears Animation
   cached playback, and retains the captured root, Display controller, and

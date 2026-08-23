@@ -1619,7 +1619,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("placed binding actor is created"), Actor);
     USkeletalMeshComponent* SkeletalMeshComponent =
         Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
-    const USkeletalMesh* VisibleTargetBefore =
+    USkeletalMesh* VisibleTargetBefore =
         SkeletalMeshComponent ? SkeletalMeshComponent->GetSkeletalMeshAsset() : nullptr;
     TestNotNull(TEXT("animation binding shows its Driver Skeletal Mesh"), VisibleTargetBefore);
 
@@ -1679,6 +1679,58 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source returns to listening after model rejection"),
         WaitForStatus(Source, TEXT("Listening on")));
 
+    USkeletalMesh* GeneratedPreview = Actor && VisibleTargetBefore
+        ? NewObject<USkeletalMesh>(
+            Actor, USkeletalMesh::StaticClass(), NAME_None, RF_Transient, VisibleTargetBefore)
+        : nullptr;
+    if (GeneratedPreview && VisibleTargetBefore)
+    {
+        GeneratedPreview->SetSkeleton(VisibleTargetBefore->GetSkeleton());
+        GeneratedPreview->SetRefSkeleton(VisibleTargetBefore->GetRefSkeleton());
+        Actor->CompletePreviewBuild(GeneratedPreview, false, TEXT("test preview"));
+    }
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->HasReadyGeneratedPreview());
+
+    FSocket* BoneOnlyClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("bone-only model client connects"), BoneOnlyClient);
+    const TArray<uint8> BoneOnlyInit = DriverInitPacket(FMtoUWorkflows::Model, false);
+    TestTrue(TEXT("bone-only model init is sent"), BoneOnlyClient
+        && SendBytes(*BoneOnlyClient, BoneOnlyInit.GetData(), BoneOnlyInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("bone-only model workflow produces ready response"),
+        BoneOnlyClient && ReceivePacket(*BoneOnlyClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("bone-only model workflow selects the Generated Preview"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && Actor
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-only result is visibly excluded from model acceptance"),
+        Actor && Actor->GetConnectionStatus().Contains(TEXT("not valid for model acceptance")));
+    DestroySocket(*SocketSubsystem, BoneOnlyClient);
+    TestTrue(TEXT("source returns to listening after bone-only disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    TestTrue(TEXT("bone-only disconnect keeps and displays the Generated Preview"),
+        Actor && Actor->GetGeneratedPreviewMesh() == GeneratedPreview
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+
+    FSocket* BlendshapeClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("BlendShape-enabled model client connects"), BlendshapeClient);
+    const TArray<uint8> BlendshapeInit = DriverInitPacket(FMtoUWorkflows::Model, true);
+    TestTrue(TEXT("BlendShape-enabled model init is sent"), BlendshapeClient
+        && SendBytes(*BlendshapeClient, BlendshapeInit.GetData(), BlendshapeInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("BlendShape-enabled model workflow receives rejection"),
+        BlendshapeClient
+        && ReceivePacket(*BlendshapeClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("Skin-only Generated Preview remains unavailable with BS enabled"),
+        FromUtf8(Payload).Contains(TEXT("PREVIEW_MORPH_MISMATCH")));
+    TestTrue(TEXT("BlendShape rejection closes the session"),
+        BlendshapeClient && WaitForClose(*BlendshapeClient));
+    DestroySocket(*SocketSubsystem, BlendshapeClient);
+    TestTrue(TEXT("source returns to listening after BlendShape rejection"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
     FSocket* AnimationClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("animation client connects"), AnimationClient);
     const TArray<uint8> AnimationInit = DriverInitPacket(FMtoUWorkflows::Animation, true);
@@ -1693,6 +1745,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":0")));
     TestTrue(TEXT("animation connection marks the actor connected"),
         Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+    TestTrue(TEXT("Animation workflow restores the Driver Skeletal Mesh"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
 
     DestroySocket(*SocketSubsystem, AnimationClient);
     Source->StopListener();

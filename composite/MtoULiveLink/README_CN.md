@@ -29,8 +29,11 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
 
 ## 使用
 
-1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Skeletal Mesh**，
-   并确保关卡中只有一个 Binding Actor。
+1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Driver Skeletal Mesh**，
+   并可在其下方指定服装 **Preview Static Mesh**。确保关卡中只有一个 Binding
+   Actor，并把 Binding 指定给该 Actor。需要模型预览时，选中 Actor 并显式点击
+   **Refresh Preview**。Refresh 只读取 LOD0 源数据并生成 Actor 自有的瞬态数据；
+   输入修改或源资产重建会将其标记为 Dirty，必须再次显式 Refresh。
 2. 在 Maya 中运行 `MtoULiveLink.py`，选择唯一的变形根骨骼，再点击
    “设置角色”。工具会自动寻找 `Display_ctrl` 和 Clothes 枚举；
    若候选不唯一，请使用手动 Display 按钮。
@@ -48,7 +51,9 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
    诊断控件，并额外提供默认开启的 **传递 BS** 开关，同时隐藏缓存播放控件。
    在 **模型** 工作流连接时，要求 UE 的 Binding Actor 已生成可用的 Generated
    Preview Skeletal Mesh；否则连接会被 `PREVIEW_NOT_READY` 拒绝，且可见目标
-   不会发生任何变化。
+   不会发生任何变化。关闭 **传递 BS** 时，可连接该预览，但会明确标记为
+   “仅骨骼诊断，不可用于模型验收”；开启 **传递 BS** 时，在 Morph 预览生成完成
+   之前仍会以 `PREVIEW_MORPH_MISMATCH` 拒绝连接。
 5. 在 Maya 中调整姿势、播放或拖动时间轴。上限只在 Maya 播放期间生效；
    暂停时的摆姿和手动拖动仍按场景帧率采样，停止播放会立即提交最终姿势。
    连接期间切换 Clothes 枚举或 **传递 BS** 都会断开会话；换装后请在 UE 中
@@ -87,5 +92,5 @@ Bind Pose `dagPose`（即 Go to Bind Pose 恢复的姿势）解析，无 dagPose
 **动画**/**模型** 工作流和 **传递 BS** 选择，`ready` 回显工作流并上报目标与
 已接受的 Morph 数量。protocol-v3 客户端会收到正常的版本不匹配错误而拒绝连接。
 模型工作流额外使用稳定的 `PREVIEW_NOT_READY`、`PREVIEW_BUILD_FAILED` 和
-`PREVIEW_MORPH_MISMATCH` 错误；当前版本在 UE 显式 Refresh 生成可用的
-Generated Preview Skeletal Mesh 之前，会拒绝所有模型工作流连接。
+`PREVIEW_MORPH_MISMATCH` 错误。当前版本在 UE 显式 Refresh 后只允许带明确标记的
+仅骨骼模型诊断；启用 BlendShape 的模型预览仍不可用。

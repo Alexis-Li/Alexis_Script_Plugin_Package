@@ -713,7 +713,17 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     {
         Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
     }
-    Actor->SetConnectionStatus(TEXT("Connected"));
+    if (bModelWorkflow)
+    {
+        Actor->ShowGeneratedPreview(!Message.bBlendshapesEnabled);
+    }
+    else
+    {
+        Actor->ShowDriverMesh();
+    }
+    Actor->SetConnectionStatus(bModelWorkflow && !Message.bBlendshapesEnabled
+        ? TEXT("Connected: bone-only diagnostic; not valid for model acceptance")
+        : TEXT("Connected"));
     SetEditorViewportRealtimeOverride(true);
 
     Client->PushSubjectStaticData_AnyThread(

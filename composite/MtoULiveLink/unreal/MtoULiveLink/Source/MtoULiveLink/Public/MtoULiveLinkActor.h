@@ -7,6 +7,29 @@
 class UMtoULiveLinkBinding;
 class USkeletalMeshComponent;
 class USkeletalMesh;
+class UStaticMesh;
+
+UENUM()
+enum class EMtoUPreviewState : uint8
+{
+    None,
+    Dirty,
+    Building,
+    Ready,
+    Warning,
+    Error
+};
+
+UENUM()
+enum class EMtoUPreviewBuildStage : uint8
+{
+    None,
+    Preflight,
+    GeometryConversion,
+    WeightTransfer,
+    SkeletalMeshBuild,
+    Validation
+};
 
 UCLASS()
 class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
@@ -18,6 +41,10 @@ public:
 
     virtual void OnConstruction(const FTransform& Transform) override;
     virtual void PostRegisterAllComponents() override;
+    virtual void PostLoad() override;
+    virtual void PostDuplicate(bool bDuplicateForPIE) override;
+    virtual void Destroyed() override;
+    virtual void BeginDestroy() override;
 
     void SetBinding(UMtoULiveLinkBinding* InBinding);
     void SetConnectionStatus(const FString& InStatus);
@@ -28,9 +55,28 @@ public:
     /** True while the actor owns a complete, transactional Generated Preview. */
     bool HasReadyGeneratedPreview() const { return GeneratedPreviewMesh != nullptr; }
     USkeletalMesh* GetGeneratedPreviewMesh() const { return GeneratedPreviewMesh; }
+    EMtoUPreviewState GetPreviewState() const { return PreviewState; }
+    EMtoUPreviewBuildStage GetPreviewBuildStage() const { return PreviewBuildStage; }
+    const FString& GetPreviewDiagnostics() const { return PreviewDiagnostics; }
+
+    void BeginPreviewBuild();
+    void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
+    void CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics);
+    void FailPreviewBuild(EMtoUPreviewBuildStage Stage, const FString& Diagnostics);
+    void InvalidateGeneratedPreview(const FString& Diagnostics);
+    void ReleaseGeneratedPreview();
+    void ShowDriverMesh();
+    void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+    void NotifyBindingInputsChanged();
+    void NotifySourceAssetChanged(const UObject* Asset, const FString& Reason);
 
 private:
     void RefreshBinding();
+    void RebindInputNotifications();
+    void UnbindInputNotifications();
+    void HandleDriverMeshChanged();
+    void HandlePreviewMeshChanged();
+    void HandlePreviewMeshBuilt(UStaticMesh* Mesh);
 
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
@@ -38,9 +84,24 @@ private:
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<UMtoULiveLinkBinding> Binding;
 
-    UPROPERTY(Transient, VisibleAnywhere, Category = "MtoU_LiveLink")
+    UPROPERTY(Transient, DuplicateTransient, VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMesh> GeneratedPreviewMesh;
+
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    EMtoUPreviewState PreviewState = EMtoUPreviewState::None;
+
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    EMtoUPreviewBuildStage PreviewBuildStage = EMtoUPreviewBuildStage::None;
+
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    FString PreviewDiagnostics;
 
     UPROPERTY(VisibleAnywhere, Transient, Category = "MtoU_LiveLink")
     FString ConnectionStatus = TEXT("Disconnected");
+
+    TWeakObjectPtr<USkeletalMesh> ObservedDriverMesh;
+    TWeakObjectPtr<UStaticMesh> ObservedPreviewMesh;
+    FDelegateHandle DriverMeshChangedHandle;
+    FDelegateHandle PreviewMeshChangedHandle;
+    FDelegateHandle PreviewMeshBuiltHandle;
 };

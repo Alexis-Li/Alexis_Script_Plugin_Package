@@ -17,7 +17,7 @@
     {
       "Name": "MtoULiveLinkEditor",
       "Type": "Editor",
-      "LoadingPhase": "Default",
+      "LoadingPhase": "PostEngineInit",
       "PlatformAllowList": ["Win64"],
       "TargetAllowList": ["Editor"]
     }
@@ -25,6 +25,10 @@
   "Plugins": [
     {
       "Name": "LiveLink",
+      "Enabled": true
+    },
+    {
+      "Name": "GeometryScripting",
       "Enabled": true
     }
   ]

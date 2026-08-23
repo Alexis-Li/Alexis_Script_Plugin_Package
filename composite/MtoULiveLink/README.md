@@ -31,8 +31,13 @@ Install the matching component in each host:
 
 ## Usage
 
-1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Skeletal Mesh**,
-   and keep exactly one binding actor in the level.
+1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Driver Skeletal
+   Mesh**, and optionally assign the garment **Preview Static Mesh** directly
+   below it. Keep exactly one binding actor in the level and assign the Binding
+   to that actor. For Model preview, select the actor and use **Refresh Preview**
+   explicitly. Refresh reads LOD0 source data and creates only actor-owned
+   transient data; input edits or source rebuilds mark it Dirty and require
+   another explicit Refresh.
 2. In Maya, run `MtoULiveLink.py`, select exactly one deformation root, and
    select **Set Character**. The tool finds the character's `Display_ctrl` and
    Clothes enum; use the manual Display button if discovery is ambiguous.
@@ -55,7 +60,11 @@ Install the matching component in each host:
    default-on **传递 BS** toggle, and hides the cached-playback controls.
    Connecting in **模型** requires a ready Generated Preview Skeletal Mesh on
    the Unreal binding actor; otherwise the connection is refused with
-   `PREVIEW_NOT_READY` and the visible target is unchanged.
+   `PREVIEW_NOT_READY` and the visible target is unchanged. With **传递 BS**
+   disabled, Model can connect to that preview as a visibly labelled bone-only
+   diagnostic that is not valid for model acceptance. With **传递 BS** enabled,
+   Model remains unavailable with `PREVIEW_MORPH_MISMATCH` until Morph preview
+   generation is implemented.
 5. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
    paused posing and manual timeline changes continue at the scene rate, and
    stopping playback submits the final pose immediately. Changing the Clothes
@@ -113,5 +122,6 @@ and Unreal components installed together: `init` carries the selected
 workflow with target and accepted Morph counts. Protocol-v3 clients are
 rejected with a normal version-mismatch error. The Model workflow additionally
 uses the stable `PREVIEW_NOT_READY`, `PREVIEW_BUILD_FAILED`, and
-`PREVIEW_MORPH_MISMATCH` errors; this release refuses Model connections until
-an explicit Unreal Refresh produces a ready Generated Preview Skeletal Mesh.
+`PREVIEW_MORPH_MISMATCH` errors. This release permits only the explicitly
+labelled bone-only Model diagnostic after Unreal Refresh; BlendShape-enabled
+Model preview remains unavailable.

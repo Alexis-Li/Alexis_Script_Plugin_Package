@@ -50,11 +50,16 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   events cannot affect a newer controller state. Deterministic tests cover the
   terminal and cleanup paths; the external C01 stock-engine production gate
   remains pending.
+- **2026-08-23:** Passed the Issue #11 stock-UE 5.7.4 transient Skin Preview
+  gate with public Geometry APIs, same-topology and local-retopology fixed
+  inputs, transactional actor-owned lifecycle automation, and no persistent
+  asset fallback.
 
 ## Stable Records
 
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
+- [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 
 ## Current Project
 
