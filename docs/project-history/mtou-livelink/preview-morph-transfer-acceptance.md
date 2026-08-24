@@ -67,3 +67,20 @@ stress, transaction, timing, and memory evidence passes the Issue #12 technical
 Go/No-Go gate. This record does not claim production-garment calibration. The
 external corpus, visual envelope, quality thresholds, and final sign-off remain
 Issue #13.
+
+## Production-garment regression
+
+On 2026-08-24, the C01 garment exposed a missing-surface case not represented by
+the original all-surface fixture. One Driver Morph had 49 nonzero source deltas,
+but no Preview vertex mapped to an affected Driver triangle because that local
+surface was absent from the Preview Static Mesh. Refresh incorrectly treated the
+zero projected deltas as a build failure, discarded the preview, and caused the
+Model workflow to return `PREVIEW_NOT_READY`.
+
+The corrected behavior omits only no-surface Morphs and completes with a quality
+warning; malformed source data and non-empty Morph write failures remain
+transactional. The production garment run projected 99 Morph Targets with
+313,749 sparse deltas, skipped 4 no-surface Morphs, retained the Generated
+Preview, and passed Model-preview readiness. A stock `SkeletalCube` regression
+fixture removes one local surface and verifies the same result without depending
+on production assets.

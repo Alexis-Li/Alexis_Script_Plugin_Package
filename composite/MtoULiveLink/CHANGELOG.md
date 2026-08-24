@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Allow Refresh Preview to complete with a warning when a localized Driver
+  Morph affects only surface absent from the Preview Static Mesh. Such Morphs
+  are omitted from the Generated Preview library and normal partial-coverage
+  negotiation reports them instead of discarding the whole preview and hiding
+  the actor.
 - Restore dragging MtoU Binding assets from the Content Browser into a level
   by registering the late-loaded actor factory with both Unreal editor
   placement registries.
@@ -15,7 +20,7 @@
   Data now publishes no property names and the ready reply reports an accepted
   morph count of zero, matching the frames that carry no PropertyValues, even
   though Maya still sends the complete curve manifest.
-- Project the complete Driver LOD0 Morph library onto the cross-topology
+- Project Driver LOD0 Morphs with matching Preview surface onto the cross-topology
   Generated Preview with nearest-triangle barycentric correspondence, using
   only public stock-UE 5.7.4 APIs. Refresh remains all-or-nothing and reports
   Morph counts, sparse deltas, and projection timing. BlendShape-enabled Model

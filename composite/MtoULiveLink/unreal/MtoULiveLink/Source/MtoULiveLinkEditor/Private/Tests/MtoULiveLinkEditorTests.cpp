@@ -43,7 +43,8 @@ UStaticMesh* MakePreview(
     USkeletalMesh& Driver,
     UObject& Outer,
     bool bLocalRetopology = false,
-    bool bDoubleLayer = false)
+    bool bDoubleLayer = false,
+    bool bRemovePositiveXSurface = false)
 {
     UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(&Outer);
     FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
@@ -55,6 +56,28 @@ UStaticMesh* MakePreview(
     if (ReadOutcome != EGeometryScriptOutcomePins::Success)
     {
         return nullptr;
+    }
+    if (bRemovePositiveXSurface)
+    {
+        DynamicMesh->EditMesh([](UE::Geometry::FDynamicMesh3& Mesh)
+        {
+            const double CenterX = Mesh.GetBounds().Center().X;
+            TArray<int32> TrianglesToRemove;
+            for (const int32 TriangleID : Mesh.TriangleIndicesItr())
+            {
+                const UE::Geometry::FIndex3i Triangle = Mesh.GetTriangle(TriangleID);
+                if (Mesh.GetVertex(Triangle.A).X > CenterX
+                    || Mesh.GetVertex(Triangle.B).X > CenterX
+                    || Mesh.GetVertex(Triangle.C).X > CenterX)
+                {
+                    TrianglesToRemove.Add(TriangleID);
+                }
+            }
+            for (const int32 TriangleID : TrianglesToRemove)
+            {
+                Mesh.RemoveTriangle(TriangleID);
+            }
+        });
     }
     if (bLocalRetopology)
     {
@@ -118,6 +141,46 @@ bool AddUniformMorph(USkeletalMesh& Driver, FName Name, const FVector3f& Positio
         &Driver, Name, RF_Transient);
     Morph->PopulateDeltas(Deltas, 0, LODModel.Sections, false, false, 0.0f);
     return Driver.RegisterMorphTarget(Morph, false);
+}
+
+bool AddPositiveXMorph(USkeletalMesh& Driver, FName Name, const FVector3f& PositionDelta)
+{
+    FSkeletalMeshModel* ImportedModel = Driver.GetImportedModel();
+    const FMeshDescription* Description = Driver.GetMeshDescription(0);
+    if (!ImportedModel || !ImportedModel->LODModels.IsValidIndex(0) || !Description)
+    {
+        return false;
+    }
+
+    const TVertexAttributesConstRef<FVector3f> Positions = Description->GetVertexPositions();
+    float MinX = TNumericLimits<float>::Max();
+    float MaxX = TNumericLimits<float>::Lowest();
+    for (const FVertexID VertexID : Description->Vertices().GetElementIDs())
+    {
+        MinX = FMath::Min(MinX, Positions[VertexID].X);
+        MaxX = FMath::Max(MaxX, Positions[VertexID].X);
+    }
+    const float CenterX = (MinX + MaxX) * 0.5f;
+
+    const FSkeletalMeshLODModel& LODModel = ImportedModel->LODModels[0];
+    TArray<FMorphTargetDelta> Deltas;
+    for (uint32 VertexIndex = 0; VertexIndex < LODModel.NumVertices; ++VertexIndex)
+    {
+        if (!LODModel.MeshToImportVertexMap.IsValidIndex(VertexIndex))
+        {
+            return false;
+        }
+        const FVertexID PointID(LODModel.MeshToImportVertexMap[VertexIndex]);
+        if (Description->Vertices().IsValid(PointID) && Positions[PointID].X > CenterX)
+        {
+            FMorphTargetDelta& Delta = Deltas.AddDefaulted_GetRef();
+            Delta.SourceIdx = VertexIndex;
+            Delta.PositionDelta = PositionDelta;
+        }
+    }
+    UMorphTarget* Morph = NewObject<UMorphTarget>(&Driver, Name, RF_Transient);
+    Morph->PopulateDeltas(Deltas, 0, LODModel.Sections, false, false, 0.0f);
+    return !Deltas.IsEmpty() && Driver.RegisterMorphTarget(Morph, false);
 }
 
 USkeletalMesh* MakeMorphDriver(UObject& Outer)
@@ -660,6 +723,58 @@ bool FMtoUPreviewMorphProjectionTest::RunTest(const FString& Parameters)
         && !Actor->HasReadyGeneratedPreview()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
         && !SecondLibrary.IsValid());
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewMissingMorphSurfaceTest,
+    "MtoULiveLink.Editor.Preview.MissingMorphSurface",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUMissingMorphSurfaceWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    TestTrue(TEXT("localized Driver Morph fixture is created"), Driver
+        && AddPositiveXMorph(
+            *Driver, FName(TEXT("NoMatchingSurface")), FVector3f(1.0f, 0.0f, 0.0f)));
+    UStaticMesh* Preview = Driver
+        ? MakePreview(*Driver, *WorldPackage, false, false, true)
+        : nullptr;
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false,
+        TEXT("MtoUMissingMorphSurfaceWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    if (Actor)
+    {
+        Actor->SetBinding(Binding);
+    }
+
+    const FMtoUPreviewPreparationResult Result = Actor
+        ? FMtoUPreviewPreparation::RefreshActor(*Actor)
+        : FMtoUPreviewPreparationResult();
+    AddInfo(Result.Diagnostics);
+    TestTrue(TEXT("Refresh succeeds when a local Driver Morph has no Preview surface"),
+        Result.bSucceeded && Result.GeneratedPreview);
+    TestEqual(TEXT("only the unsupported local Morph is skipped"),
+        Result.SkippedMorphTargetCount, 1);
+    TestEqual(TEXT("all supported Morphs remain projected"), Result.MorphTargetCount, 5);
+    TestNull(TEXT("the unsupported Morph is absent from the Generated library"),
+        Result.GeneratedPreview
+            ? Result.GeneratedPreview->FindMorphTarget(FName(TEXT("NoMatchingSurface")))
+            : nullptr);
+    TestTrue(TEXT("the Generated Preview remains visible with a warning"),
+        Actor && Actor->GetPreviewState() == EMtoUPreviewState::Warning
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+            == Result.GeneratedPreview);
 
     if (World)
     {

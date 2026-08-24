@@ -33,9 +33,10 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
    并可在其下方指定服装 **Preview Static Mesh**。确保关卡中只有一个 Binding
    Actor，并把 Binding 指定给该 Actor。需要模型预览时，选中 Actor 并显式点击
    **Refresh Preview**。Refresh 只读取 LOD0 源数据并生成 Actor 自有的瞬态数据，
-   同时为 Driver 的每个 Morph 投射一个对应的 Morph Target；输入修改或源资产重建
-   会将其标记为 Dirty，必须再次显式 Refresh。Refresh 是事务性的：任一必需 Morph
-   无效时都不会留下局部生成的 Preview。
+   对 Preview 中存在对应表面的 Driver Morph 进行投射；若某个局部 Morph 对应的表面
+   已不在 Preview 中，则跳过该 Morph 并显示警告。输入修改或源资产重建会将其标记为
+   Dirty，必须再次显式 Refresh。对于损坏或构建失败的 Morph，Refresh 仍保持事务性，
+   不会留下局部生成的 Preview。
 2. 在 Maya 中运行 `MtoULiveLink.py`，选择唯一的变形根骨骼，再点击
    “设置角色”。工具会自动寻找 `Display_ctrl` 和 Clothes 枚举；
    若候选不唯一，请使用手动 Display 按钮。

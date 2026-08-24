@@ -100,10 +100,12 @@ Preview readiness.
 _Avoid_: Auto rebuild, reconnect refresh, preview update
 
 **Preview Morph transfer**:
-A preview-only projection of the complete Driver Skeletal Mesh Morph Target
-library onto the different topology of the Preview Static Mesh during Preview
-refresh. Maya streams only the selected outfit's BlendShape values to drive the
-generated Morph Targets; it does not transmit garment geometry or Morph deltas.
+A preview-only projection of the Driver Skeletal Mesh Morph Targets whose local
+surfaces exist on the different topology of the Preview Static Mesh during
+Preview refresh. A Driver Morph with no corresponding Preview surface is
+omitted with a quality warning. Maya streams only the selected outfit's
+BlendShape values to drive the generated Morph Targets; it does not transmit
+garment geometry or Morph deltas.
 _Avoid_: BS streaming, runtime wrap, Maya mesh transfer
 
 **BS transmission**:

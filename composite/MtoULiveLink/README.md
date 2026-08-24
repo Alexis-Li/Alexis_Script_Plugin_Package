@@ -36,10 +36,11 @@ Install the matching component in each host:
    below it. Keep exactly one binding actor in the level and assign the Binding
    to that actor. For Model preview, select the actor and use **Refresh Preview**
    explicitly. Refresh reads LOD0 source data and creates only actor-owned
-   transient data, including one projected Morph Target for every Driver Morph;
-   input edits or source rebuilds mark it Dirty and require another explicit
-   Refresh. The Refresh is transactional: an invalid required Morph leaves no
-   partial Generated Preview active.
+   transient data. Driver Morphs that reach the Preview surface are projected;
+   Morphs for local surfaces absent from the Preview are omitted with a warning.
+   Input edits or source rebuilds mark it Dirty and require another explicit
+   Refresh. The Refresh remains transactional for malformed or failed Morph
+   builds and leaves no partial Generated Preview active.
 2. In Maya, run `MtoULiveLink.py`, select exactly one deformation root, and
    select **Set Character**. The tool finds the character's `Display_ctrl` and
    Clothes enum; use the manual Display button if discovery is ambiguous.

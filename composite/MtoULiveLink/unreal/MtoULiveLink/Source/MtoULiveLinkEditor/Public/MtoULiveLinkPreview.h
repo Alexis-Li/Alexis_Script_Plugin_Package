@@ -16,6 +16,7 @@ struct MTOULIVELINKEDITOR_API FMtoUPreviewPreparationResult
     int32 TriangleCount = 0;
     int32 LowConfidenceVertexCount = 0;
     int32 MorphTargetCount = 0;
+    int32 SkippedMorphTargetCount = 0;
     int64 SparseMorphDeltaCount = 0;
     double ClosestTransferMilliseconds = 0.0;
     double InpaintTransferMilliseconds = 0.0;

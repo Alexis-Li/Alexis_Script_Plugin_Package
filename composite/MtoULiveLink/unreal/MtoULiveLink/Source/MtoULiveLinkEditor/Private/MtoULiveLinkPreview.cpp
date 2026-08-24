@@ -173,6 +173,7 @@ bool GeneratePreviewMorphs(
     const TArray<FMorphCorrespondence>& Correspondence,
     USkeletalMesh& Generated,
     int32& OutMorphCount,
+    int32& OutSkippedMorphCount,
     int64& OutSparseDeltaCount,
     FString& OutError)
 {
@@ -269,10 +270,8 @@ bool GeneratePreviewMorphs(
         });
         if (ProjectedDeltaCount == 0)
         {
-            OutError = FString::Printf(
-                TEXT("Driver Morph '%s' projected to no usable Preview deltas."),
-                *DriverMorph->GetName());
-            return false;
+            ++OutSkippedMorphCount;
+            continue;
         }
 
         FGeometryScriptCopyMorphTargetToAssetOptions MorphOptions;
@@ -312,7 +311,7 @@ bool GeneratePreviewMorphs(
             OutSparseDeltaCount += GeneratedMorph->GetNumDeltasForLOD(0);
         }
     }
-    return OutMorphCount == DriverAsset.GetMorphTargets().Num();
+    return OutMorphCount + OutSkippedMorphCount == DriverAsset.GetMorphTargets().Num();
 }
 }
 
@@ -467,6 +466,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
             MorphCorrespondence,
             *Generated,
             Result.MorphTargetCount,
+            Result.SkippedMorphTargetCount,
             Result.SparseMorphDeltaCount,
             Result.Diagnostics))
     {
@@ -482,7 +482,9 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         || !Generated->HasMeshDescription(0)
         || Generated->GetRefSkeleton().GetNum() != Driver->GetRefSkeleton().GetNum()
         || Generated->GetMaterials().Num() != Preview->GetStaticMaterials().Num()
-        || Generated->GetMorphTargets().Num() != Driver->GetMorphTargets().Num())
+        || Generated->GetMorphTargets().Num() != Result.MorphTargetCount
+        || Result.MorphTargetCount + Result.SkippedMorphTargetCount
+            != Driver->GetMorphTargets().Num())
     {
         Result.Diagnostics = TEXT("Generated Preview failed transient ownership or mesh validation.");
         return Result;
@@ -492,7 +494,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     Result.GeneratedPreview = Generated;
     Result.bSucceeded = true;
     Result.Diagnostics = FString::Printf(
-        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) in %.3f ms."),
+        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms."),
         Result.LowConfidenceVertexCount,
         Result.VertexCount,
         Result.TriangleCount,
@@ -500,6 +502,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.InpaintTransferMilliseconds,
         Result.MorphTargetCount,
         Result.SparseMorphDeltaCount,
+        Result.SkippedMorphTargetCount,
         Result.MorphProjectionMilliseconds);
     return Result;
 }
@@ -534,7 +537,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::RefreshActor(
     {
         Actor.CompletePreviewBuild(
             Result.GeneratedPreview,
-            Result.LowConfidenceVertexCount > 0,
+            Result.LowConfidenceVertexCount > 0 || Result.SkippedMorphTargetCount > 0,
             Result.Diagnostics);
     }
     else
