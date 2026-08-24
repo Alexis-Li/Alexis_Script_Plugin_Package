@@ -1,4 +1,5 @@
 #include "MtoULiveLinkActor.h"
+#include "MtoULiveLinkFactories.h"
 #include "MtoULiveLinkPreview.h"
 
 #include "DetailCategoryBuilder.h"
@@ -10,6 +11,7 @@
 #include "PropertyEditorModule.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Subsystems/ImportSubsystem.h"
+#include "Subsystems/PlacementSubsystem.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
@@ -130,6 +132,24 @@ class FMtoULiveLinkEditorModule final : public IModuleInterface
 public:
     virtual void StartupModule() override
     {
+        ActorFactory = Cast<UMtoULiveLinkActorFactory>(
+            GEditor->FindActorFactoryByClass(UMtoULiveLinkActorFactory::StaticClass()));
+        if (!ActorFactory.IsValid())
+        {
+            ActorFactory = NewObject<UMtoULiveLinkActorFactory>();
+            GEditor->ActorFactories.Add(ActorFactory.Get());
+            bRegisteredWithEditor = true;
+        }
+
+        UPlacementSubsystem* PlacementSubsystem =
+            GEditor->GetEditorSubsystem<UPlacementSubsystem>();
+        if (PlacementSubsystem && !PlacementSubsystem->GetAssetFactoryFromFactoryClass(
+                UMtoULiveLinkActorFactory::StaticClass()))
+        {
+            PlacementSubsystem->RegisterAssetFactory(ActorFactory.Get());
+            bRegisteredWithPlacementSubsystem = true;
+        }
+
         FPropertyEditorModule& PropertyEditor =
             FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
         PropertyEditor.RegisterCustomClassLayout(
@@ -145,9 +165,24 @@ public:
     {
         if (GEditor)
         {
+            if (ActorFactory.IsValid() && bRegisteredWithPlacementSubsystem)
+            {
+                if (UPlacementSubsystem* PlacementSubsystem =
+                        GEditor->GetEditorSubsystem<UPlacementSubsystem>())
+                {
+                    PlacementSubsystem->UnregisterAssetFactory(ActorFactory.Get());
+                }
+            }
+            if (ActorFactory.IsValid() && bRegisteredWithEditor)
+            {
+                GEditor->ActorFactories.Remove(ActorFactory.Get());
+            }
             GEditor->GetEditorSubsystem<UImportSubsystem>()
                 ->OnAssetReimport.Remove(AssetReimportHandle);
         }
+        ActorFactory.Reset();
+        bRegisteredWithEditor = false;
+        bRegisteredWithPlacementSubsystem = false;
         if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
         {
             FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor")
@@ -175,6 +210,9 @@ private:
     }
 
     FDelegateHandle AssetReimportHandle;
+    TWeakObjectPtr<UMtoULiveLinkActorFactory> ActorFactory;
+    bool bRegisteredWithEditor = false;
+    bool bRegisteredWithPlacementSubsystem = false;
 };
 
 IMPLEMENT_MODULE(FMtoULiveLinkEditorModule, MtoULiveLinkEditor)

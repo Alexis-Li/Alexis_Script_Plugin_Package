@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore dragging MtoU Binding assets from the Content Browser into a level
+  by registering the late-loaded actor factory with both Unreal editor
+  placement registries.
 - Compact the Maya window layout: give the connection indicator its own top
   row above parallel **动画** and **模型** toggle buttons (selected green,
   unselected dark gray), regroup role/outfit/frame-rate texts on the left with

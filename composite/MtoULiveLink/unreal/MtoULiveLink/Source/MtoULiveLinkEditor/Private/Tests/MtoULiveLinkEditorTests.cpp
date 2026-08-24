@@ -31,6 +31,7 @@
 #include "SkeletalMeshAttributes.h"
 #include "StaticMeshAttributes.h"
 #include "Subsystems/ImportSubsystem.h"
+#include "Subsystems/PlacementSubsystem.h"
 #include "UDynamicMesh.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
@@ -865,7 +866,21 @@ bool FMtoULiveLinkFactoriesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("new binding participates in editor transactions"),
         Binding && Binding->HasAnyFlags(RF_Transactional));
 
-    UMtoULiveLinkActorFactory* ActorFactory = NewObject<UMtoULiveLinkActorFactory>();
+    UPlacementSubsystem* PlacementSubsystem = GEditor
+        ? GEditor->GetEditorSubsystem<UPlacementSubsystem>()
+        : nullptr;
+    TestNotNull(TEXT("placement subsystem is available"), PlacementSubsystem);
+    UMtoULiveLinkActorFactory* ActorFactory = PlacementSubsystem
+        ? Cast<UMtoULiveLinkActorFactory>(PlacementSubsystem
+            ->GetAssetFactoryFromFactoryClass(UMtoULiveLinkActorFactory::StaticClass())
+            .GetObject())
+        : nullptr;
+    TestNotNull(TEXT("actor factory is registered with the placement subsystem"),
+        ActorFactory);
+    if (!ActorFactory)
+    {
+        return false;
+    }
     FText Error;
     TestFalse(TEXT("an empty binding cannot be placed"),
         Binding && ActorFactory->CanCreateActorFrom(FAssetData(Binding), Error));
