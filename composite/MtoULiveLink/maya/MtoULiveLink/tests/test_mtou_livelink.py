@@ -1772,6 +1772,8 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session._replies.put({"type": "cache_ready", "upload_id": 1,
                               "revision": 7, "frame_count": 4})
         cache = session.capture_and_replay(scene_fps=2.0)
+        while session.phase == "uploading":
+            session.tick()
         return session, timeline, stream, scene, cache
 
     def _submitted_types(self, stream):
@@ -1935,6 +1937,8 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session.begin_capture(scene_fps=2.0)
         while session.is_capturing:
             session.capture_step()
+        while session.phase == "uploading":
+            session.tick()
 
     def test_transport_failure_during_upload_retains_completed_cache(self):
         events = []
@@ -1945,6 +1949,7 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         stream._worker.state = "error"
 
         session.capture_step()
+        session.tick()
 
         self.assertEqual("transport_failed", session.phase)
         self.assertIsNotNone(session.cache)
@@ -1965,6 +1970,7 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session.begin_capture(scene_fps=2.0)
         while session.is_capturing:
             session.capture_step()
+        session.tick()
 
         self.assertEqual("upload_failed", session.phase)
         self.assertIsNotNone(session.cache)
@@ -2245,6 +2251,7 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             "type": "cache_ready", "upload_id": 1,
             "revision": 7, "frame_count": 3})
         cache = session.capture_and_replay(scene_fps=2.0)
+        session.tick()
 
         self.assertTrue(cache.completed)
         self.assertEqual("upload_failed", session.phase)
