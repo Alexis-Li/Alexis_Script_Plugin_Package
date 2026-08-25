@@ -515,6 +515,21 @@ class StreamingSessionTests(unittest.TestCase):
             def join(self, timeout):
                 self.joined = timeout
 
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
         class FakeSceneMessage(object):
             kBeforeNew = 1
             kBeforeOpen = 2
@@ -580,6 +595,21 @@ class StreamingSessionTests(unittest.TestCase):
 
             def submit(self, frame):
                 self.submitted.append(frame)
+
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                self.submitted.append(frame)
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
 
             def stop(self):
                 pass
@@ -698,6 +728,21 @@ class StreamingSessionTests(unittest.TestCase):
                 del timeout
                 self.join_count += 1
 
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
         fake_om = type("FakeOpenMaya", (), {
             "MSceneMessage": type("FakeSceneMessage", (), {
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
@@ -763,6 +808,21 @@ class StreamingSessionTests(unittest.TestCase):
             def join(self, timeout):
                 del timeout
 
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
         fake_om = type("FakeOpenMaya", (), {
             "MSceneMessage": type("FakeSceneMessage", (), {
                 "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
@@ -818,6 +878,21 @@ class StreamingSessionTests(unittest.TestCase):
 
             def join(self, timeout):
                 del timeout
+
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
 
         fake_om = type("FakeOpenMaya", (), {
             "MSceneMessage": type("FakeSceneMessage", (), {
@@ -921,6 +996,21 @@ class StreamingSessionTests(unittest.TestCase):
 
             def join(self, timeout):
                 del timeout
+
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
 
         fake_om, fake_cmds, scene = self._runtime(timers, deferred)
         with mock.patch.object(MODULE, "om", fake_om), \
@@ -1746,19 +1836,6 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.current = frame
             self.set_frames.append(frame)
 
-    class Worker(object):
-        def __init__(self):
-            self.state = "ready"
-            self.pending = 0
-
-        def status(self):
-            return (self.state, "Connected", {
-                "missing_in_unreal": [], "missing_in_maya": [],
-                "bone_name_remaps": [], "has_warning": False}, None)
-
-        def ordered_pending(self):
-            return self.pending
-
     class Stream(object):
         def __init__(self):
             self.is_ready = True
@@ -1769,11 +1846,12 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.ended = 0
             self.stopped = 0
             self.fail_submit = False
-            self._worker = CachedPlaybackSessionTests.Worker()
+            self.drained = True
             self.listener = None
 
-        def pause_for_cached(self):
+        def pause_for_cached(self, reply_listener=None):
             self.paused += 1
+            self.listener = reply_listener
 
         def resume_from_cached(self):
             self.resumed += 1
@@ -1783,8 +1861,8 @@ class CachedPlaybackSessionTests(unittest.TestCase):
                 raise RuntimeError("transport failed")
             self.submitted.append(message)
 
-        def set_cached_reply_listener(self, listener):
-            self.listener = listener
+        def cached_delivery_drained(self):
+            return self.drained
 
         def end_cached_replay(self, discard_pending=False):
             self.ended += 1
@@ -2002,15 +2080,38 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session.begin_capture(scene_fps=2.0)
         for unused_frame in range(3):
             session.capture_step()
-        stream._worker.state = "error"
-
         session.capture_step()
+        stream.is_ready = False
+
         session.tick()
 
         self.assertEqual("transport_failed", session.phase)
         self.assertIsNotNone(session.cache)
         self.assertEqual(1, stream.stopped)
         self.assertIn("transport_failed", [event.kind for event in events])
+        session.close()
+
+    def test_cache_ready_before_drain_is_deferred_not_consumed(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        session.begin_capture(scene_fps=2.0)
+        for unused_frame in range(4):
+            session.capture_step()
+        self.assertEqual("uploading", session.phase)
+
+        stream.drained = False
+        session._replies.put({"type": "cache_ready", "upload_id": 1,
+                              "revision": 7, "frame_count": 4})
+        session.tick()
+
+        # Unreal cannot truthfully report Ready before cache_end was sent
+        # and drained: the outcome is requeued, never consumed.
+        self.assertEqual("uploading", session.phase)
+        self.assertEqual(1, session._replies.qsize())
+
+        stream.drained = True
+        while session.phase == "uploading":
+            session.tick()
+        self.assertEqual("replaying", session.phase)
         session.close()
 
     def test_upload_rejection_reports_stable_upload_failure(self):

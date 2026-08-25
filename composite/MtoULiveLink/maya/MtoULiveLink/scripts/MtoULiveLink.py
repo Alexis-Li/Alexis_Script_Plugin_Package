@@ -1836,51 +1836,21 @@ class _CachedPlaybackSession(object):
                 except Exception:
                     pass
 
-    def _streaming_value(self, name, default=None):
-        value = getattr(self._streaming_session, name, default)
-        if callable(value):
-            try:
-                return value()
-            except TypeError:
-                return default
-        return value
-
-    def _streaming_is_ready(self):
-        ready = self._streaming_value("is_ready", None)
-        if ready is not None:
-            return bool(ready)
-        ready = self._streaming_value("ready", None)
-        if ready is not None:
-            return bool(ready)
-        phase = getattr(self._streaming_session, "_phase", None)
-        if phase is not None:
-            return phase == "ready"
-        worker = getattr(self._streaming_session, "_worker", None)
-        if worker is not None and hasattr(worker, "status"):
-            try:
-                return worker.status()[0] == "ready"
-            except (AttributeError, IndexError, TypeError):
-                return False
-        return True
-
-    def _streaming_revision(self):
-        revision = self._streaming_value("revision", None)
-        if revision is None:
-            revision = getattr(self._streaming_session, "_revision", None)
-        return None if revision is None else int(revision)
-
     def _current_revision(self):
         try:
             return int(self._scene.snapshot().revision)
         except (AttributeError, RuntimeError, TypeError, ValueError):
-            return self._streaming_revision()
+            session = self._streaming_session
+            revision = session.revision if session is not None else None
+            return None if revision is None else int(revision)
 
     def _ensure_ready(self):
-        if self._closed or self._streaming_session is None or not self._streaming_is_ready():
+        session = self._streaming_session
+        if self._closed or session is None or not session.is_ready:
             raise _CachedPlaybackSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "Cached Playback requires a ready negotiated connection.")
-        expected = self._streaming_revision()
+        expected = session.revision
         current = self._current_revision()
         if expected is not None and current is not None and expected != current:
             raise _CachedPlaybackSessionError(
@@ -1892,27 +1862,20 @@ class _CachedPlaybackSession(object):
     def _pause_streaming(self):
         if self._paused_streaming:
             return
-        method = getattr(self._streaming_session, "pause_for_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "pause", None)
-        if method is not None:
-            method()
+        if self._streaming_session is not None:
+            self._streaming_session.pause_for_cached(self._replies.put)
         self._paused_streaming = True
 
     def _resume_streaming(self):
         if not self._paused_streaming:
             return
-        method = getattr(self._streaming_session, "resume_from_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "resume", None)
-        if method is not None:
-            method()
+        if self._streaming_session is not None:
+            self._streaming_session.resume_from_cached()
         self._paused_streaming = False
 
     def enter_cached_mode(self):
         self._ensure_ready()
         self._pause_streaming()
-        self._install_reply_listener()
         if self._phase == "idle":
             self._send_enter_best_effort()
             self._emit(_CachedPlaybackSessionEvent("mode_entered"))
@@ -1920,10 +1883,11 @@ class _CachedPlaybackSession(object):
 
     def _send_enter_best_effort(self):
         """Establish cached ownership in Unreal before any capture begins."""
-        if not self._worker_ready():
+        session = self._streaming_session
+        if session is None or not session.is_ready:
             return
         try:
-            self._submit_cached(make_cache_enter_message())
+            session.submit_cached(make_cache_enter_message())
         except (_CachedPlaybackSessionError, _StreamingSessionError,
                 RuntimeError, TypeError, ValueError) as exc:
             if cmds is not None:
@@ -2264,46 +2228,22 @@ class _CachedPlaybackSession(object):
         return self._cache
 
     def _submit_cached(self, message):
-        method = getattr(self._streaming_session, "submit_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "submit", None)
-        if method is None:
+        if self._streaming_session is None:
             raise _CachedPlaybackSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "The streaming session cannot submit cached messages.")
-        method(message)
+        self._streaming_session.submit_cached(message)
 
-    def _worker_ready(self):
-        worker = getattr(self._streaming_session, "_worker", None)
-        status = getattr(worker, "status", None)
-        if status is None:
-            return True
-        try:
-            return status()[0] == "ready"
-        except (AttributeError, IndexError, TypeError):
-            return True
-
-    def _install_reply_listener(self):
-        install = getattr(self._streaming_session, "set_cached_reply_listener", None)
-        if install is not None:
-            install(self._replies.put)
-
-    def _ordered_pending(self):
-        worker = getattr(self._streaming_session, "_worker", None)
-        pending = getattr(worker, "ordered_pending", None)
-        if pending is None:
-            return 0
-        try:
-            return int(pending())
-        except (AttributeError, TypeError, ValueError):
-            return 0
+    def _delivery_drained(self):
+        session = self._streaming_session
+        return True if session is None else session.cached_delivery_drained()
 
     def _accept_cache_ready(self, reply):
         if self._phase != "uploading" or self._cache is None:
             return
         if _exact_int(reply.get("upload_id")) != self._active_upload_id:
             return  # stale outcome from an older upload
-        if not self._upload_end_sent or self._ordered_pending() > 0:
+        if not self._upload_end_sent or not self._delivery_drained():
             # Unreal cannot truthfully report Ready before cache_end was sent
             # and drained. Put it back and stop draining this round so the
             # same outcome is not re-consumed in a tight loop.
@@ -2462,7 +2402,6 @@ class _CachedPlaybackSession(object):
                     revision, cache.snapshot_revision)))
             return
         self._pause_streaming()
-        self._install_reply_listener()
         start_frame, end_frame = cache.capture_range
         total_frames = cache.frame_count
         self._upload_id += 1
@@ -2588,13 +2527,14 @@ class _CachedPlaybackSession(object):
         processed = False
         self._stop_draining_this_round = False
         if self._phase == "uploading":
-            if not self._streaming_is_ready() or not self._worker_ready():
+            session = self._streaming_session
+            if session is None or not session.is_ready:
                 self._handle_transport_failure(make_diagnostic(
                     "STREAM_INTERRUPTED",
                     "The streaming connection ended during the cache upload."))
                 return processed
             if (not self._declaring_upload and self._upload_end_sent
-                    and self._ordered_pending() == 0
+                    and self._delivery_drained()
                     and self._upload_deadline is None):
                 self._upload_deadline = (
                     time.time() + UPLOAD_READY_TIMEOUT_SECONDS)
@@ -2620,8 +2560,9 @@ class _CachedPlaybackSession(object):
             self._route_outcome(reply)
             processed = True
         self._stop_draining_this_round = False
+        session = self._streaming_session
         if (self._phase in ("replaying", "stopping")
-                and not self._streaming_is_ready()):
+                and (session is None or not session.is_ready)):
             self._handle_transport_failure(make_diagnostic(
                 "STREAM_INTERRUPTED", "The streaming connection ended."))
             return processed
@@ -2640,7 +2581,7 @@ class _CachedPlaybackSession(object):
 
     def _drive_upload_chunk(self):
         """Push at most one bounded chunk of cached frames per call."""
-        if self._upload_frame_iter is None or self._ordered_pending() > 0:
+        if self._upload_frame_iter is None or not self._delivery_drained():
             return False  # previous chunk still draining on the sender thread
         total_frames = self._cache.frame_count
         submitted = 0
@@ -2747,10 +2688,11 @@ class _CachedPlaybackSession(object):
         return measured > 0
 
     def _send_clear_best_effort(self):
-        if not self._worker_ready():
+        session = self._streaming_session
+        if session is None or not session.is_ready:
             return
         try:
-            self._submit_cached(make_cache_clear_message())
+            session.submit_cached(make_cache_clear_message())
         except (_CachedPlaybackSessionError, _StreamingSessionError,
                 RuntimeError, TypeError, ValueError):
             pass
@@ -2804,10 +2746,9 @@ class _CachedPlaybackSession(object):
         self._emit(_CachedPlaybackSessionEvent(
             "transport_failed", diagnostic=diagnostic,
             metadata=self._cache.metadata if self._cache else None))
-        stop = getattr(self._streaming_session, "stop", None)
-        if stop is not None:
+        if self._streaming_session is not None:
             try:
-                stop()
+                self._streaming_session.stop()
             except (RuntimeError, TypeError):
                 pass
 
@@ -3394,11 +3335,16 @@ class _StreamingSession(object):
         self._last_sample_time = None
         return True
 
-    def pause_for_cached(self):
+    def pause_for_cached(self, reply_listener=None):
+        """Suspend live sampling, switch to ordered delivery, and route
+        Unreal's post-ready replies to ``reply_listener`` atomically, so no
+        submission can precede listener installation."""
         if self._outcome is not None or self._worker is None or not self.is_ready:
             raise _StreamingSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "Cached Playback requires a ready streaming session.")
+        if reply_listener is not None:
+            self._worker.set_reply_listener(reply_listener)
         if self._paused_for_cached:
             return
         self._paused_for_cached = True
@@ -3406,9 +3352,7 @@ class _StreamingSession(object):
         timer_id, self._timer_id = self._timer_id, None
         if timer_id is not None:
             self._remove_callback(timer_id)
-        begin_ordered = getattr(self._worker, "begin_ordered", None)
-        if begin_ordered is not None:
-            begin_ordered()
+        self._worker.begin_ordered()
         self._last_sample_time = None
 
     def set_cached_reply_listener(self, listener):
@@ -3416,23 +3360,31 @@ class _StreamingSession(object):
         if self._worker is not None:
             self._worker.set_reply_listener(listener)
 
+    def cached_delivery_drained(self):
+        """True once every ordered cached message has reached the socket.
+
+        Meaningful between pause_for_cached() and resume_from_cached().
+        An empty backlog proves wire delivery, never Unreal-side parsing;
+        only an identity-matched cache_ready outcome confirms acceptance.
+        Terminal or unstarted sessions are vacuously drained so a drain
+        gate can never wedge.
+        """
+        worker = self._worker
+        if worker is None:
+            return True
+        return worker.ordered_pending() == 0
+
     def submit_cached(self, frame_message):
         if not self.is_ready:
             raise _StreamingSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "The streaming session is not ready for cached messages.")
-        submit_ordered = getattr(self._worker, "submit_ordered", None)
-        if submit_ordered is not None:
-            submit_ordered(frame_message)
-            return
-        self._worker.submit(frame_message)
+        self._worker.submit_ordered(frame_message)
 
     def end_cached_replay(self, discard_pending=False):
         if self._worker is None:
             return
-        end_ordered = getattr(self._worker, "end_ordered", None)
-        if end_ordered is not None:
-            end_ordered(discard_pending=discard_pending)
+        self._worker.end_ordered(discard_pending=discard_pending)
 
     def resume_from_cached(self):
         if not self._paused_for_cached:

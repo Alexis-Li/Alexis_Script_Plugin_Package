@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Restore the Maya Streaming session seam for Cached Playback: the streaming
+  session now answers drain questions through `cached_delivery_drained()` and
+  installs the cached reply listener atomically inside `pause_for_cached()`,
+  so the cached playback session drives it only through public interface
+  members instead of probing worker and phase internals. Cached-mode behavior,
+  protocol v6, event kinds, and ordering are unchanged.
 - Harden Cached Playback after independent review of the v6 implementation:
   Maya validates outcome evidence strictly (exact non-bool integer counts,
   finite positive elapsed durations, and an exact `ready`-revision echo of the

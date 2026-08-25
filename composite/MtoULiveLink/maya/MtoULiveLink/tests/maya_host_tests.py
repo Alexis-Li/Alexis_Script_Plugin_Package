@@ -479,7 +479,7 @@ class MayaHostTests(unittest.TestCase):
                 def __init__(self):
                     self.resumed = 0
 
-                def pause_for_cached(self):
+                def pause_for_cached(self, reply_listener=None):
                     pass
 
                 def resume_from_cached(self):
