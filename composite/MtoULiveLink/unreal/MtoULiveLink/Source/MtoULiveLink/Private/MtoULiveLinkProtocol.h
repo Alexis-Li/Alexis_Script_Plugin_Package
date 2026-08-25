@@ -18,6 +18,9 @@ struct FMtoUInitMessage
     TArray<FName> Curves;
     FString Workflow;
     bool bBlendshapesEnabled = false;
+    // Authoritative character snapshot revision established by Maya during
+    // connection negotiation; echoed in the ready outcome.
+    int32 Revision = 0;
 };
 
 struct FMtoUWorkflows
@@ -38,6 +41,7 @@ struct FMtoUFrameMessage
 
 struct FMtoUCacheBeginMessage
 {
+    int32 UploadId = 0;
     int32 Revision = 0;
     double Fps = 0.0;
     int32 StartFrame = 0;
@@ -66,10 +70,14 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 5;
+    static constexpr int32 Version = 6;
     // Transient Unreal cache limits, calibrated for the current production
     // range (C01: 321 frames at 30 fps) and frozen in the protocol contract.
+    // Encoded bytes are metered from the framing boundary; parsed transient
+    // memory is preflighted from the negotiated transform/curve counts before
+    // any allocation.
     static constexpr int64 MaxCachePayloadBytes = 64ll * 1024ll * 1024ll;
+    static constexpr int64 MaxCacheParsedMemoryBytes = 256ll * 1024ll * 1024ll;
     static constexpr int32 MaxCacheFrameCount = 20000;
     static constexpr double MinCacheFps = 1.0;
     static constexpr double MaxCacheFps = 60.0;
@@ -87,6 +95,7 @@ public:
         int32 ExpectedCurveCount,
         FString& OutError,
         bool& bOutStructuralError);
+    static bool ParseCacheEnter(const TArray<uint8>& Payload, FString& OutError);
     static bool ParseCacheBegin(
         const TArray<uint8>& Payload,
         FMtoUCacheBeginMessage& OutMessage,
@@ -101,7 +110,7 @@ public:
     static bool ParseCacheEnd(const TArray<uint8>& Payload, FString& OutError);
     static bool ParseCachePlay(
         const TArray<uint8>& Payload,
-        int32& OutRevision,
+        int32& OutPlayId,
         FString& OutError);
     static bool ParseCacheStop(const TArray<uint8>& Payload, FString& OutError);
     static bool ParseCacheClear(const TArray<uint8>& Payload, FString& OutError);
@@ -111,13 +120,19 @@ public:
         const TArray<FString>& BoneNameRemaps,
         const FString& Workflow,
         int32 TargetMorphCount,
-        int32 AcceptedMorphCount);
-    static TArray<uint8> EncodeCacheReady(int32 FrameCount);
-    static TArray<uint8> EncodeCacheComplete(int32 FrameCount);
+        int32 AcceptedMorphCount,
+        int32 NegotiatedRevision);
+    static TArray<uint8> EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount);
+    static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);
+    static TArray<uint8> EncodeCacheComplete(int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds);
+    static TArray<uint8> EncodeCacheStopped(int32 PlayId);
+    static TArray<uint8> EncodeCacheCleared();
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,
-        const FString& Details = FString());
+        const FString& Details = FString(),
+        int32 UploadId = INDEX_NONE,
+        int32 PlayId = INDEX_NONE);
     static FLiveLinkStaticDataStruct MakeStaticData(
         const FMtoUInitMessage& Init,
         const TArray<FName>& AcceptedCurveNames);

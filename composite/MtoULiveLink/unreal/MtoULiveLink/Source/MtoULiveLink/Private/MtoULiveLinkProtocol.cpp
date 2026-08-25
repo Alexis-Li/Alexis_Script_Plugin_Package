@@ -1,5 +1,6 @@
 #include "MtoULiveLinkProtocol.h"
 
+
 #include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -307,6 +308,23 @@ bool FMtoUProtocol::ParseInit(
         return false;
     }
 
+    // The character snapshot revision is established here during connection
+    // negotiation and echoed in the ready outcome.
+    TSharedPtr<FJsonValue> RevisionValue;
+    int32 NegotiatedRevision = 0;
+    if (!GetTypedField(Object, TEXT("revision"), EJson::Number, RevisionValue, OutError)
+        || !GetExactInt(RevisionValue, NegotiatedRevision))
+    {
+        OutError = TEXT("Field 'revision' must be an integer JSON number.");
+        return false;
+    }
+    if (NegotiatedRevision < 0)
+    {
+        OutError = TEXT("Field 'revision' must not be negative.");
+        return false;
+    }
+    OutMessage.Revision = NegotiatedRevision;
+
     TSharedPtr<FJsonValue> BlendshapesValue;
     bool bBlendshapesEnabled = false;
     if (!GetTypedField(Object, TEXT("blendshapes_enabled"), EJson::Boolean, BlendshapesValue, OutError)
@@ -493,6 +511,22 @@ bool FMtoUProtocol::ParseCacheBegin(
         return Fail(TEXT("INVALID_MESSAGE"), TEXT("Message type must be 'cache_begin'."));
     }
 
+    // Upload identity is message structure: a mistyped or missing field is
+    // structural garbage, while a well-typed out-of-range value is a
+    // recoverable metadata rejection.
+    TSharedPtr<FJsonValue> UploadIdValue;
+    if (!GetTypedField(Object, TEXT("upload_id"), EJson::Number, UploadIdValue, OutError)
+        || !GetExactInt(UploadIdValue, OutMessage.UploadId))
+    {
+        return Fail(TEXT("INVALID_MESSAGE"),
+                    TEXT("Field 'upload_id' must be an integer JSON number."));
+    }
+    if (OutMessage.UploadId < 1)
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"),
+                    TEXT("Field 'upload_id' must be a positive integer."));
+    }
+
     const auto RequireExactInt32 = [&](const TCHAR* Name, int32& OutValue) -> bool
     {
         TSharedPtr<FJsonValue> Value;
@@ -655,10 +689,10 @@ bool FMtoUProtocol::ParseCacheEnd(const TArray<uint8>& Payload, FString& OutErro
 
 bool FMtoUProtocol::ParseCachePlay(
     const TArray<uint8>& Payload,
-    int32& OutRevision,
+    int32& OutPlayId,
     FString& OutError)
 {
-    OutRevision = INDEX_NONE;
+    OutPlayId = INDEX_NONE;
     OutError.Reset();
     TSharedPtr<FJsonObject> Object;
     if (!ParseObject(Payload, Object, OutError))
@@ -671,11 +705,11 @@ bool FMtoUProtocol::ParseCachePlay(
         OutError = TEXT("Message type must be 'cache_play'.");
         return false;
     }
-    TSharedPtr<FJsonValue> RevisionValue;
-    if (!GetTypedField(Object, TEXT("revision"), EJson::Number, RevisionValue, OutError)
-        || !GetExactInt(RevisionValue, OutRevision))
+    TSharedPtr<FJsonValue> PlayIdValue;
+    if (!GetTypedField(Object, TEXT("play_id"), EJson::Number, PlayIdValue, OutError)
+        || !GetExactInt(PlayIdValue, OutPlayId))
     {
-        OutError = TEXT("Field 'revision' must be an integer JSON number.");
+        OutError = TEXT("Field 'play_id' must be an integer JSON number.");
         return false;
     }
     return true;
@@ -695,6 +729,11 @@ bool ParseCacheTypeOnly(const TArray<uint8>& Payload, const TCHAR* ExpectedType,
         return false;
     }
     return true;
+}
+
+bool FMtoUProtocol::ParseCacheEnter(const TArray<uint8>& Payload, FString& OutError)
+{
+    return ParseCacheTypeOnly(Payload, TEXT("cache_enter"), OutError);
 }
 
 bool FMtoUProtocol::ParseCacheStop(const TArray<uint8>& Payload, FString& OutError)
@@ -784,7 +823,8 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     const TArray<FString>& BoneNameRemaps,
     const FString& Workflow,
     int32 TargetMorphCount,
-    int32 AcceptedMorphCount)
+    int32 AcceptedMorphCount,
+    int32 NegotiatedRevision)
 {
     auto EncodeNames = [](const TArray<FName>& Names)
     {
@@ -798,6 +838,7 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     };
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("ready"));
+    Object->SetNumberField(TEXT("revision"), NegotiatedRevision);
     Object->SetArrayField(TEXT("missing_in_unreal"), EncodeNames(MissingInUnreal));
     Object->SetArrayField(TEXT("missing_in_maya"), EncodeNames(MissingInMaya));
     TArray<TSharedPtr<FJsonValue>> RemapValues;
@@ -813,32 +854,73 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 FrameCount)
+TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_ready"));
+    Object->SetNumberField(TEXT("upload_id"), UploadId);
+    Object->SetNumberField(TEXT("revision"), NegotiatedRevision);
     Object->SetNumberField(TEXT("frame_count"), FrameCount);
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCacheComplete(int32 FrameCount)
+TArray<uint8> FMtoUProtocol::EncodeCacheProgress(int32 PlayId, int32 AppliedFrames)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_progress"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied"), AppliedFrames);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheComplete(
+    int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_complete"));
-    Object->SetNumberField(TEXT("frame_count"), FrameCount);
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied_frame_count"), AppliedFrameCount);
+    Object->SetNumberField(TEXT("elapsed_seconds"), ElapsedSeconds);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheStopped(int32 PlayId)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_stopped"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheCleared()
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_cleared"));
     return EncodeObject(Object);
 }
 
 TArray<uint8> FMtoUProtocol::EncodeError(
     const FString& Code,
     const FString& Message,
-    const FString& Details)
+    const FString& Details,
+    int32 UploadId,
+    int32 PlayId)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("error"));
     Object->SetStringField(TEXT("code"), Code);
     Object->SetStringField(TEXT("message"), Message);
     Object->SetStringField(TEXT("details"), Details.IsEmpty() ? Message : Details);
+    // Cache-operation errors echo the owning identity so Maya can discard
+    // late errors from older uploads or play attempts.
+    if (UploadId > 0)
+    {
+        Object->SetNumberField(TEXT("upload_id"), UploadId);
+    }
+    if (PlayId > 0)
+    {
+        Object->SetNumberField(TEXT("play_id"), PlayId);
+    }
     return EncodeObject(Object);
 }
 

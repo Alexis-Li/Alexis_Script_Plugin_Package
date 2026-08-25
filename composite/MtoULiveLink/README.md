@@ -81,7 +81,7 @@ Install the matching component in each host:
    **缓存播放** mode controls for review. Cached Playback requires a ready
    connection and pauses live sampling while the cache is in use.
    **捕获并回放** samples the current Maya Playback Range inclusively, writes
-   protocol-v5 cache frames incrementally to the user's system temporary
+   protocol-v6 cache frames incrementally to the user's system temporary
    directory, restores the original current frame, then uploads the complete
    cache to Unreal without a real-time deadline. Capture shows current/total
    progress, stops Maya playback before sampling, and can be canceled. The tool
@@ -134,14 +134,21 @@ before inversion. Same-named BlendShapes
 on separate skinned mesh parts are sent as one Unreal curve when their evaluated
 values agree. If those values differ, sampling stops and identifies every
 conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
-warnings in the Animation workflow. Protocol version 5 requires matching Maya
+warnings in the Animation workflow. Protocol version 6 requires matching Maya
 and Unreal components installed together: `init` carries the selected
 **动画**/**模型** workflow and the **传递 BS** choice, `ready` echoes the
 workflow with target and accepted Morph counts, and the Cached Playback
-messages (`cache_begin`, indexed `cache_frame`s, `cache_end`, `cache_ready`,
-`cache_play`, `cache_stop`, `cache_clear`, `cache_complete`) transfer and
-control a transient Unreal-side cache with stable upload, revision,
-resource-limit, and playback-performance errors. Protocol-v4 clients are
+messages (`cache_enter`, `cache_begin` carrying an upload identity and the
+authoritative snapshot revision, indexed `cache_frame`s, `cache_end`,
+identity-echoing `cache_ready`, `cache_play` with a play identity, bounded
+`cache_progress`, `cache_complete` with applied count and elapsed duration,
+`cache_stopped`, `cache_cleared`) transfer and control a transient
+Unreal-side cache with stable upload, revision, resource-limit, and
+playback-performance errors. Unreal meters actual encoded bytes against the
+declared size and frozen limits, preflights parsed transient memory from the
+negotiated counts, applies at most one cached pose per source-frame position
+per update, and stops before any overdue catch-up burst. Protocol-v5 clients
+are
 rejected with a normal version-mismatch error. The Model workflow additionally
 uses the stable `PREVIEW_NOT_READY`, `PREVIEW_BUILD_FAILED`, and
 `PREVIEW_MORPH_MISMATCH` errors. After Unreal Refresh, BlendShape-enabled Model

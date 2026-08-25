@@ -3,13 +3,17 @@
 #include "MtoULiveLinkProtocol.h"
 
 // Game-thread owner of one negotiated connection's transient animation cache.
-// It buffers a fully validated upload, gates playback behind an atomic Ready
-// transition, and replays the buffered frames on the captured scene rate using
-// an injectable monotonic clock. It never touches packages or disk.
+// It buffers a fully validated, byte-metered upload, gates playback behind an
+// atomic Ready transition, and replays buffered poses at the captured scene
+// rate using an injectable monotonic clock: at most one pose per source-frame
+// position per update, and never a catch-up burst. It never touches packages
+// or disk.
 
 enum class EMtoUCacheState : uint8
 {
     Idle,
+    // Cached ownership established by cache_enter before capture begins.
+    Entered,
     Receiving,
     Ready,
     Playing,
@@ -22,6 +26,7 @@ struct FMtoUCacheCommand
 {
     enum class EKind : uint8
     {
+        Enter,
         Begin,
         Frame,
         End,
@@ -32,9 +37,12 @@ struct FMtoUCacheCommand
 
     // Transport identity: commands from older streaming sessions are ignored.
     uint64 SessionId = 0;
-    EKind Kind = EKind::Begin;
+    EKind Kind = EKind::Enter;
     int32 Index = 0;
-    int32 Revision = 0;
+    int32 PlayId = 0;
+    // Actual encoded payload bytes of this message, metered at the framing
+    // boundary and accumulated into the upload's resource accounting.
+    int64 EncodedBytes = 0;
     FMtoUCacheBeginMessage Begin;
     FMtoUFrameMessage Frame;
 };
@@ -44,14 +52,21 @@ class FMtoUCacheSession
 public:
     using FNow = TFunction<double()>;
 
-    // Publish applies one buffered pose exactly once, in order.
-    using FPublish = TFunction<void(const FMtoUFrameMessage&)>;
+    // Publish applies one buffered pose exactly once, in order. Returns
+    // whether the publication path accepted the pose; applied evidence only
+    // advances on acceptance.
+    using FPublish = TFunction<bool(const FMtoUFrameMessage&)>;
+
+    // Bounded informational progress for the current play attempt.
+    using FProgress = TFunction<void(int32 PlayId, int32 AppliedFrames)>;
 
     FMtoUCacheSession();
 
     void SetClock(FNow InNow);
     void SetPublish(FPublish InPublish);
+    void SetProgressSink(FProgress InProgress);
     void SetValidationCounts(int32 ExpectedTransformCount, int32 ExpectedCurveCount);
+    void SetNegotiatedRevision(int32 NegotiatedRevision);
 
     EMtoUCacheState GetState() const { return State; }
     const FString& GetErrorDetails() const { return ErrorDetails; }
@@ -59,6 +74,9 @@ public:
     int32 GetExpectedFrameCount() const { return Begin.FrameCount; }
     int32 GetAppliedFrameCount() const { return AppliedCount; }
     int32 GetLastAppliedIndex() const { return LastAppliedIndex; }
+    int32 GetActiveUploadId() const { return ActiveUploadId; }
+    int32 GetActivePlayId() const { return ActivePlayId; }
+    double GetElapsedPlaybackSeconds() const { return ElapsedSeconds; }
 
     // Returns false and fills the stable protocol error code when the
     // command violates the frozen contract. Rejected uploads drop to Idle.
@@ -67,29 +85,38 @@ public:
     // Advances local replay; returns the number of frames applied this tick.
     int32 Tick();
 
-    // Drops any buffered cache and returns to Idle. Used by recapture,
-    // clear, and per-session teardown.
+    // Drops any buffered cache and returns to Idle. Used by clear and
+    // per-session teardown.
     void ResetToIdle();
 
 private:
+    bool HandleEnter(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleBegin(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleFrame(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleEnd(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandlePlay(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
-    void ApplyNext();
+    void ApplyNextPose();
     void FailPerformance(const FString& Details);
     double FrameInterval() const;
 
     FNow Now;
     FPublish Publish;
+    FProgress ProgressSink;
     EMtoUCacheState State = EMtoUCacheState::Idle;
     FMtoUCacheBeginMessage Begin;
     TArray<FMtoUFrameMessage> Frames;
     int32 ExpectedTransformCount = INDEX_NONE;
     int32 ExpectedCurveCount = INDEX_NONE;
+    int32 NegotiatedRevision = 0;
+    int32 LastSeenUploadId = 0;
+    int32 LastSeenPlayId = 0;
+    int32 ActiveUploadId = 0;
+    int32 ActivePlayId = 0;
+    int64 ActualPayloadBytes = 0;
     int32 NextFrame = 0;
     int32 AppliedCount = 0;
     int32 LastAppliedIndex = INDEX_NONE;
     double PlaybackStart = 0.0;
+    double ElapsedSeconds = 0.0;
     FString ErrorDetails;
 };

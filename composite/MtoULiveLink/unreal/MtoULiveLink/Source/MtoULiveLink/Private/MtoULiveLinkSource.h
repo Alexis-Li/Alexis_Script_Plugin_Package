@@ -91,6 +91,8 @@ private:
     uint64 GameThreadSession = 0;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
+    // Authoritative character snapshot revision from the accepted init.
+    int32 NegotiatedRevision = 0;
     TArray<FTransform> SourceBindLocalPose;
     TArray<FTransform> TargetRefLocalPose;
     TArray<int32> BoneParents;

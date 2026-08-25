@@ -689,6 +689,41 @@ pins state violations against a seeded cache session. Protocol v4 clients are
 rejected with the normal version-mismatch error, so paired installation of
 matching component versions remains required.
 
+## Protocol v6 Truthful-Completion Revision
+
+Date: 2026-08-25
+
+Specification #17 hardens the v5 upload-then-play architecture without
+reopening it. The negotiated character snapshot revision is now established by
+`init` and echoed by `ready`; cache uploads validate their declared revision
+against it, so client messages cannot invent compatibility. Every upload and
+play attempt carries a monotonically increasing identity (`upload_id`,
+`play_id`), and every Unreal outcome (Ready, bounded progress, completion with
+applied count and elapsed duration, stopped, cleared, runtime errors) echoes
+the identity that owns it. Maya drops well-formed outcomes whose identity does
+not match the current operation and keeps waiting for the current one.
+
+Unreal applies at most one cached pose per source-frame position per
+game-thread update: before publishing the next pose it checks the monotonic
+clock against that position's valid window, and a missed window raises the
+stable `CACHED_PLAYBACK_PERFORMANCE` failure before any overdue catch-up burst
+can collapse poses into a single visible tick. Publication callbacks report
+acceptance; applied evidence advances only on acceptance, and successful
+completion additionally requires total elapsed time within the captured-rate
+bound.
+
+Resource accounting moved into production paths: encoded bytes are metered at
+the framing boundary with overflow-safe accumulation against both the declared
+size and the frozen 64 MiB limit, and parsed transient memory is preflighted
+from negotiated transform/curve counts against a fixed 256 MiB budget before
+allocation. Violations reject the whole upload atomically while preserving the
+negotiated session. Negative frame indexes return
+`CACHE_FRAME_INDEX_INVALID` on the production socket path without closing.
+The ordered-to-Latest sender transition is lossless: queued controls migrate
+to a carry-over queue so `cache_clear` stays ahead of the first resumed live
+pose, and an explicit `cache_enter` control establishes cached ownership
+(held pose, live-frame isolation, released viewport realtime) before capture.
+
 ## Documentation and Packaging
 
 The composite project includes matching English and Chinese README content

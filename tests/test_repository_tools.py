@@ -59,7 +59,7 @@ class RepositoryToolTests(unittest.TestCase):
         }
         self.assertEqual(
             [
-                "protocol_version must equal 5",
+                "protocol_version must equal 6",
                 "case 1 id is duplicated: duplicate",
                 "case 1 operation is unsupported",
                 "case 1 applies_to must contain maya and/or unreal",

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Advance Cached Playback to protocol v6 (spec #17): `init` establishes the
+  authoritative character snapshot revision echoed by `ready`; uploads carry
+  monotonically increasing upload identities and play attempts carry play
+  identities; Ready, progress, completion, stopped, cleared, and error
+  outcomes echo those identities so late replies from older operations are
+  ignored instead of completing newer ones. Completion now reports the exact
+  accepted count, play identity, and elapsed duration.
+- Make Unreal's local replay truthful: at most one cached pose is applied per
+  source-frame position per update, a missed valid window stops playback with
+  the stable performance error before any overdue catch-up burst, publication
+  acceptance gates applied evidence, and success additionally requires total
+  elapsed time within the captured-rate bound. Playback progress is bounded,
+  identity-scoped, and informational only.
+- Bound cache resources in production paths: actual encoded upload bytes are
+  metered at the framing boundary with overflow-safe accumulation against both
+  the declared size and the frozen limit, and parsed transient memory is
+  preflighted from negotiated transform/curve counts against a fixed budget —
+  violations reject the whole upload atomically while keeping the session open.
+  Negative frame indexes now return the stable index error on the production
+  socket path without closing the connection.
+- Make the Real-time Preview transition lossless: queued ordered controls
+  migrate into a carry-over queue when the sender returns to Latest mode, so
+  cache clear stays ordered ahead of the first resumed live pose instead of
+  being stranded; an explicit cache-entry control now establishes Unreal's
+  cached ownership (held pose, live-frame isolation, released viewport
+  realtime) before capture begins.
+
 - Rebuild Cached Playback as upload-then-play: after capturing the inclusive
   Playback Range, Maya uploads the complete temporary cache to Unreal without a
   real-time deadline, Unreal validates and buffers it fully before replying

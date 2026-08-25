@@ -11,6 +11,7 @@ const TCHAR* ToString(EMtoUCacheState State)
     switch (State)
     {
         case EMtoUCacheState::Idle: return TEXT("Idle");
+        case EMtoUCacheState::Entered: return TEXT("Entered");
         case EMtoUCacheState::Receiving: return TEXT("Receiving");
         case EMtoUCacheState::Ready: return TEXT("Ready");
         case EMtoUCacheState::Playing: return TEXT("Playing");
@@ -20,7 +21,13 @@ const TCHAR* ToString(EMtoUCacheState State)
     }
     return TEXT("Unknown");
 }
-}
+
+// Conservative parsed-memory estimate for one buffered cached frame, derived
+// only from the negotiated transform/curve counts before any allocation.
+constexpr int64 PerTransformParsedBytes = sizeof(FMtoUTransform);
+constexpr int64 PerCurveParsedBytes = sizeof(double);
+constexpr int64 PerFrameOverheadBytes = 64;
+} // namespace
 
 FMtoUCacheSession::FMtoUCacheSession()
     : Now([]() { return FPlatformTime::Seconds(); })
@@ -37,10 +44,20 @@ void FMtoUCacheSession::SetPublish(FPublish InPublish)
     Publish = MoveTemp(InPublish);
 }
 
+void FMtoUCacheSession::SetProgressSink(FProgress InProgress)
+{
+    ProgressSink = MoveTemp(InProgress);
+}
+
 void FMtoUCacheSession::SetValidationCounts(int32 InExpectedTransformCount, int32 InExpectedCurveCount)
 {
     ExpectedTransformCount = InExpectedTransformCount;
     ExpectedCurveCount = InExpectedCurveCount;
+}
+
+void FMtoUCacheSession::SetNegotiatedRevision(int32 InNegotiatedRevision)
+{
+    NegotiatedRevision = InNegotiatedRevision;
 }
 
 double FMtoUCacheSession::FrameInterval() const
@@ -53,10 +70,14 @@ void FMtoUCacheSession::ResetToIdle()
     State = EMtoUCacheState::Idle;
     Begin = FMtoUCacheBeginMessage();
     Frames.Reset();
+    ActualPayloadBytes = 0;
     NextFrame = 0;
     AppliedCount = 0;
     LastAppliedIndex = INDEX_NONE;
     PlaybackStart = 0.0;
+    ElapsedSeconds = 0.0;
+    ActiveUploadId = 0;
+    ActivePlayId = 0;
 }
 
 bool FMtoUCacheSession::HandleCommand(
@@ -68,6 +89,9 @@ bool FMtoUCacheSession::HandleCommand(
     bool bAccepted = false;
     switch (Command.Kind)
     {
+        case FMtoUCacheCommand::EKind::Enter:
+            bAccepted = HandleEnter(Command, OutErrorCode, OutDetails);
+            break;
         case FMtoUCacheCommand::EKind::Begin:
             bAccepted = HandleBegin(Command, OutErrorCode, OutDetails);
             break;
@@ -83,7 +107,7 @@ bool FMtoUCacheSession::HandleCommand(
         case FMtoUCacheCommand::EKind::Stop:
             if (State == EMtoUCacheState::Playing)
             {
-                // Manual stop holds the last applied pose and keeps the
+                // Manual stop holds the last accepted pose and keeps the
                 // completed cache available for replay-again.
                 State = EMtoUCacheState::Stopped;
             }
@@ -108,17 +132,82 @@ bool FMtoUCacheSession::HandleCommand(
     return bAccepted;
 }
 
+bool FMtoUCacheSession::HandleEnter(
+    const FMtoUCacheCommand& Command,
+    FString& OutErrorCode,
+    FString& OutDetails)
+{
+    (void)Command;
+    (void)OutErrorCode;
+    (void)OutDetails;
+    // Entry establishes cached ownership before capture; entering while
+    // already owning a cache is an idempotent no-op so repeated mode entry
+    // never destroys buffered work.
+    if (State == EMtoUCacheState::Idle)
+    {
+        State = EMtoUCacheState::Entered;
+    }
+    return true;
+}
+
 bool FMtoUCacheSession::HandleBegin(
     const FMtoUCacheCommand& Command,
     FString& OutErrorCode,
     FString& OutDetails)
 {
-    (void)OutErrorCode;
-    (void)OutDetails;
+    const FMtoUCacheBeginMessage& Incoming = Command.Begin;
+    // claim for any other snapshot can never become compatible.
+    if (Incoming.Revision != NegotiatedRevision)
+    {
+        OutErrorCode = TEXT("CACHE_REVISION_MISMATCH");
+        OutDetails = FString::Printf(
+            TEXT("cache upload declares revision %d but the negotiated"
+                 " character snapshot revision is %d."),
+            Incoming.Revision,
+            NegotiatedRevision);
+        ResetToIdle();
+        return false;
+    }
+    if (Incoming.UploadId <= LastSeenUploadId)
+    {
+        OutErrorCode = TEXT("CACHE_METADATA_INVALID");
+        OutDetails = FString::Printf(
+            TEXT("upload_id %d must increase within the streaming session"
+                 " (last seen %d)."),
+            Incoming.UploadId,
+            LastSeenUploadId);
+        ResetToIdle();
+        return false;
+    }
+    // Preflight the predicted parsed transient allocation from the negotiated
+    // transform/curve counts before allocating anything. Overflow-safe:
+    // every factor is bounded by frozen protocol limits.
+    const int64 PerFrameBytes =
+        static_cast<int64>(FMath::Max(ExpectedTransformCount, 0)) * PerTransformParsedBytes
+        + static_cast<int64>(FMath::Max(ExpectedCurveCount, 0)) * PerCurveParsedBytes
+        + PerFrameOverheadBytes;
+    const int64 PredictedParsedBytes =
+        static_cast<int64>(Incoming.FrameCount) * PerFrameBytes;
+    if (PredictedParsedBytes > FMtoUProtocol::MaxCacheParsedMemoryBytes)
+    {
+        OutErrorCode = TEXT("CACHE_PAYLOAD_TOO_LARGE");
+        OutDetails = FString::Printf(
+            TEXT("predicted parsed cache memory %lld bytes exceeds the fixed"
+                 " budget of %lld bytes."),
+            PredictedParsedBytes,
+            FMtoUProtocol::MaxCacheParsedMemoryBytes);
+        ResetToIdle();
+        UE_LOG(LogMtoUCacheSession, Warning, TEXT("Rejected cache upload (%s): %s"), *OutErrorCode, *OutDetails);
+        return false;
+    }
+
     // Recapture always replaces the previous cache coherently; old and new
     // frames can never mix because Begin resets the buffer unconditionally.
-    Begin = Command.Begin;
+    LastSeenUploadId = Incoming.UploadId;
+    ActiveUploadId = Incoming.UploadId;
+    Begin = Incoming;
     Frames.Reset(Begin.FrameCount);
+    ActualPayloadBytes = 0;
     NextFrame = 0;
     AppliedCount = 0;
     LastAppliedIndex = INDEX_NONE;
@@ -141,6 +230,7 @@ bool FMtoUCacheSession::HandleFrame(
         ResetToIdle();
         return false;
     }
+
     if (Command.Index != Frames.Num() || Frames.Num() >= Begin.FrameCount)
     {
         OutErrorCode = TEXT("CACHE_FRAME_INDEX_INVALID");
@@ -149,6 +239,22 @@ bool FMtoUCacheSession::HandleFrame(
             Frames.Num(),
             Command.Index);
         ResetToIdle();
+        return false;
+    }
+    // Meter actual encoded bytes against both the client's declared size and
+    // the frozen wire limit, with overflow-safe accumulation.
+    if (Command.EncodedBytes < 0
+        || ActualPayloadBytes > FMtoUProtocol::MaxCachePayloadBytes - Command.EncodedBytes
+        || ActualPayloadBytes + Command.EncodedBytes > Begin.PayloadSize)
+    {
+        OutErrorCode = TEXT("CACHE_PAYLOAD_TOO_LARGE");
+        OutDetails = FString::Printf(
+            TEXT("actual uploaded encoded bytes would exceed the declared"
+                 " payload_size %lld or the frozen limit of %lld bytes."),
+            Begin.PayloadSize,
+            FMtoUProtocol::MaxCachePayloadBytes);
+        ResetToIdle();
+        UE_LOG(LogMtoUCacheSession, Warning, TEXT("Rejected cache upload (%s): %s"), *OutErrorCode, *OutDetails);
         return false;
     }
 
@@ -168,6 +274,7 @@ bool FMtoUCacheSession::HandleFrame(
         return false;
     }
 
+    ActualPayloadBytes += Command.EncodedBytes;
     Frames.Add(Command.Frame);
     return true;
 }
@@ -206,6 +313,24 @@ bool FMtoUCacheSession::HandlePlay(
     FString& OutErrorCode,
     FString& OutDetails)
 {
+    // Identity sanity comes before state so malformed or stale requests are
+    // always reported as metadata problems, never as generic not-ready.
+    if (Command.PlayId < 1)
+    {
+        OutErrorCode = TEXT("CACHE_METADATA_INVALID");
+        OutDetails = TEXT("Field 'play_id' must be a positive integer.");
+        return false;
+    }
+    if (Command.PlayId <= LastSeenPlayId)
+    {
+        OutErrorCode = TEXT("CACHE_METADATA_INVALID");
+        OutDetails = FString::Printf(
+            TEXT("play_id %d must increase within the streaming session"
+                 " (last seen %d)."),
+            Command.PlayId,
+            LastSeenPlayId);
+        return false;
+    }
     const bool bHasCache =
         State == EMtoUCacheState::Ready
         || State == EMtoUCacheState::Stopped
@@ -218,20 +343,13 @@ bool FMtoUCacheSession::HandlePlay(
             TEXT("cache_play arrived while the cache state is %s."), ToString(State));
         return false;
     }
-    if (Command.Revision != Begin.Revision)
-    {
-        OutErrorCode = TEXT("CACHE_REVISION_MISMATCH");
-        OutDetails = FString::Printf(
-            TEXT("Buffered revision %d does not match requested revision %d."),
-            Begin.Revision,
-            Command.Revision);
-        return false;
-    }
+    LastSeenPlayId = Command.PlayId;
+    ActivePlayId = Command.PlayId;
     NextFrame = 0;
     AppliedCount = 0;
     PlaybackStart = Now();
     State = EMtoUCacheState::Playing;
-    ApplyNext();
+    ApplyNextPose();
     return true;
 }
 
@@ -245,74 +363,79 @@ void FMtoUCacheSession::FailPerformance(const FString& Details)
         *Details);
 }
 
-void FMtoUCacheSession::ApplyNext()
+void FMtoUCacheSession::ApplyNextPose()
 {
-    const double CallStart = Now();
-    int32 AppliedThisCall = 0;
-    while (State == EMtoUCacheState::Playing && NextFrame < Frames.Num())
+    if (NextFrame >= Frames.Num())
     {
-        const double Due = PlaybackStart + static_cast<double>(NextFrame) * FrameInterval();
-        if (Now() < Due)
-        {
-            return;
-        }
-        if (Publish)
-        {
-            Publish(Frames[NextFrame]);
-        }
-        LastAppliedIndex = NextFrame;
-        ++AppliedCount;
-        ++NextFrame;
-        ++AppliedThisCall;
+        return;
+    }
+    const double Due = PlaybackStart + static_cast<double>(NextFrame) * FrameInterval();
+    const double NowValue = Now();
+    if (NowValue < Due)
+    {
+        return;
+    }
+    // Valid source-frame window check: this pose must still be inside its own
+    // scheduled slot. Once the window is missed we stop BEFORE publishing, so
+    // several overdue poses can never collapse into one visible catch-up burst.
+    if (NowValue - Due >= FrameInterval())
+    {
+        FailPerformance(FString::Printf(
+            TEXT("the valid source-frame window for cached frame %d was missed"
+                 " %.3fs ago at the captured rate of %g fps"),
+            NextFrame,
+            NowValue - Due,
+            Begin.Fps));
+        return;
+    }
+    bool bAccepted = true;
+    if (Publish)
+    {
+        bAccepted = Publish(Frames[NextFrame]);
+    }
+    if (!bAccepted)
+    {
+        // Applied evidence never advances past a refused publication; the
+        // next update either publishes it in window or fails on the window.
+        return;
+    }
+    LastAppliedIndex = NextFrame;
+    ++AppliedCount;
+    ++NextFrame;
 
-        if (NextFrame >= Frames.Num())
-        {
-            // Completion guard: a successful review must actually run at the
-            // captured scene rate. A long tick stall followed by an instant
-            // catch-up burst applied every frame once, but it silently
-            // stretched the review, so it reports a performance failure
-            // instead of success. The tolerance absorbs tick jitter without
-            // letting short clips pass a multi-fold stretch.
-            const double Schedule = static_cast<double>(Frames.Num() - 1) * FrameInterval();
-            const double Tolerance = FMath::Min(0.5, FMath::Max(0.05 * Schedule, FrameInterval()));
-            if (Now() - PlaybackStart > Schedule + Tolerance)
-            {
-                FailPerformance(FString::Printf(
-                    TEXT("local playback of %d cached frames took %.3fs for a %.3fs schedule"
-                         " before cached frame %d"),
-                    Frames.Num(),
-                    Now() - PlaybackStart,
-                    Schedule,
-                    NextFrame));
-                return;
-            }
-            // Successful completion: every buffered frame was applied exactly
-            // once in order and the final pose stays held.
-            State = EMtoUCacheState::Completed;
-            return;
-        }
-        // Underrun guard: applying the frames we just did must cost less wall
-        // time than the schedule they consumed, with one interval of slack.
-        // Otherwise this machine cannot sustain the captured scene rate and we
-        // stop instead of silently skipping or stretching the review.
-        const double ConsumedSchedule =
-            static_cast<double>(AppliedThisCall) * FrameInterval();
-        if (Now() - CallStart > ConsumedSchedule + FrameInterval())
+    if (ProgressSink)
+    {
+        ProgressSink(ActivePlayId, AppliedCount);
+    }
+
+    if (NextFrame >= Frames.Num())
+    {
+        // Completion guard: successful completion requires every pose
+        // accepted exactly once in order plus the elapsed monotonic duration
+        // remaining within the captured-rate requirement.
+        const double Schedule = static_cast<double>(Frames.Num()) * FrameInterval();
+        const double Tolerance = FMath::Min(0.5, FMath::Max(0.05 * Schedule, FrameInterval()));
+        if (NowValue - PlaybackStart > Schedule + Tolerance)
         {
             FailPerformance(FString::Printf(
-                TEXT("applying %d cached frames could not keep up with the captured rate"),
-                AppliedThisCall));
+                TEXT("local playback of %d cached frames took %.3fs for a %.3fs schedule"),
+                Frames.Num(),
+                NowValue - PlaybackStart,
+                Schedule));
             return;
         }
+        ElapsedSeconds = NowValue - PlaybackStart;
+        // Successful completion: the final accepted pose stays held.
+        State = EMtoUCacheState::Completed;
     }
 }
 
 int32 FMtoUCacheSession::Tick()
 {
     const int32 Before = AppliedCount;
-    if (State == EMtoUCacheState::Playing && NextFrame < Frames.Num())
+    if (State == EMtoUCacheState::Playing)
     {
-        ApplyNext();
+        ApplyNextPose();
     }
     return AppliedCount - Before;
 }

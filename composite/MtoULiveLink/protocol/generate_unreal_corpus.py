@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORPUS_PATH = HERE / "conformance-v5.json"
+CORPUS_PATH = HERE / "conformance-v6.json"
 OUTPUT_PATH = (
     HERE.parent
     / "unreal"
@@ -20,8 +20,11 @@ OUTPUT_PATH = (
 )
 OPERATIONS = {
     "framing", "init", "frame", "ready", "error",
+    "cache_enter",
     "cache_begin", "cache_frame", "cache_end", "cache_play",
-    "cache_stop", "cache_clear", "cache_ready", "cache_complete",
+    "cache_stop", "cache_clear",
+    "cache_ready", "cache_progress", "cache_complete",
+    "cache_stopped", "cache_cleared",
 }
 HOSTS = {"maya", "unreal"}
 PARSER_ERROR_CODES = {
@@ -49,8 +52,8 @@ def validate_corpus(corpus: object) -> list[str]:
         return ["corpus must be a JSON object"]
     if corpus.get("schema_version") != 1:
         errors.append("schema_version must equal 1")
-    if corpus.get("protocol_version") != 5:
-        errors.append("protocol_version must equal 5")
+    if corpus.get("protocol_version") != 6:
+        errors.append("protocol_version must equal 6")
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["cases must be a non-empty array"]
@@ -94,6 +97,9 @@ def validate_corpus(corpus: object) -> list[str]:
         keywords = expected.get("keywords", [])
         if not isinstance(keywords, list) or any(not isinstance(value, str) for value in keywords):
             errors.append(prefix + " expected.keywords must be a string array")
+        negotiated = case.get("negotiated_revision")
+        if negotiated is not None and (isinstance(negotiated, bool) or not isinstance(negotiated, int)):
+            errors.append(prefix + "negotiated_revision must be an integer")
         session = case.get("session")
         if session is not None and session not in {"fresh", "uploaded"}:
             errors.append(prefix + " session must be 'fresh' or 'uploaded'")

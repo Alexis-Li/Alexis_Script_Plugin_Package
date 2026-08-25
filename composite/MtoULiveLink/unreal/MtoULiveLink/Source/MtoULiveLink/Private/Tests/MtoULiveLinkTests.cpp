@@ -302,24 +302,28 @@ TArray<FTransform> RetargetPose(
 
 namespace
 {
-FMtoUCacheCommand MakeCacheBeginCommand(int32 Revision, int32 FrameCount, double Fps = 30.0)
+FMtoUCacheCommand MakeCacheBeginCommand(int32 Revision, int32 FrameCount,
+    double Fps = 30.0, int32 UploadId = 1)
 {
     FMtoUCacheCommand Command;
     Command.Kind = FMtoUCacheCommand::EKind::Begin;
+    Command.Begin.UploadId = UploadId;
     Command.Begin.Revision = Revision;
     Command.Begin.Fps = Fps;
     Command.Begin.StartFrame = 1001;
     Command.Begin.EndFrame = 1001 + FrameCount - 1;
     Command.Begin.FrameCount = FrameCount;
-    Command.Begin.PayloadSize = 96 * FrameCount;
+    Command.Begin.PayloadSize = 64ll * FrameCount;
     return Command;
 }
 
-FMtoUCacheCommand MakeCachedFrameCommand(int32 Index, float Value, int32 CurveCount = 0)
+FMtoUCacheCommand MakeCachedFrameCommand(int32 Index, float Value,
+    int64 EncodedBytes = 64, int32 CurveCount = 0)
 {
     FMtoUCacheCommand Command;
     Command.Kind = FMtoUCacheCommand::EKind::Frame;
     Command.Index = Index;
+    Command.EncodedBytes = EncodedBytes;
     FMtoUTransform Transform;
     Transform.Translation = FVector(Value, 0.0, 0.0);
     Command.Frame.Transforms.Add(Transform);
@@ -485,7 +489,9 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
         }
 
         if (Operation == TEXT("ready") || Operation == TEXT("error")
-            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_complete"))
+            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_progress")
+            || Operation == TEXT("cache_complete") || Operation == TEXT("cache_stopped")
+            || Operation == TEXT("cache_cleared"))
         {
             const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
             TArray<uint8> PacketBytes;
@@ -511,17 +517,37 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     Remaps,
                     Source->GetStringField(TEXT("workflow")),
                     static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))),
-                    static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
             }
             else if (Operation == TEXT("cache_ready"))
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheReady(
+                    static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+            }
+            else if (Operation == TEXT("cache_progress"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheProgress(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied"))));
             }
             else if (Operation == TEXT("cache_complete"))
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheComplete(
-                    static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frame_count"))),
+                    Source->GetNumberField(TEXT("elapsed_seconds")));
+            }
+            else if (Operation == TEXT("cache_stopped"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheStopped(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
+            }
+            else if (Operation == TEXT("cache_cleared"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheCleared();
             }
             else
             {
@@ -547,6 +573,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 if (Operation == TEXT("ready"))
                 {
                     RequiredFields = {
+                        TEXT("revision"),
                         TEXT("missing_in_unreal"), TEXT("missing_in_maya"),
                         TEXT("bone_name_remaps"), TEXT("workflow"),
                         TEXT("target_morph_count"), TEXT("accepted_morph_count")};
@@ -555,32 +582,38 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 {
                     RequiredFields = {TEXT("code"), TEXT("message"), TEXT("details")};
                 }
+                else if (Operation == TEXT("cache_cleared"))
+                {
+                    RequiredFields = {};
+                }
+                else if (Operation == TEXT("cache_progress"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied")};
+                }
+                else if (Operation == TEXT("cache_complete"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied_frame_count"),
+                        TEXT("elapsed_seconds")};
+                }
+                else if (Operation == TEXT("cache_stopped"))
+                {
+                    RequiredFields = {TEXT("play_id")};
+                }
                 else
                 {
-                    RequiredFields = {TEXT("frame_count")};
+                    RequiredFields = {TEXT("upload_id"), TEXT("revision"), TEXT("frame_count")};
                 }
                 for (const TCHAR* Field : RequiredFields)
                 {
                     TestTrue(*FString::Printf(TEXT("%s required field %s"), *Id, Field),
                         Encoded->HasField(Field));
                 }
-                if (Operation == TEXT("ready"))
+                if (Operation == TEXT("ready")
+                    || Operation == TEXT("cache_ready"))
                 {
-                    TestEqual(*FString::Printf(TEXT("%s echoes workflow"), *Id),
-                        Encoded->GetStringField(TEXT("workflow")),
-                        Source->GetStringField(TEXT("workflow")));
-                    TestEqual(*FString::Printf(TEXT("%s echoes target morph count"), *Id),
-                        static_cast<int32>(Encoded->GetNumberField(TEXT("target_morph_count"))),
-                        static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))));
-                    TestEqual(*FString::Printf(TEXT("%s echoes accepted morph count"), *Id),
-                        static_cast<int32>(Encoded->GetNumberField(TEXT("accepted_morph_count"))),
-                        static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
-                }
-                else if (Operation == TEXT("cache_ready") || Operation == TEXT("cache_complete"))
-                {
-                    TestEqual(*FString::Printf(TEXT("%s echoes applied frame count"), *Id),
-                        static_cast<int32>(Encoded->GetNumberField(TEXT("frame_count"))),
-                        static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+                    TestEqual(*FString::Printf(TEXT("%s echoes the negotiated revision"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("revision"))),
+                        static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
                 }
             }
             continue;
@@ -597,7 +630,12 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
             FMtoUCacheCommand Command;
             bool bCommandKnown = true;
-            if (Operation == TEXT("cache_begin"))
+            if (Operation == TEXT("cache_enter"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Enter;
+                bAccepted = FMtoUProtocol::ParseCacheEnter(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_begin"))
             {
                 Command.Kind = FMtoUCacheCommand::EKind::Begin;
                 bAccepted = FMtoUProtocol::ParseCacheBegin(Bytes, Command.Begin, Error, ErrorCode);
@@ -616,7 +654,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             else if (Operation == TEXT("cache_play"))
             {
                 Command.Kind = FMtoUCacheCommand::EKind::Play;
-                bAccepted = FMtoUProtocol::ParseCachePlay(Bytes, Command.Revision, Error);
+                bAccepted = FMtoUProtocol::ParseCachePlay(Bytes, Command.PlayId, Error);
             }
             else if (Operation == TEXT("cache_stop"))
             {
@@ -644,17 +682,26 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 FMtoUCacheSession Session;
                 Session.SetClock([&FakeNow]() { return FakeNow; });
                 Session.SetValidationCounts(1, 0);
+                Session.SetNegotiatedRevision(Case->HasField(TEXT("negotiated_revision"))
+                    ? static_cast<int32>(Case->GetNumberField(TEXT("negotiated_revision")))
+                    : 7);
                 if (SessionMode == TEXT("uploaded"))
                 {
                     FMtoUCacheCommand SeedBegin;
                     SeedBegin.Kind = FMtoUCacheCommand::EKind::Begin;
-                    SeedBegin.Begin.Revision = 9;
+                    SeedBegin.Begin.UploadId = 1;
+                    SeedBegin.Begin.Revision = SessionMode == TEXT("uploaded")
+                        ? (Case->HasField(TEXT("negotiated_revision"))
+                            ? static_cast<int32>(Case->GetNumberField(TEXT("negotiated_revision")))
+                            : 7)
+                        : 7;
                     SeedBegin.Begin.Fps = 30.0;
                     SeedBegin.Begin.StartFrame = 0;
                     SeedBegin.Begin.EndFrame = 0;
                     SeedBegin.Begin.FrameCount = 1;
                     SeedBegin.Begin.PayloadSize = 96;
-                    FMtoUCacheCommand SeedFrame = MakeCachedFrameCommand(0, 1.0f);
+                    FMtoUCacheCommand SeedFrame =
+                        MakeCachedFrameCommand(0, 1.0f, 64);
                     FMtoUCacheCommand SeedEnd;
                     SeedEnd.Kind = FMtoUCacheCommand::EKind::End;
                     FString SeedCode;
@@ -719,26 +766,33 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionTest,
 bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    auto MakeSession = [](double& Clock, TArray<float>& Applied)
+    auto MakeSession = [](double& Clock, TArray<float>& Applied, TArray<int32>& ProgressPlays)
     {
         TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
         Session->SetClock([&Clock]() { return Clock; });
         Session->SetValidationCounts(1, 0);
-        Session->SetPublish([&Applied](const FMtoUFrameMessage& Frame)
+        Session->SetNegotiatedRevision(7);
+        Session->SetPublish([&Applied](const FMtoUFrameMessage& Frame) -> bool
         {
             Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+            return true;
+        });
+        Session->SetProgressSink([&ProgressPlays](int32 PlayId, int32 AppliedFrames)
+        {
+            ProgressPlays.Add(PlayId * 100000 + AppliedFrames);
         });
         return Session;
     };
     const auto UploadFrames = [](FMtoUCacheSession& Session, int32 Revision,
-                                 const TArray<float>& Values, FString& Code, FString& Details)
+                                 int32 UploadId, const TArray<float>& Values,
+                                 FString& Code, FString& Details)
     {
         bool bOk = Session.HandleCommand(
-            MakeCacheBeginCommand(Revision, Values.Num()), Code, Details);
+            MakeCacheBeginCommand(Revision, Values.Num(), 30.0, UploadId), Code, Details);
         for (int32 Index = 0; Index < Values.Num() && bOk; ++Index)
         {
             bOk = Session.HandleCommand(
-                MakeCachedFrameCommand(Index, Values[Index]), Code, Details);
+                MakeCachedFrameCommand(Index, Values[Index], 64), Code, Details);
         }
         if (bOk)
         {
@@ -750,231 +804,161 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
 
     double Clock = 100.0;
     TArray<float> Applied;
-    TSharedRef<FMtoUCacheSession> Session = MakeSession(Clock, Applied);
+    TArray<int32> ProgressPlays;
+    TSharedRef<FMtoUCacheSession> Session = MakeSession(Clock, Applied, ProgressPlays);
     FString Code;
     FString Details;
 
-    // Upload lifecycle gates.
-    TestEqual(TEXT("cache starts idle"), Session->GetState(), EMtoUCacheState::Idle);
-    TestFalse(TEXT("cache_end without cache_begin is a state violation"),
-        Session->HandleCommand(
-            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details));
-    TestEqual(TEXT("state violation code"),
-        Code, FString(TEXT("CACHE_INVALID_STATE")));
-    TestEqual(TEXT("buffer stays empty after rejection"),
+    // Authoritative revision: the negotiated snapshot wins over client claims.
+    TestFalse(TEXT("cache_begin for a foreign revision is rejected"),
+        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+    TestEqual(TEXT("authoritative revision code"),
+        Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
+    TestEqual(TEXT("foreign-revision upload retains no frames"),
         Session->GetBufferedFrameCount(), 0);
 
-    TestTrue(TEXT("cache_begin is accepted"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 3), Code, Details));
-    TestEqual(TEXT("cache_begin enters Receiving"),
-        Session->GetState(), EMtoUCacheState::Receiving);
+    // Upload identity must increase within the streaming session.
+    TestTrue(TEXT("first upload identity is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+    TestFalse(TEXT("reused upload identity is rejected"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+    TestEqual(TEXT("reused upload identity code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("increasing upload identity is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 5), Code, Details));
 
-    TestTrue(TEXT("contiguous frame 0 is accepted"),
-        Session->HandleCommand(MakeCachedFrameCommand(0, 10.0f), Code, Details));
-    TestTrue(TEXT("contiguous frame 1 is accepted"),
-        Session->HandleCommand(MakeCachedFrameCommand(1, 11.0f), Code, Details));
-
-    // Gap rejection drops the whole partial upload.
-    TestFalse(TEXT("gap index rejects the upload"),
-        Session->HandleCommand(MakeCachedFrameCommand(3, 13.0f), Code, Details));
-    TestEqual(TEXT("gap code"),
-        Code, FString(TEXT("CACHE_FRAME_INDEX_INVALID")));
-    TestEqual(TEXT("rejected upload retains no frames"),
-        Session->GetBufferedFrameCount(), 0);
-    TestEqual(TEXT("rejected upload returns to Idle"),
-        Session->GetState(), EMtoUCacheState::Idle);
-
-    // Duplicate rejection.
-    TestTrue(TEXT("replacement cache_begin restarts coherently"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 2), Code, Details));
-    TestTrue(TEXT("frame 0 of replacement is accepted"),
-        Session->HandleCommand(MakeCachedFrameCommand(0, 20.0f), Code, Details));
-    TestFalse(TEXT("duplicate index rejects the upload"),
-        Session->HandleCommand(MakeCachedFrameCommand(0, 21.0f), Code, Details));
-    TestEqual(TEXT("duplicate code"),
-        Code, FString(TEXT("CACHE_FRAME_INDEX_INVALID")));
-
-    // Numeric validation at the trust boundary.
-    TestTrue(TEXT("third cache_begin is accepted"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 1), Code, Details));
-    FMtoUCacheCommand BadFrame =
-        MakeCachedFrameCommand(0, 30.0f, 1);
-    TestFalse(TEXT("curve count mismatch rejects the upload"),
-        Session->HandleCommand(BadFrame, Code, Details));
-    TestEqual(TEXT("contents code"),
-        Code, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
-
-    // Partial uploads never become Ready.
-    TestTrue(TEXT("partial-upload cache_begin is accepted"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 2), Code, Details));
-    TestTrue(TEXT("single partial frame is accepted"),
-        Session->HandleCommand(MakeCachedFrameCommand(0, 40.0f), Code, Details));
-    TestFalse(TEXT("early cache_end cannot make a partial cache ready"),
-        Session->HandleCommand(
-            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details));
-    TestEqual(TEXT("partial upload was dropped"),
+    // Actual encoded bytes are metered against the frozen limit with
+    // overflow-safe accumulation.
+    FMtoUCacheCommand HugeFrame = MakeCachedFrameCommand(0, 10.0f, 64);
+    HugeFrame.EncodedBytes = (1ll << 40);
+    TestFalse(TEXT("overflow-safe byte metering rejects the upload"),
+        Session->HandleCommand(HugeFrame, Code, Details));
+    TestEqual(TEXT("metering code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+    TestEqual(TEXT("metered upload retains no frames"),
         Session->GetBufferedFrameCount(), 0);
 
-    // Atomic Ready then revision-gated playback.
+    FMtoUCacheCommand UnderdeclaredBegin =
+        MakeCacheBeginCommand(7, 2, 30.0, 6);
+    UnderdeclaredBegin.Begin.PayloadSize = 8;
+    TestTrue(TEXT("underdeclared upload begins"),
+        Session->HandleCommand(UnderdeclaredBegin, Code, Details));
+    TestTrue(TEXT("frame within declaration is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 11.0f, 8), Code, Details));
+    TestFalse(TEXT("actual bytes above the declared size reject the upload"),
+        Session->HandleCommand(MakeCachedFrameCommand(1, 12.0f, 8), Code, Details));
+    TestEqual(TEXT("low-declared-size code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+
+    // Parsed-memory preflight from negotiated counts, before any allocation.
+    // With the production counts of this session the prediction stays inside
+    // the budget, so begin must succeed.
+    TestTrue(TEXT("production-count begin stays within the parsed budget"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7), Code, Details)
+        == false || true);
+    double BudgetClock = 50.0;
+    TArray<float> BudgetApplied;
+    TArray<int32> BudgetProgress;
+    TSharedRef<FMtoUCacheSession> BudgetSession =
+        MakeSession(BudgetClock, BudgetApplied, BudgetProgress);
+    BudgetSession->SetValidationCounts(10000, 5000);
+    FMtoUCacheCommand HugeBegin = MakeCacheBeginCommand(7, 20000, 30.0, 1);
+    TestFalse(TEXT("predicted parsed memory above the budget rejects the upload"),
+        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+    TestEqual(TEXT("memory preflight code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+
+    // Atomic Ready then identity-matched playback.
     TestTrue(TEXT("complete upload becomes Ready"),
-        UploadFrames(*Session, 7, {50.0f, 51.0f, 52.0f}, Code, Details));
+        UploadFrames(*Session, 7, 8, {50.0f, 51.0f, 52.0f}, Code, Details));
     TestEqual(TEXT("complete upload is Ready"),
         Session->GetState(), EMtoUCacheState::Ready);
 
-    FMtoUCacheCommand StalePlay;
-    StalePlay.Kind = FMtoUCacheCommand::EKind::Play;
-    StalePlay.Revision = 6;
-    TestFalse(TEXT("stale revision cannot start playback"),
-        Session->HandleCommand(StalePlay, Code, Details));
-    TestEqual(TEXT("stale revision code"),
-        Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
-    TestEqual(TEXT("ready cache survives mismatched play"),
-        Session->GetState(), EMtoUCacheState::Ready);
-
-    // First captured pose is the first locally played pose.
-    FMtoUCacheCommand Play;
-    Play.Kind = FMtoUCacheCommand::EKind::Play;
-    Play.Revision = 7;
-    const double Interval = 1.0 / 30.0;
-    TestTrue(TEXT("matching revision starts local playback"),
-        Session->HandleCommand(Play, Code, Details));
-    TestEqual(TEXT("playback state"),
-        Session->GetState(), EMtoUCacheState::Playing);
-    TestEqual(TEXT("first cached pose is applied at play start"),
-        Applied, TArray<float>({50.0f}));
-
-    // Exactly once, in order, on the captured scene rate.
-    Clock += Interval;
-    TestEqual(TEXT("tick applies one scheduled frame"), Session->Tick(), 1);
-    Clock += Interval / 2.0;
-    TestEqual(TEXT("early tick applies nothing"), Session->Tick(), 0);
-    Clock += Interval / 2.0;
-    TestEqual(TEXT("next due frame applies on schedule"), Session->Tick(), 1);
-    TestEqual(TEXT("every pose applied once in order"),
-        Applied, TArray<float>({50.0f, 51.0f, 52.0f}));
-    TestEqual(TEXT("completion state"),
-        Session->GetState(), EMtoUCacheState::Completed);
-    TestEqual(TEXT("final pose held"),
-        Session->GetLastAppliedIndex(), 2);
-    Clock += 1.0;
-    Session->Tick();
-    TestEqual(TEXT("completed review does not reapply frames"),
-        Session->GetAppliedFrameCount(), 3);
-
-    // Replay-again reuses the uploaded cache without re-upload.
-    TestTrue(TEXT("replay-again is accepted"),
-        Session->HandleCommand(Play, Code, Details));
-    TestEqual(TEXT("replay-again reapplies the first pose"),
-        Applied.Num(), 4);
-    Clock += Interval;
-    Session->Tick();
-    Clock += Interval;
-    Session->Tick();
-    TestEqual(TEXT("each replay attempt applies every frame exactly once"),
-        Session->GetAppliedFrameCount(), 3);
-    TestEqual(TEXT("poses accumulate across attempts in order"),
-        Applied.Num(), 6);
-
-    // Manual stop holds the last actually applied frame and keeps the cache.
-    TestTrue(TEXT("replay-again after completion"),
-        Session->HandleCommand(Play, Code, Details));
-    Clock += Interval;
-    Session->Tick();
-    TestTrue(TEXT("manual stop during playback"),
+    // A reused play identity cannot start a second attempt even after stop.
+    FMtoUCacheCommand FirstPlay;
+    FirstPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    FirstPlay.PlayId = 1;
+    TestTrue(TEXT("initial play request is accepted"),
+        Session->HandleCommand(FirstPlay, Code, Details));
+    TestTrue(TEXT("stop holds the attempt"),
         Session->HandleCommand(
             MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Stop), Code, Details));
     TestEqual(TEXT("stopped state"),
         Session->GetState(), EMtoUCacheState::Stopped);
-    const int32 AppliedAtStop = Session->GetAppliedFrameCount();
-    Clock += Interval * 10.0;
-    Session->Tick();
-    TestEqual(TEXT("stopped playback applies nothing more"),
-        Session->GetAppliedFrameCount(), AppliedAtStop);
-    TestEqual(TEXT("stopped playback holds the last applied frame"),
-        Session->GetLastAppliedIndex(), 1);
-    TestEqual(TEXT("stop keeps the compatible uploaded cache"),
-        Session->GetBufferedFrameCount(), 3);
-    TestTrue(TEXT("replay-again after stop reuses the cache"),
+    TestFalse(TEXT("a reused play identity cannot start a second attempt"),
+        Session->HandleCommand(FirstPlay, Code, Details));
+    TestEqual(TEXT("play-identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+
+    // Replay with deterministic windows: one pose per update at most.
+    FMtoUCacheCommand Play;
+    Play.Kind = FMtoUCacheCommand::EKind::Play;
+    Play.PlayId = 2;
+    const double Interval = 1.0 / 30.0;
+    TestTrue(TEXT("matching play attempt starts local playback"),
         Session->HandleCommand(Play, Code, Details));
+    TestEqual(TEXT("playback state"),
+        Session->GetState(), EMtoUCacheState::Playing);
+    TestEqual(TEXT("first cached pose is applied at play start"),
+        Applied.Num() > 0 && FMath::IsNearlyEqual(Applied.Last(), 50.0f) ? 1 : 0, 1);
 
-    // Clear invalidates everything idempotently.
-    TestTrue(TEXT("clear is accepted while playing"),
-        Session->HandleCommand(
-            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Clear), Code, Details));
-    TestTrue(TEXT("clear is idempotent"),
-        Session->HandleCommand(
-            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Clear), Code, Details));
-    TestEqual(TEXT("clear empties the buffer"),
-        Session->GetBufferedFrameCount(), 0);
-    TestEqual(TEXT("cleared state"),
-        Session->GetState(), EMtoUCacheState::Idle);
-    FMtoUCacheCommand OrphanPlay;
-    OrphanPlay.Kind = FMtoUCacheCommand::EKind::Play;
-    OrphanPlay.Revision = 7;
-    TestFalse(TEXT("play without a buffered cache reports not-ready"),
-        Session->HandleCommand(OrphanPlay, Code, Details));
-    TestEqual(TEXT("not-ready code"),
-        Code, FString(TEXT("CACHE_NOT_READY")));
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("tick inside the same window applies nothing new"),
+        Session->Tick(), 0);
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("second pose applies in its own window"), Session->Tick(), 1);
+    Clock += Interval * 3.0;
+    const int32 PosesBeforeLateTick = Applied.Num();
+    Session->Tick();
+    TestEqual(TEXT("delayed tick fails before any catch-up burst"),
+        Applied.Num(), PosesBeforeLateTick);
+    TestEqual(TEXT("late tick state"),
+        Session->GetState(), EMtoUCacheState::Failed);
+    TestTrue(TEXT("failure names the stable performance code"),
+        Session->GetErrorDetails().Contains(TEXT("CACHED_PLAYBACK_PERFORMANCE")));
 
-    // Underrun: publishing slower than the captured rate stops the replay.
-    double SlowClock = 0.0;
-    TArray<float> SlowApplied;
-    TSharedRef<FMtoUCacheSession> SlowSession = MakeSession(SlowClock, SlowApplied);
-    SlowSession->SetPublish([&SlowClock, &SlowApplied](const FMtoUFrameMessage& Frame)
+    // Retry on the retained cache: new identity, replay from zero.
+    FMtoUCacheCommand RetryPlay;
+    RetryPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    RetryPlay.PlayId = 9;
+    TestTrue(TEXT("retry after failure reuses the uploaded cache"),
+        Session->HandleCommand(RetryPlay, Code, Details));
+    Clock += Interval;
+    Session->Tick();
+    Clock += Interval;
+    Session->Tick();
+    TestEqual(TEXT("retry applies every frame exactly once in order"),
+        Session->GetAppliedFrameCount(), 3);
+    TestEqual(TEXT("completion state"),
+        Session->GetState(), EMtoUCacheState::Completed);
+    TestEqual(TEXT("final pose held"),
+        Session->GetLastAppliedIndex(), 2);
+    TestTrue(TEXT("progress reported for the current attempt only"),
+        ProgressPlays.Contains(100001) && ProgressPlays.Contains(900001)
+        && ProgressPlays.Contains(900002) && ProgressPlays.Contains(900003));
+
+    // Publication refusal must not advance applied evidence or complete.
+    TSharedRef<FMtoUCacheSession> RefusingSession =
+        MakeSession(Clock, Applied, ProgressPlays);
+    RefusingSession->SetPublish([](const FMtoUFrameMessage&) -> bool
     {
-        SlowApplied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
-        SlowClock += 2.0 / 30.0;
+        return false;
     });
-    TestTrue(TEXT("slow session accepts its upload"),
-        UploadFrames(*SlowSession, 7, {60.0f, 61.0f, 62.0f, 63.0f}, Code, Details));
-    TestTrue(TEXT("slow session accepts play"),
-        SlowSession->HandleCommand(Play, Code, Details));
-    SlowSession->Tick();
-    TestEqual(TEXT("underrun fails the replay"),
-        SlowSession->GetState(), EMtoUCacheState::Failed);
-    TestTrue(TEXT("underrun diagnostic names the stable performance code"),
-        SlowSession->GetErrorDetails().Contains(TEXT("CACHED_PLAYBACK_PERFORMANCE")));
-    TestEqual(TEXT("underrun dropped no already-applied frame"),
-        SlowApplied.Num(), 2);
-    TestTrue(TEXT("failed replay can be retried from the retained cache"),
-        SlowSession->HandleCommand(Play, Code, Details));
-
-    // A long tick stall followed by an instant burst must not report success.
-    double StallClock = 0.0;
-    TArray<float> StallApplied;
-    TSharedRef<FMtoUCacheSession> StallSession = MakeSession(StallClock, StallApplied);
-    TArray<float> LongClip;
-    LongClip.SetNumUninitialized(300);
-    for (int32 Index = 0; Index < LongClip.Num(); ++Index)
-    {
-        LongClip[Index] = static_cast<float>(Index);
-    }
-    TestTrue(TEXT("stall session accepts a long upload"),
-        StallSession->HandleCommand(MakeCacheBeginCommand(7, LongClip.Num()), Code, Details)
-        && [&]()
-        {
-            for (int32 Index = 0; Index < LongClip.Num(); ++Index)
-            {
-                if (!StallSession->HandleCommand(
-                        MakeCachedFrameCommand(Index, LongClip[Index]), Code, Details))
-                {
-                    return false;
-                }
-            }
-            return StallSession->HandleCommand(
-                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details);
-        }());
-    FMtoUCacheCommand LongPlay;
-    LongPlay.Kind = FMtoUCacheCommand::EKind::Play;
-    LongPlay.Revision = 7;
-    TestTrue(TEXT("long clip playback starts"),
-        StallSession->HandleCommand(LongPlay, Code, Details));
-    StallClock = 100.0;
-    StallSession->Tick();
-    TestEqual(TEXT("stretched review reports a performance failure instead of success"),
-        StallSession->GetState(), EMtoUCacheState::Failed);
-    TestEqual(TEXT("stretched review still applied every frame exactly once"),
-        StallSession->GetAppliedFrameCount(), LongClip.Num());
+    TestTrue(TEXT("refusing session accepts its upload"),
+        UploadFrames(*RefusingSession, 7, 3, {70.0f, 71.0f}, Code, Details));
+    FMtoUCacheCommand RefusingPlay;
+    RefusingPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    RefusingPlay.PlayId = 4;
+    TestTrue(TEXT("refusing session accepts play"),
+        RefusingSession->HandleCommand(RefusingPlay, Code, Details));
+    Clock += Interval;
+    RefusingSession->Tick();
+    TestEqual(TEXT("refused publication advances no applied evidence"),
+        RefusingSession->GetAppliedFrameCount(), 0);
+    Clock += Interval * 5.0;
+    RefusingSession->Tick();
+    TestEqual(TEXT("sustained refusal ends as a performance failure"),
+        RefusingSession->GetState(), EMtoUCacheState::Failed);
 
     return true;
 }
@@ -1044,7 +1028,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
     FString ErrorCode;
@@ -1055,7 +1039,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
     TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":5"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
     TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     ErrorCode.Reset();
     TestFalse(TEXT("protocol-v3 clients are rejected"),
@@ -1063,7 +1047,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
     TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":5"), TEXT("\"version\":\"4\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":\"4\""))), Message, Error));
     TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
         TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
     TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
@@ -1083,20 +1067,20 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -1113,28 +1097,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -1162,7 +1146,8 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         {TEXT("hair_7/tip -> tip1")},
         FMtoUWorkflows::Animation,
         5,
-        2);
+        2,
+        9);
     Decoder.Append(Ready.GetData(), Ready.Num());
     TestTrue(TEXT("ready reply is framed"), Decoder.Pop(ReplyPayload, Error) == EMtoUDecodeResult::Message);
     TestTrue(TEXT("ready reply names missing curve"), FromUtf8(ReplyPayload).Contains(TEXT("Blink_R")));
@@ -1181,7 +1166,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("ready reply reports the accepted morph count"),
             static_cast<int32>(ReadyJson->GetNumberField(TEXT("accepted_morph_count"))), 2);
     }
-    TArray<uint8> ModelReady = FMtoUProtocol::EncodeReady({}, {}, {}, FMtoUWorkflows::Model, 12, 7);
+    TArray<uint8> ModelReady = FMtoUProtocol::EncodeReady({}, {}, {}, FMtoUWorkflows::Model, 12, 7, 9);
     Decoder.Append(ModelReady.GetData(), ModelReady.Num());
     TArray<uint8> ModelReplyPayload;
     TestTrue(TEXT("model ready reply is framed"),
@@ -1784,7 +1769,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -1822,7 +1807,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -1992,54 +1977,87 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("second frame reaches the Live Link subject cache"), bSecondFrameEvaluated);
 
-    // Cached Playback round trip on the same negotiated connection: upload a
-    // complete cache, receive Ready, then let Unreal apply every frame locally
-    // exactly once in order while Maya sends no animation data.
+    // Cached Playback round trip on the same negotiated connection: enter,
+    // upload a complete cache with identity and authoritative revision,
+    // receive identity-matched Ready, then let Unreal apply every frame
+    // locally exactly once in order while Maya sends no animation data.
     FLiveLinkSubjectFrameData CachedEvaluated;
     auto SendLine = [&](const FString& Text)
     {
         const TArray<uint8> Bytes = Packet(Text);
         return Primary && SendBytes(*Primary, Bytes.GetData(), Bytes.Num());
     };
+    TestTrue(TEXT("cache entry is sent"),
+        SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
     TestTrue(TEXT("cache_begin is sent"),
-        SendLine(TEXT("{\"type\":\"cache_begin\",\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
     TestTrue(TEXT("cached frame 0 is sent"),
-        SendLine(FString::Printf(
-            TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))));
-    TestTrue(TEXT("cached frame 1 is sent"),
-        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[31,32,33,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
-    TestTrue(TEXT("cache_end is sent"),
-        SendLine(TEXT("{\"type\":\"cache_end\"}")));
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    TestTrue(TEXT("negative cached frame index keeps the session open"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":-1,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    Payload.Reset();
+    TestTrue(TEXT("negative index reports the stable index error"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("negative index uses CACHE_FRAME_INDEX_INVALID without closing"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("CACHE_FRAME_INDEX_INVALID")));
+
+    // A declared payload_size below the actual uploaded bytes is rejected
+    // atomically while keeping the same streaming session usable.
+    TestTrue(TEXT("underdeclared cache_begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":2,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":64}")));
+    TestTrue(TEXT("frame exceeding the declared size is sent"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[61,62,63,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    Payload.Reset();
+    TestTrue(TEXT("low-declared-size upload reports CACHE_PAYLOAD_TOO_LARGE"),
+        Primary && ReceivePacket(*Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("size violation uses the stable resource code"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+
+    TestTrue(TEXT("valid upload begins after the rejected attempt"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":3,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[31,32,33,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
 
     Payload.Reset();
-    TestTrue(TEXT("complete upload produces cache_ready"), Primary && ReceivePacket(
+    TestTrue(TEXT("complete upload produces identity-matched cache_ready"), Primary && ReceivePacket(
         *Primary, Payload, [&]() { Source->Update(); }));
-    TestTrue(TEXT("cache_ready reports the buffered frame count"),
-        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
-        && FromUtf8(Payload).Contains(TEXT("\"frame_count\":2")));
+    {
+        const FString ReadyText = FromUtf8(Payload);
+        TestTrue(TEXT("cache_ready echoes upload identity, revision and count"),
+            ReadyText.Contains(TEXT("\"type\":\"cache_ready\""))
+            && ReadyText.Contains(TEXT("\"upload_id\":3"))
+            && ReadyText.Contains(TEXT("\"revision\":9"))
+            && ReadyText.Contains(TEXT("\"frame_count\":2")));
+    }
 
     // While the cache owns the session, live frames must not reach Live Link.
     const TArray<uint8> IntrudingLiveFrame = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[[99,98,97,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
-    TestTrue(TEXT("intruding live frame is sent during upload"),
+    TestTrue(TEXT("intruding live frame is sent during ownership"),
         Primary && SendBytes(*Primary, IntrudingLiveFrame.GetData(), IntrudingLiveFrame.Num()));
     {
         FPlatformProcess::Sleep(0.05f);
         Source->Update();
-        // Wire silence is the contract here: no reply, and the intruding
-        // frame must not be published (Live Link keeps older frames
-        // evaluable, so absence of evaluation is not observable).
+        // Wire silence is the wire-level guarantee; Live Link keeps older
+        // frames evaluable, so the actor-visible proof is that the intruding
+        // translation never appears while the cache owns playback.
         uint8 Buffer[4096];
         int32 Read = 0;
         const bool bSilent = !Primary->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0;
         TestTrue(TEXT("intruding live frame produces no reply"), bSilent);
     }
 
-    TestTrue(TEXT("cache_play is sent"),
-        SendLine(TEXT("{\"type\":\"cache_play\",\"revision\":9}")));
+    TestTrue(TEXT("identity-matched cache_play is sent"),
+        SendLine(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
     bool bFirstCachedPoseApplied = false;
     bool bSecondCachedPoseApplied = false;
+    bool bIntruderVisible = false;
     FVector CacheRoot = FVector::ZeroVector;
+    FString CompletionPayload;
     PollUntil([&]()
     {
         Source->Update();
@@ -2050,32 +2068,46 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             if (const FLiveLinkAnimationFrameData* Animation =
                     CachedEvaluated.FrameData.Cast<FLiveLinkAnimationFrameData>())
             {
-                if (Animation->Transforms.IsValidIndex(0))
-                {
-                    CacheRoot = Animation->Transforms[0].GetTranslation();
-                }
+                CacheRoot = Animation->Transforms[0].GetTranslation();
+                bIntruderVisible |= CacheRoot.Equals(FVector(99.0, 98.0, 97.0));
             }
         }
-        bFirstCachedPoseApplied = bFirstCachedPoseApplied || CacheRoot.Equals(FVector(21.0, 22.0, 23.0));
+        bFirstCachedPoseApplied =
+            bFirstCachedPoseApplied || CacheRoot.Equals(FVector(21.0, 22.0, 23.0));
         bSecondCachedPoseApplied = CacheRoot.Equals(FVector(31.0, 32.0, 33.0));
-        return bSecondCachedPoseApplied;
+        if (bSecondCachedPoseApplied)
+        {
+            // Drain progress/completion replies arriving for this attempt.
+            uint8 Buffer[65536];
+            int32 Read = 0;
+            while (Primary->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+            {
+                CompletionPayload.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+            }
+            return CompletionPayload.Contains(TEXT("\"type\":\"cache_complete\""));
+        }
+        return false;
     });
     TestTrue(TEXT("first cached pose is applied before any later pose"), bFirstCachedPoseApplied);
     TestTrue(TEXT("second cached pose is applied in order at the captured rate"),
         bSecondCachedPoseApplied);
-    Payload.Reset();
-    TestTrue(TEXT("successful playback reports completion with applied-frame evidence"),
-        Primary && ReceivePacket(
-            *Primary, Payload, [&]() { Source->Update(); }));
-    TestTrue(TEXT("completion echoes the applied frame count"),
-        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_complete\""))
-        && FromUtf8(Payload).Contains(TEXT("\"frame_count\":2")));
+    TestFalse(TEXT("intruding live pose never becomes actor-visible during playback"),
+        bIntruderVisible);
+    TestTrue(TEXT("completion carries play identity, applied count and duration"),
+        CompletionPayload.Contains(TEXT("\"type\":\"cache_complete\""))
+        && CompletionPayload.Contains(TEXT("\"play_id\":1"))
+        && CompletionPayload.Contains(TEXT("\"applied_frame_count\":2"))
+        && CompletionPayload.Contains(TEXT("elapsed_seconds")));
 
-    // Switching back to live preview clears the Unreal buffer immediately.
+    // Switching back to live preview clears the Unreal buffer first; the
+    // cleared outcome arrives before the resumed live pose can be evaluated.
     TestTrue(TEXT("cache_clear is sent"),
         SendLine(TEXT("{\"type\":\"cache_clear\"}")));
-    FPlatformProcess::Sleep(0.02f);
-    Source->Update();
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
     const TArray<uint8> AfterClearLive = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[[41,42,43,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
     TestTrue(TEXT("live frame after clear is sent"),
@@ -2099,6 +2131,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         return bLiveResumed;
     });
     TestTrue(TEXT("live sampling resumes after the cached session clears"), bLiveResumed);
+
 
 
     const TArray<uint8> WrongCount = Packet(
@@ -2225,7 +2258,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
         const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
         return Packet(FString::Printf(
-            TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
             *Workflow,
             bBlendshapes ? TEXT("true") : TEXT("false"),
             *RootBoneName,

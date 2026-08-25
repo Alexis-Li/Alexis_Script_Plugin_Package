@@ -67,7 +67,7 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
 6. 在 **动画** 工作流中，使用互斥的 **实时预览** 和 **缓存播放** 模式进行
    复查。缓存播放要求连接已完成 Unreal 协商，并在缓存使用期间暂停实时采样。
    点击 **捕获并回放** 后，工具会按当前 Maya Playback Range（包含首尾帧）
-   逐帧采样，把 protocol-v5 缓存帧增量写入当前用户的系统临时目录并恢复原来的
+   逐帧采样，把 protocol-v6 缓存帧增量写入当前用户的系统临时目录并恢复原来的
    当前帧，然后在无实时时限的情况下把完整缓存上传给 Unreal。捕获会显示
    当前/总进度，开始前自动停止 Maya 播放，并可点击取消。工具会在写入帧前估算
    临时磁盘用量，超过 1 GiB 时请求确认，空间不足时拒绝捕获；失败或取消都会删除
@@ -101,12 +101,16 @@ Bind Pose `dagPose`（即 Go to Bind Pose 恢复的姿势）解析，无 dagPose
 不可逆的绑定矩阵会在求逆前被拒绝。多个蒙皮网格部件上的同名 BlendShape 在求值
 一致时会合并为一条 Unreal 曲线发送；若数值不同，采样会停止并列出所有冲突的 Maya
 插口。Maya 和 Unreal 单方存在的 BlendShape 会作为不阻断连接的警告显示。
-协议版本 5 要求 Maya 和 Unreal 两端组件配套安装：`init` 携带所选的
+协议版本 6 要求 Maya 和 Unreal 两端组件配套安装：`init` 携带所选的
 **动画**/**模型** 工作流和 **传递 BS** 选择，`ready` 回显工作流并上报目标与
-已接受的 Morph 数量；缓存播放消息（`cache_begin`、带索引的 `cache_frame`、
-`cache_end`、`cache_ready`、`cache_play`、`cache_stop`、`cache_clear`、
-`cache_complete`）负责传输并控制 Unreal 侧的瞬态缓存，并提供稳定的上传、修订、
-资源上限与播放性能错误。protocol-v4 客户端会收到正常的版本不匹配错误而拒绝连接。
+已接受的 Morph 数量；缓存播放消息（建立缓存归属的 `cache_enter`、携带上传身份与权威快照修订版的
+`cache_begin`、带索引的 `cache_frame`、`cache_end`、回显身份的 `cache_ready`、
+携带播放身份的 `cache_play`、有界 `cache_progress`、包含已应用帧数与耗时的
+`cache_complete`、`cache_stopped`、`cache_cleared`）负责传输并控制 Unreal 侧的
+瞬态缓存，并提供稳定的上传、修订、资源上限与播放性能错误。Unreal 会按声明尺寸
+与冻结上限计量实际上传字节，依据协商数量预检解析内存，每个更新至多应用一个源帧
+位置的姿势，并在错过窗口时于任何追赶式连发之前停止。protocol-v5 客户端会收到
+正常的版本不匹配错误而拒绝连接。
 模型工作流额外使用稳定的 `PREVIEW_NOT_READY`、`PREVIEW_BUILD_FAILED` 和
 `PREVIEW_MORPH_MISMATCH` 错误。UE 显式 Refresh 后，启用 BlendShape 的模型预览
 会传输 Maya 与 Generated Preview 的非空交集；部分覆盖明确显示为黄色，完全覆盖

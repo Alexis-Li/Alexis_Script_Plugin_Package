@@ -16,7 +16,7 @@ import time
 import uuid
 
 __version__ = "0.4.0"
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
@@ -324,13 +324,14 @@ def convert_transform(translation, quaternion, scale, unit_scale):
     return [tx, tz, ty, -qx, -qz, -qy, qw, sx, sz, sy]
 
 
-def make_init_message(bones, curves, workflow=WORKFLOW_ANIMATION,
+def make_init_message(bones, curves, revision, workflow=WORKFLOW_ANIMATION,
                       blendshapes_enabled=True):
     if workflow not in WORKFLOWS:
         raise ValueError("workflow must be 'animation' or 'model'")
     return {
         "type": "init",
         "version": PROTOCOL_VERSION,
+        "revision": int(revision),
         "workflow": workflow,
         "blendshapes_enabled": bool(blendshapes_enabled),
         "bones": bones,
@@ -345,21 +346,30 @@ def make_frame_message(transforms, curves):
     return {"type": "frame", "transforms": transforms, "curves": curves}
 
 
-def make_cache_begin_message(revision, start_frame, end_frame, fps, payload_size):
+def make_cache_enter_message():
+    return {"type": "cache_enter"}
+
+
+def make_cache_begin_message(revision, start_frame, end_frame, fps, payload_size,
+                             upload_id):
     revision = int(revision)
     start_frame = int(start_frame)
     end_frame = int(end_frame)
     frame_count = int(end_frame) - int(start_frame) + 1
     fps = float(fps)
     payload_size = int(payload_size)
+    upload_id = int(upload_id)
     if not math.isfinite(fps):
         raise ValueError("cache fps must be finite")
+    if upload_id < 1:
+        raise ValueError("cache upload id must be a positive integer")
     if frame_count < 1 or frame_count > MAX_CACHE_FRAME_COUNT:
         raise ValueError("cache frame count is outside the supported range")
     if payload_size < 1 or payload_size > MAX_CACHE_PAYLOAD_BYTES:
         raise ValueError("cache encoded size exceeds the Unreal transient limit")
     return {
         "type": "cache_begin",
+        "upload_id": upload_id,
         "revision": revision,
         "fps": fps,
         "start_frame": start_frame,
@@ -384,8 +394,11 @@ def make_cache_end_message():
     return {"type": "cache_end"}
 
 
-def make_cache_play_message(revision):
-    return {"type": "cache_play", "revision": int(revision)}
+def make_cache_play_message(play_id):
+    play_id = int(play_id)
+    if play_id < 1:
+        raise ValueError("cache play id must be a positive integer")
+    return {"type": "cache_play", "play_id": play_id}
 
 
 def make_cache_stop_message():
@@ -427,6 +440,7 @@ def validate_reply(reply):
     reply_type = reply.get("type")
     required = {
         "ready": {
+            "revision": (int, float),
             "missing_in_unreal": list,
             "missing_in_maya": list,
             "bone_name_remaps": list,
@@ -435,14 +449,24 @@ def validate_reply(reply):
             "accepted_morph_count": (int, float),
         },
         "error": {"code": str, "message": str, "details": str},
-        "cache_ready": {"frame_count": (int, float)},
-        "cache_complete": {"frame_count": (int, float)},
+        "cache_ready": {
+            "upload_id": (int, float),
+            "revision": (int, float),
+            "frame_count": (int, float),
+        },
+        "cache_progress": {"play_id": (int, float), "applied": (int, float)},
+        "cache_complete": {
+            "play_id": (int, float),
+            "applied_frame_count": (int, float),
+            "elapsed_seconds": (int, float),
+        },
+        "cache_stopped": {"play_id": (int, float)},
+        "cache_cleared": {},
     }
     fields = required.get(reply_type)
     if fields is None:
         raise ValueError(
-            "protocol reply type must be 'ready', 'error', 'cache_ready'"
-            " or 'cache_complete'")
+            "protocol reply type must be 'ready', 'error' or a cache outcome")
     for name, expected_type in fields.items():
         if name not in reply:
             raise ValueError("protocol reply requires field '{0}'".format(name))
@@ -450,21 +474,14 @@ def validate_reply(reply):
             raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
         if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
             raise ValueError("protocol reply field '{0}' must contain strings".format(name))
-    if reply_type in ("ready", "cache_ready", "cache_complete"):
-        for name in ("target_morph_count", "accepted_morph_count"):
-            if name not in reply:
-                continue
-            value = reply[name]
-            if isinstance(value, bool) or not float(value).is_integer():
-                raise ValueError(
-                    "protocol reply field '{0}' must be an integer count".format(name))
-        for name in ("frame_count",):
-            if name not in reply:
-                continue
-            value = reply[name]
-            if isinstance(value, bool) or not float(value).is_integer():
-                raise ValueError(
-                    "protocol reply field '{0}' must be an integer count".format(name))
+    for name in ("revision", "target_morph_count", "accepted_morph_count",
+                 "upload_id", "play_id", "applied", "applied_frame_count"):
+        if name not in reply:
+            continue
+        value = reply[name]
+        if isinstance(value, bool) or not float(value).is_integer():
+            raise ValueError(
+                "protocol reply field '{0}' must be an integer count".format(name))
     return reply
 
 
@@ -1726,6 +1743,10 @@ class _CachedPlaybackSession(object):
         self._poller_timer_id = None
         self._uploaded_revision = None
         self._applied_frames = None
+        self._upload_id = 0
+        self._play_id = 0
+        self._active_upload_id = None
+        self._active_play_id = None
         self._closed = False
 
     @classmethod
@@ -1842,9 +1863,27 @@ class _CachedPlaybackSession(object):
     def enter_cached_mode(self):
         self._ensure_ready()
         self._pause_streaming()
+        self._install_reply_listener()
         if self._phase == "idle":
+            self._send_enter_best_effort()
             self._emit(_CachedPlaybackSessionEvent("mode_entered"))
         return self
+
+    def _send_enter_best_effort(self):
+        """Establish cached ownership in Unreal before any capture begins."""
+        if not self._worker_ready():
+            return
+        try:
+            self._submit_cached(make_cache_enter_message())
+        except (_CachedPlaybackSessionError, _StreamingSessionError,
+                RuntimeError, TypeError, ValueError) as exc:
+            if cmds is not None:
+                try:
+                    cmds.warning(
+                        "MtoU_LiveLink could not send the cache entry"
+                        " control: {0}".format(exc))
+                except Exception:
+                    pass
 
     def leave_cached_mode(self):
         if self._closed:
@@ -2186,8 +2225,13 @@ class _CachedPlaybackSession(object):
         except (AttributeError, TypeError, ValueError):
             return 0
 
-    def _wait_for_reply(self, expected_type, timeout=UPLOAD_READY_TIMEOUT_SECONDS):
-        deadline = time.time() + float(timeout)
+    def _wait_for_cache_ready(self, expected_count, expected_revision):
+        """Block until the Ready outcome for THIS upload identity arrives.
+
+        Well-formed outcomes for older operations are stale and skipped; they
+        never end the wait or the connection.
+        """
+        deadline = time.time() + UPLOAD_READY_TIMEOUT_SECONDS
         while True:
             remaining = deadline - time.time()
             if remaining <= 0.0:
@@ -2202,38 +2246,117 @@ class _CachedPlaybackSession(object):
                 reply = self._replies.get(timeout=min(0.05, remaining))
             except queue.Empty:
                 continue
-            if reply.get("type") == expected_type:
-                return reply
-            self._handle_reply(reply)
-            return None
+            reply_type = reply.get("type")
+            if reply_type == "error":
+                # Errors echoing a foreign identity are stale; id-less errors
+                # are session-level and always surface.
+                if "upload_id" in reply \
+                        and reply["upload_id"] != self._active_upload_id:
+                    continue
+                self._handle_error_reply(reply)
+                return None
+            if reply_type != "cache_ready":
+                continue
+            if reply.get("upload_id") != self._active_upload_id:
+                continue
+            try:
+                echoed_count = int(reply.get("frame_count"))
+                echoed_revision = int(reply.get("revision"))
+            except (TypeError, ValueError):
+                echoed_count = echoed_revision = -1
+            if (echoed_count != expected_count
+                    or echoed_revision != expected_revision):
+                self._fail_upload(make_diagnostic(
+                    "CACHED_UPLOAD_FAILED",
+                    "Unreal reported inconsistent cache evidence.",
+                    details="ready frame_count={0} revision={1}, expected"
+                            " frame_count={2} revision={3}".format(
+                                echoed_count, echoed_revision,
+                                expected_count, expected_revision)))
+                return None
+            return reply
 
-    def _handle_reply(self, reply):
+    def _accept_cache_ready(self, reply):
+        if self._phase != "uploading" or self._cache is None:
+            return
+        self._uploaded_revision = self._cache.snapshot_revision
+        self._phase = "ready_to_play"
+        count = int(reply.get("frame_count") or self._cache.frame_count)
+        self._emit(_CachedPlaybackSessionEvent(
+            "upload_completed", total_frames=count,
+            metadata=self._cache.metadata))
+        self._request_play()
+
+    def _route_outcome(self, reply):
+        """Identity-aware routing: late outcomes from older operations are
+        dropped without touching current state."""
         reply_type = reply.get("type")
         if reply_type == "error":
-            self._handle_error_reply(reply)
+            active_id = None
+            if self._phase == "uploading":
+                active_id = self._active_upload_id
+            elif self._phase in ("ready_to_play", "replaying"):
+                active_id = self._active_play_id
+            if reply.get("play_id", reply.get("upload_id")) in (None, active_id):
+                self._handle_error_reply(reply)
             return
-        if reply_type == "cache_ready":
-            if self._phase != "uploading" or self._cache is None:
-                return
-            self._uploaded_revision = self._cache.snapshot_revision
-            self._phase = "ready_to_play"
-            count = int(reply.get("frame_count") or self._cache.frame_count)
-            self._emit(_CachedPlaybackSessionEvent(
-                "upload_completed", total_frames=count,
-                metadata=self._cache.metadata))
-            self._request_play()
+        if reply_type == "cache_progress":
+            if self._phase == "replaying" \
+                    and reply.get("play_id") == self._active_play_id:
+                # Informational only; never completion evidence.
+                self._emit(_CachedPlaybackSessionEvent(
+                    "replay_progress",
+                    current_frame=int(reply.get("applied") or 0),
+                    total_frames=self._cache.frame_count if self._cache else None,
+                    metadata=self._cache.metadata if self._cache else None))
             return
         if reply_type == "cache_complete":
-            if self._phase != "replaying":
+            if self._phase != "replaying" \
+                    or reply.get("play_id") != self._active_play_id:
+                return
+            total_frames = self._cache.frame_count if self._cache else None
+            try:
+                applied = int(reply.get("applied_frame_count"))
+                elapsed = float(reply.get("elapsed_seconds"))
+            except (TypeError, ValueError):
+                applied, elapsed = -1, 0.0
+            if total_frames is None or applied != total_frames or elapsed <= 0.0:
+                self._remove_playback_poller()
+                self._phase = "failed"
+                self._emit(_CachedPlaybackSessionEvent(
+                    "failed", diagnostic=make_diagnostic(
+                        "INTERNAL_ERROR",
+                        "Unreal reported inconsistent playback evidence.",
+                        details="completion applied_frame_count={0}"
+                                " elapsed_seconds={1}, expected {2} applied"
+                                " frames".format(applied, elapsed, total_frames))))
                 return
             self._remove_playback_poller()
-            applied = int(reply.get("frame_count") or 0)
             self._applied_frames = applied
             self._phase = "completed"
             self._emit(_CachedPlaybackSessionEvent(
                 "replay_completed", current_frame=applied,
-                total_frames=self._cache.frame_count if self._cache else None,
+                total_frames=total_frames,
                 metadata=self._cache.metadata if self._cache else None))
+            return
+        if reply_type == "cache_stopped":
+            if self._phase == "replaying" \
+                    and reply.get("play_id") == self._active_play_id:
+                self._remove_playback_poller()
+                self._phase = "stopped"
+                self._applied_frames = None
+                self._emit(_CachedPlaybackSessionEvent(
+                    "replay_stopped",
+                    total_frames=self._cache.frame_count if self._cache else None,
+                    metadata=self._cache.metadata if self._cache else None))
+            return
+        if reply_type == "cache_ready":
+            # A late duplicate Ready can only belong to an older upload;
+            # the current upload consumes its Ready synchronously.
+            if self._phase == "uploading":
+                self._accept_cache_ready(reply)
+            return
+        # cache_cleared and any unknown well-formed outcome are informational.
 
     def _handle_error_reply(self, reply):
         code = str(reply.get("code") or "")
@@ -2281,26 +2404,28 @@ class _CachedPlaybackSession(object):
             return
         self._pause_streaming()
         self._install_reply_listener()
-        frame_bytes = 0
+        payload_size = 0
         try:
-            for frame in cache.iter_frames():
+            for index, frame in enumerate(cache.iter_frames()):
                 encoded = json.dumps(
-                    {"type": "cache_frame", "index": 0,
-                     "transforms": frame["transforms"], "curves": frame["curves"]},
-                    ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-                frame_bytes = max(frame_bytes, len(encoded.encode("utf-8")))
-        except _PlaybackCacheError as error:
+                    make_cache_frame_message(
+                        index, frame["transforms"], frame["curves"]),
+                    ensure_ascii=False, allow_nan=False,
+                    separators=(",", ":"))
+                payload_size += len(encoded.encode("utf-8"))
+        except (_PlaybackCacheError, TypeError, ValueError) as error:
             self._invalidate_corrupt_cache(error)
             raise _CachedPlaybackSessionError(
                 "CACHED_PLAYBACK_NO_CACHE",
                 "The cached frame file is incomplete or invalid.",
                 details=str(error))
-        payload_size = frame_bytes * cache.frame_count
         start_frame, end_frame = cache.capture_range
+        self._upload_id += 1
+        self._active_upload_id = self._upload_id
         try:
             begin_message = make_cache_begin_message(
-                cache.snapshot_revision, start_frame, end_frame,
-                cache.scene_fps, payload_size)
+                revision, start_frame, end_frame,
+                cache.scene_fps, payload_size, self._upload_id)
         except ValueError as exc:
             self._fail_upload(make_diagnostic(
                 "CACHED_UPLOAD_FAILED",
@@ -2334,12 +2459,12 @@ class _CachedPlaybackSession(object):
             self._handle_transport_failure(exc)
             return
         try:
-            reply = self._wait_for_reply("cache_ready")
+            reply = self._wait_for_cache_ready(total_frames, revision)
         except _CachedPlaybackSessionError as error:
             self._handle_transport_failure(error)
             return
         if reply is not None:
-            self._handle_reply(reply)
+            self._accept_cache_ready(reply)
 
     def _can_reuse_upload(self):
         return (
@@ -2349,8 +2474,10 @@ class _CachedPlaybackSession(object):
             and int(self._uploaded_revision) == self._cache.snapshot_revision)
 
     def _request_play(self):
+        self._play_id += 1
+        self._active_play_id = self._play_id
         try:
-            self._submit_cached(make_cache_play_message(self._cache.snapshot_revision))
+            self._submit_cached(make_cache_play_message(self._play_id))
         except (_CachedPlaybackSessionError, _StreamingSessionError,
                 RuntimeError, TypeError, ValueError) as exc:
             self._handle_transport_failure(exc)
@@ -2395,14 +2522,14 @@ class _CachedPlaybackSession(object):
             pass
 
     def tick(self):
-        """Drain Unreal's playback replies; Maya sends no frame data here."""
+        """Drain Unreal's playback outcomes; Maya sends no frame data here."""
         processed = False
         while True:
             try:
                 reply = self._replies.get_nowait()
             except queue.Empty:
                 break
-            self._handle_reply(reply)
+            self._route_outcome(reply)
             processed = True
         if (self._phase == "replaying"
                 and not self._streaming_is_ready()):
@@ -2565,6 +2692,9 @@ class _SenderWorker(threading.Thread):
         self._init_packet = encode_message(init_message)
         self._latest = _LatestFrame()
         self._ordered = queue.Queue()
+        # Controls queued in ordered mode survive the switch back to Latest
+        # mode here, so a mode transition can never strand queued work.
+        self._carryover = queue.Queue()
         self._ordered_mode = False
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -2621,6 +2751,16 @@ class _SenderWorker(threading.Thread):
                         self._ordered.task_done()
                     except queue.Empty:
                         break
+            else:
+                # Lossless transition: queued ordered packets keep their place
+                # ahead of any subsequent Latest-mode live frames.
+                while True:
+                    try:
+                        packet = self._ordered.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._carryover.put(packet)
+                    self._ordered.task_done()
 
     def status(self):
         with self._lock:
@@ -2741,17 +2881,26 @@ class _SenderWorker(threading.Thread):
             while not self._stop_event.is_set():
                 with self._lock:
                     ordered_mode = self._ordered_mode
-                    if ordered_mode:
-                        try:
-                            packet = self._ordered.get_nowait()
-                        except queue.Empty:
-                            packet = None
-                    else:
-                        packet = self._latest.take()
+                    packet = None
+                    try:
+                        packet = self._carryover.get_nowait()
+                        from_carryover = True
+                    except queue.Empty:
+                        from_carryover = False
+                    if packet is None:
+                        if ordered_mode:
+                            try:
+                                packet = self._ordered.get_nowait()
+                            except queue.Empty:
+                                packet = None
+                        else:
+                            packet = self._latest.take()
                 if packet is not None:
                     with self._send_lock:
                         sock.sendall(packet)
-                    if ordered_mode:
+                    if from_carryover:
+                        self._carryover.task_done()
+                    elif ordered_mode:
                         self._ordered.task_done()
                 readable, _, _ = select.select([sock], [], [], 0.01)
                 if readable:
@@ -2957,7 +3106,7 @@ class _StreamingSession(object):
             for index, (name, parent) in enumerate(snapshot.bones)
         ]
         init_message = make_init_message(
-            bones, list(snapshot.curve_names),
+            bones, list(snapshot.curve_names), snapshot.revision,
             workflow=self._workflow,
             blendshapes_enabled=self._blendshapes_enabled)
         self._worker = _SenderWorker(init_message)
