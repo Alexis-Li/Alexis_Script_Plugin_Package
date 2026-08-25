@@ -1756,6 +1756,9 @@ class _CachedPlaybackSession(object):
         self._active_upload_revision = None
         self._active_play_id = None
         self._upload_deadline = None
+        self._upload_frame_iter = None
+        self._upload_end_sent = False
+        self._upload_submitted = 0
         self._closed = False
 
     @classmethod
@@ -2025,6 +2028,11 @@ class _CachedPlaybackSession(object):
         self.enter_cached_mode()
         if self.is_replaying:
             self.stop_replay()
+        if self._phase == "uploading":
+            # Abort the in-flight transfer; the fresh cache_begin below resets
+            # Unreal's buffer coherently, so stale frames cannot mix.
+            self._close_upload_iter()
+            self._upload_end_sent = True
         if self._cache is not None:
             self._cache.delete()
             self._cache = None
@@ -2245,6 +2253,13 @@ class _CachedPlaybackSession(object):
     def _accept_cache_ready(self, reply):
         if self._phase != "uploading" or self._cache is None:
             return
+        if not self._upload_end_sent or self._ordered_pending() > 0:
+            # Unreal cannot truthfully report Ready before cache_end was sent
+            # and drained. Put it back and stop draining this round so the
+            # same outcome is not re-consumed in a tight loop.
+            self._replies.put(reply)
+            self._stop_draining_this_round = True
+            return
         total_frames = self._cache.frame_count
         try:
             echoed_count = int(reply.get("frame_count"))
@@ -2287,12 +2302,17 @@ class _CachedPlaybackSession(object):
         if reply_type == "cache_progress":
             if self._phase == "replaying" \
                     and reply.get("play_id") == self._active_play_id:
-                # Informational only; never completion evidence.
-                self._emit(_CachedPlaybackSessionEvent(
-                    "replay_progress",
-                    current_frame=int(reply.get("applied") or 0),
-                    total_frames=self._cache.frame_count if self._cache else None,
-                    metadata=self._cache.metadata if self._cache else None))
+                # Informational only; never completion evidence. Throttled to
+                # roughly 2% steps so the UI is not flooded at scene rate.
+                total_frames = self._cache.frame_count if self._cache else None
+                applied = int(reply.get("applied") or 0)
+                step = max(1, round(total_frames / 50)) if total_frames else 1
+                if total_frames is None or applied % step == 0 \
+                        or applied >= total_frames:
+                    self._emit(_CachedPlaybackSessionEvent(
+                        "replay_progress", current_frame=applied,
+                        total_frames=total_frames,
+                        metadata=self._cache.metadata if self._cache else None))
             return
         if reply_type == "cache_complete":
             if self._phase != "replaying" \
@@ -2426,30 +2446,13 @@ class _CachedPlaybackSession(object):
             metadata=cache.metadata))
         try:
             self._submit_cached(begin_message)
-            submitted = 0
-            for index, frame in enumerate(cache.iter_frames()):
-                self._submit_cached(make_cache_frame_message(
-                    index, frame["transforms"], frame["curves"]))
-                submitted += 1
-                if submitted % UPLOAD_CHUNK_FRAMES == 0:
-                    self._await_upload_drain()
-                    self._emit(_CachedPlaybackSessionEvent(
-                        "upload_progress", current_frame=submitted,
-                        total_frames=total_frames, metadata=cache.metadata))
-            self._await_upload_drain()
-            self._submit_cached(make_cache_end_message())
-            self._await_upload_drain()
-        except _PlaybackCacheError as error:
-            self._invalidate_corrupt_cache(error)
-            raise _CachedPlaybackSessionError(
-                "CACHED_PLAYBACK_NO_CACHE",
-                "The cached frame file is incomplete or invalid.",
-                details=str(error))
+            # The transfer itself is driven by the poller in bounded chunks so
+            # Maya's thread never stalls for the duration of the upload.
+            self._upload_frame_iter = cache.iter_frames()
+            self._upload_end_sent = False
+            self._upload_submitted = 0
         except (_CachedPlaybackSessionError, _StreamingSessionError) as error:
             self._handle_transport_failure(error)
-            return
-        except (RuntimeError, ValueError, TypeError) as exc:
-            self._handle_transport_failure(exc)
             return
         # Ready arrives asynchronously: Unreal parses and buffers without any
         # real-time deadline while the poller drains the identity-matched
@@ -2515,15 +2518,13 @@ class _CachedPlaybackSession(object):
             pass
 
     def tick(self):
-        """Drain Unreal's playback outcomes; Maya sends no frame data here."""
+        """Drain outcomes and advance the pipelined cache upload.
+
+        Each call pushes at most one bounded chunk of cached frames toward
+        Unreal; Maya's thread never stalls for the duration of an upload.
+        """
         processed = False
-        while True:
-            try:
-                reply = self._replies.get_nowait()
-            except queue.Empty:
-                break
-            self._route_outcome(reply)
-            processed = True
+        self._stop_draining_this_round = False
         if self._phase == "uploading":
             if not self._streaming_is_ready() or not self._worker_ready():
                 self._handle_transport_failure(make_diagnostic(
@@ -2536,12 +2537,74 @@ class _CachedPlaybackSession(object):
                     "STREAM_INTERRUPTED",
                     "Timed out waiting for Unreal to accept the uploaded cache."))
                 return processed
+            processed = self._drive_upload_chunk() or processed
+        while not self._stop_draining_this_round:
+            try:
+                reply = self._replies.get_nowait()
+            except queue.Empty:
+                break
+            self._route_outcome(reply)
+            processed = True
+        self._stop_draining_this_round = False
         if (self._phase == "replaying"
                 and not self._streaming_is_ready()):
             self._handle_transport_failure(make_diagnostic(
                 "STREAM_INTERRUPTED", "The streaming connection ended."))
             return processed
         return processed
+
+    def _close_upload_iter(self):
+        iterator, self._upload_frame_iter = self._upload_frame_iter, None
+        if iterator is None:
+            return
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            try:
+                close()
+            except (RuntimeError, TypeError):
+                pass
+
+    def _drive_upload_chunk(self):
+        """Push at most one bounded chunk of cached frames per call."""
+        if self._upload_frame_iter is None or self._ordered_pending() > 0:
+            return False  # previous chunk still draining on the sender thread
+        total_frames = self._cache.frame_count
+        submitted = 0
+        while submitted < UPLOAD_CHUNK_FRAMES:
+            try:
+                frame = next(self._upload_frame_iter)
+            except _PlaybackCacheError as error:
+                self._close_upload_iter()
+                self._invalidate_corrupt_cache(error)
+                return submitted > 0
+            except StopIteration:
+                # Release the frames-file handle before declaring wire done.
+                self._close_upload_iter()
+                if not self._upload_end_sent:
+                    self._submit_cached(make_cache_end_message())
+                    self._upload_end_sent = True
+                break
+            try:
+                self._submit_cached(make_cache_frame_message(
+                    self._upload_submitted,
+                    frame["transforms"], frame["curves"]))
+            except (_PlaybackCacheError, RuntimeError, TypeError,
+                    ValueError) as error:
+                # A frame that cannot be encoded invalidates the whole upload
+                # deterministically instead of masquerading as a transport
+                # failure.
+                if isinstance(error, _PlaybackCacheError):
+                    self._invalidate_corrupt_cache(error)
+                    return submitted > 0
+                raise
+            self._upload_submitted += 1
+            submitted += 1
+            if self._upload_submitted % UPLOAD_CHUNK_FRAMES == 0:
+                self._emit(_CachedPlaybackSessionEvent(
+                    "upload_progress", current_frame=self._upload_submitted,
+                    total_frames=total_frames,
+                    metadata=self._cache.metadata))
+        return submitted > 0
 
     def _send_clear_best_effort(self):
         if not self._worker_ready():
@@ -2554,6 +2617,7 @@ class _CachedPlaybackSession(object):
 
     def _invalidate_incompatible_cache(self, error):
         self._remove_playback_poller()
+        self._close_upload_iter()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
@@ -2566,6 +2630,7 @@ class _CachedPlaybackSession(object):
 
     def _invalidate_corrupt_cache(self, error):
         self._remove_playback_poller()
+        self._close_upload_iter()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
@@ -2584,6 +2649,7 @@ class _CachedPlaybackSession(object):
         if self._phase not in ("uploading", "ready_to_play", "replaying"):
             return
         self._remove_playback_poller()
+        self._close_upload_iter()
         self._phase = "transport_failed"
         diagnostic = error if isinstance(error, dict) else make_diagnostic(
             "STREAM_INTERRUPTED", str(getattr(error, "message", error)),
@@ -2659,6 +2725,7 @@ class _CachedPlaybackSession(object):
         self._capture_cancel_requested = True
         self._remove_capture_timer()
         self._remove_playback_poller()
+        self._close_upload_iter()
         self._restore_capture_frame()
         if delete_cache:
             if self._capture_cache is not None:

@@ -2068,7 +2068,8 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session.close()
 
     def test_corrupt_completed_cache_is_deleted_before_upload_error(self):
-        session, unused_timeline, stream, unused_scene = self._session()
+        events = []
+        session, unused_timeline, stream, unused_scene = self._session(events)
         with __import__("tempfile").TemporaryDirectory() as directory:
             session._temp_dir = directory
             self._captured_session_into(session)
@@ -2077,10 +2078,11 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             cache = session.cache
             pathlib.Path(cache.frames_path).write_text("")
 
-            with self.assertRaises(MODULE._CachedPlaybackSessionError) as caught:
-                session.replay()
-            self.assertEqual("CACHED_PLAYBACK_NO_CACHE", caught.exception.code)
+            session.replay()
+            session.tick()
+
             self.assertIsNone(session.cache)
+            self.assertEqual("idle", session.phase)
             self.assertEqual(1, stream.resumed)
             self.assertEqual([], list(pathlib.Path(directory).iterdir()))
         session.close()
