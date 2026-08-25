@@ -841,6 +841,10 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
     TestEqual(TEXT("foreign-revision upload retains no frames"),
         Session->GetBufferedFrameCount(), 0);
+    TestFalse(TEXT("a rejected upload identity is still consumed"),
+        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+    TestEqual(TEXT("rejected upload identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
 
     // Upload identity must increase within the streaming session.
     TestTrue(TEXT("first upload identity is accepted"),
@@ -879,8 +883,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     // With the production counts of this session the prediction stays inside
     // the budget, so begin must succeed.
     TestTrue(TEXT("production-count begin stays within the parsed budget"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7), Code, Details)
-        == false || true);
+        Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7), Code, Details));
     double BudgetClock = 50.0;
     TArray<float> BudgetApplied;
     TArray<int32> BudgetProgress;
@@ -892,6 +895,10 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         BudgetSession->HandleCommand(HugeBegin, Code, Details));
     TestEqual(TEXT("memory preflight code"),
         Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+    TestFalse(TEXT("memory-rejected upload identity is still consumed"),
+        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+    TestEqual(TEXT("memory-rejected upload identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
 
     // Atomic Ready then identity-matched playback.
     TestTrue(TEXT("complete upload becomes Ready"),
@@ -962,7 +969,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("final pose held"),
         Session->GetLastAppliedIndex(), 2);
     TestTrue(TEXT("progress reported for the current attempt only"),
-        ProgressPlays.Contains(100001) && ProgressPlays.Contains(900001)
+        !ProgressPlays.Contains(100001) && ProgressPlays.Contains(900001)
         && ProgressPlays.Contains(900002) && ProgressPlays.Contains(900003));
 
     // Publication refusal must not advance applied evidence or complete.

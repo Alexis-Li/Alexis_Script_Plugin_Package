@@ -1544,14 +1544,14 @@ class _PlaybackCache(object):
     def iter_frames(self):
         if not self.completed or self._deleted:
             raise _PlaybackCacheError("only a completed cache can be replayed")
-        try:
-            stream = open(self._frames_path, "r", encoding="utf-8")
-        except OSError as exc:
-            raise _PlaybackCacheError(str(exc))
         expected_frames = self.frame_count
 
         def frames():
             seen_frames = 0
+            try:
+                stream = open(self._frames_path, "r", encoding="utf-8")
+            except OSError as exc:
+                raise _PlaybackCacheError(str(exc))
             with stream:
                 for line in stream:
                     if not line.strip():
@@ -1943,8 +1943,7 @@ class _CachedPlaybackSession(object):
         self.stop_replay()
         # Queue the Unreal cache clear while ordered delivery is active, then
         # resume streaming so live frames follow the clear in order.
-        self._send_clear_best_effort()
-        self._resume_streaming()
+        self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
         self._phase = "idle"
         self._emit(_CachedPlaybackSessionEvent("mode_exited"))
 
@@ -2065,6 +2064,7 @@ class _CachedPlaybackSession(object):
         self.enter_cached_mode()
         if self.is_replaying or self.is_stopping:
             self.stop_replay()
+        self._remove_playback_poller()
         if self._phase == "uploading":
             # Abort the in-flight transfer; the fresh cache_begin below resets
             # Unreal's buffer coherently, so stale frames cannot mix.
@@ -2339,10 +2339,10 @@ class _CachedPlaybackSession(object):
             play_id = _exact_int(reply.get("play_id"))
             upload_id = _exact_int(reply.get("upload_id"))
             if self._phase == "uploading":
-                if upload_id in (None, self._active_upload_id):
+                if upload_id == self._active_upload_id:
                     self._handle_error_reply(reply)
             elif self._phase in ("ready_to_play", "replaying", "stopping"):
-                if play_id in (None, self._active_play_id):
+                if play_id == self._active_play_id:
                     self._handle_error_reply(reply)
             return
         if reply_type == "cache_progress":
@@ -2495,7 +2495,7 @@ class _CachedPlaybackSession(object):
         # real-time deadline while the poller drains the identity-matched
         # outcome, so Maya's thread never blocks on Unreal's cache parsing.
         self._active_upload_revision = revision
-        self._upload_deadline = time.time() + UPLOAD_READY_TIMEOUT_SECONDS
+        self._upload_deadline = None
         self._add_playback_poller()
 
     def _send_cache_begin(self, revision):
@@ -2550,6 +2550,8 @@ class _CachedPlaybackSession(object):
     def _add_playback_poller(self):
         if self._timer_api is None or not hasattr(self._timer_api, "addTimerCallback"):
             return
+        if self._poller_timer_id is not None:
+            return
         self._poller_generation += 1
         generation = self._poller_generation
 
@@ -2591,6 +2593,11 @@ class _CachedPlaybackSession(object):
                     "STREAM_INTERRUPTED",
                     "The streaming connection ended during the cache upload."))
                 return processed
+            if (not self._declaring_upload and self._upload_end_sent
+                    and self._ordered_pending() == 0
+                    and self._upload_deadline is None):
+                self._upload_deadline = (
+                    time.time() + UPLOAD_READY_TIMEOUT_SECONDS)
             if (self._upload_deadline is not None
                     and time.time() > self._upload_deadline):
                 self._handle_transport_failure(make_diagnostic(

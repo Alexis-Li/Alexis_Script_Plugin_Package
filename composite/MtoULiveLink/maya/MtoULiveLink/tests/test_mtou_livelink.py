@@ -1605,6 +1605,20 @@ class PlaybackCacheTests(unittest.TestCase):
             self.assertFalse(__import__("os").path.exists(cache.metadata_path))
             self.assertFalse(__import__("os").path.exists(cache.frames_path))
 
+    def test_unstarted_frame_iterator_does_not_open_the_cache_file(self):
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            cache = MODULE._PlaybackCache.begin(
+                snapshot_revision=7, capture_start=10, capture_end=10,
+                scene_fps=30.0, temp_dir=directory, capture_time=123.0)
+            cache.append(self._frame(10))
+            cache.finalize()
+
+            with mock.patch("builtins.open", mock.mock_open()) as open_file:
+                frames = cache.iter_frames()
+                frames.close()
+
+            open_file.assert_not_called()
+
     def test_incomplete_frame_range_never_becomes_replayable(self):
         with __import__("tempfile").TemporaryDirectory() as directory:
             cache = MODULE._PlaybackCache.begin(
@@ -2300,6 +2314,27 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual("completed", session.phase)
         session.close()
 
+    def test_unscoped_errors_do_not_terminate_current_operations(self):
+        upload, unused_timeline, unused_stream, unused_scene = self._session()
+        upload.begin_capture(scene_fps=2.0)
+        while upload.is_capturing:
+            upload.capture_step()
+        upload._replies.put({
+            "type": "error", "code": "CACHE_METADATA_INVALID",
+            "message": "late upload error", "details": "missing upload_id"})
+        upload.tick()
+        self.assertEqual("uploading", upload.phase)
+        upload.close()
+
+        replay, unused_timeline, unused_stream, unused_scene = self._session()
+        self._captured_session_into(replay)
+        replay._replies.put({
+            "type": "error", "code": "CACHE_NOT_READY",
+            "message": "late play error", "details": "missing play_id"})
+        replay.tick()
+        self.assertEqual("replaying", replay.phase)
+        replay.close()
+
     def test_inconsistent_ready_evidence_fails_the_upload(self):
         events = []
         session, unused_timeline, stream, unused_scene = self._session(events)
@@ -2464,6 +2499,38 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual("idle", session.phase)
         session.close()
 
+    def test_replay_during_stop_reuses_and_leave_removes_the_poller(self):
+        session, unused_timeline, unused_stream, unused_scene = self._session()
+        self._captured_session_into(session)
+        added = []
+        removed = []
+
+        class Timer(object):
+            @staticmethod
+            def addTimerCallback(unused_interval, unused_callback):
+                added.append(len(added) + 1)
+                return added[-1]
+
+        class Message(object):
+            @staticmethod
+            def removeCallback(timer_id):
+                removed.append(timer_id)
+
+        session._timer_api = Timer
+        with mock.patch.object(MODULE, "om", type("OpenMaya", (), {
+                "MMessage": Message})):
+            session._add_playback_poller()
+            session.stop_replay()
+            session.replay()
+            session.stop_replay()
+            session.leave_cached_mode()
+
+        self.assertEqual([1], added)
+        self.assertEqual([1], removed)
+        self.assertIsNone(session._poller_timer_id)
+        self.assertEqual("idle", session.phase)
+        session.close()
+
     def test_cancelled_capture_clears_unreal_ownership_before_resuming(self):
         session, timeline, stream, unused_scene = self._session()
 
@@ -2576,6 +2643,26 @@ class CachedPlaybackSessionTests(unittest.TestCase):
                 self.assertEqual(4, begin["frame_count"])
                 self.assertEqual(expected, begin["payload_size"])
                 session.close()
+            source.close()
+
+    def test_adopted_cache_ready_timeout_starts_after_upload_drains(self):
+        with __import__("tempfile").TemporaryDirectory() as owned:
+            source, unused_timeline, unused_stream, unused_scene = self._session()
+            source._temp_dir = owned
+            self._captured_session_into(source)
+            adopted = MODULE._PlaybackCache.load(source.cache.metadata_path)
+
+            session, unused_timeline, stream, unused_scene = self._session()
+            session._cache = adopted
+            with mock.patch.object(MODULE.time, "time", return_value=100.0):
+                session.replay()
+            with mock.patch.object(MODULE.time, "time", return_value=(
+                    100.0 + MODULE.UPLOAD_READY_TIMEOUT_SECONDS + 1.0)):
+                session.tick()
+
+            self.assertEqual("uploading", session.phase)
+            self.assertIn("cache_begin", self._submitted_types(stream))
+            session.close()
             source.close()
 
     def test_recapture_after_declaring_upload_uses_captured_wire_sizes(self):

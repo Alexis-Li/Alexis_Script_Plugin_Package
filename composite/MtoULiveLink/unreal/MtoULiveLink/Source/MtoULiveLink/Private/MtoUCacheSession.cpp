@@ -160,18 +160,6 @@ bool FMtoUCacheSession::HandleBegin(
     FString& OutDetails)
 {
     const FMtoUCacheBeginMessage& Incoming = Command.Begin;
-    // claim for any other snapshot can never become compatible.
-    if (Incoming.Revision != NegotiatedRevision)
-    {
-        OutErrorCode = TEXT("CACHE_REVISION_MISMATCH");
-        OutDetails = FString::Printf(
-            TEXT("cache upload declares revision %d but the negotiated"
-                 " character snapshot revision is %d."),
-            Incoming.Revision,
-            NegotiatedRevision);
-        ResetToIdle();
-        return false;
-    }
     if (Incoming.UploadId <= LastSeenUploadId)
     {
         OutErrorCode = TEXT("CACHE_METADATA_INVALID");
@@ -180,6 +168,20 @@ bool FMtoUCacheSession::HandleBegin(
                  " (last seen %d)."),
             Incoming.UploadId,
             LastSeenUploadId);
+        ResetToIdle();
+        return false;
+    }
+    LastSeenUploadId = Incoming.UploadId;
+    // A claim for any other snapshot can never become compatible. Its upload
+    // identity is still consumed so a rejected attempt cannot be replayed.
+    if (Incoming.Revision != NegotiatedRevision)
+    {
+        OutErrorCode = TEXT("CACHE_REVISION_MISMATCH");
+        OutDetails = FString::Printf(
+            TEXT("cache upload declares revision %d but the negotiated"
+                 " character snapshot revision is %d."),
+            Incoming.Revision,
+            NegotiatedRevision);
         ResetToIdle();
         return false;
     }
@@ -207,7 +209,6 @@ bool FMtoUCacheSession::HandleBegin(
 
     // Recapture always replaces the previous cache coherently; old and new
     // frames can never mix because Begin resets the buffer unconditionally.
-    LastSeenUploadId = Incoming.UploadId;
     ActiveUploadId = Incoming.UploadId;
     Begin = Incoming;
     Frames.Reset(Begin.FrameCount);
