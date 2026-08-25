@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
   "Version": 3,
-  "VersionName": "0.3.0",
+  "VersionName": "0.4.0",
   "FriendlyName": "MtoU_LiveLink",
   "Description": "Streams evaluated Maya character animation into Unreal Live Link.",
   "Category": "Animation",

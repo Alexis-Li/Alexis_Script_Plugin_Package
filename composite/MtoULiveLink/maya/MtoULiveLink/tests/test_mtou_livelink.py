@@ -31,7 +31,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
         bind_conflict_count,
     )
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v4.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v5.json")
     .read_text(encoding="utf-8")
 )
 
@@ -1165,6 +1165,51 @@ class SenderLifecycleTests(unittest.TestCase):
         self.assertEqual("INVALID_MESSAGE", diagnostic["code"])
         self.assertEqual("transform count mismatch", diagnostic["details"])
 
+    def test_reply_listener_receives_cache_replies_and_keeps_connection(self):
+        worker = MODULE._SenderWorker({"type": "init"})
+        received = []
+        worker.set_reply_listener(received.append)
+        cache_ready = MODULE.encode_message({
+            "type": "cache_ready", "frame_count": 321})
+
+        class ListenerSocket(object):
+            def __init__(self):
+                self.reply = MODULE.encode_message({
+                    "type": "ready", "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0,
+                }) + cache_ready
+
+            def settimeout(self, timeout):
+                pass
+
+            def recv(self, size):
+                chunk, self.reply = self.reply[:size], self.reply[size:]
+                return chunk or b"\x00"
+
+            def sendall(self, packet):
+                pass
+
+            def close(self):
+                pass
+
+        fake_socket = ListenerSocket()
+
+        def selectable(unused_rlist, unused_wlist, unused_xlist, unused_timeout):
+            if fake_socket.reply:
+                return ([fake_socket], [], [])
+            worker.stop()
+            return ([], [], [])
+
+        with mock.patch.object(worker, "_connect", return_value=fake_socket), \
+             mock.patch.object(worker, "_send_initial", return_value=True), \
+             mock.patch.object(MODULE.select, "select", side_effect=selectable):
+            worker.run()
+
+        self.assertEqual(
+            [{"type": "cache_ready", "frame_count": 321}], received)
+        self.assertEqual("disconnected", worker.status()[0])
+
     def test_stop_during_connection_prevents_init_and_terminates(self):
         entered = threading.Event()
         released = threading.Event()
@@ -1589,6 +1634,19 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.current = frame
             self.set_frames.append(frame)
 
+    class Worker(object):
+        def __init__(self):
+            self.state = "ready"
+            self.pending = 0
+
+        def status(self):
+            return (self.state, "Connected", {
+                "missing_in_unreal": [], "missing_in_maya": [],
+                "bone_name_remaps": [], "has_warning": False}, None)
+
+        def ordered_pending(self):
+            return self.pending
+
     class Stream(object):
         def __init__(self):
             self.is_ready = True
@@ -1597,9 +1655,10 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.resumed = 0
             self.submitted = []
             self.ended = 0
-            self.begun = 0
             self.stopped = 0
             self.fail_submit = False
+            self._worker = CachedPlaybackSessionTests.Worker()
+            self.listener = None
 
         def pause_for_cached(self):
             self.paused += 1
@@ -1607,15 +1666,15 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         def resume_from_cached(self):
             self.resumed += 1
 
-        def submit_cached(self, frame):
+        def submit_cached(self, message):
             if self.fail_submit:
                 raise RuntimeError("transport failed")
-            self.submitted.append(frame)
+            self.submitted.append(message)
 
-        def begin_cached_replay(self):
-            self.begun += 1
+        def set_cached_reply_listener(self, listener):
+            self.listener = listener
 
-        def end_cached_replay(self):
+        def end_cached_replay(self, discard_pending=False):
             self.ended += 1
 
         def stop(self):
@@ -1634,38 +1693,81 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         return scene
 
     def _session(self, events=None):
+        import tempfile
         timeline = self.Timeline()
         stream = self.Stream()
         scene = self._scene(timeline)
         session = MODULE._CachedPlaybackSession(
             scene, stream, on_event=events.append if events is not None else None,
-            timeline=timeline, temp_dir=__import__("tempfile").gettempdir(),
-            clock=lambda: 0.0,
+            timeline=timeline, temp_dir=tempfile.gettempdir(),
             disk_usage=lambda unused: type("Usage", (), {"free": 1 << 40})(),
             timer_api=None)
         return session, timeline, stream, scene
 
-    def test_capture_restores_timeline_and_replays_every_frame_once_in_order(self):
-        events = []
+    @staticmethod
+    def _ready_reply(cache):
+        return {"type": "cache_ready", "frame_count": cache.frame_count}
+
+    def _captured_session(self, events=None):
+        """Run a full capture whose upload succeeds and enters local replay."""
         session, timeline, stream, scene = self._session(events)
+        session._replies.put({"type": "cache_ready"})
         cache = session.capture_and_replay(scene_fps=2.0)
+        return session, timeline, stream, scene, cache
+
+    def _submitted_types(self, stream):
+        return [message["type"] for message in stream.submitted]
+
+    def test_capture_uploads_complete_cache_then_unreal_drives_playback(self):
+        events = []
+        session, timeline, stream, scene, cache = self._captured_session(events)
         self.assertIs(cache, session.cache)
         self.assertTrue(cache.completed)
         self.assertEqual(4, cache.frame_count)
+        self.assertEqual("replaying", session.phase)
+        self.assertEqual(
+            ["cache_begin"]
+            + ["cache_frame"] * 4 + ["cache_end", "cache_play"],
+            self._submitted_types(stream))
+        begin_message = stream.submitted[0]
+        self.assertEqual(7, begin_message["revision"])
+        self.assertEqual(2.0, begin_message["fps"])
+        self.assertEqual((0, 3), (begin_message["start_frame"], begin_message["end_frame"]))
+        self.assertEqual(4, begin_message["frame_count"])
+        self.assertGreater(begin_message["payload_size"], 0)
+        self.assertEqual([0, 1, 2, 3], [
+            message["index"] for message in stream.submitted[1:-2]])
+        self.assertEqual([0.0, 1.0, 2.0, 3.0], [
+            message["transforms"][0][0] for message in stream.submitted[1:-2]])
+        self.assertEqual(7, stream.submitted[-1]["revision"])
+        self.assertEqual([], [m for m in stream.submitted if m["type"] == "frame"])
         self.assertEqual(42, timeline.current)
-        self.assertEqual(1, timeline.stopped)
         self.assertEqual(1, stream.paused)
-        self.assertEqual([0.0], [frame["transforms"][0][0] for frame in stream.submitted])
-        for now in (0.5, 1.0, 1.5):
-            self.assertTrue(session.tick(now=now))
-        self.assertEqual([0.0, 1.0, 2.0, 3.0],
-                         [frame["transforms"][0][0] for frame in stream.submitted])
+        self.assertEqual(4, scene.sample.call_count)
+        session._replies.put({"type": "cache_complete", "frame_count": 4})
+        self.assertTrue(session.tick())
         self.assertEqual("completed", session.phase)
-        self.assertIn("capture_completed", [event.kind for event in events])
+        self.assertIn("upload_completed", [event.kind for event in events])
         self.assertIn("replay_completed", [event.kind for event in events])
+        completed_event = [e for e in events if e.kind == "replay_completed"][0]
+        self.assertEqual(4, completed_event.current_frame)
         session.leave_cached_mode()
         self.assertEqual(1, stream.resumed)
         self.assertIsNotNone(session.cache)
+        session.close()
+
+    def test_transfer_progress_is_reported_separately_from_local_playback(self):
+        events = []
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 2):
+            session, unused_timeline, unused_stream, unused_scene, cache = \
+                self._captured_session(events)
+        kinds = [event.kind for event in events]
+        self.assertIn("upload_started", kinds)
+        self.assertIn("upload_progress", kinds)
+        self.assertLess(kinds.index("upload_completed"), kinds.index("replay_started"))
+        progress_events = [event for event in events if event.kind == "upload_progress"]
+        self.assertEqual([2, 4], [event.current_frame for event in progress_events])
+        self.assertEqual(4, cache.frame_count)
         session.close()
 
     def test_cancel_capture_deletes_partial_cache_and_restores_frame(self):
@@ -1684,7 +1786,7 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertIn("capture_cancelled", [event.kind for event in events])
         session.close()
 
-    def test_cancel_requested_by_final_progress_does_not_finalize_or_replay(self):
+    def test_cancel_requested_by_final_progress_does_not_finalize_or_upload(self):
         events = []
         session, timeline, stream, unused_scene = self._session(events)
 
@@ -1700,8 +1802,6 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual(1, stream.resumed)
         self.assertIn("capture_cancelled", [event.kind for event in events])
         session.close()
-
-
 
     def test_begin_capture_is_incremental_and_timer_cancelable(self):
         events = []
@@ -1749,69 +1849,34 @@ class CachedPlaybackSessionTests(unittest.TestCase):
             self.assertEqual([], list(pathlib.Path(directory).iterdir()))
         session.close()
 
-    def test_recapture_stops_active_replay_before_replacing_cache(self):
-        session, timeline, stream, unused_scene = self._session()
-        with __import__("tempfile").TemporaryDirectory() as directory:
-            session._temp_dir = directory
-            session.capture_and_replay(scene_fps=24.0)
-            self.assertTrue(session.is_replaying)
+    def test_recapture_stops_active_playback_and_replaces_coherently(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        self._captured_session_into(session)
+        self.assertTrue(session.is_replaying)
 
-            session.begin_capture(scene_fps=24.0)
-            self.assertTrue(session.is_capturing)
-            self.assertEqual(1, stream.ended)
+        session.begin_capture(scene_fps=24.0)
+        self.assertTrue(session.is_capturing)
+        self.assertEqual("cache_stop", stream.submitted[-1]["type"])
+        self.assertIsNone(session.cache)
 
-            session.cancel_capture()
+        session.cancel_capture()
+        session.capture_step()
+        self.assertIsNone(session.cache)
+        session.close()
+
+    def _captured_session_into(self, session):
+        session._replies.put({"type": "cache_ready"})
+        session.begin_capture(scene_fps=2.0)
+        while session.is_capturing:
             session.capture_step()
-            self.assertIsNone(session.cache)
-            self.assertEqual(42, timeline.current)
-        session.close()
 
-
-
-    def test_late_replay_sends_one_frame_per_tick_without_dropping(self):
-        session, unused_timeline, stream, unused_scene = self._session()
-        session.capture_and_replay(scene_fps=2.0)
-        self.assertTrue(session.tick(now=100.0))
-        self.assertEqual([0.0, 1.0],
-                         [frame["transforms"][0][0] for frame in stream.submitted])
-        self.assertFalse(session.tick(now=100.1))
-        self.assertTrue(session.tick(now=100.5))
-        self.assertEqual([0.0, 1.0, 2.0],
-                         [frame["transforms"][0][0] for frame in stream.submitted])
-        session.stop_replay()
-        self.assertIsNotNone(session.cache)
-        self.assertEqual("stopped", session.phase)
-        session.close()
-
-    def test_replay_can_be_started_again_without_recapture(self):
-        session, unused_timeline, stream, unused_scene = self._session()
-        session.capture_and_replay(scene_fps=2.0)
-        for now in (0.5, 1.0, 1.5):
-            session.tick(now=now)
-        first_capture_count = len(stream.submitted)
-        session.replay()
-        self.assertEqual(first_capture_count + 1, len(stream.submitted))
-        session.close()
-
-    def test_replay_reopens_ordered_transport_after_manual_stop(self):
-        session, unused_timeline, stream, unused_scene = self._session()
-        session.capture_and_replay(scene_fps=2.0)
-        session.stop_replay()
-        begun_before_replay = stream.begun
-
-        session.replay()
-
-        self.assertGreater(stream.begun, begun_before_replay)
-        self.assertEqual("replaying", session.phase)
-        session.close()
-
-    def test_first_replay_frame_transport_failure_has_terminal_outcome(self):
+    def test_transport_failure_during_upload_retains_completed_cache(self):
         events = []
         session, unused_timeline, stream, unused_scene = self._session(events)
         session.begin_capture(scene_fps=2.0)
         for unused_frame in range(3):
             session.capture_step()
-        stream.fail_submit = True
+        stream._worker.state = "error"
 
         session.capture_step()
 
@@ -1821,9 +1886,84 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertIn("transport_failed", [event.kind for event in events])
         session.close()
 
-    def test_cache_revision_mismatch_resumes_streaming_after_invalidation(self):
+    def test_upload_rejection_reports_stable_upload_failure(self):
+        events = []
+        session, unused_timeline, stream, unused_scene = self._session(events)
+        session._replies.put({
+            "type": "error",
+            "code": "CACHE_METADATA_INVALID",
+            "message": "The cache upload metadata is invalid.",
+            "details": "frame_count mismatch",
+        })
+        session.begin_capture(scene_fps=2.0)
+        while session.is_capturing:
+            session.capture_step()
+
+        self.assertEqual("upload_failed", session.phase)
+        self.assertIsNotNone(session.cache)
+        self.assertEqual(0, stream.stopped)
+        failed_events = [event for event in events if event.kind == "failed"]
+        self.assertEqual(1, len(failed_events))
+        self.assertEqual(
+            "CACHED_UPLOAD_FAILED", failed_events[0].diagnostic["code"])
+        session.close()
+
+    def test_playback_performance_failure_is_explicit_and_keeps_cache(self):
+        events = []
+        session, unused_timeline, stream, unused_scene, unused_cache = self._captured_session(events)
+        play_count = len(stream.submitted)
+        session._replies.put({
+            "type": "error",
+            "code": "CACHED_PLAYBACK_PERFORMANCE",
+            "message": "Local playback fell behind the captured scene rate.",
+            "details": "frame 118 missed its schedule",
+        })
+        self.assertTrue(session.tick())
+
+        self.assertEqual("playback_failed", session.phase)
+        self.assertIsNotNone(session.cache)
+        self.assertEqual(play_count, len(stream.submitted))
+        performance_events = [
+            event for event in events if event.kind == "playback_failed"]
+        self.assertEqual(1, len(performance_events))
+        self.assertEqual(
+            "CACHED_PLAYBACK_PERFORMANCE",
+            performance_events[0].diagnostic["code"])
+        session.close()
+
+    def test_manual_stop_holds_last_frame_and_replay_again_reuses_upload(self):
         session, unused_timeline, stream, unused_scene = self._session()
-        session.capture_and_replay(scene_fps=2.0)
+        self._captured_session_into(session)
+        session.stop_replay()
+        self.assertEqual("stopped", session.phase)
+        self.assertEqual("cache_stop", stream.submitted[-1]["type"])
+        self.assertIsNotNone(session.cache)
+        uploads_before = self._submitted_types(stream).count("cache_begin")
+
+        session.replay()
+
+        self.assertEqual("replaying", session.phase)
+        self.assertEqual(uploads_before, self._submitted_types(stream).count("cache_begin"))
+        self.assertEqual("cache_play", stream.submitted[-1]["type"])
+        session.close()
+
+    def test_completed_review_replays_again_without_reupload(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        self._captured_session_into(session)
+        session._replies.put({"type": "cache_complete", "frame_count": 4})
+        session.tick()
+        self.assertEqual("completed", session.phase)
+        uploads_before = self._submitted_types(stream).count("cache_begin")
+
+        session.replay()
+
+        self.assertEqual("replaying", session.phase)
+        self.assertEqual(uploads_before, self._submitted_types(stream).count("cache_begin"))
+        session.close()
+
+    def test_snapshot_change_invalidates_cache_before_replay_again(self):
+        session, unused_timeline, stream, scene = self._session()
+        self._captured_session_into(session)
         session.stop_replay()
         session.cache._metadata["snapshot_revision"] = 8
 
@@ -1836,29 +1976,33 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual(1, stream.resumed)
         session.close()
 
-    def test_completed_cache_replays_after_transport_reconnect(self):
-        first, unused_timeline, first_stream, unused_scene = self._session()
-        cache = first.capture_and_replay(scene_fps=2.0)
-        first.on_transport_failure(MODULE.make_diagnostic("STREAM_INTERRUPTED"))
-        first.close(delete_cache=False)
+    def test_corrupt_completed_cache_is_deleted_before_upload_error(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            session._temp_dir = directory
+            self._captured_session_into(session)
+            session.stop_replay()
+            session._uploaded_revision = None
+            cache = session.cache
+            pathlib.Path(cache.frames_path).write_text("")
 
-        second, unused_timeline, second_stream, unused_scene = self._session()
-        second._cache = cache
-        second.replay()
-
-        self.assertEqual([0.0], [
-            frame["transforms"][0][0] for frame in second_stream.submitted
-        ])
-        second.close()
+            with self.assertRaises(MODULE._CachedPlaybackSessionError) as caught:
+                session.replay()
+            self.assertEqual("CACHED_PLAYBACK_NO_CACHE", caught.exception.code)
+            self.assertIsNone(session.cache)
+            self.assertEqual(1, stream.resumed)
+            self.assertEqual([], list(pathlib.Path(directory).iterdir()))
+        session.close()
 
     def test_three_capture_stop_cycles_leave_only_the_current_cache(self):
         session, unused_timeline, stream, unused_scene = self._session()
         with __import__("tempfile").TemporaryDirectory() as directory:
             session._temp_dir = directory
             for unused_cycle in range(3):
-                session.capture_and_replay(scene_fps=2.0)
+                self._captured_session_into(session)
                 session.stop_replay()
                 self.assertIsNotNone(session.cache)
+                self.assertEqual("stopped", session.phase)
 
             self.assertEqual(2, len(list(pathlib.Path(directory).iterdir())))
             session.close()
@@ -1940,37 +2084,20 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         session._disk_usage = disk_usage
         with __import__("tempfile").TemporaryDirectory() as directory:
             session._temp_dir = directory
+            session._replies.put({"type": "cache_ready"})
             cache = session.capture_and_replay(scene_fps=24.0)
             self.assertTrue(cache.completed)
             self.assertEqual(4, cache.frame_count)
             session.close()
 
-    def test_corrupt_completed_cache_is_deleted_before_replay_error(self):
+    def test_oversized_cache_fails_fast_before_upload_starts(self):
         session, unused_timeline, stream, unused_scene = self._session()
-        with __import__("tempfile").TemporaryDirectory() as directory:
-            session._temp_dir = directory
-            session.capture_and_replay(scene_fps=24.0)
-            session.stop_replay()
-            cache = session.cache
-            pathlib.Path(cache.frames_path).write_text("")
-
-            with self.assertRaises(MODULE._CachedPlaybackSessionError) as caught:
-                session.replay()
-            self.assertEqual("CACHED_PLAYBACK_NO_CACHE", caught.exception.code)
-            self.assertIsNone(session.cache)
-            self.assertEqual(1, stream.resumed)
-            self.assertEqual([], list(pathlib.Path(directory).iterdir()))
-        session.close()
-
-    def test_revision_change_invalidates_completed_cache_during_replay(self):
-        session, unused_timeline, stream, scene = self._session()
-        session.capture_and_replay(scene_fps=2.0)
-        scene.snapshot.return_value = character_snapshot(
-            8, "|root", "Clothes01", [("root", -1)], [])
-        self.assertFalse(session.tick(now=0.5))
-        self.assertIsNone(session.cache)
-        self.assertEqual("idle", session.phase)
-        self.assertEqual(1, stream.resumed)
+        with mock.patch.object(MODULE, "MAX_CACHE_PAYLOAD_BYTES", 8):
+            session._replies.put({"type": "cache_ready"})
+            cache = session.capture_and_replay(scene_fps=24.0)
+            self.assertTrue(cache.completed)
+            self.assertEqual("upload_failed", session.phase)
+            self.assertEqual([], stream.submitted)
         session.close()
 
     def test_replay_requires_ready_connection_and_matching_revision(self):
@@ -1989,7 +2116,7 @@ class CachedPlaybackSessionTests(unittest.TestCase):
     def test_transport_failure_after_stop_does_not_overwrite_terminal_outcome(self):
         events = []
         session, unused_timeline, stream, unused_scene = self._session(events)
-        session.capture_and_replay(scene_fps=2.0)
+        self._captured_session_into(session)
         session.stop_replay()
 
         session.on_transport_failure(MODULE.make_diagnostic("STREAM_INTERRUPTED"))
@@ -1997,6 +2124,31 @@ class CachedPlaybackSessionTests(unittest.TestCase):
         self.assertEqual("stopped", session.phase)
         self.assertEqual(0, stream.stopped)
         self.assertEqual(1, [event.kind for event in events].count("replay_stopped"))
+        session.close()
+
+    def test_stale_replies_do_not_change_a_finished_playback(self):
+        events = []
+        session, unused_timeline, stream, unused_scene = self._session(events)
+        self._captured_session_into(session)
+        session.stop_replay()
+
+        session._replies.put({"type": "cache_complete", "frame_count": 4})
+        session._replies.put({"type": "cache_ready", "frame_count": 4})
+        self.assertTrue(session.tick())
+
+        self.assertEqual("stopped", session.phase)
+        self.assertNotIn("replay_completed", [event.kind for event in events])
+        session.close()
+
+    def test_leave_cached_mode_clears_unreal_buffer_and_resumes_streaming(self):
+        session, unused_timeline, stream, unused_scene = self._session()
+        self._captured_session_into(session)
+
+        session.leave_cached_mode()
+
+        self.assertEqual("cache_clear", stream.submitted[-1]["type"])
+        self.assertEqual("idle", session.phase)
+        self.assertEqual(1, stream.resumed)
         session.close()
 
 class ControllerLifecycleTests(unittest.TestCase):
@@ -2561,7 +2713,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(MODULE.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v4_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v5_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
@@ -2604,7 +2756,7 @@ class WorkflowTests(unittest.TestCase):
             session.stop()
 
         init_message = captured["init"]
-        self.assertEqual(4, init_message["version"])
+        self.assertEqual(5, init_message["version"])
         self.assertEqual(MODULE.WORKFLOW_MODEL, init_message["workflow"])
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
@@ -2723,19 +2875,68 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(payload, actual)
             self.assertTrue(MODULE.encode_message(actual))
             return
-        if operation in ("ready", "error"):
+        if operation in ("ready", "error", "cache_ready", "cache_complete"):
             if expected["accepted"]:
                 self.assertEqual(case["payload"], MODULE.validate_reply(case["payload"]))
             else:
                 with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
                     MODULE.validate_reply(case["payload"])
             return
+        if operation == "cache_begin":
+            payload = case["payload"]
+            actual = MODULE.make_cache_begin_message(
+                payload["revision"], payload["start_frame"], payload["end_frame"],
+                payload["fps"], payload["payload_size"])
+            actual.update({key: value for key, value in payload.items() if key == "future"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation == "cache_frame":
+            payload = case["payload"]
+            counts = case.get("expected_counts")
+            transforms = payload.get(
+                "transforms",
+                [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+                 for unused in range((counts or {}).get("transforms", 0))])
+            curves = payload.get(
+                "curves", [0.0 for unused in range((counts or {}).get("curves", 0))])
+            actual = MODULE.make_cache_frame_message(
+                payload.get("index", 0), transforms, curves)
+            actual.update({key: value for key, value in payload.items()
+                           if key not in ("index", "transforms", "curves")})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation == "cache_end":
+            payload = dict(case["payload"])
+            actual = MODULE.make_cache_end_message()
+            actual.update({key: value for key, value in payload.items() if key != "type"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation == "cache_play":
+            payload = case["payload"]
+            actual = MODULE.make_cache_play_message(payload["revision"])
+            actual.update({key: value for key, value in payload.items()
+                           if key != "revision"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
+        if operation in ("cache_stop", "cache_clear"):
+            payload = dict(case["payload"])
+            builder = (MODULE.make_cache_stop_message if operation == "cache_stop"
+                       else MODULE.make_cache_clear_message)
+            actual = builder()
+            actual.update({key: value for key, value in payload.items() if key != "type"})
+            self.assertEqual(payload, actual)
+            self.assertTrue(MODULE.encode_message(actual))
+            return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v4_init_and_structured_diagnostics(self):
+    def test_protocol_v5_init_and_structured_diagnostics(self):
         identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
         message = MODULE.make_init_message([["root", -1, identity]], ["Smile"])
-        self.assertEqual(4, message["version"])
+        self.assertEqual(5, message["version"])
         self.assertEqual("animation", message["workflow"])
         self.assertTrue(message["blendshapes_enabled"])
         model_message = MODULE.make_init_message(
@@ -2744,6 +2945,11 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(model_message["blendshapes_enabled"])
         with self.assertRaisesRegex(ValueError, "workflow"):
             MODULE.make_init_message([["root", -1, identity]], [], "preview", True)
+        for code in ("CACHED_UPLOAD_FAILED", "CACHED_PLAYBACK_PERFORMANCE"):
+            cached_diagnostic = MODULE.make_diagnostic(code)
+            self.assertEqual(code, cached_diagnostic["code"])
+            self.assertNotEqual(
+                "MtoU_LiveLink 发生内部错误", cached_diagnostic["summary"])
         diagnostic = MODULE.make_diagnostic(
             "SKELETON_MISMATCH", "Skeleton differs", details="details"
         )

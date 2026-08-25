@@ -445,7 +445,8 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             continue;
         }
 
-        if (Operation == TEXT("ready") || Operation == TEXT("error"))
+        if (Operation == TEXT("ready") || Operation == TEXT("error")
+            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_complete"))
         {
             const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
             TArray<uint8> PacketBytes;
@@ -472,6 +473,16 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     Source->GetStringField(TEXT("workflow")),
                     static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
+            }
+            else if (Operation == TEXT("cache_ready"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheReady(
+                    static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+            }
+            else if (Operation == TEXT("cache_complete"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheComplete(
+                    static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
             }
             else
             {
@@ -501,9 +512,13 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                         TEXT("bone_name_remaps"), TEXT("workflow"),
                         TEXT("target_morph_count"), TEXT("accepted_morph_count")};
                 }
-                else
+                else if (Operation == TEXT("error"))
                 {
                     RequiredFields = {TEXT("code"), TEXT("message"), TEXT("details")};
+                }
+                else
+                {
+                    RequiredFields = {TEXT("frame_count")};
                 }
                 for (const TCHAR* Field : RequiredFields)
                 {
@@ -522,10 +537,442 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                         static_cast<int32>(Encoded->GetNumberField(TEXT("accepted_morph_count"))),
                         static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))));
                 }
+                else if (Operation == TEXT("cache_ready") || Operation == TEXT("cache_complete"))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s echoes applied frame count"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("frame_count"))),
+                        static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+                }
             }
+            continue;
+        }
+
+        if (Operation.StartsWith(TEXT("cache_")))
+        {
+            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
+                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
+                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            FString Error;
+            FString ErrorCode = TEXT("INVALID_MESSAGE");
+            bool bAccepted = false;
+
+            FMtoUCacheCommand Command;
+            bool bCommandKnown = true;
+            if (Operation == TEXT("cache_begin"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Begin;
+                bAccepted = FMtoUProtocol::ParseCacheBegin(Bytes, Command.Begin, Error, ErrorCode);
+            }
+            else if (Operation == TEXT("cache_frame"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Frame;
+                bAccepted = FMtoUProtocol::ParseCacheFrame(Bytes, Command.Index, Command.Frame, Error);
+            }
+            else if (Operation == TEXT("cache_end"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::End;
+                bAccepted = FMtoUProtocol::ParseCacheEnd(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_play"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Play;
+                bAccepted = FMtoUProtocol::ParseCachePlay(Bytes, Command.Revision, Error);
+            }
+            else if (Operation == TEXT("cache_stop"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Stop;
+                bAccepted = FMtoUProtocol::ParseCacheStop(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_clear"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Clear;
+                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Error);
+            }
+            else
+            {
+                bCommandKnown = false;
+            }
+
+            // State-sensitive cases run against a seeded transient cache
+            // session so the corpus pins Unreal's session semantics too.
+            const FString SessionMode = Case->HasField(TEXT("session"))
+                ? Case->GetStringField(TEXT("session"))
+                : FString();
+            if (bCommandKnown && !SessionMode.IsEmpty())
+            {
+                double FakeNow = 100.0;
+                FMtoUCacheSession Session;
+                Session.SetClock([&FakeNow]() { return FakeNow; });
+                if (SessionMode == TEXT("uploaded"))
+                {
+                    FMtoUCacheCommand SeedBegin;
+                    SeedBegin.Kind = FMtoUCacheCommand::EKind::Begin;
+                    SeedBegin.Begin.Revision = 9;
+                    SeedBegin.Begin.Fps = 30.0;
+                    SeedBegin.Begin.StartFrame = 0;
+                    SeedBegin.Begin.EndFrame = 0;
+                    SeedBegin.Begin.FrameCount = 1;
+                    SeedBegin.Begin.PayloadSize = 96;
+                    FMtoUCacheCommand SeedFrame;
+                    SeedFrame.Kind = FMtoUCacheCommand::EKind::Frame;
+                    SeedFrame.Index = 0;
+                    FMtoUCacheCommand SeedEnd;
+                    SeedEnd.Kind = FMtoUCacheCommand::EKind::End;
+                    FString SeedCode;
+                    FString SeedDetails;
+                    TestTrue(*FString::Printf(TEXT("%s seeds an uploaded session"), *Id),
+                        Session.HandleCommand(SeedBegin, SeedCode, SeedDetails)
+                        && Session.HandleCommand(SeedFrame, SeedCode, SeedDetails)
+                        && Session.HandleCommand(SeedEnd, SeedCode, SeedDetails));
+                }
+                ErrorCode = TEXT("");
+                bAccepted = Session.HandleCommand(Command, ErrorCode, Error);
+                if (!bAccepted && ErrorCode.IsEmpty())
+                {
+                    ErrorCode = TEXT("INVALID_MESSAGE");
+                }
+            }
+            else if (Operation == TEXT("cache_frame") && bAccepted
+                && Case->HasField(TEXT("expected_counts")))
+            {
+                // Cached frames never close the connection over value
+                // problems; they reject the whole upload with a stable code.
+                const TSharedPtr<FJsonObject> Counts = Case->GetObjectField(TEXT("expected_counts"));
+                bool bStructural = false;
+                FString ValidationError;
+                if (!FMtoUProtocol::ValidateFrame(
+                        Command.Frame,
+                        static_cast<int32>(Counts->GetNumberField(TEXT("transforms"))),
+                        static_cast<int32>(Counts->GetNumberField(TEXT("curves"))),
+                        ValidationError,
+                        bStructural))
+                {
+                    bAccepted = false;
+                    ErrorCode = TEXT("CACHE_FRAME_CONTENTS_INVALID");
+                    Error = ValidationError;
+                }
+            }
+
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id),
+                !bAccepted && ErrorCode == TEXT("INVALID_MESSAGE"), bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+            }
+            continue;
         }
     }
     TestTrue(TEXT("Unreal exercised canonical conformance cases"), ApplicableCount > 0);
+    return true;
+}
+
+namespace
+{
+FMtoUCacheCommand MakeCacheBeginCommand(int32 Revision, int32 FrameCount, double Fps = 30.0)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Begin;
+    Command.Begin.Revision = Revision;
+    Command.Begin.Fps = Fps;
+    Command.Begin.StartFrame = 1001;
+    Command.Begin.EndFrame = 1001 + FrameCount - 1;
+    Command.Begin.FrameCount = FrameCount;
+    Command.Begin.PayloadSize = 96 * FrameCount;
+    return Command;
+}
+
+FMtoUCacheCommand MakeCachedFrameCommand(int32 Index, float Value, int32 CurveCount = 0)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Frame;
+    Command.Index = Index;
+    FMtoUTransform Transform;
+    Transform.Translation = FVector(Value, 0.0, 0.0);
+    Command.Frame.Transforms.Add(Transform);
+    for (int32 Curve = 0; Curve < CurveCount; ++Curve)
+    {
+        Command.Frame.Curves.Add(0.5);
+    }
+    return Command;
+}
+
+FMtoUCacheCommand MakeSimpleCacheCommand(FMtoUCacheCommand::EKind Kind)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = Kind;
+    return Command;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionTest,
+    "MtoULiveLink.CachedPlayback.CacheSession",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    auto MakeSession = [](double& Clock, TArray<float>& Applied)
+    {
+        TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
+        Session->SetClock([&Clock]() { return Clock; });
+        Session->SetValidationCounts(1, 0);
+        Session->SetPublish([&Applied](const FMtoUFrameMessage& Frame)
+        {
+            Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+        });
+        return Session;
+    };
+    const auto UploadFrames = [](FMtoUCacheSession& Session, int32 Revision,
+                                 const TArray<float>& Values, FString& Code, FString& Details)
+    {
+        bool bOk = Session.HandleCommand(
+            MakeCacheBeginCommand(Revision, Values.Num()), Code, Details);
+        for (int32 Index = 0; Index < Values.Num() && bOk; ++Index)
+        {
+            bOk = Session.HandleCommand(
+                MakeCachedFrameCommand(Index, Values[Index]), Code, Details);
+        }
+        if (bOk)
+        {
+            bOk = Session.HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details);
+        }
+        return bOk;
+    };
+
+    double Clock = 100.0;
+    TArray<float> Applied;
+    TSharedRef<FMtoUCacheSession> Session = MakeSession(Clock, Applied);
+    FString Code;
+    FString Details;
+
+    // Upload lifecycle gates.
+    TestEqual(TEXT("cache starts idle"), Session->GetState(), EMtoUCacheState::Idle);
+    TestFalse(TEXT("cache_end without cache_begin is a state violation"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details));
+    TestEqual(TEXT("state violation code"),
+        Code, FString(TEXT("CACHE_INVALID_STATE")));
+    TestEqual(TEXT("buffer stays empty after rejection"),
+        Session->GetBufferedFrameCount(), 0);
+
+    TestTrue(TEXT("cache_begin is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 3), Code, Details));
+    TestEqual(TEXT("cache_begin enters Receiving"),
+        Session->GetState(), EMtoUCacheState::Receiving);
+
+    TestTrue(TEXT("contiguous frame 0 is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 10.0f), Code, Details));
+    TestTrue(TEXT("contiguous frame 1 is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(1, 11.0f), Code, Details));
+
+    // Gap rejection drops the whole partial upload.
+    TestFalse(TEXT("gap index rejects the upload"),
+        Session->HandleCommand(MakeCachedFrameCommand(3, 13.0f), Code, Details));
+    TestEqual(TEXT("gap code"),
+        Code, FString(TEXT("CACHE_FRAME_INDEX_INVALID")));
+    TestEqual(TEXT("rejected upload retains no frames"),
+        Session->GetBufferedFrameCount(), 0);
+    TestEqual(TEXT("rejected upload returns to Idle"),
+        Session->GetState(), EMtoUCacheState::Idle);
+
+    // Duplicate rejection.
+    TestTrue(TEXT("replacement cache_begin restarts coherently"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2), Code, Details));
+    TestTrue(TEXT("frame 0 of replacement is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 20.0f), Code, Details));
+    TestFalse(TEXT("duplicate index rejects the upload"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 21.0f), Code, Details));
+    TestEqual(TEXT("duplicate code"),
+        Code, FString(TEXT("CACHE_FRAME_INDEX_INVALID")));
+
+    // Numeric validation at the trust boundary.
+    TestTrue(TEXT("third cache_begin is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 1), Code, Details));
+    FMtoUCacheCommand BadFrame =
+        MakeCachedFrameCommand(0, 30.0f, 1);
+    TestFalse(TEXT("curve count mismatch rejects the upload"),
+        Session->HandleCommand(BadFrame, Code, Details));
+    TestEqual(TEXT("contents code"),
+        Code, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+
+    // Partial uploads never become Ready.
+    TestTrue(TEXT("partial-upload cache_begin is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2), Code, Details));
+    TestTrue(TEXT("single partial frame is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 40.0f), Code, Details));
+    TestFalse(TEXT("early cache_end cannot make a partial cache ready"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details));
+    TestEqual(TEXT("partial upload was dropped"),
+        Session->GetBufferedFrameCount(), 0);
+
+    // Atomic Ready then revision-gated playback.
+    TestTrue(TEXT("complete upload becomes Ready"),
+        UploadFrames(*Session, 7, {50.0f, 51.0f, 52.0f}, Code, Details));
+    TestEqual(TEXT("complete upload is Ready"),
+        Session->GetState(), EMtoUCacheState::Ready);
+
+    FMtoUCacheCommand StalePlay;
+    StalePlay.Kind = FMtoUCacheCommand::EKind::Play;
+    StalePlay.Revision = 6;
+    TestFalse(TEXT("stale revision cannot start playback"),
+        Session->HandleCommand(StalePlay, Code, Details));
+    TestEqual(TEXT("stale revision code"),
+        Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
+    TestEqual(TEXT("ready cache survives mismatched play"),
+        Session->GetState(), EMtoUCacheState::Ready);
+
+    // First captured pose is the first locally played pose.
+    FMtoUCacheCommand Play;
+    Play.Kind = FMtoUCacheCommand::EKind::Play;
+    Play.Revision = 7;
+    const double Interval = 1.0 / 30.0;
+    TestTrue(TEXT("matching revision starts local playback"),
+        Session->HandleCommand(Play, Code, Details));
+    TestEqual(TEXT("playback state"),
+        Session->GetState(), EMtoUCacheState::Playing);
+    TestEqual(TEXT("first cached pose is applied at play start"),
+        Applied, TArray<float>({50.0f}));
+
+    // Exactly once, in order, on the captured scene rate.
+    Clock += Interval;
+    TestEqual(TEXT("tick applies one scheduled frame"), Session->Tick(), 1);
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("early tick applies nothing"), Session->Tick(), 0);
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("next due frame applies on schedule"), Session->Tick(), 1);
+    TestEqual(TEXT("every pose applied once in order"),
+        Applied, TArray<float>({50.0f, 51.0f, 52.0f}));
+    TestEqual(TEXT("completion state"),
+        Session->GetState(), EMtoUCacheState::Completed);
+    TestEqual(TEXT("final pose held"),
+        Session->GetLastAppliedIndex(), 2);
+    Clock += 1.0;
+    Session->Tick();
+    TestEqual(TEXT("completed review does not reapply frames"),
+        Session->GetAppliedFrameCount(), 3);
+
+    // Replay-again reuses the uploaded cache without re-upload.
+    TestTrue(TEXT("replay-again is accepted"),
+        Session->HandleCommand(Play, Code, Details));
+    TestEqual(TEXT("replay-again reapplies the first pose"),
+        Applied.Num(), 4);
+    Clock += Interval;
+    Session->Tick();
+    Clock += Interval;
+    Session->Tick();
+    TestEqual(TEXT("second full pass completed"),
+        Session->GetAppliedFrameCount(), 6);
+
+    // Manual stop holds the last actually applied frame and keeps the cache.
+    TestTrue(TEXT("replay-again after completion"),
+        Session->HandleCommand(Play, Code, Details));
+    Clock += Interval;
+    Session->Tick();
+    TestTrue(TEXT("manual stop during playback"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Stop), Code, Details));
+    TestEqual(TEXT("stopped state"),
+        Session->GetState(), EMtoUCacheState::Stopped);
+    const int32 AppliedAtStop = Session->GetAppliedFrameCount();
+    Clock += Interval * 10.0;
+    Session->Tick();
+    TestEqual(TEXT("stopped playback applies nothing more"),
+        Session->GetAppliedFrameCount(), AppliedAtStop);
+    TestEqual(TEXT("stopped playback holds the last applied frame"),
+        Session->GetLastAppliedIndex(), 1);
+    TestTrue(TEXT("stop keeps the compatible uploaded cache"),
+        Session->GetBufferedFrameCount(), 3);
+    TestTrue(TEXT("replay-again after stop reuses the cache"),
+        Session->HandleCommand(Play, Code, Details));
+
+    // Clear invalidates everything idempotently.
+    TestTrue(TEXT("clear is accepted while playing"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Clear), Code, Details));
+    TestTrue(TEXT("clear is idempotent"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Clear), Code, Details));
+    TestEqual(TEXT("clear empties the buffer"),
+        Session->GetBufferedFrameCount(), 0);
+    TestEqual(TEXT("cleared state"),
+        Session->GetState(), EMtoUCacheState::Idle);
+    FMtoUCacheCommand OrphanPlay;
+    OrphanPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    OrphanPlay.Revision = 7;
+    TestFalse(TEXT("play without a buffered cache reports not-ready"),
+        Session->HandleCommand(OrphanPlay, Code, Details));
+    TestEqual(TEXT("not-ready code"),
+        Code, FString(TEXT("CACHE_NOT_READY")));
+
+    // Underrun: publishing slower than the captured rate stops the replay.
+    double SlowClock = 0.0;
+    TArray<float> SlowApplied;
+    TSharedRef<FMtoUCacheSession> SlowSession = MakeSession(SlowClock, SlowApplied);
+    SlowSession->SetPublish([&SlowClock](const FMtoUFrameMessage& Frame)
+    {
+        SlowApplied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+        SlowClock += 2.0 / 30.0;
+    });
+    TestTrue(TEXT("slow session accepts its upload"),
+        UploadFrames(*SlowSession, 7, {60.0f, 61.0f, 62.0f, 63.0f}, Code, Details));
+    TestTrue(TEXT("slow session accepts play"),
+        SlowSession->HandleCommand(Play, Code, Details));
+    SlowSession->Tick();
+    TestEqual(TEXT("underrun fails the replay"),
+        SlowSession->GetState(), EMtoUCacheState::Failed);
+    TestTrue(TEXT("underrun diagnostic names the stable performance code"),
+        SlowSession->GetErrorDetails().Contains(TEXT("CACHED_PLAYBACK_PERFORMANCE")));
+    TestEqual(TEXT("underrun dropped no already-applied frame"),
+        SlowApplied.Num(), 2);
+    TestTrue(TEXT("failed replay can be retried from the retained cache"),
+        SlowSession->HandleCommand(Play, Code, Details));
+
+    // A long tick stall followed by an instant burst must not report success.
+    double StallClock = 0.0;
+    TArray<float> StallApplied;
+    TSharedRef<FMtoUCacheSession> StallSession = MakeSession(StallClock, StallApplied);
+    TArray<float> LongClip;
+    LongClip.SetNumUninitialized(300);
+    for (int32 Index = 0; Index < LongClip.Num(); ++Index)
+    {
+        LongClip[Index] = static_cast<float>(Index);
+    }
+    TestTrue(TEXT("stall session accepts a long upload"),
+        StallSession->HandleCommand(MakeCacheBeginCommand(7, LongClip.Num()), Code, Details)
+        && [&]()
+        {
+            for (int32 Index = 0; Index < LongClip.Num(); ++Index)
+            {
+                if (!StallSession->HandleCommand(
+                        MakeCachedFrameCommand(Index, LongClip[Index]), Code, Details))
+                {
+                    return false;
+                }
+            }
+            return StallSession->HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details);
+        }());
+    FMtoUCacheCommand LongPlay;
+    LongPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    LongPlay.Revision = 7;
+    TestTrue(TEXT("long clip playback starts"),
+        StallSession->HandleCommand(LongPlay, Code, Details));
+    StallClock = 100.0;
+    StallSession->Tick();
+    TestEqual(TEXT("stretched review reports a performance failure instead of success"),
+        StallSession->GetState(), EMtoUCacheState::Failed);
+    TestEqual(TEXT("stretched review still applied every frame exactly once"),
+        StallSession->GetAppliedFrameCount(), LongClip.Num());
+
     return true;
 }
 
@@ -1334,7 +1781,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -1372,7 +1819,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":4,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"version\":5,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -1541,6 +1988,114 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             *LastCachedRoot.ToString()));
     }
     TestTrue(TEXT("second frame reaches the Live Link subject cache"), bSecondFrameEvaluated);
+
+    // Cached Playback round trip on the same negotiated connection: upload a
+    // complete cache, receive Ready, then let Unreal apply every frame locally
+    // exactly once in order while Maya sends no animation data.
+    FLiveLinkSubjectFrameData CachedEvaluated;
+    auto SendLine = [&](const TCHAR* Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return Primary && SendBytes(*Primary, Bytes.GetData(), Bytes.Num());
+    };
+    TestTrue(TEXT("cache_begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
+    TestTrue(TEXT("cached frame 0 is sent"),
+        SendLine(FString::Printf(
+            TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))));
+    TestTrue(TEXT("cached frame 1 is sent"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[31,32,33,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    TestTrue(TEXT("cache_end is sent"),
+        SendLine(TEXT("{\"type\":\"cache_end\"}")));
+
+    Payload.Reset();
+    TestTrue(TEXT("complete upload produces cache_ready"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cache_ready reports the buffered frame count"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"frame_count\":2")));
+
+    // While the cache owns the session, live frames must not reach Live Link.
+    const TArray<uint8> IntrudingLiveFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[99,98,97,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+    TestTrue(TEXT("intruding live frame is sent during upload"),
+        Primary && SendBytes(*Primary, IntrudingLiveFrame.GetData(), IntrudingLiveFrame.Num()));
+    {
+        FPlatformProcess::Sleep(0.05f);
+        Source->Update();
+        uint8 Buffer[4096];
+        int32 Read = 0;
+        const bool bSilent = !Primary->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0;
+        TestTrue(TEXT("intruding live frame produces no reply and no publication"), bSilent
+            && !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), CachedEvaluated));
+    }
+
+    TestTrue(TEXT("cache_play is sent"),
+        SendLine(TEXT("{\"type\":\"cache_play\",\"revision\":9}")));
+    bool bFirstCachedPoseApplied = false;
+    bool bSecondCachedPoseApplied = false;
+    FVector CacheRoot = FVector::ZeroVector;
+    PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), CachedEvaluated))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    CachedEvaluated.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                if (Animation->Transforms.IsValidIndex(0))
+                {
+                    CacheRoot = Animation->Transforms[0].GetTranslation();
+                }
+            }
+        }
+        bFirstCachedPoseApplied = bFirstCachedPoseApplied || CacheRoot.Equals(FVector(21.0, 22.0, 23.0));
+        bSecondCachedPoseApplied = CacheRoot.Equals(FVector(31.0, 32.0, 33.0));
+        return bSecondCachedPoseApplied;
+    });
+    TestTrue(TEXT("first cached pose is applied before any later pose"), bFirstCachedPoseApplied);
+    TestTrue(TEXT("second cached pose is applied in order at the captured rate"),
+        bSecondCachedPoseApplied);
+    Payload.Reset();
+    TestTrue(TEXT("successful playback reports completion with applied-frame evidence"),
+        Primary && ReceivePacket(
+            *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("completion echoes the applied frame count"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_complete\""))
+        && FromUtf8(Payload).Contains(TEXT("\"frame_count\":2")));
+
+    // Switching back to live preview clears the Unreal buffer immediately.
+    TestTrue(TEXT("cache_clear is sent"),
+        SendLine(TEXT("{\"type\":\"cache_clear\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    const TArray<uint8> AfterClearLive = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[41,42,43,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+    TestTrue(TEXT("live frame after clear is sent"),
+        Primary && SendBytes(*Primary, AfterClearLive.GetData(), AfterClearLive.Num()));
+    bool bLiveResumed = false;
+    PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData ResumedFrame;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), ResumedFrame))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    ResumedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                bLiveResumed = Animation->Transforms.IsValidIndex(0)
+                    && Animation->Transforms[0].GetTranslation().Equals(FVector(41.0, 42.0, 43.0));
+            }
+        }
+        return bLiveResumed;
+    });
+    TestTrue(TEXT("live sampling resumes after the cached session clears"), bLiveResumed);
+
 
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));

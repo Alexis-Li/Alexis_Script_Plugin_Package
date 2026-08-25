@@ -129,6 +129,21 @@ FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
     : ConfiguredPort(InPort)
     , Status(TEXT("Starting listener..."))
 {
+    CacheSession.SetPublish([this](const FMtoUFrameMessage& Frame)
+    {
+        if (!Client || !SourceGuid.IsValid())
+        {
+            return;
+        }
+        Client->PushSubjectFrameData_AnyThread(
+            SubjectKey,
+            FMtoUProtocol::MakeRetargetedFrameData(
+                Frame,
+                AcceptedCurveIndices,
+                SourceBindLocalPose,
+                TargetRefLocalPose,
+                BoneParents));
+    });
     StartListener();
 }
 
@@ -178,6 +193,9 @@ void FMtoULiveLinkSource::Update()
             SourceBindLocalPose.Reset();
             TargetRefLocalPose.Reset();
             BoneParents.Reset();
+            // The transient cache is scoped to one negotiated streaming
+            // session; a newer connection never inherits it.
+            CacheSession.ResetToIdle();
         }
     }
 
@@ -195,7 +213,23 @@ void FMtoULiveLinkSource::Update()
         GameThreadSession = Init->SessionId;
         HandleInitOnGameThread(MoveTemp(Init->Message));
     }
-    PublishLatestFrameOnGameThread();
+    HandleCacheCommandsOnGameThread();
+
+    // While a cache owns this session, ordinary live frames must neither
+    // mutate the cache nor overwrite local playback; drop them and their
+    // stale pending slots silently.
+    if (CacheSession.GetState() == EMtoUCacheState::Idle)
+    {
+        PublishLatestFrameOnGameThread();
+    }
+    else
+    {
+        FScopeLock Lock(&PendingMutex);
+        if (PendingFrame.IsSet() && PendingFrame->SessionId == GameThreadSession)
+        {
+            PendingFrame.Reset();
+        }
+    }
 }
 
 bool FMtoULiveLinkSource::IsSourceStillValid() const
@@ -264,6 +298,8 @@ void FMtoULiveLinkSource::StopListener()
     SetStatus(TEXT("Stopped"));
     if (IsInGameThread())
     {
+        CacheSession.ResetToIdle();
+        bPlaybackOutcomePending = false;
         SetEditorViewportRealtimeOverride(false);
         for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
         {
@@ -502,6 +538,127 @@ uint32 FMtoULiveLinkSource::Run()
                             TEXT("INVALID_MESSAGE"),
                             TEXT("A frame was received before the init message was accepted."));
                         break;
+                    }
+
+                    if (!bReady)
+                    {
+                        SendErrorAndDisconnect(
+                            TEXT("INVALID_MESSAGE"),
+                            TEXT("A frame was received before the init message was accepted."));
+                        break;
+                    }
+
+                    FString MessageType;
+                    {
+                        FString TypeError;
+                        if (!FMtoUProtocol::PeekType(Payload, MessageType, TypeError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), TypeError);
+                            break;
+                        }
+                    }
+
+                    auto EnqueueCacheCommand = [&](FMtoUCacheCommand Command)
+                    {
+                        bDidWork = true;
+                        Command.SessionId = ActiveSession;
+                        FScopeLock Lock(&PendingMutex);
+                        if (CurrentWorkerSession == ActiveSession)
+                        {
+                            PendingCacheCommands.Enqueue(MoveTemp(Command));
+                        }
+                    };
+
+                    if (MessageType == TEXT("cache_begin")
+                        || MessageType == TEXT("cache_frame"))
+                    {
+                        FMtoUCacheCommand Command;
+                        Command.Kind = MessageType == TEXT("cache_begin")
+                            ? FMtoUCacheCommand::EKind::Begin
+                            : FMtoUCacheCommand::EKind::Frame;
+                        FString CacheError;
+                        bool bShapeValid = true;
+                        if (MessageType == TEXT("cache_begin"))
+                        {
+                            FString ErrorCode;
+                            bShapeValid = FMtoUProtocol::ParseCacheBegin(
+                                Payload,
+                                Command.Begin,
+                                CacheError,
+                                ErrorCode);
+                            // Metadata limits are frozen protocol semantics;
+                            // reject without closing so Maya can recapture.
+                            if (!bShapeValid && ErrorCode != TEXT("INVALID_MESSAGE"))
+                            {
+                                bDidWork = true;
+                                SendPacket(
+                                    *ClientSocket,
+                                    FMtoUProtocol::EncodeError(ErrorCode, CacheError, CacheError),
+                                    bStopRequested);
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            bShapeValid = FMtoUProtocol::ParseCacheFrame(
+                                Payload, Command.Index, Command.Frame, CacheError);
+                        }
+                        if (!bShapeValid)
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_end"))
+                    {
+                        FString CacheError;
+                        if (!FMtoUProtocol::ParseCacheEnd(Payload, CacheError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        FMtoUCacheCommand Command;
+                        Command.Kind = FMtoUCacheCommand::EKind::End;
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_play"))
+                    {
+                        FString CacheError;
+                        FMtoUCacheCommand Command;
+                        Command.Kind = FMtoUCacheCommand::EKind::Play;
+                        if (!FMtoUProtocol::ParseCachePlay(Payload, Command.Revision, CacheError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_stop") || MessageType == TEXT("cache_clear"))
+                    {
+                        FString CacheError;
+                        bool bValid = false;
+                        FMtoUCacheCommand Command;
+                        if (MessageType == TEXT("cache_stop"))
+                        {
+                            bValid = FMtoUProtocol::ParseCacheStop(Payload, CacheError);
+                            Command.Kind = FMtoUCacheCommand::EKind::Stop;
+                        }
+                        else
+                        {
+                            bValid = FMtoUProtocol::ParseCacheClear(Payload, CacheError);
+                            Command.Kind = FMtoUCacheCommand::EKind::Clear;
+                        }
+                        if (!bValid)
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
                     }
 
                     FMtoUFrameMessage Frame;
@@ -747,6 +904,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
+    CacheSession.SetValidationCounts(ExpectedBoneCount, ExpectedCurveCount);
     SourceBindLocalPose = Message.SourceBindLocalPose;
     TargetRefLocalPose.Reset(ExpectedBoneCount);
     BoneParents.Reset(ExpectedBoneCount);
@@ -801,6 +959,130 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;
+    OutgoingReplies.Enqueue(MoveTemp(Reply));
+}
+
+void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
+{
+    check(IsInGameThread());
+    FMtoUCacheCommand Command;
+    while (PendingCacheCommands.Dequeue(Command))
+    {
+        if (Command.SessionId != GameThreadSession || GameThreadSession == 0)
+        {
+            continue;
+        }
+        if (!DispatchCacheCommandOnGameThread(Command))
+        {
+            continue;
+        }
+        const EMtoUCacheState State = CacheSession.GetState();
+        switch (Command.Kind)
+        {
+            case FMtoUCacheCommand::EKind::Begin:
+                // Hold the recent pose and release viewport realtime while
+                // Maya captures and uploads; playback re-enables rendering.
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(FString::Printf(
+                    TEXT("Receiving animation cache (%d frames)..."), CacheSession.GetExpectedFrameCount()));
+                break;
+            case FMtoUCacheCommand::EKind::End:
+                {
+                    SetStatus(TEXT("Cached animation ready"));
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheReady(CacheSession.GetBufferedFrameCount());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                break;
+            case FMtoUCacheCommand::EKind::Play:
+                SetEditorViewportRealtimeOverride(true);
+                SetStatus(TEXT("Playing cached animation locally"));
+                bPlaybackOutcomePending = true;
+                break;
+            case FMtoUCacheCommand::EKind::Stop:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Cached playback stopped; last applied frame held"));
+                break;
+            case FMtoUCacheCommand::EKind::Clear:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Connected to Maya"));
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Drive local replay and report exactly one outcome per attempt:
+    // completion with applied-frame evidence, or a stable performance error.
+    if (CacheSession.GetState() == EMtoUCacheState::Playing)
+    {
+        CacheSession.Tick();
+    }
+    if (bPlaybackOutcomePending)
+    {
+        switch (CacheSession.GetState())
+        {
+            case EMtoUCacheState::Completed:
+                SetStatus(TEXT("Cached playback complete; final frame held"));
+                {
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheComplete(
+                        CacheSession.GetAppliedFrameCount());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                bPlaybackOutcomePending = false;
+                break;
+            case EMtoUCacheState::Failed:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Cached playback missed the captured scene rate"));
+                EnqueueErrorOnGameThread(
+                    TEXT("CACHED_PLAYBACK_PERFORMANCE"),
+                    TEXT("Local playback fell behind the captured scene rate."),
+                    CacheSession.GetErrorDetails());
+                bPlaybackOutcomePending = false;
+                break;
+            case EMtoUCacheState::Stopped:
+            case EMtoUCacheState::Idle:
+                // Manual stop, clear, or session loss supersedes the outcome.
+                bPlaybackOutcomePending = false;
+                break;
+            default:
+                break; // still playing
+        }
+    }
+}
+
+bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command)
+{
+    FString ErrorCode;
+    FString Details;
+    if (CacheSession.HandleCommand(Command, ErrorCode, Details))
+    {
+        return true;
+    }
+    UE_LOG(LogMtoULiveLinkSource, Warning, TEXT("Rejected cache command: %s"), *Details);
+    // Upload and control errors reject the offending request but keep the
+    // negotiated connection open; only structural garbage closes.
+    EnqueueReplyPacketOnGameThread(
+        GameThreadSession,
+        FMtoUProtocol::EncodeError(ErrorCode, Details, Details),
+        false);
+    return false;
+}
+
+void FMtoULiveLinkSource::EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter)
+{
+    check(IsInGameThread());
+    if (!IsCurrentSession(SessionId))
+    {
+        return;
+    }
+    FMtoUOutgoing Reply;
+    Reply.SessionId = SessionId;
+    Reply.Packet = MoveTemp(Packet);
+    Reply.bCloseAfter = bCloseAfter;
     OutgoingReplies.Enqueue(MoveTemp(Reply));
 }
 

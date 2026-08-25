@@ -36,6 +36,16 @@ struct FMtoUFrameMessage
     TArray<double> Curves;
 };
 
+struct FMtoUCacheBeginMessage
+{
+    int32 Revision = 0;
+    double Fps = 0.0;
+    int32 StartFrame = 0;
+    int32 EndFrame = 0;
+    int32 FrameCount = 0;
+    int64 PayloadSize = 0;
+};
+
 enum class EMtoUDecodeResult
 {
     NeedMore,
@@ -56,19 +66,44 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 4;
+    static constexpr int32 Version = 5;
+    // Transient Unreal cache limits, calibrated for the current production
+    // range (C01: 321 frames at 30 fps) and frozen in the protocol contract.
+    static constexpr int64 MaxCachePayloadBytes = 64ll * 1024ll * 1024ll;
+    static constexpr int32 MaxCacheFrameCount = 20000;
+    static constexpr double MinCacheFps = 1.0;
+    static constexpr double MaxCacheFps = 60.0;
+
     static bool ParseInit(
         const TArray<uint8>& Payload,
         FMtoUInitMessage& OutMessage,
         FString& OutError,
         FString* OutErrorCode = nullptr);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
+    static bool PeekType(const TArray<uint8>& Payload, FString& OutType, FString& OutError);
     static bool ValidateFrame(
         const FMtoUFrameMessage& Frame,
         int32 ExpectedTransformCount,
         int32 ExpectedCurveCount,
         FString& OutError,
         bool& bOutStructuralError);
+    static bool ParseCacheBegin(
+        const TArray<uint8>& Payload,
+        FMtoUCacheBeginMessage& OutMessage,
+        FString& OutError,
+        FString& OutErrorCode);
+    static bool ParseCacheFrame(
+        const TArray<uint8>& Payload,
+        int32& OutIndex,
+        FMtoUFrameMessage& OutMessage,
+        FString& OutError);
+    static bool ParseCacheEnd(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCachePlay(
+        const TArray<uint8>& Payload,
+        int32& OutRevision,
+        FString& OutError);
+    static bool ParseCacheStop(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCacheClear(const TArray<uint8>& Payload, FString& OutError);
     static TArray<uint8> EncodeReady(
         const TArray<FName>& MissingInUnreal,
         const TArray<FName>& MissingInMaya,
@@ -76,6 +111,8 @@ public:
         const FString& Workflow,
         int32 TargetMorphCount,
         int32 AcceptedMorphCount);
+    static TArray<uint8> EncodeCacheReady(int32 FrameCount);
+    static TArray<uint8> EncodeCacheComplete(int32 FrameCount);
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,

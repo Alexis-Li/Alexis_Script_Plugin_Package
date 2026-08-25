@@ -79,24 +79,36 @@ Install the matching component in each host:
    fresh negotiation.
 6. In the **动画** workflow, use the mutually exclusive **实时预览** and
    **缓存播放** mode controls for review. Cached Playback requires a ready
-   connection, pauses live sampling, and disables the real-time cap.
+   connection and pauses live sampling while the cache is in use.
    **捕获并回放** samples the current Maya Playback Range inclusively, writes
-   protocol-v4 frames incrementally to the user's system temporary directory,
-   restores the original current frame, and replays every captured frame once
-   at the recorded scene rate. Capture shows current/total progress, stops
-   Maya playback before sampling, and can be canceled. The tool estimates
-   temporary-disk usage before writing frames, asks for confirmation above
-   1 GiB, and rejects a range when free space is insufficient; failed or
-   canceled capture removes its partial cache.
-7. While replaying, the status explicitly says that Unreal is showing the
-   captured cache rather than the current Maya pose. Use **停止回放** to hold
-   the last frame sent and retain the cache, or **再次回放** to replay it
-   without recapturing. Switch back to **实时预览** to stop replay and
-   immediately submit Maya's current pose. Cached Playback creates no Unreal
-   asset; the completed cache is kept only for the compatible Maya session and
-   is removed when replaced, canceled, disconnected, the scene or character
-   changes, the tool closes, or Maya exits. Startup removes only valid
-   MtoU-owned cache remnants older than 24 hours.
+   protocol-v5 cache frames incrementally to the user's system temporary
+   directory, restores the original current frame, then uploads the complete
+   cache to Unreal without a real-time deadline. Capture shows current/total
+   progress, stops Maya playback before sampling, and can be canceled. The tool
+   estimates temporary-disk usage before writing frames, asks for confirmation
+   above 1 GiB, and rejects a range when free space is insufficient; failed or
+   canceled capture removes its partial cache. Unreal validates the upload's
+   metadata, frame count, sequence, transforms, curves, and bounded resource
+   use, replies **cache ready** only after the entire cache is buffered, and
+   rejects oversized or invalid uploads with stable errors instead of replaying
+   them.
+7. After Unreal reports the cache ready, local replay starts automatically:
+   Unreal drives playback from its own monotonic clock using the scene rate
+   recorded at capture time, applying every cached frame exactly once and in
+   order while Maya sends no per-frame animation data. Transfer progress and
+   playback progress are reported separately. Successful completion holds the
+   final captured pose; a replay that cannot keep up with the captured rate is
+   stopped and reported as a playback-performance failure — Unreal never
+   silently skips a cached frame or silently stretches a completed review.
+   Use **停止回放** to hold the last applied frame and retain the cache, or
+   **再次回放** to reuse the already uploaded compatible cache without
+   recapturing. Switch back to **实时预览** to stop local replay, clear the
+   Unreal transient buffer, and immediately submit Maya's current pose. Cached
+   Playback creates no Unreal asset; the completed cache is kept only for the
+   compatible Maya session and is removed when replaced, canceled,
+   disconnected, the scene or character changes, the tool closes, or Maya
+   exits. Startup removes only valid MtoU-owned cache remnants older than 24
+   hours.
 
 **View Diagnostic Details** shows only the current error summary, solution,
 code, and relevant technical details. Long details wrap to the window width;
@@ -122,10 +134,14 @@ before inversion. Same-named BlendShapes
 on separate skinned mesh parts are sent as one Unreal curve when their evaluated
 values agree. If those values differ, sampling stops and identifies every
 conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
-warnings in the Animation workflow. Protocol version 4 requires matching Maya
+warnings in the Animation workflow. Protocol version 5 requires matching Maya
 and Unreal components installed together: `init` carries the selected
-**动画**/**模型** workflow and the **传递 BS** choice, and `ready` echoes the
-workflow with target and accepted Morph counts. Protocol-v3 clients are
+**动画**/**模型** workflow and the **传递 BS** choice, `ready` echoes the
+workflow with target and accepted Morph counts, and the Cached Playback
+messages (`cache_begin`, indexed `cache_frame`s, `cache_end`, `cache_ready`,
+`cache_play`, `cache_stop`, `cache_clear`, `cache_complete`) transfer and
+control a transient Unreal-side cache with stable upload, revision,
+resource-limit, and playback-performance errors. Protocol-v4 clients are
 rejected with a normal version-mismatch error. The Model workflow additionally
 uses the stable `PREVIEW_NOT_READY`, `PREVIEW_BUILD_FAILED`, and
 `PREVIEW_MORPH_MISMATCH` errors. After Unreal Refresh, BlendShape-enabled Model

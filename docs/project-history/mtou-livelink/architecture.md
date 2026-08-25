@@ -1,7 +1,7 @@
 # MtoU_LiveLink Architecture
 
 Date: 2026-07-31
-Status: Version 0.3.0 implemented and locally verified; unreleased
+Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 pending a complete rerun
@@ -118,7 +118,7 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both components share product version `0.3.0`. The composite project root owns
+Both components share product version `0.4.0`. The composite project root owns
 the matching English and Chinese READMEs, changelog, and license; host-specific
 tests stay beside the implementation they exercise.
 
@@ -553,7 +553,9 @@ The machine-authoritative conformance corpus is
 read it directly. A Python-standard-library generator projects the same cases
 into a checked-in, test-only Unreal `.inl`; repository validation fails if that
 projection is stale. Neither shipped host component has a runtime dependency
-on the corpus or on its sibling host directory.
+on the corpus or on its sibling host directory. Protocol v5 later extends this
+contract with the Cached Playback transfer and control messages documented
+below.
 
 ## Reference-Pose Mapping Revision
 
@@ -633,6 +635,59 @@ manual disconnect cleanup, explicit cached-state messaging, and stale session
 events. The external C01 production fixture remains required for the
 stock-engine 321-frame production gate; automated pure/host checks do not
 claim that fixture has passed.
+
+## Protocol v5 Upload-then-Play Cached Playback Revision
+
+Date: 2026-08-25
+
+Specification #16 supersedes the transport-paced cached replay above. Maya's
+`_PlaybackCache` keeps owning complete capture, metadata, atomic completion,
+iteration, replacement, and deletion; `_CachedPlaybackSession` no longer paces
+replay with Maya timers. After capture completes it uploads the whole cache
+without a real-time deadline — `cache_begin` declares revision, captured range,
+scene rate, frame count, and encoded size (bounded per-frame size times frame
+count), indexed `cache_frame` messages stream in chunks through the sender's
+ordered queue so Maya memory stays bounded, and `cache_end` finishes the
+upload. Maya then blocks on `cache_ready`; during local replay it only drains
+Unreal's control replies on a lightweight poller timer and sends no animation
+data.
+
+The Unreal runtime module gains `FMtoUCacheSession`, a game-thread transient
+cache owner scoped to one negotiated session id. The worker thread parses cache
+message shapes and forwards commands with their session identity; the game
+thread validates semantics against negotiated bone/curve counts and frozen
+bounds (64 MiB declared payload, 20 000 frames, 1–60 fps), buffers validated
+frames, and transitions Idle → Receiving → Ready atomically at `cache_end`.
+Partial uploads are dropped entirely and can never become Ready or replayable;
+cache validation errors reply with stable codes while keeping the connection
+open. While the cache owns the session, ordinary live frames are dropped and
+their pending slots cleared, viewport realtime override is released during
+capture/upload, re-enabled for local playback, and restored on stop, clear, or
+disconnect.
+
+Local replay applies each buffered frame exactly once, in order, through the
+existing retargeted Live Link publication path, scheduled by the captured scene
+rate on an injectable monotonic clock. Two guards report
+`CACHED_PLAYBACK_PERFORMANCE` instead of silently degrading: publishing may not
+cost more wall time than the schedule it consumed (plus one interval of slack),
+and total completion time may not exceed the schedule by more than max(0.5 s,
+5%). Manual stop holds the last applied frame and retains the buffer;
+replay-again replays it without re-upload when the revision still matches;
+recapture, revision change, clear, disconnect, tool close, and exit invalidate
+coherently. No package, `.uasset`, or Content Browser asset is created.
+
+Protocol v5 freezes the cache wire contract in
+`composite/MtoULiveLink/protocol/conformance-v5.json`: `cache_begin`
+(`revision`, `fps`, `start_frame`, `end_frame`, `frame_count`, `payload_size`),
+indexed `cache_frame`, `cache_end`, `cache_ready` (`frame_count`),
+`cache_play` (`revision`), `cache_stop`, `cache_clear`, `cache_complete`
+(`frame_count`), plus stable errors `CACHE_METADATA_INVALID`,
+`CACHE_PAYLOAD_TOO_LARGE`, `CACHE_FRAME_INDEX_INVALID`,
+`CACHE_FRAME_CONTENTS_INVALID`, `CACHE_INVALID_STATE`, `CACHE_NOT_READY`,
+`CACHE_REVISION_MISMATCH`, and `CACHED_PLAYBACK_PERFORMANCE`. The corpus also
+pins state violations against a seeded cache session. Protocol v4 clients are
+rejected with the normal version-mismatch error, so paired installation of
+matching component versions remains required.
 
 ## Documentation and Packaging
 

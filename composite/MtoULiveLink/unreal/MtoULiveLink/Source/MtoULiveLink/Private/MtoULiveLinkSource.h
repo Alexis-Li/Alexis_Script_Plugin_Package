@@ -3,6 +3,7 @@
 #include "Containers/Queue.h"
 #include "HAL/Runnable.h"
 #include "ILiveLinkSource.h"
+#include "MtoUCacheSession.h"
 #include "MtoULiveLinkProtocol.h"
 
 class AMtoULiveLinkActor;
@@ -57,7 +58,10 @@ public:
 
 private:
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
+    void HandleCacheCommandsOnGameThread();
+    bool DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command);
     void PublishLatestFrameOnGameThread();
+    void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
     void EnqueueErrorOnGameThread(
         const FString& Code,
         const FString& Message,
@@ -79,6 +83,7 @@ private:
     TOptional<FMtoUPendingFrame> PendingFrame;
     TQueue<uint64, EQueueMode::Spsc> DisconnectedSessions;
     TQueue<FMtoUOutgoing, EQueueMode::Spsc> OutgoingReplies;
+    TQueue<FMtoUCacheCommand, EQueueMode::Spsc> PendingCacheCommands;
 
     ILiveLinkClient* Client = nullptr;
     FGuid SourceGuid;
@@ -91,4 +96,10 @@ private:
     TArray<int32> BoneParents;
     TArray<int32> AcceptedCurveIndices;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
+
+    // Game-thread-only transient cache owner scoped to GameThreadSession.
+    FMtoUCacheSession CacheSession;
+    // Set when playback starts; one completion or performance-failure reply
+    // is reported exactly once per replay attempt.
+    bool bPlaybackOutcomePending = false;
 };

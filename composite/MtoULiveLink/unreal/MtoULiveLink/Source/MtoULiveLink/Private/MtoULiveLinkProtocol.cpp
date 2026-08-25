@@ -87,6 +87,18 @@ bool GetExactInt(const TSharedPtr<FJsonValue>& Value, int32& OutValue)
     return static_cast<double>(OutValue) == Number;
 }
 
+bool GetExactInt64(const TSharedPtr<FJsonValue>& Value, int64& OutValue)
+{
+    double Number = 0.0;
+    if (!Value.IsValid() || Value->Type != EJson::Number || !Value->TryGetNumber(Number)
+        || !FMath::IsFinite(Number) || Number < MIN_int64 || Number > MAX_int64)
+    {
+        return false;
+    }
+    OutValue = static_cast<int64>(Number);
+    return static_cast<double>(OutValue) == Number;
+}
+
 bool GetNumber(const TSharedPtr<FJsonValue>& Value, double& OutValue)
 {
     return Value.IsValid() && Value->Type == EJson::Number && Value->TryGetNumber(OutValue);
@@ -135,6 +147,68 @@ TArray<uint8> EncodeObject(const TSharedRef<FJsonObject>& Object)
     }
     Packet.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
     return Packet;
+}
+
+bool ParseFrameBody(
+    const TSharedPtr<FJsonObject>& Object,
+    const TCHAR* ExpectedType,
+    FMtoUFrameMessage& OutMessage,
+    FString& OutError)
+{
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != ExpectedType)
+    {
+        OutError = FString::Printf(TEXT("Message type must be '%s'."), ExpectedType);
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* TransformValues = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
+    if (!GetArrayField(Object, TEXT("transforms"), TransformValues, OutError)
+        || !GetArrayField(Object, TEXT("curves"), CurveValues, OutError))
+    {
+        return false;
+    }
+
+    OutMessage.Transforms.Reserve(TransformValues->Num());
+    for (int32 Index = 0; Index < TransformValues->Num(); ++Index)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+        if (!(*TransformValues)[Index].IsValid() || (*TransformValues)[Index]->Type != EJson::Array
+            || !(*TransformValues)[Index]->TryGetArray(Values) || Values->Num() != 10)
+        {
+            OutError = FString::Printf(TEXT("Transform %d must contain ten numbers."), Index);
+            return false;
+        }
+        double Numbers[10];
+        for (int32 NumberIndex = 0; NumberIndex < 10; ++NumberIndex)
+        {
+            if (!GetNumber((*Values)[NumberIndex], Numbers[NumberIndex]))
+            {
+                OutError = FString::Printf(
+                    TEXT("Transform %d value %d must have numeric JSON type."), Index, NumberIndex);
+                return false;
+            }
+        }
+        OutMessage.Transforms.Add({
+            FVector(Numbers[0], Numbers[1], Numbers[2]),
+            FQuat(Numbers[3], Numbers[4], Numbers[5], Numbers[6]),
+            FVector(Numbers[7], Numbers[8], Numbers[9]),
+        });
+    }
+
+    OutMessage.Curves.Reserve(CurveValues->Num());
+    for (int32 Index = 0; Index < CurveValues->Num(); ++Index)
+    {
+        double Number = 0.0;
+        if (!GetNumber((*CurveValues)[Index], Number))
+        {
+            OutError = FString::Printf(TEXT("Curve %d must have numeric JSON type."), Index);
+            return false;
+        }
+        OutMessage.Curves.Add(Number);
+    }
+    return true;
 }
 
 }
@@ -375,61 +449,248 @@ bool FMtoUProtocol::ParseFrame(
     {
         return false;
     }
+    return ParseFrameBody(Object, TEXT("frame"), OutMessage, OutError);
+}
+
+bool FMtoUProtocol::PeekType(
+    const TArray<uint8>& Payload,
+    FString& OutType,
+    FString& OutError)
+{
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    return GetStringField(Object, TEXT("type"), OutType, OutError);
+}
+
+bool FMtoUProtocol::ParseCacheBegin(
+    const TArray<uint8>& Payload,
+    FMtoUCacheBeginMessage& OutMessage,
+    FString& OutError,
+    FString& OutErrorCode)
+{
+    auto Fail = [&](const TCHAR* Code, FString Error)
+    {
+        OutErrorCode = Code;
+        OutError = MoveTemp(Error);
+        return false;
+    };
+
+    OutMessage = FMtoUCacheBeginMessage();
+    OutError.Reset();
+    OutErrorCode = TEXT("INVALID_MESSAGE");
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
 
     FString Type;
-    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("frame"))
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_begin"))
     {
-        OutError = TEXT("Message type must be 'frame'.");
+        return Fail(TEXT("INVALID_MESSAGE"), TEXT("Message type must be 'cache_begin'."));
+    }
+
+    const auto RequireExactInt32 = [&](const TCHAR* Name, int32& OutValue) -> bool
+    {
+        TSharedPtr<FJsonValue> Value;
+        int32 Parsed = 0;
+        if (!GetTypedField(Object, Name, EJson::Number, Value, OutError)
+            || !GetExactInt(Value, Parsed))
+        {
+            OutError = FString::Printf(
+                TEXT("Field '%s' must be an integer JSON number."), Name);
+            return false;
+        }
+        OutValue = Parsed;
+        return true;
+    };
+    const auto RequireInt64 = [&](const TCHAR* Name, int64& OutValue) -> bool
+    {
+        TSharedPtr<FJsonValue> Value;
+        int64 Parsed = 0;
+        if (!GetTypedField(Object, Name, EJson::Number, Value, OutError)
+            || !GetExactInt64(Value, Parsed))
+        {
+            OutError = FString::Printf(
+                TEXT("Field '%s' must be an integer JSON number."), Name);
+            return false;
+        }
+        OutValue = Parsed;
+        return true;
+    };
+
+    if (!RequireExactInt32(TEXT("revision"), OutMessage.Revision))
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
+    }
+    TSharedPtr<FJsonValue> FpsValue;
+    if (!GetTypedField(Object, TEXT("fps"), EJson::Number, FpsValue, OutError)
+        || !FpsValue->TryGetNumber(OutMessage.Fps) || !FMath::IsFinite(OutMessage.Fps))
+    {
+        return Fail(
+            TEXT("CACHE_METADATA_INVALID"),
+            TEXT("Field 'fps' must be a finite JSON number."));
+    }
+    if (OutMessage.Fps < MinCacheFps || OutMessage.Fps > MaxCacheFps)
+    {
+        return Fail(
+            TEXT("CACHE_METADATA_INVALID"),
+            FString::Printf(
+                TEXT("Field 'fps' must be between %g and %g."),
+                MinCacheFps,
+                MaxCacheFps));
+    }
+    if (!RequireExactInt32(TEXT("start_frame"), OutMessage.StartFrame))
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
+    }
+    if (!RequireExactInt32(TEXT("end_frame"), OutMessage.EndFrame))
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
+    }
+    if (!RequireExactInt32(TEXT("frame_count"), OutMessage.FrameCount))
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
+    }
+    if (OutMessage.EndFrame < OutMessage.StartFrame
+        || OutMessage.FrameCount != OutMessage.EndFrame - OutMessage.StartFrame + 1)
+    {
+        return Fail(
+            TEXT("CACHE_METADATA_INVALID"),
+            TEXT("Field 'frame_count' must cover the inclusive capture range."));
+    }
+    if (OutMessage.FrameCount < 1 || OutMessage.FrameCount > MaxCacheFrameCount)
+    {
+        return Fail(
+            TEXT("CACHE_PAYLOAD_TOO_LARGE"),
+            FString::Printf(
+                TEXT("Field 'frame_count' must be between 1 and %d."),
+                MaxCacheFrameCount));
+    }
+    if (!RequireInt64(TEXT("payload_size"), OutMessage.PayloadSize))
+    {
+        return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
+    }
+    if (OutMessage.PayloadSize < 1 || OutMessage.PayloadSize > MaxCachePayloadBytes)
+    {
+        return Fail(
+            TEXT("CACHE_PAYLOAD_TOO_LARGE"),
+            FString::Printf(
+                TEXT("Declared payload_size %lld exceeds the transient limit of %lld bytes."),
+                OutMessage.PayloadSize,
+                MaxCachePayloadBytes));
+    }
+    OutErrorCode = TEXT("");
+    return true;
+}
+
+bool FMtoUProtocol::ParseCacheFrame(
+    const TArray<uint8>& Payload,
+    int32& OutIndex,
+    FMtoUFrameMessage& OutMessage,
+    FString& OutError)
+{
+    OutIndex = INDEX_NONE;
+    OutMessage = FMtoUFrameMessage();
+    OutError.Reset();
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
         return false;
     }
 
-    const TArray<TSharedPtr<FJsonValue>>* TransformValues = nullptr;
-    const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
-    if (!GetArrayField(Object, TEXT("transforms"), TransformValues, OutError)
-        || !GetArrayField(Object, TEXT("curves"), CurveValues, OutError))
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_frame"))
     {
+        OutError = TEXT("Message type must be 'cache_frame'.");
         return false;
     }
 
-    OutMessage.Transforms.Reserve(TransformValues->Num());
-    for (int32 Index = 0; Index < TransformValues->Num(); ++Index)
+    TSharedPtr<FJsonValue> IndexValue;
+    if (!GetTypedField(Object, TEXT("index"), EJson::Number, IndexValue, OutError)
+        || !GetExactInt(IndexValue, OutIndex))
     {
-        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-        if (!(*TransformValues)[Index].IsValid() || (*TransformValues)[Index]->Type != EJson::Array
-            || !(*TransformValues)[Index]->TryGetArray(Values) || Values->Num() != 10)
-        {
-            OutError = FString::Printf(TEXT("Transform %d must contain ten numbers."), Index);
-            return false;
-        }
-        double Numbers[10];
-        for (int32 NumberIndex = 0; NumberIndex < 10; ++NumberIndex)
-        {
-            if (!GetNumber((*Values)[NumberIndex], Numbers[NumberIndex]))
-            {
-                OutError = FString::Printf(
-                    TEXT("Transform %d value %d must have numeric JSON type."), Index, NumberIndex);
-                return false;
-            }
-        }
-        OutMessage.Transforms.Add({
-            FVector(Numbers[0], Numbers[1], Numbers[2]),
-            FQuat(Numbers[3], Numbers[4], Numbers[5], Numbers[6]),
-            FVector(Numbers[7], Numbers[8], Numbers[9]),
-        });
+        OutError = TEXT("Field 'index' must be an integer JSON number.");
+        return false;
     }
-
-    OutMessage.Curves.Reserve(CurveValues->Num());
-    for (int32 Index = 0; Index < CurveValues->Num(); ++Index)
+    if (!ParseFrameBody(Object, TEXT("cache_frame"), OutMessage, OutError))
     {
-        double Number = 0.0;
-        if (!GetNumber((*CurveValues)[Index], Number))
-        {
-            OutError = FString::Printf(TEXT("Curve %d must have numeric JSON type."), Index);
-            return false;
-        }
-        OutMessage.Curves.Add(Number);
+        return false;
     }
     return true;
+}
+
+bool FMtoUProtocol::ParseCacheEnd(const TArray<uint8>& Payload, FString& OutError)
+{
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_end"))
+    {
+        OutError = TEXT("Message type must be 'cache_end'.");
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseCachePlay(
+    const TArray<uint8>& Payload,
+    int32& OutRevision,
+    FString& OutError)
+{
+    OutRevision = INDEX_NONE;
+    OutError.Reset();
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_play"))
+    {
+        OutError = TEXT("Message type must be 'cache_play'.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> RevisionValue;
+    if (!GetTypedField(Object, TEXT("revision"), EJson::Number, RevisionValue, OutError)
+        || !GetExactInt(RevisionValue, OutRevision))
+    {
+        OutError = TEXT("Field 'revision' must be an integer JSON number.");
+        return false;
+    }
+    return true;
+}
+
+bool ParseCacheTypeOnly(const TArray<uint8>& Payload, const TCHAR* ExpectedType, FString& OutError)
+{
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != ExpectedType)
+    {
+        OutError = FString::Printf(TEXT("Message type must be '%s'."), ExpectedType);
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseCacheStop(const TArray<uint8>& Payload, FString& OutError)
+{
+    return ParseCacheTypeOnly(Payload, TEXT("cache_stop"), OutError);
+}
+
+bool FMtoUProtocol::ParseCacheClear(const TArray<uint8>& Payload, FString& OutError)
+{
+    return ParseCacheTypeOnly(Payload, TEXT("cache_clear"), OutError);
 }
 
 bool FMtoUProtocol::ValidateFrame(
@@ -535,6 +796,22 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     Object->SetStringField(TEXT("workflow"), Workflow);
     Object->SetNumberField(TEXT("target_morph_count"), TargetMorphCount);
     Object->SetNumberField(TEXT("accepted_morph_count"), AcceptedMorphCount);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 FrameCount)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_ready"));
+    Object->SetNumberField(TEXT("frame_count"), FrameCount);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheComplete(int32 FrameCount)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_complete"));
+    Object->SetNumberField(TEXT("frame_count"), FrameCount);
     return EncodeObject(Object);
 }
 

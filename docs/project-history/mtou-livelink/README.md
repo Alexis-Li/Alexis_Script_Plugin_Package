@@ -1,7 +1,7 @@
 # MtoU_LiveLink Development History
 
-The current implementation is MtoU_LiveLink 0.3.0, a composite Maya 2022.4 and
-stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
+The current implementation is MtoU_LiveLink 0.4.0, a composite Maya 2022.4 and
+stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
 
 ## Timeline
 
@@ -58,6 +58,13 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.3.0 remains unreleased.
   on stock UE 5.7.4 with cross-topology barycentric projection, accepted-only
   v4 streaming, double-layer/seam stress automation, and transactional transient
   lifecycle evidence.
+- **2026-08-25:** Implemented specification #16 upload-then-play Cached
+  Playback on protocol v5: complete cache upload with Unreal-side validation
+  and Ready gating, Unreal-driven local replay at the captured scene rate,
+  exactly-once in-order application, stable playback-performance failure,
+  replay-again reuse of the uploaded cache, and per-session transient cache
+  ownership. The external C01 stock-engine production gate (321 frames applied
+  by Unreal within 5% of the captured rate) remains pending.
 
 ## Stable Records
 

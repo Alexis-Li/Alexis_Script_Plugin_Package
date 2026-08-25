@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Rebuild Cached Playback as upload-then-play: after capturing the inclusive
+  Playback Range, Maya uploads the complete temporary cache to Unreal without a
+  real-time deadline, Unreal validates and buffers it fully before replying
+  Ready, and local replay is then driven by an Unreal monotonic clock at the
+  captured scene rate while Maya sends only playback controls. Every cached
+  frame is applied exactly once and in order; a replay that cannot sustain the
+  captured rate stops with a stable playback-performance error instead of
+  silently skipping or stretching, and successful completion holds the final
+  pose.
+- Upgrade the protocol to v5: add `cache_begin`, indexed `cache_frame`,
+  `cache_end`, `cache_ready`, `cache_play`, `cache_stop`, `cache_clear`, and
+  `cache_complete` messages with stable `CACHE_METADATA_INVALID`,
+  `CACHE_PAYLOAD_TOO_LARGE`, `CACHE_FRAME_INDEX_INVALID`,
+  `CACHE_FRAME_CONTENTS_INVALID`, `CACHE_INVALID_STATE`, `CACHE_NOT_READY`,
+  `CACHE_REVISION_MISMATCH`, and `CACHED_PLAYBACK_PERFORMANCE` errors. Cache
+  validation errors keep the negotiated connection open; protocol-v4 clients
+  are rejected with a normal version-mismatch error. The conformance corpus
+  moves to conformance-v5.json and pins every new message, limit, state
+  violation, and failure boundary.
+- Scope a transient Unreal cache to each negotiated streaming session: uploads
+  are preflighted against frozen size and frame-count bounds, buffered frames
+  are validated at the trust boundary, partial uploads can never become ready
+  or replayable, ordinary live frames cannot mutate the cache or overwrite
+  local playback, recapture replaces caches coherently, disconnect clears the
+  buffer, and no package, `.uasset`, or Content Browser asset is ever created.
+- Distinguish transfer from playback in Cached Playback statuses: capture,
+  upload progress, cache-ready, Unreal-driven local replay progress, manual
+  stop holding the last applied frame, replay-again reusing the uploaded
+  compatible cache, explicit playback-performance failure with retry, and
+  immediate live-pose submission when switching back to Real-time Preview.
+
 - Allow Refresh Preview to complete with a warning when a localized Driver
   Morph affects only surface absent from the Preview Static Mesh. Such Morphs
   are omitted from the Generated Preview library and normal partial-coverage
