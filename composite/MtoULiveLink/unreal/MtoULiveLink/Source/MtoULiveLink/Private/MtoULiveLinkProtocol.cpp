@@ -591,11 +591,16 @@ bool FMtoUProtocol::ParseCacheFrame(
     const TArray<uint8>& Payload,
     int32& OutIndex,
     FMtoUFrameMessage& OutMessage,
-    FString& OutError)
+    FString& OutError,
+    FString* OutErrorCode)
 {
     OutIndex = INDEX_NONE;
     OutMessage = FMtoUFrameMessage();
     OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
     TSharedPtr<FJsonObject> Object;
     if (!ParseObject(Payload, Object, OutError))
     {
@@ -614,6 +619,15 @@ bool FMtoUProtocol::ParseCacheFrame(
         || !GetExactInt(IndexValue, OutIndex))
     {
         OutError = TEXT("Field 'index' must be an integer JSON number.");
+        return false;
+    }
+    if (OutIndex < 0)
+    {
+        OutError = TEXT("Field 'index' must not be negative.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("CACHE_FRAME_INDEX_INVALID");
+        }
         return false;
     }
     if (!ParseFrameBody(Object, TEXT("cache_frame"), OutMessage, OutError))

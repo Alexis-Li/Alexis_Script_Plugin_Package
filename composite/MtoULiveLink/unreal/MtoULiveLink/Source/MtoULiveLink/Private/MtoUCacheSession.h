@@ -67,13 +67,16 @@ public:
     // Advances local replay; returns the number of frames applied this tick.
     int32 Tick();
 
+    // Drops any buffered cache and returns to Idle. Used by recapture,
+    // clear, and per-session teardown.
+    void ResetToIdle();
+
 private:
     bool HandleBegin(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleFrame(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleEnd(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandlePlay(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     void ApplyNext();
-    void ResetToIdle();
     void FailPerformance(const FString& Details);
     double FrameInterval() const;
 

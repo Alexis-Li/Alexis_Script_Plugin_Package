@@ -96,7 +96,8 @@ public:
         const TArray<uint8>& Payload,
         int32& OutIndex,
         FMtoUFrameMessage& OutMessage,
-        FString& OutError);
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
     static bool ParseCacheEnd(const TArray<uint8>& Payload, FString& OutError);
     static bool ParseCachePlay(
         const TArray<uint8>& Payload,

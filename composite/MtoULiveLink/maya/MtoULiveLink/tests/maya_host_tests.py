@@ -438,7 +438,7 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(4, FakeWorker.instance.init_message["version"])
+        self.assertEqual(5, FakeWorker.instance.init_message["version"])
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
@@ -502,7 +502,6 @@ class MayaHostTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 session = module._CachedPlaybackSession(
                     FakeScene(), stream, timeline=timeline, temp_dir=directory,
-                    clock=lambda: 0.0,
                     disk_usage=lambda unused: (1, 1, 1 << 40), timer_api=None)
                 self.assertIsNone(session.capture_and_replay(
                     scene_fps=24.0, progress=cancel_after_two))

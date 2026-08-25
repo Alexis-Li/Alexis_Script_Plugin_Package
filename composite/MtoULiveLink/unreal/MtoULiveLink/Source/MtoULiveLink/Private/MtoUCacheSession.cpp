@@ -94,15 +94,17 @@ bool FMtoUCacheSession::HandleCommand(
             bAccepted = true;
             break;
     }
-    if (!bAccepted && ErrorDetails.IsEmpty())
+    if (!bAccepted)
     {
-        OutErrorCode = TEXT("CACHE_INVALID_STATE");
-        OutDetails = TEXT("Unknown cache command failure.");
+        if (OutErrorCode.IsEmpty())
+        {
+            OutErrorCode = TEXT("CACHE_INVALID_STATE");
+            OutDetails = TEXT("Unknown cache command failure.");
+        }
+        ErrorDetails = OutErrorCode + TEXT(": ") + OutDetails;
     }
-    else
-    {
-        ErrorDetails = OutErrorCode.IsEmpty() ? FString() : OutErrorCode + TEXT(": ") + OutDetails;
-    }
+    // On success ErrorDetails keeps whatever FailPerformance wrote during
+    // this command (a play can fail immediately); it was cleared above.
     return bAccepted;
 }
 
@@ -239,7 +241,8 @@ void FMtoUCacheSession::FailPerformance(const FString& Details)
         TEXT("Cached playback stopped without dropping frames: %s"), *Details);
     State = EMtoUCacheState::Failed;
     ErrorDetails = FString::Printf(
-        TEXT("%s; replay stopped without dropping frames."), *Details);
+        TEXT("CACHED_PLAYBACK_PERFORMANCE: %s; replay stopped without dropping frames."),
+        *Details);
 }
 
 void FMtoUCacheSession::ApplyNext()
