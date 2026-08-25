@@ -114,6 +114,10 @@ bool FMtoUCacheSession::HandleCommand(
             bAccepted = true;
             break;
         case FMtoUCacheCommand::EKind::Clear:
+            // Capture the ownership being dropped before it is reset so the
+            // cleared outcome can echo it.
+            LastClearedUploadId = ActiveUploadId;
+            LastClearedPlayId = ActivePlayId;
             ResetToIdle();
             bAccepted = true;
             break;
@@ -220,6 +224,17 @@ bool FMtoUCacheSession::HandleFrame(
     FString& OutErrorCode,
     FString& OutDetails)
 {
+    // A negative index is always the stable index error, and it always
+    // atomically discards any partial upload: reset before replying so a
+    // later frame can never complete the poisoned upload.
+    if (Command.Index < 0)
+    {
+        OutErrorCode = TEXT("CACHE_FRAME_INDEX_INVALID");
+        OutDetails = FString::Printf(
+            TEXT("Field 'index' must not be negative; got %d."), Command.Index);
+        ResetToIdle();
+        return false;
+    }
     if (State != EMtoUCacheState::Receiving)
     {
         OutErrorCode = TEXT("CACHE_INVALID_STATE");
@@ -242,15 +257,17 @@ bool FMtoUCacheSession::HandleFrame(
         return false;
     }
     // Meter actual encoded bytes against both the client's declared size and
-    // the frozen wire limit, with overflow-safe accumulation.
+    // the frozen wire limit, with overflow-safe accumulation. The rejection
+    // reports the computed candidate total alongside declaration and limit.
     if (Command.EncodedBytes < 0
         || ActualPayloadBytes > FMtoUProtocol::MaxCachePayloadBytes - Command.EncodedBytes
         || ActualPayloadBytes + Command.EncodedBytes > Begin.PayloadSize)
     {
         OutErrorCode = TEXT("CACHE_PAYLOAD_TOO_LARGE");
         OutDetails = FString::Printf(
-            TEXT("actual uploaded encoded bytes would exceed the declared"
+            TEXT("actual uploaded encoded bytes %lld exceed the declared"
                  " payload_size %lld or the frozen limit of %lld bytes."),
+            ActualPayloadBytes + Command.EncodedBytes,
             Begin.PayloadSize,
             FMtoUProtocol::MaxCachePayloadBytes);
         ResetToIdle();
@@ -349,7 +366,9 @@ bool FMtoUCacheSession::HandlePlay(
     AppliedCount = 0;
     PlaybackStart = Now();
     State = EMtoUCacheState::Playing;
-    ApplyNextPose();
+    // cache_play only initializes the attempt: every pose, including the
+    // first, is published by a later Tick so one game-thread update can never
+    // apply two cached poses.
     return true;
 }
 

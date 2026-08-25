@@ -127,7 +127,9 @@ public:
     static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);
     static TArray<uint8> EncodeCacheComplete(int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds);
     static TArray<uint8> EncodeCacheStopped(int32 PlayId);
-    static TArray<uint8> EncodeCacheCleared();
+    // Cleared echoes the owning identity of the cache ownership that was
+    // dropped so Maya can discard late outcomes from older operations.
+    static TArray<uint8> EncodeCacheCleared(int32 UploadId, int32 PlayId);
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,

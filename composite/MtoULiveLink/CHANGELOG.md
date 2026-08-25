@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Harden Cached Playback after independent review of the v6 implementation:
+  Maya validates outcome evidence strictly (exact non-bool integer counts,
+  finite positive elapsed durations, and an exact `ready`-revision echo of the
+  negotiated `init` revision) before advancing state; manual stop now reports
+  success only after Unreal's identity-matched `cache_stopped` acknowledgement;
+  every terminal cached-mode path (capture cancellation, upload rejection,
+  corruption, transport failure, close) shares one cleanup seam that removes
+  pollers, closes upload iterators, queues the ordered `cache_clear`, and only
+  then resumes live streaming; adopted caches derive their exact encoded
+  declaration in bounded poller chunks instead of blocking Maya.
+- Make runtime cache outcomes fully identity-scoped and recoverable on the
+  Unreal side: playback-performance errors echo the owning upload/play
+  identity and keep the negotiated connection open, `cache_cleared` echoes the
+  dropped ownership, and a production negative-index rejection routes through
+  the cache session so it atomically discards the partial upload with
+  `CACHE_FRAME_INDEX_INVALID` while preserving the connection. `cache_play`
+  now only initializes playback — every pose, including the first, is
+  published by a later game-thread update, so one update can never apply two
+  cached poses. Byte-metering rejections report the computed candidate total,
+  declared size, and frozen limit.
+- Treat mid-upload cache decoding/iteration failures as deterministic
+  corruption: invalid UTF-8 or unreadable frame files invalidate the whole
+  transient cache and resume live preview instead of masquerading as a
+  transport failure that retains bad data and drops the connection.
+- Restore the frozen protocol-v5 record: `conformance-v5.json` keeps its
+  immutable 64 MiB boundary, and the v5 architecture history keeps its
+  historical limit; the recalibrated 1 GiB / 1536 MiB bounds are described
+  only under protocol v6, whose corpus boundary case moves to 1 GiB + 1 byte.
 - Recalibrate the frozen transient cache limits with the first real-project
   evidence (a 320-frame, 30 fps capture whose exact encoded size exceeded the
   original estimate): encoded uploads may now use up to 1 GiB and parsed

@@ -621,16 +621,14 @@ uint32 FMtoULiveLinkSource::Run()
                             Command.Kind = FMtoUCacheCommand::EKind::Frame;
                             bShapeValid = FMtoUProtocol::ParseCacheFrame(
                                 Payload, Command.Index, Command.Frame, CacheError, &ErrorCode);
-                            // Negative and mistyped indices follow the same
-                            // production error-code path as the conformance
-                            // adapter: stable code, connection preserved.
-                            if (!bShapeValid && ErrorCode != TEXT("INVALID_MESSAGE"))
+                            // A negative index follows the production
+                            // cache-session rejection path: the stable code is
+                            // echoed by the session itself while it atomically
+                            // discards the partial upload, and the negotiated
+                            // connection stays open.
+                            if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_INDEX_INVALID"))
                             {
-                                bDidWork = true;
-                                SendPacket(
-                                    *ClientSocket,
-                                    FMtoUProtocol::EncodeError(ErrorCode, CacheError, CacheError),
-                                    bStopRequested);
+                                EnqueueCacheCommand(MoveTemp(Command));
                                 continue;
                             }
                         }
@@ -1064,7 +1062,9 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
                 {
                     FMtoUOutgoing Reply;
                     Reply.SessionId = GameThreadSession;
-                    Reply.Packet = FMtoUProtocol::EncodeCacheCleared();
+                    Reply.Packet = FMtoUProtocol::EncodeCacheCleared(
+                        CacheSession.GetLastClearedUploadId(),
+                        CacheSession.GetLastClearedPlayId());
                     OutgoingReplies.Enqueue(MoveTemp(Reply));
                 }
                 break;
@@ -1099,10 +1099,19 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
             case EMtoUCacheState::Failed:
                 SetEditorViewportRealtimeOverride(false);
                 SetStatus(TEXT("Cached playback missed the captured scene rate"));
-                EnqueueErrorOnGameThread(
-                    TEXT("CACHED_PLAYBACK_PERFORMANCE"),
-                    TEXT("Local playback fell behind the captured scene rate."),
-                    CacheSession.GetErrorDetails());
+                // The performance failure is recoverable and identity-scoped:
+                // it ends this play attempt only, keeps the negotiated
+                // connection open, and echoes the attempt it belongs to so
+                // Maya never applies a stale failure to a newer replay.
+                EnqueueReplyPacketOnGameThread(
+                    GameThreadSession,
+                    FMtoUProtocol::EncodeError(
+                        TEXT("CACHED_PLAYBACK_PERFORMANCE"),
+                        TEXT("Local playback fell behind the captured scene rate."),
+                        CacheSession.GetErrorDetails(),
+                        CacheSession.GetActiveUploadId(),
+                        CacheSession.GetActivePlayId()),
+                    false);
                 bPlaybackOutcomePending = false;
                 break;
             case EMtoUCacheState::Stopped:
@@ -1120,6 +1129,28 @@ bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheComma
 {
     FString ErrorCode;
     FString Details;
+    // Capture the owning identity before dispatch: a rejection resets the
+    // session, so afterwards only the last-seen identities survive. Begin
+    // echoes its own declared upload id because the previous ownership, if
+    // any, is older than the request being rejected.
+    int32 EchoUploadId = INDEX_NONE;
+    int32 EchoPlayId = INDEX_NONE;
+    switch (Command.Kind)
+    {
+        case FMtoUCacheCommand::EKind::Begin:
+            EchoUploadId = Command.Begin.UploadId;
+            break;
+        case FMtoUCacheCommand::EKind::Frame:
+        case FMtoUCacheCommand::EKind::End:
+            EchoUploadId = CacheSession.GetActiveUploadId();
+            break;
+        case FMtoUCacheCommand::EKind::Play:
+            EchoUploadId = CacheSession.GetActiveUploadId();
+            EchoPlayId = Command.PlayId;
+            break;
+        default:
+            break;
+    }
     if (CacheSession.HandleCommand(Command, ErrorCode, Details))
     {
         return true;
@@ -1128,12 +1159,6 @@ bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheComma
     // Upload and control errors reject the offending request but keep the
     // negotiated connection open; only structural garbage closes. The echoed
     // operation identity lets Maya discard late errors from older attempts.
-    const int32 EchoUploadId =
-        Command.Kind == FMtoUCacheCommand::EKind::Begin
-            ? CacheSession.GetActiveUploadId() : INDEX_NONE;
-    const int32 EchoPlayId =
-        Command.Kind == FMtoUCacheCommand::EKind::Play
-            ? CacheSession.GetActivePlayId() : INDEX_NONE;
     EnqueueReplyPacketOnGameThread(
         GameThreadSession,
         FMtoUProtocol::EncodeError(

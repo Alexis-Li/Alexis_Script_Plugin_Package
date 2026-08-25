@@ -98,7 +98,8 @@ def validate_corpus(corpus: object) -> list[str]:
         if not isinstance(keywords, list) or any(not isinstance(value, str) for value in keywords):
             errors.append(prefix + " expected.keywords must be a string array")
         negotiated = case.get("negotiated_revision")
-        if negotiated is not None and (isinstance(negotiated, bool) or not isinstance(negotiated, int)):
+        if negotiated is not None and (
+                isinstance(negotiated, bool) or not isinstance(negotiated, int)):
             errors.append(prefix + "negotiated_revision must be an integer")
         session = case.get("session")
         if session is not None and session not in {"fresh", "uploaded"}:

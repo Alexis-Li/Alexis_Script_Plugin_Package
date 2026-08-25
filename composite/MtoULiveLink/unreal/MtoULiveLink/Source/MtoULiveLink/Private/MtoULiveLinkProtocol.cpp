@@ -892,10 +892,12 @@ TArray<uint8> FMtoUProtocol::EncodeCacheStopped(int32 PlayId)
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCacheCleared()
+TArray<uint8> FMtoUProtocol::EncodeCacheCleared(int32 UploadId, int32 PlayId)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_cleared"));
+    Object->SetNumberField(TEXT("upload_id"), UploadId);
+    Object->SetNumberField(TEXT("play_id"), PlayId);
     return EncodeObject(Object);
 }
 

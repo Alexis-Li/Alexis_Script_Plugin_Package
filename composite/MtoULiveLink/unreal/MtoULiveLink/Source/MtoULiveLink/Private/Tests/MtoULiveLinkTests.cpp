@@ -547,14 +547,26 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             }
             else if (Operation == TEXT("cache_cleared"))
             {
-                PacketBytes = FMtoUProtocol::EncodeCacheCleared();
+                PacketBytes = FMtoUProtocol::EncodeCacheCleared(
+                    static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
             }
             else
             {
+                // Cache-operation errors may echo the owning identity; the
+                // encoder forwards it so the corpus pins the scoped shape.
+                const int32 EchoUploadId = Source->HasField(TEXT("upload_id"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("upload_id")))
+                    : INDEX_NONE;
+                const int32 EchoPlayId = Source->HasField(TEXT("play_id"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("play_id")))
+                    : INDEX_NONE;
                 PacketBytes = FMtoUProtocol::EncodeError(
                     Source->GetStringField(TEXT("code")),
                     Source->GetStringField(TEXT("message")),
-                    Source->GetStringField(TEXT("details")));
+                    Source->GetStringField(TEXT("details")),
+                    EchoUploadId,
+                    EchoPlayId);
             }
             FMtoUFrameDecoder Decoder;
             TArray<uint8> Reply;
@@ -584,7 +596,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 }
                 else if (Operation == TEXT("cache_cleared"))
                 {
-                    RequiredFields = {};
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id")};
                 }
                 else if (Operation == TEXT("cache_progress"))
                 {
@@ -614,6 +626,19 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     TestEqual(*FString::Printf(TEXT("%s echoes the negotiated revision"), *Id),
                         static_cast<int32>(Encoded->GetNumberField(TEXT("revision"))),
                         static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
+                }
+                if (Operation == TEXT("error"))
+                {
+                    for (const TCHAR* IdentityField : {TEXT("upload_id"), TEXT("play_id")})
+                    {
+                        if (Source->HasField(IdentityField))
+                        {
+                            TestEqual(
+                                *FString::Printf(TEXT("%s echoes %s"), *Id, IdentityField),
+                                static_cast<int32>(Encoded->GetNumberField(IdentityField)),
+                                static_cast<int32>(Source->GetNumberField(IdentityField)));
+                        }
+                    }
                 }
             }
             continue;
@@ -890,7 +915,8 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("play-identity reuse code"),
         Code, FString(TEXT("CACHE_METADATA_INVALID")));
 
-    // Replay with deterministic windows: one pose per update at most.
+    // Replay with deterministic windows: one pose per update at most, and
+    // every pose - including the first - published by a later Tick.
     FMtoUCacheCommand Play;
     Play.Kind = FMtoUCacheCommand::EKind::Play;
     Play.PlayId = 2;
@@ -899,12 +925,12 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         Session->HandleCommand(Play, Code, Details));
     TestEqual(TEXT("playback state"),
         Session->GetState(), EMtoUCacheState::Playing);
-    TestEqual(TEXT("first cached pose is applied at play start"),
-        Applied.Num() > 0 && FMath::IsNearlyEqual(Applied.Last(), 50.0f) ? 1 : 0, 1);
+    TestEqual(TEXT("cache_play only initializes the attempt"),
+        Session->GetAppliedFrameCount(), 0);
 
     Clock += Interval / 2.0;
-    TestEqual(TEXT("tick inside the same window applies nothing new"),
-        Session->Tick(), 0);
+    TestEqual(TEXT("first cached pose is published by a later tick"),
+        Session->Tick(), 1);
     Clock += Interval / 2.0;
     TestEqual(TEXT("second pose applies in its own window"), Session->Tick(), 1);
     Clock += Interval * 3.0;
@@ -923,6 +949,8 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     RetryPlay.PlayId = 9;
     TestTrue(TEXT("retry after failure reuses the uploaded cache"),
         Session->HandleCommand(RetryPlay, Code, Details));
+    Clock += Interval;
+    Session->Tick();
     Clock += Interval;
     Session->Tick();
     Clock += Interval;
@@ -951,7 +979,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     RefusingPlay.PlayId = 4;
     TestTrue(TEXT("refusing session accepts play"),
         RefusingSession->HandleCommand(RefusingPlay, Code, Details));
-    Clock += Interval;
+    Clock += Interval / 2.0;
     RefusingSession->Tick();
     TestEqual(TEXT("refused publication advances no applied evidence"),
         RefusingSession->GetAppliedFrameCount(), 0);

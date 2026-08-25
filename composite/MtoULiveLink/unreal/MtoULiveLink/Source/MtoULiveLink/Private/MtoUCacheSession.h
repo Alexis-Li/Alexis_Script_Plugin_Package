@@ -76,6 +76,10 @@ public:
     int32 GetLastAppliedIndex() const { return LastAppliedIndex; }
     int32 GetActiveUploadId() const { return ActiveUploadId; }
     int32 GetActivePlayId() const { return ActivePlayId; }
+    // Owning identity of the cache ownership dropped by the most recent
+    // clear, echoed by the cache_cleared outcome.
+    int32 GetLastClearedUploadId() const { return LastClearedUploadId; }
+    int32 GetLastClearedPlayId() const { return LastClearedPlayId; }
     double GetElapsedPlaybackSeconds() const { return ElapsedSeconds; }
 
     // Returns false and fills the stable protocol error code when the
@@ -112,6 +116,8 @@ private:
     int32 LastSeenPlayId = 0;
     int32 ActiveUploadId = 0;
     int32 ActivePlayId = 0;
+    int32 LastClearedUploadId = 0;
+    int32 LastClearedPlayId = 0;
     int64 ActualPayloadBytes = 0;
     int32 NextFrame = 0;
     int32 AppliedCount = 0;

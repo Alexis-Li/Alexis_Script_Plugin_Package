@@ -19,19 +19,27 @@ monotonically increasing `play_id`. `cache_ready`, bounded `cache_progress`,
 `cache_complete` (applied count plus elapsed duration), `cache_stopped`, and
 `cache_cleared` echo these identities, and Maya ignores any well-formed
 outcome whose identity does not match the current operation while continuing
-to wait. Wrong counts or revisions in Ready or completion are stable
-invalid-outcome failures, never success.
+to wait. Runtime cache errors — including `CACHED_PLAYBACK_PERFORMANCE` — are
+recoverable: they end only the offending attempt, keep the negotiated
+connection open, and echo the owning upload/play identity. Wrong counts,
+non-integer counts, non-finite durations, or revision mismatches in Ready or
+completion are stable invalid-outcome failures, never success.
 
 ## Truthful application evidence
 
 Unreal applies at most one cached pose per source-frame position per game-thread
-update. Before publishing the next pose it checks the monotonic clock against
-that position's valid window; a missed window stops playback with
-`CACHED_PLAYBACK_PERFORMANCE` before any overdue catch-up burst can collapse
-several poses into one visible tick. The publication callback reports
-acceptance, and applied evidence advances only on acceptance. Successful
-completion requires every expected pose accepted exactly once in order, the
-final pose held, and elapsed duration within the captured-rate bound.
+update. `cache_play` only initializes the attempt: every pose, including the
+first, is published by a later Tick, so one update can never collapse two
+poses into one visible frame. Before publishing the next pose it checks the
+monotonic clock against that position's valid window; a missed window stops
+playback with `CACHED_PLAYBACK_PERFORMANCE` before any overdue catch-up burst
+can collapse several poses into one visible tick. The publication callback
+reports acceptance, and applied evidence advances only on acceptance.
+Successful completion requires every expected pose accepted exactly once in
+order, the final pose held, and elapsed duration within the captured-rate
+bound. A production negative-index rejection routes through the same cache
+session as the conformance adapter: it atomically discards the partial upload
+with `CACHE_FRAME_INDEX_INVALID` while preserving the connection.
 
 ## Bounded resources
 

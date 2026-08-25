@@ -1313,7 +1313,7 @@
         "start_frame": 1001,
         "end_frame": 1021,
         "frame_count": 21,
-        "payload_size": 67108865
+        "payload_size": 1073741825
       },
       "expected": {
         "accepted": false,
@@ -2045,11 +2045,51 @@
         "unreal"
       ],
       "payload": {
-        "type": "cache_cleared"
+        "type": "cache_cleared",
+        "upload_id": 1,
+        "play_id": 1
       },
       "expected": {
         "accepted": true,
         "close": false
+      }
+    },
+    {
+      "id": "cache-cleared-missing-upload-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "play_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-cleared-missing-play-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "upload_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
       }
     },
     {
@@ -2605,7 +2645,9 @@
         "type": "error",
         "code": "CACHED_PLAYBACK_PERFORMANCE",
         "message": "Local playback fell behind the captured scene rate.",
-        "details": "frame 118 missed its schedule; replay stopped without dropping frames"
+        "details": "frame 118 missed its schedule; replay stopped without dropping frames",
+        "upload_id": 1,
+        "play_id": 1
       },
       "expected": {
         "accepted": true,
