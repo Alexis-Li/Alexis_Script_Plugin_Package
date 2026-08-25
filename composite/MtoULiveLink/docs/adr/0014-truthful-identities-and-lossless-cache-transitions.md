@@ -37,10 +37,10 @@ final pose held, and elapsed duration within the captured-rate bound.
 
 The framing boundary meters actual encoded bytes of every cached frame with
 overflow-safe accumulation; exceeding the client-declared size or the frozen
-64 MiB limit rejects the whole upload with `CACHE_PAYLOAD_TOO_LARGE` while
+1 GiB limit rejects the whole upload with `CACHE_PAYLOAD_TOO_LARGE` while
 keeping the session open. `cache_begin` also preflights the predicted parsed
 transient allocation from negotiated transform/curve counts against a fixed
-256 MiB budget before any allocation.
+1536 MiB budget before any allocation.
 
 ## Lossless mode transitions
 

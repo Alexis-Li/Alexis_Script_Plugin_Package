@@ -40,7 +40,10 @@ CACHE_PARTIAL_METADATA_SUFFIX = ".partial.json"
 CACHE_PARTIAL_FRAMES_SUFFIX = ".partial.frames"
 CACHE_CONFIRMATION_BYTES = 1 << 30
 CACHE_STALE_SECONDS = 24 * 60 * 60
-MAX_CACHE_PAYLOAD_BYTES = 64 * 1024 * 1024
+# Recalibrated with the first real-project capture (320 frames at 30 fps
+# exceeding the previous 64 MiB estimate); still a frozen bound, not a
+# user tuning knob.
+MAX_CACHE_PAYLOAD_BYTES = 1024 * 1024 * 1024
 MAX_CACHE_FRAME_COUNT = 20000
 UPLOAD_CHUNK_FRAMES = 64
 # Watchdog for a wedged-but-open connection during the Ready wait; the upload
@@ -366,7 +369,10 @@ def make_cache_begin_message(revision, start_frame, end_frame, fps, payload_size
     if frame_count < 1 or frame_count > MAX_CACHE_FRAME_COUNT:
         raise ValueError("cache frame count is outside the supported range")
     if payload_size < 1 or payload_size > MAX_CACHE_PAYLOAD_BYTES:
-        raise ValueError("cache encoded size exceeds the Unreal transient limit")
+        raise ValueError(
+            "cache encoded size {0} bytes exceeds the Unreal transient"
+            " limit of {1} bytes".format(
+                payload_size, MAX_CACHE_PAYLOAD_BYTES))
     return {
         "type": "cache_begin",
         "upload_id": upload_id,

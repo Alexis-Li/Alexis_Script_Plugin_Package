@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Recalibrate the frozen transient cache limits with the first real-project
+  evidence (a 320-frame, 30 fps capture whose exact encoded size exceeded the
+  original estimate): encoded uploads may now use up to 1 GiB and parsed
+  transient memory a fixed 1536 MiB budget, still rejected atomically beyond
+  the bounds; oversized caches now report the computed size against the limit.
 - Advance Cached Playback to protocol v6 (spec #17): `init` establishes the
   authoritative character snapshot revision echoed by `ready`; uploads carry
   monotonically increasing upload identities and play attempts carry play

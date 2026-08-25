@@ -656,7 +656,7 @@ The Unreal runtime module gains `FMtoUCacheSession`, a game-thread transient
 cache owner scoped to one negotiated session id. The worker thread parses cache
 message shapes and forwards commands with their session identity; the game
 thread validates semantics against negotiated bone/curve counts and frozen
-bounds (64 MiB declared payload, 20 000 frames, 1–60 fps), buffers validated
+bounds (1 GiB declared payload, 20 000 frames, 1–60 fps), buffers validated
 frames, and transitions Idle → Receiving → Ready atomically at `cache_end`.
 Partial uploads are dropped entirely and can never become Ready or replayable;
 cache validation errors reply with stable codes while keeping the connection
@@ -714,8 +714,8 @@ bound.
 
 Resource accounting moved into production paths: encoded bytes are metered at
 the framing boundary with overflow-safe accumulation against both the declared
-size and the frozen 64 MiB limit, and parsed transient memory is preflighted
-from negotiated transform/curve counts against a fixed 256 MiB budget before
+size and the frozen 1 GiB limit, and parsed transient memory is preflighted
+from negotiated transform/curve counts against a fixed 1536 MiB budget before
 allocation. Violations reject the whole upload atomically while preserving the
 negotiated session. Negative frame indexes return
 `CACHE_FRAME_INDEX_INVALID` on the production socket path without closing.

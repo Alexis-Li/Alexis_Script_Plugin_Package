@@ -71,13 +71,14 @@ class FMtoUProtocol
 {
 public:
     static constexpr int32 Version = 6;
-    // Transient Unreal cache limits, calibrated for the current production
-    // range (C01: 321 frames at 30 fps) and frozen in the protocol contract.
-    // Encoded bytes are metered from the framing boundary; parsed transient
-    // memory is preflighted from the negotiated transform/curve counts before
-    // any allocation.
-    static constexpr int64 MaxCachePayloadBytes = 64ll * 1024ll * 1024ll;
-    static constexpr int64 MaxCacheParsedMemoryBytes = 256ll * 1024ll * 1024ll;
+    // Transient Unreal cache limits, recalibrated with the first real-project
+    // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
+    // aligned with Maya's 1 GiB large-cache confirmation gate. Frozen in the
+    // protocol contract. Encoded bytes are metered from the framing boundary;
+    // parsed transient memory is preflighted from the negotiated transform and
+    // curve counts before any allocation.
+    static constexpr int64 MaxCachePayloadBytes = 1024ll * 1024ll * 1024ll;
+    static constexpr int64 MaxCacheParsedMemoryBytes = 1536ll * 1024ll * 1024ll;
     static constexpr int32 MaxCacheFrameCount = 20000;
     static constexpr double MinCacheFps = 1.0;
     static constexpr double MaxCacheFps = 60.0;
