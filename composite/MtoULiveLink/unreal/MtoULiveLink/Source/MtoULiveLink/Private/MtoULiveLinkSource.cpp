@@ -899,10 +899,10 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             : bZeroMorphManifest
                 ? TEXT("Bone-driven outfit: the current Maya outfit declares no BlendShapes.")
                 : Message.bBlendshapesEnabled
-                ? (bPartialMorphCoverage
-                    ? TEXT("YELLOW: Partial Preview Morph coverage.")
-                    : TEXT("Full Preview Morph coverage."))
-                : TEXT("ORANGE: Bone-only diagnostic; not valid for model acceptance.");
+                    ? (bPartialMorphCoverage
+                        ? TEXT("YELLOW: Partial Preview Morph coverage.")
+                        : TEXT("Full Preview Morph coverage."))
+                    : TEXT("ORANGE: Bone-only diagnostic; not valid for model acceptance.");
         Actor->SetModelDiagnostics(
             FString::Printf(
                 TEXT("%s\nMaya current BlendShape count: %d\nGenerated Preview Morph total: %d\nAccepted count: %d\nMaya-only count: %d (%s)\nUE-only count: %d (%s)"),
@@ -917,9 +917,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             DiagnosticLevel);
     }
 
-    if (bModelWorkflow
-        && Message.bBlendshapesEnabled
-        && !Message.Curves.IsEmpty()
+    if (bModelWorkflow && !bZeroMorphManifest
         && Outcome.AcceptedCurveIndices.IsEmpty())
     {
         // BS transmission with a non-empty manifest and zero accepted Preview

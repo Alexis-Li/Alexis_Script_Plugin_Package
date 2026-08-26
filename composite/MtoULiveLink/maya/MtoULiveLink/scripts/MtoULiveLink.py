@@ -312,6 +312,21 @@ def blendshape_warning_from_reply(reply):
     }
 
 
+def filter_bone_driven_differences(init_message, reply):
+    """Drop UE-only Morph differences for outfits that declare no BlendShapes.
+
+    A bone-driven outfit declares zero BlendShape names, so generated Morph
+    Targets missing in Maya are expected and are not an expression-coverage
+    warning.
+    """
+    if (init_message.get("workflow") == WORKFLOW_MODEL
+            and init_message.get("blendshapes_enabled")
+            and not init_message.get("curves")):
+        reply = dict(reply)
+        reply["missing_in_maya"] = []
+    return reply
+
+
 def _finite(values):
     return all(math.isfinite(float(value)) for value in values)
 
@@ -3047,18 +3062,8 @@ class _SenderWorker(threading.Thread):
                 self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
                 return
             connected = True
-            warning = blendshape_warning_from_reply(reply)
-            init_message = self._init_message
-            if (init_message.get("workflow") == WORKFLOW_MODEL
-                    and init_message.get("blendshapes_enabled")
-                    and not init_message.get("curves")):
-                # A bone-driven outfit declares no BlendShape names, so
-                # generated Morph Targets missing in Maya are expected and are
-                # not an expression-coverage warning.
-                warning["missing_in_maya"] = []
-                warning["has_warning"] = bool(
-                    warning["missing_in_unreal"]
-                    or warning["bone_name_remaps"])
+            warning = blendshape_warning_from_reply(
+                filter_bone_driven_differences(self._init_message, reply))
             self._set_status("ready", "Connected", warning=warning)
             sock.settimeout(0.25)
             while not self._stop_event.is_set():

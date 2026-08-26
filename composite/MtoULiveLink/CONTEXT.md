@@ -117,13 +117,17 @@ _Avoid_: BS build, Morph transfer button, live Morph generation
 **Accepted Preview Morph set**:
 The name intersection between the selected Maya outfit's BlendShapes and the
 Generated Preview Skeletal Mesh Morph Targets negotiated for one Model preview
-streaming session. Only this set receives streamed values.
+streaming session. Only this set receives streamed values. An outfit that
+declares no BlendShape names has a valid empty accepted set; only a non-empty
+manifest with an empty intersection is a failed pairing.
 _Avoid_: Full Morph stream, active Morph library, transferred BS list
 
 **Bone-only comparison**:
 An explicitly requested Model preview connection with BS transmission disabled.
 It may help isolate skinning behavior but is not valid evidence for model
-acceptance.
+acceptance. It differs from an intentionally bone-driven outfit whose manifest
+declares zero BlendShape names while BS transmission stays enabled; that
+session negotiates Ready.
 _Avoid_: Model preview acceptance, Morph fallback, degraded preview
 
 **Protocol contract**:
