@@ -178,6 +178,44 @@
       }
     },
     {
+      "id": "init-model-workflow-empty-curves",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 6,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
       "id": "init-utf8-duplicates-and-unknown-field",
       "operation": "init",
       "applies_to": [

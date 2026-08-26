@@ -2407,17 +2407,70 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         Actor && Actor->GetGeneratedPreviewMesh() == GeneratedPreview
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
 
+    FSocket* BoneDrivenClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("bone-driven model client connects"), BoneDrivenClient);
+    const TArray<uint8> BoneDrivenInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[]"));
+    TestTrue(TEXT("bone-driven model init is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, BoneDrivenInit.GetData(), BoneDrivenInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("bone-driven outfit produces ready response"),
+        BoneDrivenClient && ReceivePacket(*BoneDrivenClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("zero-name manifest negotiates Ready with an empty accepted set"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
+    TestTrue(TEXT("bone-driven outfit is not labelled an invalid diagnostic"),
+        Actor
+        && Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && Actor->GetPreviewState() == EMtoUPreviewState::Ready
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-driven diagnostics report the declared-zero manifest"),
+        Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 0"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Bone-driven outfit"))
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Full);
+    const TArray<uint8> BoneDrivenFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
+    TestTrue(TEXT("bone-driven frame is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, BoneDrivenFrame.GetData(), BoneDrivenFrame.Num()));
+    FLiveLinkSubjectFrameData BoneDrivenEvaluatedFrame;
+    const bool bBoneDrivenFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            BoneDrivenEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* BoneDrivenStatic = bBoneDrivenFrameEvaluated
+        ? BoneDrivenEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* BoneDrivenAnimation = bBoneDrivenFrameEvaluated
+        ? BoneDrivenEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("bone-driven session streams bones with no Morph properties"),
+        BoneDrivenStatic
+        && BoneDrivenStatic->PropertyNames.IsEmpty()
+        && BoneDrivenAnimation
+        && BoneDrivenAnimation->Transforms.Num() == 2
+        && !BoneDrivenAnimation->Transforms[0].ContainsNaN()
+        && BoneDrivenAnimation->PropertyValues.IsEmpty());
+    DestroySocket(*SocketSubsystem, BoneDrivenClient);
+    TestTrue(TEXT("source returns to listening after bone-driven disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
     FSocket* BlendshapeClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("BlendShape-enabled model client connects"), BlendshapeClient);
     const TArray<uint8> BlendshapeInit = DriverInitPacket(
-        FMtoUWorkflows::Model, true, TEXT("[]"));
+        FMtoUWorkflows::Model, true, TEXT("[\"OtherOutfit\"]"));
     TestTrue(TEXT("BlendShape-enabled model init is sent"), BlendshapeClient
         && SendBytes(*BlendshapeClient, BlendshapeInit.GetData(), BlendshapeInit.Num()));
     Payload.Reset();
     TestTrue(TEXT("BlendShape-enabled model workflow receives rejection"),
         BlendshapeClient
         && ReceivePacket(*BlendshapeClient, Payload, [&]() { Source->Update(); }));
-    TestTrue(TEXT("zero Morph intersection remains unavailable with BS enabled"),
+    TestTrue(TEXT("a non-empty manifest without intersection remains unavailable with BS enabled"),
         FromUtf8(Payload).Contains(TEXT("PREVIEW_MORPH_MISMATCH")));
     TestTrue(TEXT("BlendShape rejection closes the session"),
         BlendshapeClient && WaitForClose(*BlendshapeClient));

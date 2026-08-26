@@ -541,6 +541,17 @@ When `blendshapes_enabled` is false, Maya still sends the complete `curves`
 manifest, while the ready reply's `accepted_morph_count` and the published
 Live Link property list both stay empty so the session remains consistent.
 
+Model preview negotiation distinguishes an intentionally empty manifest from a
+failed non-empty one. A current outfit that declares zero BlendShape names is
+bone-driven by design: with BS transmission enabled it still negotiates Ready
+with an empty Accepted Preview Morph set and no placeholder curve or synthetic
+manifest entry, while a non-empty manifest whose intersection with the
+generated library is empty keeps blocking with `PREVIEW_MORPH_MISMATCH`.
+Partial and complete intersections keep their warning and Ready behavior, and
+other garments' BlendShapes never satisfy the current outfit's coverage. This
+clarification requires no new wire field and leaves protocol v6 framing,
+message shapes, Cached Playback identity, and version negotiation unchanged.
+
 Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
 messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
 protocol version uses `PROTOCOL_VERSION_MISMATCH` and closes the connection. A

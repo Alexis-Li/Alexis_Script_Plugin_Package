@@ -868,8 +868,16 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         }
         return Text.IsEmpty() ? FString(TEXT("none")) : FString::Join(Text, TEXT(", "));
     };
+    // A zero-name manifest declares an intentionally bone-driven outfit: its
+    // empty Accepted Preview Morph set is valid even with BS transmission
+    // enabled. Only a non-empty manifest with zero accepted names is a failed
+    // pairing, so it keeps blocking with PREVIEW_MORPH_MISMATCH.
+    const bool bZeroMorphManifest = bModelWorkflow
+        && Message.bBlendshapesEnabled
+        && Message.Curves.IsEmpty();
     const bool bPartialMorphCoverage = bModelWorkflow
         && Message.bBlendshapesEnabled
+        && !bZeroMorphManifest
         && (!Outcome.MayaOnlyMorphNames.IsEmpty() || !Outcome.UnrealOnlyMorphNames.IsEmpty());
     if (bModelWorkflow)
     {
@@ -877,6 +885,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             ? Outcome.AcceptedCurveNames.Num()
             : 0;
         const bool bEmptyRequiredIntersection = Message.bBlendshapesEnabled
+            && !bZeroMorphManifest
             && Outcome.AcceptedCurveIndices.IsEmpty();
         const EMtoUModelDiagnosticLevel DiagnosticLevel = bEmptyRequiredIntersection
             ? EMtoUModelDiagnosticLevel::Error
@@ -887,7 +896,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
                 : EMtoUModelDiagnosticLevel::BoneOnly;
         const FString Indicator = bEmptyRequiredIntersection
             ? TEXT("ERROR: No accepted Preview Morphs.")
-            : Message.bBlendshapesEnabled
+            : bZeroMorphManifest
+                ? TEXT("Bone-driven outfit: the current Maya outfit declares no BlendShapes.")
+                : Message.bBlendshapesEnabled
                 ? (bPartialMorphCoverage
                     ? TEXT("YELLOW: Partial Preview Morph coverage.")
                     : TEXT("Full Preview Morph coverage."))
@@ -908,10 +919,12 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 
     if (bModelWorkflow
         && Message.bBlendshapesEnabled
+        && !Message.Curves.IsEmpty()
         && Outcome.AcceptedCurveIndices.IsEmpty())
     {
-        // BS transmission with zero accepted Preview Morphs is blocking; the
-        // user must fix the pairing or explicitly disable BS transmission.
+        // BS transmission with a non-empty manifest and zero accepted Preview
+        // Morphs is blocking; the user must fix the pairing or explicitly
+        // disable BS transmission.
         const FString Details = FString::Printf(
             TEXT("%s has no Morph Target intersection between Maya and the generated preview.\nMaya-only: %d, Unreal-only: %d."),
             *Actor->GetName(),

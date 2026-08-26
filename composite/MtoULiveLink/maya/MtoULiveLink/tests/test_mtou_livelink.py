@@ -1255,6 +1255,69 @@ class SenderLifecycleTests(unittest.TestCase):
         self.assertEqual("INVALID_MESSAGE", diagnostic["code"])
         self.assertIn("revision", diagnostic["details"])
 
+    def test_bone_driven_outfit_treats_unreal_only_morphs_as_expected(self):
+        identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+
+        def connect_with(manifest_curves):
+            init_message = MODULE.make_init_message(
+                [["root", -1, identity]], manifest_curves, 7,
+                MODULE.WORKFLOW_MODEL, True)
+            worker = MODULE._SenderWorker(init_message)
+
+            class ReadySocket(object):
+                def __init__(self):
+                    self.reply = MODULE.encode_message({
+                        "type": "ready", "revision": 7,
+                        "missing_in_unreal": [],
+                        "missing_in_maya": ["Projected"],
+                        "bone_name_remaps": [], "workflow": "model",
+                        "target_morph_count": 1, "accepted_morph_count": 0,
+                    })
+
+                def settimeout(self, timeout):
+                    pass
+
+                def recv(self, size):
+                    chunk, self.reply = self.reply[:size], self.reply[size:]
+                    return chunk
+
+                def sendall(self, packet):
+                    pass
+
+                def close(self):
+                    pass
+
+            fake_socket = ReadySocket()
+            observed = []
+
+            def selectable(unused_rlist, unused_wlist, unused_xlist, unused_timeout):
+                if not observed:
+                    # The first poll runs after the ready reply was processed.
+                    observed.append(worker.status())
+                worker.stop()
+                return ([], [], [])
+
+            with mock.patch.object(worker, "_connect", return_value=fake_socket), \
+                 mock.patch.object(worker, "_send_initial", return_value=True), \
+                 mock.patch.object(MODULE.select, "select", side_effect=selectable):
+                worker.run()
+            return observed[0]
+
+        # A zero-name manifest is intentionally bone-driven: UE-only generated
+        # Morphs are expected and must not raise the expression-coverage
+        # warning.
+        state, detail, warning, diagnostic = connect_with([])
+        self.assertEqual("ready", state)
+        self.assertEqual("Connected", detail)
+        self.assertFalse(warning["has_warning"])
+        self.assertEqual([], warning["missing_in_maya"])
+        self.assertIsNone(diagnostic)
+
+        # A declared manifest keeps the expression-coverage warning.
+        _, _, warning, _ = connect_with(["Smile"])
+        self.assertTrue(warning["has_warning"])
+        self.assertEqual(["Projected"], warning["missing_in_maya"])
+
     def test_runtime_structured_error_is_preserved(self):
         worker = MODULE._SenderWorker({"type": "init", "revision": 7})
         runtime_error = MODULE.encode_message({

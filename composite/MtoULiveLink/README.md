@@ -71,10 +71,12 @@ Install the matching component in each host:
    disabled, Model can connect to that preview as a visibly labelled bone-only
    diagnostic that is not valid for model acceptance. With **传递 BS** enabled,
    Unreal accepts only the intersection of the current Maya outfit's
-   BlendShapes and the Generated Preview Morph library. An empty intersection
-   is refused with `PREVIEW_MORPH_MISMATCH`; partial coverage connects with a
-   yellow warning and both difference lists, while full coverage connects as
-   ready. Only accepted values are streamed, so UE-only Morphs remain at zero.
+   BlendShapes and the Generated Preview Morph library. An outfit that declares
+   no BlendShapes is intentionally bone-driven and connects as ready with an
+   empty accepted set. A non-empty manifest with zero intersection is refused
+   with `PREVIEW_MORPH_MISMATCH`; partial coverage connects with a yellow
+   warning and both difference lists, while full coverage connects as ready.
+   Only accepted values are streamed, so UE-only Morphs remain at zero.
 5. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
    paused posing and manual timeline changes continue at the scene rate, and
    stopping playback submits the final pose immediately. Changing the Clothes

@@ -59,10 +59,11 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
    Preview Skeletal Mesh；否则连接会被 `PREVIEW_NOT_READY` 拒绝，且可见目标
    不会发生任何变化。关闭 **传递 BS** 时，可连接该预览，但会明确标记为
    “仅骨骼诊断，不可用于模型验收”；开启 **传递 BS** 时，UE 只接受当前 Maya
-   服装 BlendShape 与 Generated Preview Morph 库的交集。交集为空时会以
-   `PREVIEW_MORPH_MISMATCH` 拒绝连接；部分覆盖会连接并显示黄色警告及双方差异
-   列表，完全覆盖则进入 Ready。只传输已接受的数值，因此仅 UE 存在的 Morph
-   始终保持为零。
+   服装 BlendShape 与 Generated Preview Morph 库的交集。当前服装未声明任何
+   BlendShape 时，属于有意的仅骨骼驱动，会以空接受集正常进入 Ready；声明了
+   名称但交集为零时会以 `PREVIEW_MORPH_MISMATCH` 拒绝连接；部分覆盖会连接并显示
+   黄色警告及双方差异列表，完全覆盖则进入 Ready。只传输已接受的数值，因此仅
+   UE 存在的 Morph 始终保持为零。
 5. 在 Maya 中调整姿势、播放或拖动时间轴。上限只在 Maya 播放期间生效；
    暂停时的摆姿和手动拖动仍按场景帧率采样，停止播放会立即提交最终姿势。
    连接期间切换 Clothes 枚举或 **传递 BS** 都会断开会话；换装后请在 UE 中

@@ -75,6 +75,12 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   boundaries, misalignment rejection before mesh build, closest-point fallback
   when the public inpaint solve fails on large layered inputs, and a
   reproducible corpus measurement harness.
+- **2026-08-26:** Clarified Model Preview negotiation for outfits without
+  BlendShapes (Issue #20): a zero-name Maya outfit manifest is intentionally
+  bone-driven and negotiates Ready with an empty accepted Morph set, while a
+  non-empty manifest with zero generated matches keeps blocking with
+  `PREVIEW_MORPH_MISMATCH`. Protocol v6 framing and message shapes are
+  unchanged.
 
 ## Stable Records
 

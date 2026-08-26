@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Accept bone-only Model Preview for outfits without BlendShapes: a current
+  Maya outfit that declares zero BlendShape names now negotiates Ready with an
+  empty Accepted Preview Morph set even when BS transmission is enabled, with
+  no placeholder Morph Target, accepted curve, or synthetic manifest entry.
+  A non-empty manifest whose generated intersection stays empty is still
+  refused with `PREVIEW_MORPH_MISMATCH`, partial and complete coverage keep
+  their warning and Ready behavior, and disabling BS transmission on an outfit
+  that declares BlendShapes remains the labelled bone-only diagnostic. Maya no
+  longer shows the expression-coverage warning for the expected UE-only Morphs
+  of a bone-driven outfit. Protocol v6 framing, message shapes, Cached
+  Playback identity, and version negotiation are unchanged.
 - Calibrate Model Preview quality warnings on the garment corpus: Refresh now
   measures the symmetric Driver/Preview surface distance (min/max/average/RMS,
   normalized by the Driver bounds) and the weight-transfer low-confidence
