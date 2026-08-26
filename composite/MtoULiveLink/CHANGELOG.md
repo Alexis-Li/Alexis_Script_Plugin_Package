@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Calibrate Model Preview quality warnings on the garment corpus: Refresh now
+  measures the symmetric Driver/Preview surface distance (min/max/average/RMS,
+  normalized by the Driver bounds) and the weight-transfer low-confidence
+  ratio, then reports a Ready, Warning, or Error verdict with measured reason
+  text. Misaligned inputs are rejected transactionally before any mesh build;
+  approved production revisions measure Ready; when the public inpaint solve
+  fails on large layered inputs, Refresh keeps the already-computed
+  closest-point weights and warns instead of failing. Structural errors stay
+  hard failures, and Morph-intersection behavior from the previous gate is
+  unchanged.
 - Restore the Maya Streaming session seam for Cached Playback: the streaming
   session now answers drain questions through `cached_delivery_drained()` and
   installs the cached reply listener atomically inside `pause_for_cached()`,

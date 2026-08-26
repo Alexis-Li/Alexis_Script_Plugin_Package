@@ -32,6 +32,7 @@
 #include "StaticMeshAttributes.h"
 #include "Subsystems/ImportSubsystem.h"
 #include "Subsystems/PlacementSubsystem.h"
+#include "Tests/EnsureScope.h"
 #include "UDynamicMesh.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
@@ -44,7 +45,8 @@ UStaticMesh* MakePreview(
     UObject& Outer,
     bool bLocalRetopology = false,
     bool bDoubleLayer = false,
-    bool bRemovePositiveXSurface = false)
+    bool bRemovePositiveXSurface = false,
+    bool bMisaligned = false)
 {
     UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(&Outer);
     FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
@@ -56,6 +58,18 @@ UStaticMesh* MakePreview(
     if (ReadOutcome != EGeometryScriptOutcomePins::Success)
     {
         return nullptr;
+    }
+    if (bMisaligned)
+    {
+        DynamicMesh->EditMesh([](UE::Geometry::FDynamicMesh3& Mesh)
+        {
+            const double Offset = Mesh.GetBounds().DiagonalLength() * 2.0;
+            for (const int32 VertexID : Mesh.VertexIndicesItr())
+            {
+                Mesh.SetVertex(VertexID,
+                    Mesh.GetVertex(VertexID) + FVector3d(Offset, 0.0, 0.0));
+            }
+        });
     }
     if (bRemovePositiveXSurface)
     {
@@ -103,6 +117,100 @@ UStaticMesh* MakePreview(
             }
         });
     }
+
+    UStaticMesh* Preview = NewObject<UStaticMesh>(&Outer, NAME_None, RF_Transient);
+    FGeometryScriptCopyMeshToAssetOptions WriteOptions;
+    WriteOptions.bEmitTransaction = false;
+    WriteOptions.bReplaceMaterials = true;
+    for (const FSkeletalMaterial& Material : Driver.GetMaterials())
+    {
+        WriteOptions.NewMaterials.Add(Material.MaterialInterface);
+        WriteOptions.NewMaterialSlotNames.Add(Material.MaterialSlotName);
+    }
+    FGeometryScriptMeshWriteLOD WriteLOD;
+    EGeometryScriptOutcomePins WriteOutcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+        DynamicMesh, Preview, WriteOptions, WriteLOD, WriteOutcome, false);
+    return WriteOutcome == EGeometryScriptOutcomePins::Success ? Preview : nullptr;
+}
+
+enum class EMtoUCorpusVariant : uint8
+{
+    SameTopology,
+    LocalRetopology,
+    DoubleLayerSeams,
+    Misaligned
+};
+
+UStaticMesh* MakeCorpusPreview(
+    USkeletalMesh& Driver,
+    UStaticMesh* BasePreview,
+    UObject& Outer,
+    EMtoUCorpusVariant Variant)
+{
+    UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(&Outer);
+    FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+    ReadOptions.bApplyBuildSettings = false;
+    ReadOptions.bRequestTangents = true;
+    FGeometryScriptMeshReadLOD ReadLOD;
+    ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+    EGeometryScriptOutcomePins ReadOutcome = EGeometryScriptOutcomePins::Failure;
+    if (BasePreview)
+    {
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMeshV2(
+            BasePreview, DynamicMesh, ReadOptions, ReadLOD, ReadOutcome, false);
+    }
+    else
+    {
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+            &Driver, DynamicMesh, ReadOptions, ReadLOD, ReadOutcome);
+    }
+    if (ReadOutcome != EGeometryScriptOutcomePins::Success)
+    {
+        return nullptr;
+    }
+
+    DynamicMesh->EditMesh([Variant](UE::Geometry::FDynamicMesh3& Mesh)
+    {
+        switch (Variant)
+        {
+        case EMtoUCorpusVariant::Misaligned:
+        {
+            const double Offset = Mesh.GetBounds().DiagonalLength() * 2.0;
+            for (const int32 VertexID : Mesh.VertexIndicesItr())
+            {
+                Mesh.SetVertex(VertexID,
+                    Mesh.GetVertex(VertexID) + FVector3d(Offset, 0.0, 0.0));
+            }
+            break;
+        }
+        case EMtoUCorpusVariant::LocalRetopology:
+        case EMtoUCorpusVariant::DoubleLayerSeams:
+        {
+            UE::Geometry::FDynamicMesh3::FPokeTriangleInfo PokeInfo;
+            for (const int32 TriangleID : Mesh.TriangleIndicesItr())
+            {
+                Mesh.PokeTriangle(TriangleID, PokeInfo);
+                break;
+            }
+            if (Variant == EMtoUCorpusVariant::DoubleLayerSeams)
+            {
+                const UE::Geometry::FDynamicMesh3 OuterLayer(Mesh);
+                UE::Geometry::FDynamicMeshEditor Editor(&Mesh);
+                UE::Geometry::FMeshIndexMappings Mappings;
+                Editor.AppendMesh(
+                    &OuterLayer,
+                    Mappings,
+                    [](int32, const FVector3d& Position) { return Position * 0.9; },
+                    nullptr,
+                    true);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    });
 
     UStaticMesh* Preview = NewObject<UStaticMesh>(&Outer, NAME_None, RF_Transient);
     FGeometryScriptCopyMeshToAssetOptions WriteOptions;
@@ -958,6 +1066,266 @@ bool FMtoUPreviewSourceFailuresTest::RunTest(const FString& Parameters)
         && MissingInfluence.GeneratedPreview == nullptr
         && MissingInfluence.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
         && MissingInfluence.Diagnostics.Contains(TEXT("absent from the target skeleton")));
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewQualityBoundaryTest,
+    "MtoULiveLink.Editor.Preview.QualityBoundaries",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewQualityBoundaryTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FMtoUPreviewQualityThresholds Thresholds;
+    const double Epsilon = 1.0e-6;
+    FString Reason;
+
+    TestEqual(TEXT("average distance immediately below the misalignment bound is not an error by itself"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            0.0, Thresholds.MisalignedNormalizedDistanceAverage - Epsilon, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Ready));
+    TestEqual(TEXT("average distance immediately above the misalignment bound fails"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            0.0, Thresholds.MisalignedNormalizedDistanceAverage + Epsilon, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Error));
+    TestTrue(TEXT("the misaligned reason names the boundary"),
+        Reason.Contains(TEXT("misaligned")));
+
+    TestEqual(TEXT("ratio immediately below the ready boundary stays Ready"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            Thresholds.MaxReadyInpaintRatio - Epsilon, 0.0, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Ready));
+    TestEqual(TEXT("ratio immediately above the ready boundary warns"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            Thresholds.MaxReadyInpaintRatio + Epsilon, 0.0, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Warning));
+    TestEqual(TEXT("ratio immediately below the warning boundary still warns"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            Thresholds.MaxWarningInpaintRatio - Epsilon, 0.0, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Warning));
+    TestEqual(TEXT("ratio immediately above the warning boundary fails"),
+        static_cast<uint8>(MtoUEvaluatePreviewQuality(
+            Thresholds.MaxWarningInpaintRatio + Epsilon, 0.0, Thresholds, Reason)),
+        static_cast<uint8>(EMtoUPreviewQuality::Error));
+    TestTrue(TEXT("every verdict carries a measured reason"),
+        !Reason.IsEmpty() && Reason.Contains(FString::SanitizeFloat(Thresholds.MaxWarningInpaintRatio)));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewMisalignmentTest,
+    "MtoULiveLink.Editor.Preview.Misalignment",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewMisalignmentTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUMisalignedWorld"));
+    UStaticMesh* AlignedPreview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    UStaticMesh* MisalignedPreview = Driver ? MakePreview(*Driver, *WorldPackage, false, false, false, true) : nullptr;
+    // The binding input drops each preview mid-test; keep the transient fixtures alive.
+    TStrongObjectPtr<UStaticMesh> AlignedGuard(AlignedPreview);
+    TStrongObjectPtr<UStaticMesh> MisalignedGuard(MisalignedPreview);
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUMisalignedWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = MisalignedPreview;
+    if (!Driver || !AlignedPreview || !MisalignedPreview || !Actor)
+    {
+        AddError(TEXT("misalignment fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Actor->SetBinding(Binding);
+
+    FProperty* PreviewInputProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, PreviewStaticMesh));
+    FPropertyChangedEvent PreviewInputChanged(PreviewInputProperty);
+
+    const FMtoUPreviewPreparationResult Misaligned =
+        FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+    AddInfo(Misaligned.Diagnostics);
+    TestFalse(TEXT("an intentionally misaligned input cannot produce a usable preview"),
+        Misaligned.bSucceeded);
+    TestNull(TEXT("the misaligned preparation returns no mesh"), Misaligned.GeneratedPreview);
+    TestEqual(TEXT("misalignment is rejected at quality validation of the converted inputs"),
+        Misaligned.FailureStage, EMtoUPreviewBuildStage::GeometryConversion);
+    TestTrue(TEXT("the misaligned reason names the calibrated bound"),
+        Misaligned.Diagnostics.Contains(TEXT("misaligned"))
+        && Misaligned.Diagnostics.Contains(*FString::SanitizeFloat(
+            FMtoUPreviewQualityThresholds().MisalignedNormalizedDistanceAverage)));
+
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = AlignedPreview;
+    {
+        const FMtoUPreviewPreparationResult Aligned =
+            FMtoUPreviewPreparation::RefreshActor(*Actor);
+        TestTrue(TEXT("the aligned input recovers with a complete preview"),
+            Aligned.bSucceeded && Actor->HasReadyGeneratedPreview());
+    }
+
+    Binding->PreviewStaticMesh = MisalignedPreview;
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    TWeakObjectPtr<USkeletalMesh> StaleMesh = Actor->GetGeneratedPreviewMesh();
+    const FMtoUPreviewPreparationResult Failed =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("a misaligned Refresh transactionally discards and hides the stale preview"),
+        !Failed.bSucceeded
+        && Failed.GeneratedPreview == nullptr
+        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && !StaleMesh.IsValid()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    Binding->PreviewStaticMesh = AlignedPreview;
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    TestTrue(TEXT("Refresh recovers after a misaligned attempt"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCorpusMeasurementTest,
+    "MtoULiveLink.Editor.Preview.QualityCorpus",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCorpusMeasurementTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString OverrideDriverPath
+        = FPlatformMisc::GetEnvironmentVariable(TEXT("MTOU_QUALITY_DRIVER"));
+    const FString OverridePreviewPath
+        = FPlatformMisc::GetEnvironmentVariable(TEXT("MTOU_QUALITY_PREVIEW"));
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUQualityCorpusWorld"));
+    USkeletalMesh* Driver = OverrideDriverPath.IsEmpty()
+        ? MakeMorphDriver(*WorldPackage)
+        : LoadObject<USkeletalMesh>(nullptr, *OverrideDriverPath);
+    UStaticMesh* BasePreview = OverridePreviewPath.IsEmpty()
+        ? nullptr
+        : LoadObject<UStaticMesh>(nullptr, *OverridePreviewPath);
+    const FString CorpusName = OverrideDriverPath.IsEmpty()
+        ? TEXT("stock-SkeletalCube")
+        : FPaths::GetBaseFilename(OverrideDriverPath);
+    if (!Driver || (!BasePreview && !OverridePreviewPath.IsEmpty()))
+    {
+        AddError(TEXT("corpus fixture assets were not loaded"));
+        return false;
+    }
+    TStrongObjectPtr<USkeletalMesh> DriverGuard(Driver);
+    TStrongObjectPtr<UStaticMesh> BasePreviewGuard(BasePreview);
+
+    struct FMtoUCorpusCase
+    {
+        const TCHAR* Name;
+        EMtoUCorpusVariant Variant;
+        bool bExpectFailure;
+    };
+    const FMtoUCorpusCase Cases[] = {
+        {TEXT("SameTopology"), EMtoUCorpusVariant::SameTopology, false},
+        {TEXT("LocalRetopology"), EMtoUCorpusVariant::LocalRetopology, false},
+        {TEXT("DoubleLayerSeams"), EMtoUCorpusVariant::DoubleLayerSeams, false},
+        {TEXT("MisalignedNegative"), EMtoUCorpusVariant::Misaligned, true},
+    };
+
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUQualityCorpusWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    if (!Actor)
+    {
+        AddError(TEXT("corpus world was not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Binding->SkeletalMesh = Driver;
+
+    for (const FMtoUCorpusCase& Case : Cases)
+    {
+        UStaticMesh* VariantPreview = MakeCorpusPreview(
+            *Driver, BasePreview, *WorldPackage, Case.Variant);
+        if (!VariantPreview)
+        {
+            AddError(FString::Printf(TEXT("corpus variant %s was not created"), Case.Name));
+            continue;
+        }
+        Binding->PreviewStaticMesh = VariantPreview;
+        // The public inpaint QP solve fails with a handled ensure on large
+        // layered inputs; Refresh falls back to closest-point weights.
+        FEnsureScope InpaintEnsureScope;
+        const double StartSeconds = FPlatformTime::Seconds();
+        const FMtoUPreviewPreparationResult Result =
+            FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+        const double TotalMilliseconds = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
+        const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+
+        AddInfo(FString::Printf(
+            TEXT("{\"corpus\":\"%s\",\"case\":\"%s\",\"vertices\":%d,\"triangles\":%d,"
+                "\"low_confidence\":%d,\"inpaint_ratio\":%.5f,"
+                "\"distance_min\":%.6f,\"distance_max\":%.6f,\"distance_avg\":%.6f,\"distance_rms\":%.6f,"
+                "\"morph_count\":%d,\"skipped_morphs\":%d,\"sparse_deltas\":%lld,"
+                "\"closest_ms\":%.3f,\"inpaint_ms\":%.3f,\"morph_projection_ms\":%.3f,"
+                "\"total_refresh_ms\":%.1f,\"peak_physical_mib\":%.1f,\"status\":\"%s\"}"),
+            *CorpusName,
+            Case.Name,
+            Result.VertexCount,
+            Result.TriangleCount,
+            Result.LowConfidenceVertexCount,
+            Result.InpaintLowConfidenceRatio,
+            Result.SurfaceDistanceMin,
+            Result.SurfaceDistanceMax,
+            Result.SurfaceDistanceAverage,
+            Result.SurfaceDistanceRms,
+            Result.MorphTargetCount,
+            Result.SkippedMorphTargetCount,
+            Result.SparseMorphDeltaCount,
+            Result.ClosestTransferMilliseconds,
+            Result.InpaintTransferMilliseconds,
+            Result.MorphProjectionMilliseconds,
+            TotalMilliseconds,
+            Stats.PeakUsedPhysical / (1024.0 * 1024.0),
+            Result.bSucceeded
+                ? (Result.Quality == EMtoUPreviewQuality::Ready ? TEXT("Ready") : TEXT("Warning"))
+                : TEXT("Error")));
+        AddInfo(Result.Diagnostics);
+
+        if (Case.bExpectFailure)
+        {
+            TestTrue(FString::Printf(TEXT("%s fails rather than producing a misleading preview"), Case.Name),
+                !Result.bSucceeded
+                && Result.GeneratedPreview == nullptr
+                && Result.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
+                && Result.Diagnostics.Contains(TEXT("misaligned")));
+        }
+        else
+        {
+            TestTrue(FString::Printf(TEXT("%s builds within the calibrated envelope"), Case.Name),
+                Result.bSucceeded
+                && Result.GeneratedPreview != nullptr
+                && Result.Quality != EMtoUPreviewQuality::Error
+                && Result.SurfaceDistanceAverage
+                    <= FMtoUPreviewQualityThresholds().MisalignedNormalizedDistanceAverage);
+        }
+    }
 
     if (World)
     {

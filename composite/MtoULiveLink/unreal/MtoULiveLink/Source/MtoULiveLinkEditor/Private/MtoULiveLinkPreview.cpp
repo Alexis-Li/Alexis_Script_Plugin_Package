@@ -19,6 +19,44 @@
 
 using namespace UE::Geometry;
 
+EMtoUPreviewQuality MtoUEvaluatePreviewQuality(
+    const double InpaintLowConfidenceRatio,
+    const double NormalizedSurfaceDistanceAverage,
+    const FMtoUPreviewQualityThresholds& Thresholds,
+    FString& OutReason)
+{
+    if (NormalizedSurfaceDistanceAverage > Thresholds.MisalignedNormalizedDistanceAverage)
+    {
+        OutReason = FString::Printf(
+            TEXT("misaligned inputs: normalized surface distance average %.4f exceeds %.4f"),
+            NormalizedSurfaceDistanceAverage,
+            Thresholds.MisalignedNormalizedDistanceAverage);
+        return EMtoUPreviewQuality::Error;
+    }
+    if (InpaintLowConfidenceRatio > Thresholds.MaxWarningInpaintRatio)
+    {
+        OutReason = FString::Printf(
+            TEXT("unsafe weight transfer: low-confidence ratio %.4f exceeds %.4f"),
+            InpaintLowConfidenceRatio,
+            Thresholds.MaxWarningInpaintRatio);
+        return EMtoUPreviewQuality::Error;
+    }
+    if (InpaintLowConfidenceRatio > Thresholds.MaxReadyInpaintRatio)
+    {
+        OutReason = FString::Printf(
+            TEXT("low-confidence weight transfer: ratio %.4f is within the calibrated warning band (%.4f, %.4f]"),
+            InpaintLowConfidenceRatio,
+            Thresholds.MaxReadyInpaintRatio,
+            Thresholds.MaxWarningInpaintRatio);
+        return EMtoUPreviewQuality::Warning;
+    }
+    OutReason = FString::Printf(
+        TEXT("within the calibrated envelope: low-confidence ratio %.4f <= %.4f"),
+        InpaintLowConfidenceRatio,
+        Thresholds.MaxReadyInpaintRatio);
+    return EMtoUPreviewQuality::Ready;
+}
+
 namespace
 {
 constexpr double InpaintSearchRadiusFraction = 0.05;
@@ -29,6 +67,71 @@ struct FMorphCorrespondence
     FIndex3i DriverTriangle = FIndex3i::Invalid();
     FVector3d Barycentric = FVector3d::Zero();
 };
+
+struct FMtoUSurfaceDistanceStats
+{
+    double Min = 0.0;
+    double Max = 0.0;
+    double Average = 0.0;
+    double Rms = 0.0;
+};
+
+void AccumulateDistanceSamples(
+    const FDynamicMesh3& From,
+    const FDynamicMeshAABBTree3& ToSpatial,
+    double& Sum,
+    double& SumSquares,
+    double& Min,
+    double& Max,
+    int32& Count)
+{
+    for (const int32 VertexID : From.VertexIndicesItr())
+    {
+        double DistanceSquared = 0.0;
+        ToSpatial.FindNearestTriangle(From.GetVertex(VertexID), DistanceSquared);
+        const double Distance = FMath::Sqrt(FMath::Max(0.0, DistanceSquared));
+        Sum += Distance;
+        SumSquares += Distance * Distance;
+        Min = FMath::Min(Min, Distance);
+        Max = FMath::Max(Max, Distance);
+        ++Count;
+    }
+}
+
+bool MeasureSurfaceDistances(
+    const FDynamicMesh3& Driver,
+    const FDynamicMesh3& Preview,
+    const double NormalizeLength,
+    FMtoUSurfaceDistanceStats& OutStats,
+    FString& OutError)
+{
+    if (NormalizeLength <= UE_SMALL_NUMBER)
+    {
+        OutError = TEXT("Driver bounding box has no usable size; scale is invalid.");
+        return false;
+    }
+    const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
+    const FDynamicMeshAABBTree3 PreviewSpatial(&Preview, true);
+
+    double Sum = 0.0;
+    double SumSquares = 0.0;
+    double Min = TNumericLimits<double>::Max();
+    double Max = 0.0;
+    int32 Count = 0;
+    AccumulateDistanceSamples(Preview, DriverSpatial, Sum, SumSquares, Min, Max, Count);
+    AccumulateDistanceSamples(Driver, PreviewSpatial, Sum, SumSquares, Min, Max, Count);
+    if (Count == 0)
+    {
+        OutError = TEXT("Symmetric surface distance requires non-empty Driver and Preview geometry.");
+        return false;
+    }
+
+    OutStats.Min = Min / NormalizeLength;
+    OutStats.Max = Max / NormalizeLength;
+    OutStats.Average = Sum / Count / NormalizeLength;
+    OutStats.Rms = FMath::Sqrt(SumSquares / Count) / NormalizeLength;
+    return true;
+}
 
 void ObserveStage(
     FMtoUPreviewPreparationResult& Result,
@@ -318,7 +421,8 @@ bool GeneratePreviewMorphs(
 FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     AMtoULiveLinkActor& Owner,
     const UMtoULiveLinkBinding& Binding,
-    const FMtoUPreviewStageCallback& OnStage)
+    const FMtoUPreviewStageCallback& OnStage,
+    const FMtoUPreviewQualityThresholds& Thresholds)
 {
     FMtoUPreviewPreparationResult Result;
     ObserveStage(Result, EMtoUPreviewBuildStage::Preflight, OnStage);
@@ -380,6 +484,34 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.Diagnostics = InfluenceError;
         return Result;
     }
+
+    FMtoUSurfaceDistanceStats DistanceStats;
+    FString DistanceError;
+    if (!MeasureSurfaceDistances(
+            DriverDynamic->GetMeshRef(),
+            PreviewDynamic->GetMeshRef(),
+            DriverDynamic->GetMeshRef().GetBounds().DiagonalLength(),
+            DistanceStats,
+            DistanceError))
+    {
+        Result.Diagnostics = DistanceError;
+        return Result;
+    }
+    Result.SurfaceDistanceMin = DistanceStats.Min;
+    Result.SurfaceDistanceMax = DistanceStats.Max;
+    Result.SurfaceDistanceAverage = DistanceStats.Average;
+    Result.SurfaceDistanceRms = DistanceStats.Rms;
+    if (DistanceStats.Average > Thresholds.MisalignedNormalizedDistanceAverage)
+    {
+        Result.Diagnostics = FString::Printf(
+            TEXT("Driver and Preview surfaces are misaligned: normalized surface distance average %.4f exceeds %.4f (min %.4f, max %.4f, rms %.4f). Check reference pose, origin, units, and asset-local import space."),
+            DistanceStats.Average,
+            Thresholds.MisalignedNormalizedDistanceAverage,
+            DistanceStats.Min,
+            DistanceStats.Max,
+            DistanceStats.Rms);
+        return Result;
+    }
     Result.CompletedStages.Add(EMtoUPreviewBuildStage::GeometryConversion);
 
     ObserveStage(Result, EMtoUPreviewBuildStage::WeightTransfer, OnStage);
@@ -396,24 +528,33 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
 
     FDynamicMesh3 InpaintTarget(PreviewDynamic->GetMeshRef());
     TArray<bool> InpaintMatches;
-    if (!TransferWeights(
-            DriverDynamic->GetMeshRef(), InpaintTarget,
-            FTransferBoneWeights::ETransferBoneWeightsMethod::InpaintWeights,
-            Result.InpaintTransferMilliseconds, InpaintMatches))
+    const bool bUseInpaintResult = TransferWeights(
+        DriverDynamic->GetMeshRef(), InpaintTarget,
+        FTransferBoneWeights::ETransferBoneWeightsMethod::InpaintWeights,
+        Result.InpaintTransferMilliseconds, InpaintMatches);
+    if (!bUseInpaintResult)
     {
-        Result.Diagnostics = TEXT("Inpaint weight transfer failed.");
-        return Result;
+        // The public inpaint QP solve can fail on large layered inputs; keep the
+        // already-computed closest-point result and warn instead of failing.
+        Result.bTransferFallbackToClosest = true;
     }
-    Result.VertexCount = InpaintTarget.VertexCount();
-    Result.TriangleCount = InpaintTarget.TriangleCount();
-    for (const int32 VertexID : InpaintTarget.VertexIndicesItr())
+    const FDynamicMesh3& TransferSource = bUseInpaintResult ? InpaintTarget : ClosestTarget;
+    const TArray<bool>& TransferMatches = bUseInpaintResult ? InpaintMatches : ClosestMatches;
+    Result.VertexCount = TransferSource.VertexCount();
+    Result.TriangleCount = TransferSource.TriangleCount();
+    for (const int32 VertexID : TransferSource.VertexIndicesItr())
     {
-        if (!InpaintMatches.IsValidIndex(VertexID) || !InpaintMatches[VertexID])
+        if (!TransferMatches.IsValidIndex(VertexID) || !TransferMatches[VertexID])
         {
             ++Result.LowConfidenceVertexCount;
         }
     }
-    PreviewDynamic->SetMesh(MoveTemp(InpaintTarget));
+    Result.InpaintLowConfidenceRatio = Result.VertexCount > 0
+        ? static_cast<double>(Result.LowConfidenceVertexCount) / Result.VertexCount
+        : 0.0;
+    PreviewDynamic->SetMesh(bUseInpaintResult
+        ? MoveTemp(InpaintTarget)
+        : MoveTemp(ClosestTarget));
     Result.CompletedStages.Add(EMtoUPreviewBuildStage::WeightTransfer);
 
     ObserveStage(Result, EMtoUPreviewBuildStage::SkeletalMeshBuild, OnStage);
@@ -493,17 +634,38 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     Result.FailureStage = EMtoUPreviewBuildStage::None;
     Result.GeneratedPreview = Generated;
     Result.bSucceeded = true;
+    Result.Quality = MtoUEvaluatePreviewQuality(
+        Result.InpaintLowConfidenceRatio,
+        Result.SurfaceDistanceAverage,
+        Thresholds,
+        Result.QualityReason);
+    if (Result.bTransferFallbackToClosest && Result.Quality == EMtoUPreviewQuality::Ready)
+    {
+        Result.Quality = EMtoUPreviewQuality::Warning;
+    }
     Result.Diagnostics = FString::Printf(
-        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms."),
+        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
         Result.LowConfidenceVertexCount,
         Result.VertexCount,
+        Result.InpaintLowConfidenceRatio,
         Result.TriangleCount,
         Result.ClosestTransferMilliseconds,
         Result.InpaintTransferMilliseconds,
         Result.MorphTargetCount,
         Result.SparseMorphDeltaCount,
         Result.SkippedMorphTargetCount,
-        Result.MorphProjectionMilliseconds);
+        Result.MorphProjectionMilliseconds,
+        Result.SurfaceDistanceMin,
+        Result.SurfaceDistanceMax,
+        Result.SurfaceDistanceAverage,
+        Result.SurfaceDistanceRms,
+        Result.Quality == EMtoUPreviewQuality::Ready
+            ? TEXT("Ready")
+            : (Result.Quality == EMtoUPreviewQuality::Warning ? TEXT("Warning") : TEXT("Error")),
+        *Result.QualityReason,
+        Result.bTransferFallbackToClosest
+            ? TEXT("; inpaint solve failed so closest-point weights are used")
+            : TEXT(""));
     return Result;
 }
 
@@ -537,7 +699,9 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::RefreshActor(
     {
         Actor.CompletePreviewBuild(
             Result.GeneratedPreview,
-            Result.LowConfidenceVertexCount > 0 || Result.SkippedMorphTargetCount > 0,
+            Result.Quality == EMtoUPreviewQuality::Warning
+                || Result.SkippedMorphTargetCount > 0
+                || Result.bTransferFallbackToClosest,
             Result.Diagnostics);
     }
     else

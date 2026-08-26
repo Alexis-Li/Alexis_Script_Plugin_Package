@@ -65,6 +65,12 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   replay-again reuse of the uploaded cache, and per-session transient cache
   ownership. The external C01 stock-engine production gate (321 frames applied
   by Unreal within 5% of the captured rate) remains pending.
+- **2026-08-26:** Calibrated Model Preview quality warnings (Issue #13) on the
+  stock fixtures plus the external C01 production garment: symmetric surface
+  distance and inpaint-ratio metrics with measured Ready/Warning/Error
+  boundaries, misalignment rejection before mesh build, closest-point fallback
+  when the public inpaint solve fails on large layered inputs, and a
+  reproducible corpus measurement harness.
 
 ## Stable Records
 
@@ -72,6 +78,7 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)
+- [Model Preview quality calibration](model-preview-quality-calibration.md)
 
 ## Current Project
 
