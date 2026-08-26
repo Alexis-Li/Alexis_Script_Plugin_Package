@@ -884,6 +884,17 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
             == Result.GeneratedPreview);
 
+    FMtoUPreviewQualityThresholds UnsafeThresholds;
+    UnsafeThresholds.MaxWarningInpaintRatio = Result.InpaintLowConfidenceRatio - 0.01;
+    const FMtoUPreviewPreparationResult UnsafeResult = Actor
+        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding, {}, UnsafeThresholds)
+        : FMtoUPreviewPreparationResult();
+    TestTrue(TEXT("an Error quality verdict transactionally discards the generated preview"),
+        !UnsafeResult.bSucceeded
+        && UnsafeResult.GeneratedPreview == nullptr
+        && UnsafeResult.FailureStage == EMtoUPreviewBuildStage::Validation
+        && UnsafeResult.Quality == EMtoUPreviewQuality::Error);
+
     if (World)
     {
         World->DestroyWorld(false);

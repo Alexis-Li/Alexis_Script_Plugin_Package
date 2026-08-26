@@ -6,7 +6,8 @@
   measures the symmetric Driver/Preview surface distance (min/max/average/RMS,
   normalized by the Driver bounds) and the weight-transfer low-confidence
   ratio, then reports a Ready, Warning, or Error verdict with measured reason
-  text. Misaligned inputs are rejected transactionally before any mesh build;
+  text. Misaligned inputs are rejected before mesh build, and unsafe
+  low-confidence transfers are rejected transactionally during validation;
   approved production revisions measure Ready; when the public inpaint solve
   fails on large layered inputs, Refresh keeps the already-computed
   closest-point weights and warns instead of failing. Structural errors stay

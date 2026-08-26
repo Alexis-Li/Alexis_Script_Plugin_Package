@@ -18,14 +18,15 @@ enum class EMtoUPreviewQuality : uint8
  * record. Measured on the stock fixtures plus the external production garment:
  * approved inputs measure at most 0.26532 low-confidence ratio and 0.00468
  * normalized surface-distance average; the seam-heavy diagnostic cubes measure
- * up to 0.66667 ratio; misaligned negatives measure 1.7113+ distance average.
+ * up to 0.66667 ratio; the accepted half-surface fixture measures 0.75000;
+ * misaligned negatives measure 1.7113+ distance average.
  */
 struct MTOULIVELINKEDITOR_API FMtoUPreviewQualityThresholds
 {
     /** Inpaint low-confidence ratio at or below which the preview is Ready. */
     double MaxReadyInpaintRatio = 0.27;
     /** Inpaint low-confidence ratio above which the transfer is unsafe. */
-    double MaxWarningInpaintRatio = 0.70;
+    double MaxWarningInpaintRatio = 0.75;
     /**
      * Normalized symmetric surface-distance average above which inputs are
      * misaligned. The average keeps local missing-surface holes (a quality

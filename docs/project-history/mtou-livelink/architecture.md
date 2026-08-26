@@ -548,13 +548,14 @@ non-finite or Unreal-float-range value in an otherwise structural frame drops
 only that frame and keeps the connection. An unusable connection-negotiation
 outcome sends its negotiation error and then closes.
 
-The machine-authoritative conformance corpus is
-`composite/MtoULiveLink/protocol/conformance-v4.json`. Maya repository tests
-read it directly. A Python-standard-library generator projects the same cases
+The v4 wire contract above is retained as history; its standalone corpus was
+superseded and is no longer retained. The frozen v5 corpus remains beside the
+current machine-authoritative `conformance-v6.json`. Maya repository tests read
+v6 directly, and a Python-standard-library generator projects the same cases
 into a checked-in, test-only Unreal `.inl`; repository validation fails if that
 projection is stale. Neither shipped host component has a runtime dependency
-on the corpus or on its sibling host directory. Protocol v5 later extends this
-contract with the Cached Playback transfer and control messages documented
+on the corpus or on its sibling host directory. Protocol v5 later extends the
+v4 contract with the Cached Playback transfer and control messages documented
 below.
 
 ## Reference-Pose Mapping Revision

@@ -83,14 +83,14 @@ positive/negative pair, left/right pair, stress):
 | MisalignedNegative | rejected | — | 1.711325 | rejected | Error |
 
 The half-missing-surface regression fixture from Issue #12 measures distance
-average 0.2474 and must remain a warning. Calibrated boundaries follow
-directly from these anchors:
+average 0.2474 and an inpaint ratio of 0.75000; it must remain a warning.
+Calibrated boundaries follow directly from these anchors:
 
 - `MaxReadyInpaintRatio = 0.27` — just above the largest approved production
   measurement (0.26532), so approved same-topology and retopology revisions
   are Ready while the degenerate diagnostic cubes (0.64–0.67) warn.
-- `MaxWarningInpaintRatio = 0.70` — above every valid measured input including
-  the worst diagnostic fixture (0.66667); no valid corpus case exceeds it.
+- `MaxWarningInpaintRatio = 0.75` — includes the accepted half-missing-surface
+  fixture at the warning boundary; inputs above it fail validation.
 - `MisalignedNormalizedDistanceAverage = 0.60` — a conservative round boundary
   inside the measured gap between the extreme acceptable hole (0.2474) and the
   smallest observed misalignment distance average (1.7113); it sits below the

@@ -630,10 +630,6 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.Diagnostics = TEXT("Generated Preview failed transient ownership or mesh validation.");
         return Result;
     }
-    Result.CompletedStages.Add(EMtoUPreviewBuildStage::Validation);
-    Result.FailureStage = EMtoUPreviewBuildStage::None;
-    Result.GeneratedPreview = Generated;
-    Result.bSucceeded = true;
     Result.Quality = MtoUEvaluatePreviewQuality(
         Result.InpaintLowConfidenceRatio,
         Result.SurfaceDistanceAverage,
@@ -666,6 +662,14 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.bTransferFallbackToClosest
             ? TEXT("; inpaint solve failed so closest-point weights are used")
             : TEXT(""));
+    if (Result.Quality == EMtoUPreviewQuality::Error)
+    {
+        return Result;
+    }
+    Result.CompletedStages.Add(EMtoUPreviewBuildStage::Validation);
+    Result.FailureStage = EMtoUPreviewBuildStage::None;
+    Result.GeneratedPreview = Generated;
+    Result.bSucceeded = true;
     return Result;
 }
 

@@ -65,6 +65,10 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   replay-again reuse of the uploaded cache, and per-session transient cache
   ownership. The external C01 stock-engine production gate (321 frames applied
   by Unreal within 5% of the captured rate) remains pending.
+- **2026-08-25:** Hardened Cached Playback on protocol v6 with authoritative
+  character revisions, identity-scoped upload/play outcomes, truthful accepted
+  completion evidence, bounded transient resources, and a lossless return to
+  Real-time Preview.
 - **2026-08-26:** Calibrated Model Preview quality warnings (Issue #13) on the
   stock fixtures plus the external C01 production garment: symmetric surface
   distance and inpaint-ratio metrics with measured Ready/Warning/Error

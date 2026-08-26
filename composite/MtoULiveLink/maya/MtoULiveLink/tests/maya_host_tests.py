@@ -429,6 +429,9 @@ class MayaHostTests(unittest.TestCase):
             def join(self, timeout):
                 self.joined = timeout
 
+            def end_ordered(self, discard_pending=True):
+                pass
+
         with mock.patch.object(module, "_SenderWorker", FakeWorker):
             session = module._StreamingSession.start(scene, 24.0, events.append)
             session.change_rate(30.0)
