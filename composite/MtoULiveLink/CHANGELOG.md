@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Preview a separable garment from a full-character Driver: Model preview now
+  accepts one Driver Skeletal Mesh containing body, face, hair, and one current
+  outfit together with one garment-only Preview Static Mesh. Explicit Refresh
+  automatically resolves the unique separable Driver garment surface from
+  edge-connected regions and nearest-surface ownership of the Preview vertices;
+  geometry is the only selection evidence, so replaced Preview materials or
+  imported slot-name suffix differences never block resolution and material
+  agreement alone cannot authorize an unrelated region. Quality measurement,
+  skin-weight transfer, and Preview Morph correspondence run only against the
+  resolved surface with original Driver vertex correspondence preserved, and
+  the Generated Preview keeps the complete Driver reference skeleton while
+  showing only the garment. Only Driver Morphs with nonzero deltas on the
+  resolved surface are generated; body, face, hair, and attachment Morphs are
+  omitted with the existing warning behavior. Garment-only Drivers pass through
+  the same preparation seam unchanged.
 - Accept bone-only Model Preview for outfits without BlendShapes: a current
   Maya outfit that declares zero BlendShape names now negotiates Ready with an
   empty Accepted Preview Morph set even when BS transmission is enabled, with

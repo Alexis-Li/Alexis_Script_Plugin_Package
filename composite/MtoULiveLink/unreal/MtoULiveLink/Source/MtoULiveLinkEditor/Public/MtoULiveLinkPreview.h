@@ -49,6 +49,12 @@ struct MTOULIVELINKEDITOR_API FMtoUPreviewPreparationResult
     int32 MorphTargetCount = 0;
     int32 SkippedMorphTargetCount = 0;
     int64 SparseMorphDeltaCount = 0;
+    /** Connected Driver LOD0 regions that automatic resolution selected as the garment source. */
+    int32 GarmentSourceRegionCount = 0;
+    /** Driver LOD0 source triangles inside the resolved Driver garment surface. */
+    int32 GarmentSourceTriangleCount = 0;
+    /** Fraction of Preview vertices within agreement distance of the resolved Driver garment surface. */
+    double MatchedPreviewCoverage = 1.0;
     bool bTransferFallbackToClosest = false;
     double ClosestTransferMilliseconds = 0.0;
     double InpaintTransferMilliseconds = 0.0;

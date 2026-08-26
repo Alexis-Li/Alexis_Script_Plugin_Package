@@ -47,11 +47,21 @@ is not evidence of final deformation quality and excludes cloth and physics.
 _Avoid_: Final preview, binding preview, deformation approval
 
 **Driver Skeletal Mesh**:
-The formally bound version of exactly one garment that supplies its reference
-skeleton, source skin weights, and Morph Target library. Every garment Driver
-retains the same complete deformation hierarchy and represents the same garment
-as its Preview Static Mesh without aggregating other outfits.
+The formally bound Skeletal Mesh that supplies its reference skeleton, source
+skin weights, and Morph Target library. It is either the production
+full-character mesh containing body, face, hair, and exactly one current
+outfit, or a garment-only mesh; it never aggregates several outfit variants.
+Every Driver retains the same complete deformation hierarchy.
 _Avoid_: Source mesh, final mesh, binding mesh
+
+**Driver garment surface**:
+The transient set of Driver LOD0 triangles that automatic resolution selects as
+corresponding to the selected Preview Static Mesh for one Preview refresh,
+resolved from geometry connectivity and spatial agreement while imported
+material-slot identity stays supporting evidence only. It may span several
+sections and disconnected pieces, retains original source-vertex
+correspondence, and is never a persistent asset.
+_Avoid_: Garment section, source region index, resolved LOD
 
 **Preview Static Mesh**:
 The current modeling iteration of the same garment, aligned to its Driver

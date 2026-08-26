@@ -33,18 +33,27 @@ Install the matching component in each host:
 
 1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Driver Skeletal
    Mesh**, and optionally assign the garment **Preview Static Mesh** directly
-   below it. Keep exactly one binding actor in the level and assign the Binding
+   below it. The Driver may be the production full-character Skeletal Mesh that
+   contains body, face, hair, and one current outfit together: Refresh
+   automatically resolves the unique separable Driver garment surface from
+   geometry connectivity and spatial agreement, so the Preview only needs the
+   standalone garment Static Mesh and its assigned materials or slot names may
+   differ freely from the Driver's. A garment-only Driver remains equally
+   valid. Keep exactly one binding actor in the level and assign the Binding
    to that actor. For Model preview, select the actor and use **Refresh Preview**
    explicitly. Refresh reads LOD0 source data and creates only actor-owned
-   transient data. Driver Morphs that reach the Preview surface are projected;
-   Morphs for local surfaces absent from the Preview are omitted with a warning.
-   Refresh measures alignment and weight-transfer quality against garment-corpus
+   transient data; quality measurement, weight transfer, and Morph projection
+   use only the resolved garment surface, so body, face, and hair never
+   contribute nearest-surface data. Driver Morphs that reach the resolved
+   garment surface are projected; Morphs whose deltas lie elsewhere (body,
+   face, hair, attachments) are omitted with a warning. Refresh measures
+   alignment and weight-transfer quality against garment-corpus
    calibrated boundaries and reports Ready, Warning, or Error with measured
    reason text: misaligned Driver/Preview pairs are rejected before any build,
    while calibrated local low-confidence transfer remains a non-blocking yellow
    warning. Input edits or source rebuilds mark it Dirty and require another
    explicit Refresh. The Refresh remains transactional for malformed or failed
-   Morph builds and leaves no partial Generated Preview active.
+   builds and leaves no partial Generated Preview active.
 2. In Maya, run `MtoULiveLink.py`, select exactly one deformation root, and
    select **Set Character**. The tool finds the character's `Display_ctrl` and
    Clothes enum; use the manual Display button if discovery is ambiguous.

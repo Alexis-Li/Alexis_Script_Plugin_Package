@@ -1213,6 +1213,605 @@ bool FMtoUPreviewMisalignmentTest::RunTest(const FString& Parameters)
     return true;
 }
 
+namespace
+{
+using UE::Geometry::FAxisAlignedBox3d;
+using UE::Geometry::FDynamicMesh3;
+using UE::Geometry::FIndex3i;
+
+/**
+ * Appends one transformed copy of Source into Target under GroupID (split into
+ * two polygon groups when GroupCount is 2) and reports the appended bounds.
+ */
+FAxisAlignedBox3d AppendPartCopy(
+    FDynamicMesh3& Target,
+    const FDynamicMesh3& Source,
+    const FVector3d& Translation,
+    const double Scale,
+    const int32 GroupID,
+    const int32 GroupCount = 1)
+{
+    FAxisAlignedBox3d Bounds;
+    TMap<int32, int32> VertexMap;
+    int32 VisitedTriangles = 0;
+    const int32 TotalTriangles = Source.TriangleCount();
+    for (const int32 TriangleID : Source.TriangleIndicesItr())
+    {
+        ++VisitedTriangles;
+        const int32 PartGroup = (GroupCount == 2 && VisitedTriangles * 2 > TotalTriangles)
+            ? GroupID + 1
+            : GroupID;
+        FIndex3i Triangle = Source.GetTriangle(TriangleID);
+        for (int32* Corner : {&Triangle.A, &Triangle.B, &Triangle.C})
+        {
+            const int32 SourceVertexID = *Corner;
+            if (int32* Mapped = VertexMap.Find(SourceVertexID))
+            {
+                *Corner = *Mapped;
+            }
+            else
+            {
+                *Corner = Target.AppendVertex(
+                    Source.GetVertex(SourceVertexID) * Scale + Translation);
+                Bounds.Contain(Target.GetVertex(*Corner));
+                VertexMap.Add(SourceVertexID, *Corner);
+            }
+        }
+        Target.AppendTriangle(Triangle, PartGroup);
+    }
+    return Bounds;
+}
+
+/** Gives every vertex a single full influence on bone 0 so source validation passes. */
+void SetUniformBoneWeights(FDynamicMesh3& Mesh)
+{
+    UE::AnimationCore::FBoneWeights Uniform;
+    Uniform.SetBoneWeight(0, 1.0f);
+    if (!Mesh.HasAttributes() || !Mesh.Attributes()->HasBones())
+    {
+        return;
+    }
+    UE::Geometry::FDynamicMeshVertexSkinWeightsAttribute* SkinWeights =
+        Mesh.Attributes()->GetSkinWeightsAttribute(
+            FSkeletalMeshAttributes::DefaultSkinWeightProfileName);
+    if (!SkinWeights)
+    {
+        return;
+    }
+    for (const int32 VertexID : Mesh.VertexIndicesItr())
+    {
+        SkinWeights->SetValue(VertexID, Uniform);
+    }
+}
+
+bool AddBoxMorph(USkeletalMesh& Driver, FName Name,
+    const FAxisAlignedBox3d& Box, const FVector3f& PositionDelta,
+    int32* OutMatchedCount = nullptr)
+{
+    FSkeletalMeshModel* ImportedModel = Driver.GetImportedModel();
+    const FMeshDescription* Description = Driver.GetMeshDescription(0);
+    if (OutMatchedCount)
+    {
+        *OutMatchedCount = 0;
+    }
+    if (!ImportedModel || !ImportedModel->LODModels.IsValidIndex(0) || !Description)
+    {
+        return false;
+    }
+
+    const TVertexAttributesConstRef<FVector3f> Positions = Description->GetVertexPositions();
+    const FSkeletalMeshLODModel& LODModel = ImportedModel->LODModels[0];
+    TArray<FMorphTargetDelta> Deltas;
+    for (uint32 VertexIndex = 0; VertexIndex < LODModel.NumVertices; ++VertexIndex)
+    {
+        if (!LODModel.MeshToImportVertexMap.IsValidIndex(VertexIndex))
+        {
+            return false;
+        }
+        const FVertexID PointID(LODModel.MeshToImportVertexMap[VertexIndex]);
+        if (Description->Vertices().IsValid(PointID)
+            && Box.Contains(FVector3d(Positions[PointID])))
+        {
+            FMorphTargetDelta& Delta = Deltas.AddDefaulted_GetRef();
+            Delta.SourceIdx = VertexIndex;
+            Delta.PositionDelta = PositionDelta;
+        }
+    }
+    if (OutMatchedCount)
+    {
+        *OutMatchedCount = Deltas.Num();
+    }
+    UMorphTarget* Morph = NewObject<UMorphTarget>(&Driver, Name, RF_Transient);
+    Morph->PopulateDeltas(Deltas, 0, LODModel.Sections, false, false, 0.0f);
+    return !Deltas.IsEmpty() && Driver.RegisterMorphTarget(Morph, false);
+}
+
+struct FMtoUFullCharacterFixtures
+{
+    USkeletalMesh* FullDriver = nullptr;
+    USkeletalMesh* GarmentOnlyDriver = nullptr;
+    UStaticMesh* Preview = nullptr;
+    FAxisAlignedBox3d GarmentBounds;
+    FAxisAlignedBox3d GarmentABounds;
+    FAxisAlignedBox3d BodyCoreBounds;
+    int32 PreviewTriangleCount = 0;
+
+    bool IsValid() const
+    {
+        return FullDriver && GarmentOnlyDriver && Preview && PreviewTriangleCount > 0;
+    }
+};
+
+/**
+ * Builds a deterministic full-character Driver: body cube plus separate face
+ * and hair cubes and a two-piece garment whose upper piece carries two
+ * material sections. The Preview contains only the garment surface with its
+ * own slot names and material assignment.
+ */
+bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
+    FMtoUFullCharacterFixtures& Fixtures)
+{
+    USkeletalMesh* Base = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!Base)
+    {
+        Test.AddError(TEXT("fixture SkeletalCube was not loaded"));
+        return false;
+    }
+    UDynamicMesh* BodySource = NewObject<UDynamicMesh>(&Outer);
+    FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+    ReadOptions.bApplyBuildSettings = false;
+    ReadOptions.bRequestTangents = true;
+    FGeometryScriptMeshReadLOD ReadLOD;
+    ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+    EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+        Base, BodySource, ReadOptions, ReadLOD, Outcome);
+    if (Outcome != EGeometryScriptOutcomePins::Success)
+    {
+        Test.AddError(TEXT("fixture body conversion failed"));
+        return false;
+    }
+    const FDynamicMesh3& Cube = BodySource->GetMeshRef();
+    const FVector3d BodyCenter = Cube.GetBounds().Center();
+    const double BodyHeight = Cube.GetBounds().Height();
+
+    // Full character: body (group 0), face (1), hair (2), garment upper shell
+    // split across groups 3/4, disconnected lower garment piece (5), and a
+    // separate arm attachment piece (6) beside the body.
+    const FVector3d GarmentUpperOffset = FVector3d::Zero();
+    const double GarmentUpperScale = 1.15;
+    const FVector3d GarmentLowerOffset =
+        BodyCenter - FVector3d(0.0, 0.0, BodyHeight * 1.05);
+    const double GarmentLowerScale = 0.55;
+    UDynamicMesh* Merged = NewObject<UDynamicMesh>(&Outer);
+    Merged->SetMesh(FDynamicMesh3(Cube));
+    FAxisAlignedBox3d FaceBounds;
+    FAxisAlignedBox3d HairBounds;
+    FAxisAlignedBox3d ArmBounds;
+    FAxisAlignedBox3d GarmentBBounds;
+    bool bAppendOk = true;
+    Merged->EditMesh([&](FDynamicMesh3& Mesh)
+    {
+        FaceBounds = AppendPartCopy(Mesh, Cube,
+            BodyCenter + FVector3d(0.0, 0.0, BodyHeight), 0.35, 1);
+        HairBounds = AppendPartCopy(Mesh, Cube,
+            BodyCenter + FVector3d(0.0, 0.0, BodyHeight * 1.35), 0.4, 2);
+        Fixtures.GarmentABounds = AppendPartCopy(Mesh, Cube,
+            GarmentUpperOffset, GarmentUpperScale, 3, 2);
+        GarmentBBounds = AppendPartCopy(Mesh, Cube,
+            GarmentLowerOffset, GarmentLowerScale, 5);
+        ArmBounds = AppendPartCopy(Mesh, Cube,
+            BodyCenter + FVector3d(BodyHeight * 0.9, 0.0, BodyHeight * 0.35), 0.3, 6);
+        SetUniformBoneWeights(Mesh);
+        bAppendOk = Mesh.TriangleCount() == Cube.TriangleCount() * 6;
+    });
+    if (!bAppendOk)
+    {
+        Test.AddError(FString::Printf(
+            TEXT("fixture merge produced %d triangles instead of %d"),
+            Merged->GetMeshRef().TriangleCount(), Cube.TriangleCount() * 6));
+        return false;
+    }
+    Fixtures.GarmentBounds = Fixtures.GarmentABounds;
+    Fixtures.GarmentBounds.Contain(GarmentBBounds);
+    // Body core inset from the body surface so no shell or piece boundary can
+    // touch it; only genuine interior body volume counts as body territory.
+    constexpr double CoreInset = 1.5;
+    Fixtures.BodyCoreBounds = FAxisAlignedBox3d(
+        Cube.GetBounds().Min + CoreInset, Cube.GetBounds().Max - CoreInset);
+
+    auto WriteDriver = [&Outer, Base](const FDynamicMesh3& Geometry,
+        const TArray<FName>& SlotNames) -> USkeletalMesh*
+    {
+        USkeletalMesh* Driver = NewObject<USkeletalMesh>(
+            &Outer, NAME_None, RF_Transient);
+        Driver->SetSkeleton(Base->GetSkeleton());
+        Driver->SetRefSkeleton(Base->GetRefSkeleton());
+        Driver->CalculateInvRefMatrices();
+        UDynamicMesh* Source = NewObject<UDynamicMesh>(&Outer);
+        Source->SetMesh(FDynamicMesh3(Geometry));
+        FGeometryScriptCopyMeshToAssetOptions WriteOptions;
+        WriteOptions.bEmitTransaction = false;
+        WriteOptions.bEnableRecomputeNormals = true;
+        WriteOptions.bEnableRecomputeTangents = true;
+        WriteOptions.bReplaceMaterials = true;
+        WriteOptions.bUseBuildScale = false;
+        WriteOptions.BoneHierarchyMismatchHandling =
+            EGeometryScriptBoneHierarchyMismatchHandling::RemapGeometryToReferenceSkeleton;
+        for (const FName SlotName : SlotNames)
+        {
+            WriteOptions.NewMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+            WriteOptions.NewMaterialSlotNames.Add(SlotName);
+        }
+        FGeometryScriptMeshWriteLOD WriteLOD;
+        EGeometryScriptOutcomePins WriteOutcome = EGeometryScriptOutcomePins::Failure;
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToSkeletalMesh(
+            Source, Driver, WriteOptions, WriteLOD, WriteOutcome);
+        return WriteOutcome == EGeometryScriptOutcomePins::Success ? Driver : nullptr;
+    };
+
+    Fixtures.FullDriver = WriteDriver(Merged->GetMeshRef(),
+        {
+            FName(TEXT("Body")),
+            FName(TEXT("Face")),
+            FName(TEXT("Hair")),
+            FName(TEXT("Garment_Upper_A")),
+            FName(TEXT("Garment_Upper_B")),
+            FName(TEXT("Garment_Lower")),
+            FName(TEXT("Arm")),
+        });
+    if (!Fixtures.FullDriver)
+    {
+        Test.AddError(TEXT("fixture full-character Driver was not written"));
+        return false;
+    }
+    if (!Fixtures.FullDriver->GetMeshDescription(0)
+        || !Fixtures.FullDriver->GetImportedModel()
+        || !Fixtures.FullDriver->GetImportedModel()->LODModels.IsValidIndex(0))
+    {
+        Test.AddError(TEXT("fixture full-character Driver has no LOD0 source data"));
+        return false;
+    }
+
+    // Region-targeted Morphs: only the garment upper-shell morph may reach the
+    // garment-only Preview; the others must be filtered by resolution.
+    const FAxisAlignedBox3d FlapBounds(
+        Fixtures.GarmentABounds.Min - 2.0, Fixtures.GarmentABounds.Max + 2.0);
+    const auto Grown = [](const FAxisAlignedBox3d& Box, double Margin)
+    {
+        return FAxisAlignedBox3d(Box.Min - Margin, Box.Max + Margin);
+    };
+    int32 MatchedCount = 0;
+    const auto RegisterPartMorph = [&](FName Name, const FAxisAlignedBox3d& Box,
+        const FVector3f& Delta) -> bool
+    {
+        if (AddBoxMorph(*Fixtures.FullDriver, Name, Box, Delta, &MatchedCount))
+        {
+            return true;
+        }
+        Test.AddError(FString::Printf(
+            TEXT("fixture %s morph matched %d vertices in box [%.1f %.1f %.1f]..[%.1f %.1f %.1f]"),
+            *Name.ToString(), MatchedCount,
+            Box.Min.X, Box.Min.Y, Box.Min.Z, Box.Max.X, Box.Max.Y, Box.Max.Z));
+        return false;
+    };
+    if (!RegisterPartMorph(FName(TEXT("GarmentFlare")),
+            FlapBounds, FVector3f(2.0f, 0.0f, 0.0f))
+        || !RegisterPartMorph(FName(TEXT("ArmRaise")),
+            Grown(ArmBounds, 1.0), FVector3f(0.0f, 3.0f, 0.0f))
+        || !RegisterPartMorph(FName(TEXT("FaceBlink")),
+            Grown(FaceBounds, 1.0), FVector3f(0.0f, 0.0f, 1.0f))
+        || !RegisterPartMorph(FName(TEXT("HairSway")),
+            Grown(HairBounds, 1.0), FVector3f(1.0f, 0.0f, 0.0f)))
+    {
+        return false;
+    }
+
+    // Legacy garment-only Driver and the garment-only Preview are built from
+    // the identical garment piece transforms as the full-character Driver.
+    FDynamicMesh3 GarmentOnly;
+    AppendPartCopy(GarmentOnly, Cube, GarmentUpperOffset, GarmentUpperScale, 0, 2);
+    AppendPartCopy(GarmentOnly, Cube, GarmentLowerOffset, GarmentLowerScale, 2);
+    if (GarmentOnly.TriangleCount() == 0)
+    {
+        Test.AddError(TEXT("fixture garment filter selected no triangles"));
+        return false;
+    }
+    Fixtures.GarmentOnlyDriver = WriteDriver(GarmentOnly,
+        {
+            FName(TEXT("Garment_Upper_A")),
+            FName(TEXT("Garment_Upper_B")),
+            FName(TEXT("Garment_Lower")),
+        });
+    if (!Fixtures.GarmentOnlyDriver)
+    {
+        Test.AddError(TEXT("fixture garment-only Driver was not written"));
+        return false;
+    }
+    if (!AddBoxMorph(*Fixtures.GarmentOnlyDriver, FName(TEXT("GarmentFlare")),
+            FlapBounds, FVector3f(2.0f, 0.0f, 0.0f)))
+    {
+        Test.AddError(TEXT("fixture legacy GarmentFlare morph was not registered"));
+        return false;
+    }
+
+    // Garment-only Preview with its own two slots and different materials so
+    // slot-name suffixes and assignments cannot drive resolution.
+    UDynamicMesh* PreviewSource = NewObject<UDynamicMesh>(&Outer);
+    PreviewSource->EditMesh([&](FDynamicMesh3& Mesh)
+    {
+        AppendPartCopy(Mesh, Cube, GarmentUpperOffset, GarmentUpperScale, 0);
+        AppendPartCopy(Mesh, Cube, GarmentLowerOffset, GarmentLowerScale, 1);
+    });
+    Fixtures.PreviewTriangleCount = PreviewSource->GetMeshRef().TriangleCount();
+
+    Fixtures.Preview = NewObject<UStaticMesh>(&Outer, NAME_None, RF_Transient);
+    FGeometryScriptCopyMeshToAssetOptions PreviewWriteOptions;
+    PreviewWriteOptions.bEmitTransaction = false;
+    PreviewWriteOptions.bEnableRecomputeNormals = true;
+    PreviewWriteOptions.bEnableRecomputeTangents = true;
+    PreviewWriteOptions.bReplaceMaterials = true;
+    PreviewWriteOptions.NewMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+    PreviewWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Cloth09_Top_1")));
+    PreviewWriteOptions.NewMaterials.Add(nullptr);
+    PreviewWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Cloth09_Bottom_2")));
+    FGeometryScriptMeshWriteLOD PreviewWriteLOD;
+    EGeometryScriptOutcomePins PreviewOutcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+        PreviewSource, Fixtures.Preview, PreviewWriteOptions, PreviewWriteLOD, PreviewOutcome, false);
+    if (PreviewOutcome != EGeometryScriptOutcomePins::Success)
+    {
+        Test.AddError(TEXT("fixture Preview Static Mesh was not written"));
+        return false;
+    }
+    return true;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewFullCharacterTest,
+    "MtoULiveLink.Editor.Preview.FullCharacter",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFullCharacterWorld"));
+    const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+        WorldPackage->GetName(), FPackageName::GetAssetPackageExtension());
+    FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("full-character fixtures are created"),
+        MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("full-character fixtures were not created"));
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUFullCharacterWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Binding->SkeletalMesh = Fixtures.FullDriver;
+    Binding->PreviewStaticMesh = Fixtures.Preview;
+    if (!Actor || World == nullptr)
+    {
+        AddError(TEXT("full-character world was not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    TestTrue(TEXT("Animation preview keeps showing the complete Driver before Refresh"),
+        Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver);
+
+    TArray<EMtoUPreviewBuildStage> ObservedStages;
+    const FMtoUPreviewPreparationResult Result = FMtoUPreviewPreparation::Prepare(
+        *Actor, *Binding,
+        [&ObservedStages](EMtoUPreviewBuildStage Stage) { ObservedStages.Add(Stage); });
+    AddInfo(Result.Diagnostics);
+    TestTrue(TEXT("full-character Driver builds a garment-only Generated Preview"),
+        Result.bSucceeded && Result.GeneratedPreview != nullptr);
+    TestEqual(TEXT("all five preparation stages remain observable"),
+        ObservedStages.Num(), 5);
+    TestTrue(TEXT("resolution reports full matched coverage"),
+        Result.MatchedPreviewCoverage > 0.999);
+    TestTrue(TEXT("the resolved garment stays within the Preview garment surface"),
+        Result.GarmentSourceTriangleCount > 0
+        && Result.GarmentSourceTriangleCount <= Fixtures.PreviewTriangleCount);
+    TestTrue(TEXT("resolution names multiple disconnected regions"),
+        Result.GarmentSourceRegionCount >= 2);
+    TestTrue(TEXT("diagnostics identify the resolved regions and verdict"),
+        Result.Diagnostics.Contains(TEXT("garment region"))
+        && Result.Diagnostics.Contains(TEXT("matched Preview coverage"))
+        && Result.Diagnostics.Contains(TEXT("verdict")));
+
+    // Generated geometry: garment surface only, nothing from other parts.
+    const FAxisAlignedBox3d GarmentCheckBounds(
+        Fixtures.GarmentBounds.Min - 0.5, Fixtures.GarmentBounds.Max + 0.5);
+    bool bGarmentOnlyGeometry = false;
+    int32 GeneratedTriangleCount = -1;
+    int32 OutsideGarmentCount = 0;
+    int32 InsideBodyCount = 0;
+    if (Result.GeneratedPreview && Result.GeneratedPreview->HasMeshDescription(0))
+    {
+        const FMeshDescription* GeneratedDescription =
+            Result.GeneratedPreview->GetMeshDescription(0);
+        GeneratedTriangleCount = GeneratedDescription->Triangles().Num();
+        const TVertexAttributesConstRef<FVector3f> Positions =
+            GeneratedDescription->GetVertexPositions();
+        bGarmentOnlyGeometry = GeneratedTriangleCount == Fixtures.PreviewTriangleCount;
+        for (const FVertexID VertexID : GeneratedDescription->Vertices().GetElementIDs())
+        {
+            const FVector3d Position(Positions[VertexID]);
+            if (!GarmentCheckBounds.Contains(Position))
+            {
+                ++OutsideGarmentCount;
+            }
+            if (Fixtures.BodyCoreBounds.Contains(Position))
+            {
+                ++InsideBodyCount;
+            }
+        }
+        bGarmentOnlyGeometry &= OutsideGarmentCount == 0 && InsideBodyCount == 0;
+        AddInfo(FString::Printf(
+            TEXT("purity probe: %d generated triangles (preview %d), %d outside garment bounds, %d inside body core"),
+            GeneratedTriangleCount, Fixtures.PreviewTriangleCount,
+            OutsideGarmentCount, InsideBodyCount));
+    }
+    TestTrue(TEXT("Generated Preview contains only the Preview garment surface"),
+        bGarmentOnlyGeometry);
+
+    TestTrue(TEXT("Generated Preview retains the complete Driver reference skeleton"),
+        Result.GeneratedPreview
+        && Result.GeneratedPreview->GetRefSkeleton().GetNum()
+            == Fixtures.FullDriver->GetRefSkeleton().GetNum()
+        && Result.GeneratedPreview->GetSkeleton() == Fixtures.FullDriver->GetSkeleton());
+
+    const TArray<FSkeletalMaterial>& GeneratedMaterials =
+        Result.GeneratedPreview ? Result.GeneratedPreview->GetMaterials()
+            : TArray<FSkeletalMaterial>();
+    TestEqual(TEXT("Generated Preview uses only the Preview material slots"),
+        GeneratedMaterials.Num(), 2);
+    TestEqual(TEXT("Preview slot names replace the Driver section names"),
+        GeneratedMaterials.Num() == 2
+            ? GeneratedMaterials[0].MaterialSlotName.ToString()
+            : FString(),
+        FString(TEXT("Cloth09_Top_1")));
+    TestEqual(TEXT("second Preview slot name is preserved"),
+        GeneratedMaterials.Num() == 2
+            ? GeneratedMaterials[1].MaterialSlotName.ToString()
+            : FString(),
+        FString(TEXT("Cloth09_Bottom_2")));
+
+    // Morph filtering: only the garment morph reaches the generated library.
+    const auto GeneratedMorph = [&Result](const TCHAR* Name) -> UMorphTarget*
+    {
+        return Result.GeneratedPreview
+            ? Result.GeneratedPreview->FindMorphTarget(FName(Name))
+            : nullptr;
+    };
+    TestEqual(TEXT("only nonzero garment-surface Morphs are generated"),
+        Result.MorphTargetCount, 1);
+    TestEqual(TEXT("body, face, and hair Morphs are skipped entirely"),
+        Result.SkippedMorphTargetCount, 3);
+    TestNotNull(TEXT("garment Morph is present in the Generated library"),
+        GeneratedMorph(TEXT("GarmentFlare")));
+    TestNull(TEXT("arm attachment Morph is absent from the Generated library"),
+        GeneratedMorph(TEXT("ArmRaise")));
+    TestNull(TEXT("face Morph is absent from the Generated library"),
+        GeneratedMorph(TEXT("FaceBlink")));
+    TestNull(TEXT("hair Morph is absent from the Generated library"),
+        GeneratedMorph(TEXT("HairSway")));
+
+    // Model preview displays only the generated garment through explicit Refresh.
+    const FMtoUPreviewPreparationResult RefreshResult =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("explicit Refresh readies the garment preview"),
+        RefreshResult.bSucceeded
+        && (Actor->GetPreviewState() == EMtoUPreviewState::Ready
+            || Actor->GetPreviewState() == EMtoUPreviewState::Warning)
+        && Actor->HasReadyGeneratedPreview());
+    TestTrue(TEXT("Model preview displays only the Generated Preview"),
+        Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+            == RefreshResult.GeneratedPreview);
+
+    // Reimport invalidates and requires explicit Refresh again.
+    if (GEditor)
+    {
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Fixtures.Preview);
+    }
+    TestTrue(TEXT("source Reimport marks Dirty and hides the stale garment"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+    TestFalse(TEXT("normal Refresh creates no .uasset on the filesystem"),
+        IFileManager::Get().FileExists(*PackageFilename));
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewGarmentResolutionTest,
+    "MtoULiveLink.Editor.Preview.GarmentResolution",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewGarmentResolutionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUGarmentResolutionWorld"));
+    FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("garment-resolution fixtures are created"),
+        MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("garment-resolution fixtures were not created"));
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUGarmentResolutionWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    if (!Actor || World == nullptr)
+    {
+        AddError(TEXT("garment-resolution world was not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+
+    // Legacy compatibility: a garment-only Driver follows the same seam.
+    Binding->SkeletalMesh = Fixtures.GarmentOnlyDriver;
+    Binding->PreviewStaticMesh = Fixtures.Preview;
+    Actor->SetBinding(Binding);
+    const FMtoUPreviewPreparationResult Legacy = FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+    AddInfo(Legacy.Diagnostics);
+    TestTrue(TEXT("legacy garment-only Driver resolves through the same seam"),
+        Legacy.bSucceeded
+        && Legacy.GeneratedPreview != nullptr
+        && Legacy.MorphTargetCount == 1
+        && Legacy.SkippedMorphTargetCount == 0
+        && Legacy.MatchedPreviewCoverage > 0.999
+        && Legacy.GarmentSourceTriangleCount > 0);
+
+    // Material agreement alone cannot authorize the unrelated body: give the
+    // Driver body slot the exact same slot name and material as a Preview slot.
+    FSkeletalMaterial& BodyMaterial = Fixtures.FullDriver->GetMaterials()[0];
+    BodyMaterial.MaterialSlotName = FName(TEXT("Cloth09_Top_1"));
+    BodyMaterial.MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
+    Binding->SkeletalMesh = Fixtures.FullDriver;
+    FPropertyChangedEvent DriverPropertyChanged(FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, SkeletalMesh)));
+    Binding->PostEditChangeProperty(DriverPropertyChanged);
+    const FMtoUPreviewPreparationResult Mimicry = FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+    AddInfo(Mimicry.Diagnostics);
+    TestTrue(TEXT("matching material identity does not change geometric resolution"),
+        Mimicry.bSucceeded
+        && Mimicry.GeneratedPreview != nullptr
+        && Mimicry.MatchedPreviewCoverage > 0.999);
+    TestTrue(TEXT("material agreement cannot add body triangles to the garment"),
+        Mimicry.GarmentSourceTriangleCount > 0
+        && Mimicry.GarmentSourceTriangleCount <= Fixtures.PreviewTriangleCount);
+    TestNull(TEXT("attachment Morph stays excluded despite matching material identity"),
+        Mimicry.GeneratedPreview
+            ? Mimicry.GeneratedPreview->FindMorphTarget(FName(TEXT("ArmRaise")))
+            : nullptr);
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCorpusMeasurementTest,
     "MtoULiveLink.Editor.Preview.QualityCorpus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

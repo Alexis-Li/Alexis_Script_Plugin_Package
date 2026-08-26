@@ -15,6 +15,7 @@
 #include "Operations/TransferBoneWeights.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "SkeletalMeshAttributes.h"
+#include "Selections/MeshConnectedComponents.h"
 #include "UDynamicMesh.h"
 
 using namespace UE::Geometry;
@@ -61,6 +62,15 @@ namespace
 {
 constexpr double InpaintSearchRadiusFraction = 0.05;
 constexpr double InpaintNormalThresholdRadians = UE_DOUBLE_PI / 6.0;
+
+/**
+ * Maximum distance between a Preview vertex and its nearest Driver surface for
+ * that vertex to count as spatially agreeing, as a fraction of the Preview
+ * scale. Selection itself uses nearest-surface ownership, so unrelated regions
+ * cannot be picked; this radius only separates an aligned Preview from a
+ * globally misaligned one.
+ */
+constexpr double GarmentAgreementRadiusFraction = 0.05;
 
 struct FMorphCorrespondence
 {
@@ -130,6 +140,184 @@ bool MeasureSurfaceDistances(
     OutStats.Max = Max / NormalizeLength;
     OutStats.Average = Sum / Count / NormalizeLength;
     OutStats.Rms = FMath::Sqrt(SumSquares / Count) / NormalizeLength;
+    return true;
+}
+
+/**
+ * Resolved Driver garment surface: the Driver LOD0 triangles selected as the
+ * source for one Preview refresh. The filtered mesh keeps the original Driver
+ * vertex IDs so Morph deltas and import-vertex correspondence stay lossless;
+ * vertices outside the resolved surface are removed instead of compacted.
+ */
+struct FMtoUDriverGarmentResolution
+{
+    FDynamicMesh3 Surface;
+    int32 RegionCount = 0;
+    int32 TriangleCount = 0;
+    double MatchedPreviewCoverage = 1.0;
+    /** Compact identification of each selected region for diagnostics. */
+    FString RegionSummary;
+};
+
+/**
+ * Resolve which connected regions of the full-character Driver LOD0 correspond
+ * to the garment-only Preview Static Mesh. Geometry connectivity and spatial
+ * agreement are the only selection evidence: every Preview vertex belongs to
+ * the region containing its nearest Driver triangle, so ownership is unique
+ * and the resolved garment is exactly the set of edge-connected regions that
+ * own at least one spatially agreeing Preview vertex. Material-slot identity
+ * is never consulted, so replaced Preview materials or imported slot-name
+ * suffixes cannot change the outcome, and material agreement alone cannot
+ * authorize an unrelated region. A garment-only Driver resolves to its whole
+ * single region unchanged.
+ */
+bool ResolveDriverGarmentSurface(
+    const FDynamicMesh3& Driver,
+    const FDynamicMesh3& Preview,
+    double MisalignedBound,
+    FMtoUDriverGarmentResolution& Out,
+    FString& OutError)
+{
+    // Admission gate: a Preview vertex only agrees when its nearest Driver
+    // point lies within GarmentAgreementRadiusFraction of the Preview scale.
+    // MisalignedBound is quoted in the failure text so artists see the
+    // calibrated distance bound alongside the measured coverage gap; Issue
+    // #22 recalibrates both boundaries for the full-character corpus.
+    if (Driver.TriangleCount() == 0)
+    {
+        OutError = TEXT("Driver LOD0 source geometry is empty; no garment surface can be resolved.");
+        return false;
+    }
+    const double Scale = Preview.GetBounds().DiagonalLength();
+    if (Scale <= UE_SMALL_NUMBER)
+    {
+        OutError = TEXT("Preview Static Mesh bounding box has no usable size; scale is invalid.");
+        return false;
+    }
+    const double AgreementRadiusSquared =
+        FMath::Square(GarmentAgreementRadiusFraction * Scale);
+
+    TArray<int32> PreviewVertexIDs;
+    for (const int32 VertexID : Preview.VertexIndicesItr())
+    {
+        PreviewVertexIDs.Add(VertexID);
+    }
+    if (PreviewVertexIDs.Num() == 0)
+    {
+        OutError = TEXT("Preview Static Mesh has no LOD0 geometry to match against the Driver.");
+        return false;
+    }
+
+    FMeshConnectedComponents Components(&Driver);
+    Components.FindConnectedTriangles();
+
+    // Map every Driver triangle to its edge-connected region.
+    TArray<int32> RegionOfTriangle;
+    RegionOfTriangle.Init(INDEX_NONE, Driver.MaxTriangleID());
+    for (int32 RegionIndex = 0; RegionIndex < Components.Components.Num(); ++RegionIndex)
+    {
+        for (const int32 TriangleID : Components.Components[RegionIndex].Indices)
+        {
+            RegionOfTriangle[TriangleID] = RegionIndex;
+        }
+    }
+
+    // Assign each Preview vertex to the region owning its nearest Driver
+    // surface point; the agreement radius decides whether that vertex is
+    // spatially explained at all.
+    const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
+    TArray<int32> OwnerRegion;
+    OwnerRegion.Init(INDEX_NONE, PreviewVertexIDs.Num());
+    TBitArray<> Agreeing(false, PreviewVertexIDs.Num());
+    int32 AgreeingCount = 0;
+    for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+    {
+        double DistanceSquared = 0.0;
+        const int32 TriangleID = DriverSpatial.FindNearestTriangle(
+            Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
+        if (TriangleID != INDEX_NONE && DistanceSquared <= AgreementRadiusSquared)
+        {
+            OwnerRegion[Sample] = RegionOfTriangle[TriangleID];
+            Agreeing[Sample] = true;
+            ++AgreeingCount;
+        }
+    }
+
+    // Ownership is unique per vertex, so the resolved garment is exactly the
+    // set of regions that own at least one agreeing Preview vertex. Regions
+    // that own none (body, face, hair) are never selected.
+    TArray<bool> RegionSelected;
+    RegionSelected.Init(false, Components.Components.Num());
+    for (const int32 RegionIndex : OwnerRegion)
+    {
+        if (RegionIndex != INDEX_NONE && !RegionSelected[RegionIndex])
+        {
+            RegionSelected[RegionIndex] = true;
+            ++Out.RegionCount;
+            Out.TriangleCount += Components.Components[RegionIndex].Indices.Num();
+        }
+    }
+
+    // Identify each selected region by size and touched material sections so
+    // diagnostics expose what Auto chose without persisting anything.
+    for (int32 RegionIndex = 0; RegionIndex < RegionSelected.Num(); ++RegionIndex)
+    {
+        if (!RegionSelected[RegionIndex])
+        {
+            continue;
+        }
+        TSet<int32> SectionIDs;
+        for (const int32 TriangleID : Components.Components[RegionIndex].Indices)
+        {
+            SectionIDs.Add(Driver.GetTriangleGroup(TriangleID));
+        }
+        TArray<int32> SortedSections = SectionIDs.Array();
+        SortedSections.Sort();
+        Out.RegionSummary += FString::Printf(
+            TEXT("%s%d tris in section%s %d"),
+            Out.RegionSummary.IsEmpty() ? TEXT("") : TEXT(", "),
+            Components.Components[RegionIndex].Indices.Num(),
+            SortedSections.Num() == 1 ? TEXT("") : TEXT("s"),
+            SortedSections[0]);
+        for (int32 SectionIndex = 1; SectionIndex < SortedSections.Num(); ++SectionIndex)
+        {
+            Out.RegionSummary += FString::Printf(
+                TEXT("/%d"), SortedSections[SectionIndex]);
+        }
+    }
+
+    Out.MatchedPreviewCoverage =
+        static_cast<double>(AgreeingCount) / PreviewVertexIDs.Num();
+    if (AgreeingCount < PreviewVertexIDs.Num())
+    {
+        OutError = FString::Printf(
+            TEXT("Auto garment resolution found no unique separable Driver surface covering %d of %d Preview vertices "
+                "within %.4f of the Preview scale or the calibrated misalignment bound %.4f. The unmatched surface is "
+                "misaligned (check reference pose, origin, units, and asset-local import space), or the garment is "
+                "welded to other character surfaces without a distinct source region."),
+            PreviewVertexIDs.Num() - AgreeingCount,
+            PreviewVertexIDs.Num(),
+            GarmentAgreementRadiusFraction,
+            MisalignedBound);
+        return false;
+    }
+
+    Out.Surface = Driver;
+    TArray<int32> UnselectedTriangles;
+    for (int32 RegionIndex = 0; RegionIndex < RegionSelected.Num(); ++RegionIndex)
+    {
+        if (!RegionSelected[RegionIndex])
+        {
+            UnselectedTriangles.Append(Components.Components[RegionIndex].Indices);
+        }
+    }
+    UnselectedTriangles.Sort(TGreater<int32>());
+    for (const int32 TriangleID : UnselectedTriangles)
+    {
+        // Removing the resulting isolated vertices keeps every resolved-surface
+        // vertex ID identical to its original Driver LOD0 import vertex.
+        Out.Surface.RemoveTriangle(TriangleID);
+    }
     return true;
 }
 
@@ -314,10 +502,10 @@ bool GeneratePreviewMorphs(
             const int32 DriverPointID = DriverLOD.MeshToImportVertexMap[Delta.SourceIdx];
             if (!DriverMesh.IsVertex(DriverPointID))
             {
-                OutError = FString::Printf(
-                    TEXT("Driver Morph '%s' cannot map LOD0 vertex %u to source geometry."),
-                    *DriverMorph->GetName(), Delta.SourceIdx);
-                return false;
+                // The resolved Driver garment surface removed this vertex, so
+                // the delta lies outside the garment and cannot reach the
+                // Preview; only deltas on the resolved surface are projected.
+                continue;
             }
             if (AssignedDriverPoints[DriverPointID]
                 && !DriverPointDeltas[DriverPointID].Equals(Delta.PositionDelta, 1.0e-4f))
@@ -485,12 +673,34 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         return Result;
     }
 
+    // Resolve the unique separable Driver garment surface from geometry
+    // evidence alone. Everything downstream (alignment, weights, Morphs)
+    // measures and transfers against this filtered surface only, so body,
+    // face, and hair cannot contribute nearest-surface data. The filtered
+    // mesh keeps original Driver vertex IDs for lossless Morph projection.
+    FMtoUDriverGarmentResolution Garment;
+    FString ResolveError;
+    if (!ResolveDriverGarmentSurface(
+            DriverDynamic->GetMeshRef(),
+            PreviewDynamic->GetMeshRef(),
+            Thresholds.MisalignedNormalizedDistanceAverage,
+            Garment,
+            ResolveError))
+    {
+        Result.Diagnostics = ResolveError;
+        return Result;
+    }
+    FDynamicMesh3 ResolvedDriver(MoveTemp(Garment.Surface));
+    Result.GarmentSourceRegionCount = Garment.RegionCount;
+    Result.GarmentSourceTriangleCount = Garment.TriangleCount;
+    Result.MatchedPreviewCoverage = Garment.MatchedPreviewCoverage;
+
     FMtoUSurfaceDistanceStats DistanceStats;
     FString DistanceError;
     if (!MeasureSurfaceDistances(
-            DriverDynamic->GetMeshRef(),
+            ResolvedDriver,
             PreviewDynamic->GetMeshRef(),
-            DriverDynamic->GetMeshRef().GetBounds().DiagonalLength(),
+            ResolvedDriver.GetBounds().DiagonalLength(),
             DistanceStats,
             DistanceError))
     {
@@ -518,7 +728,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     FDynamicMesh3 ClosestTarget(PreviewDynamic->GetMeshRef());
     TArray<bool> ClosestMatches;
     if (!TransferWeights(
-            DriverDynamic->GetMeshRef(), ClosestTarget,
+            ResolvedDriver, ClosestTarget,
             FTransferBoneWeights::ETransferBoneWeightsMethod::ClosestPointOnSurface,
             Result.ClosestTransferMilliseconds, ClosestMatches))
     {
@@ -529,7 +739,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     FDynamicMesh3 InpaintTarget(PreviewDynamic->GetMeshRef());
     TArray<bool> InpaintMatches;
     const bool bUseInpaintResult = TransferWeights(
-        DriverDynamic->GetMeshRef(), InpaintTarget,
+        ResolvedDriver, InpaintTarget,
         FTransferBoneWeights::ETransferBoneWeightsMethod::InpaintWeights,
         Result.InpaintTransferMilliseconds, InpaintMatches);
     if (!bUseInpaintResult)
@@ -561,7 +771,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     TArray<FMorphCorrespondence> MorphCorrespondence;
     const double MorphStart = FPlatformTime::Seconds();
     if (!BuildMorphCorrespondence(
-            DriverDynamic->GetMeshRef(),
+            ResolvedDriver,
             PreviewDynamic->GetMeshRef(),
             MorphCorrespondence,
             Result.Diagnostics))
@@ -602,7 +812,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     }
     if (!GeneratePreviewMorphs(
             *Driver,
-            DriverDynamic->GetMeshRef(),
+            ResolvedDriver,
             *PreviewDynamic,
             MorphCorrespondence,
             *Generated,
@@ -640,7 +850,14 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.Quality = EMtoUPreviewQuality::Warning;
     }
     Result.Diagnostics = FString::Printf(
-        TEXT("Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
+        TEXT("Resolved %d Driver garment region(s) from %d/%d LOD0 triangles with %.4f matched Preview coverage [%s]. Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
+        Result.GarmentSourceRegionCount,
+        Result.GarmentSourceTriangleCount,
+        Driver->GetNumSourceModels() > 0 && Driver->HasMeshDescription(0)
+            ? Driver->GetMeshDescription(0)->Triangles().Num()
+            : 0,
+        Result.MatchedPreviewCoverage,
+        *Garment.RegionSummary,
         Result.LowConfidenceVertexCount,
         Result.VertexCount,
         Result.InpaintLowConfidenceRatio,

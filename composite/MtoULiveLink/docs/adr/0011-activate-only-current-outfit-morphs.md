@@ -1,9 +1,12 @@
 # Activate only Morphs accepted for the current outfit
 
-Each Model preview binding uses a single-garment Driver Skeletal Mesh, and Maya
+Each Model preview binding uses one Driver Skeletal Mesh that contains exactly
+one current outfit, either as the production full-character mesh or as an
+equivalent garment-only mesh, and Maya
 continues to discover BlendShapes only from the effectively visible character
 and selected outfit context. Protocol v4 negotiates the Accepted Preview Morph
-set as the intersection of that Maya manifest and the complete generated Driver
+set as the intersection of that Maya manifest and the garment-surface generated
+Driver
 Morph library. Only accepted names receive streamed values; every other
 generated Morph remains at zero. No outfit-name or node-prefix filter is added.
 A partial intersection is a visible warning with Maya-only and Unreal-only
