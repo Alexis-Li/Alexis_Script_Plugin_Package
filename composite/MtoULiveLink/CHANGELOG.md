@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add an advanced manual Driver garment source override for Model preview:
+  when automatic resolution of the full-character Driver's garment surface is
+  ambiguous, the Binding now exposes an optional **Driver Garment Slot
+  Override** list that pins the source to specific Driver material slots by
+  their stable imported slot names. An empty list keeps automatic resolution;
+  every entry must exist exactly once on the current Driver import or Refresh
+  fails with an actionable diagnostic naming the missing, duplicated, or
+  stale identity, and Reimport or source edits that invalidate a persisted
+  name mark readiness Dirty instead of silently returning to Auto. Manual
+  selections pick whole LOD0 sections and still pass the same geometry
+  coverage and alignment validation as automatic results before any weight or
+  Morph transfer, changing or clearing the override releases the previous
+  Generated Preview through the existing transactional lifecycle, and Refresh
+  diagnostics distinguish Manual from Auto while listing the resolved slot
+  identities and matched Preview coverage.
 - Preview a separable garment from a full-character Driver: Model preview now
   accepts one Driver Skeletal Mesh containing body, face, hair, and one current
   outfit together with one garment-only Preview Static Mesh. Explicit Refresh

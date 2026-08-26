@@ -55,13 +55,23 @@ Every Driver retains the same complete deformation hierarchy.
 _Avoid_: Source mesh, final mesh, binding mesh
 
 **Driver garment surface**:
-The transient set of Driver LOD0 triangles that automatic resolution selects as
-corresponding to the selected Preview Static Mesh for one Preview refresh,
-resolved from geometry connectivity and spatial agreement while imported
-material-slot identity stays supporting evidence only. It may span several
-sections and disconnected pieces, retains original source-vertex
-correspondence, and is never a persistent asset.
+The transient set of Driver LOD0 triangles selected as corresponding to the
+selected Preview Static Mesh for one Preview refresh. Automatic resolution
+picks it from geometry connectivity and spatial agreement with imported
+material-slot identity as supporting evidence only; the advanced manual Driver
+Garment Slot Override pins it to named imported slots instead, and every
+manual selection still passes the same geometry coverage and alignment
+validation. It may span several sections and disconnected pieces, retains
+original source-vertex correspondence, and is never a persistent asset.
 _Avoid_: Garment section, source region index, resolved LOD
+
+**Driver Garment Slot Override**:
+The Binding's optional advanced list of stable imported Driver material-slot
+names that manually identifies the garment source when automatic resolution is
+ambiguous. An empty list keeps automatic resolution; a missing, duplicated, or
+no-longer-unique name is a hard preflight error that never silently returns to
+Auto.
+_Avoid_: Slot index override, section selection, source mesh picker
 
 **Preview Static Mesh**:
 The current modeling iteration of the same garment, aligned to its Driver

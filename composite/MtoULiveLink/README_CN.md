@@ -34,7 +34,12 @@ Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 Ble
    包含身体、面部、头发和当前一套服装的整角色 Skeletal Mesh：Refresh 会依据
    几何连通性与空间一致性自动解析出唯一可分离的 Driver 服装表面，因此
    Preview 只需单独导入的服装 Static Mesh，其材质与插槽命名也可以与 Driver
-   自由不同；仅含单一服装的 Driver 依旧完全可用。确保关卡中只有一个 Binding
+   自由不同；仅含单一服装的 Driver 依旧完全可用。当自动解析出现歧义时，
+   可使用 Binding 的高级 **Driver Garment Slot Override** 列表，按稳定的导入
+   插槽名把服装来源锁定到指定的 Driver 材质插槽；留空表示自动解析，每个
+   名称必须在当前 Driver 导入中恰好存在一次，过期或重复的名称会以可操作的
+   诊断阻止 Refresh，而不会静默回退到自动模式。手动选中的区域仍需通过与
+   自动结果相同的几何覆盖与对齐校验。确保关卡中只有一个 Binding
    Actor，并把 Binding 指定给该 Actor。需要模型预览时，选中 Actor 并显式点击
    **Refresh Preview**。Refresh 只读取 LOD0 源数据并生成 Actor 自有的瞬态数据；
    质量度量、权重传输与 Morph 投射只使用解析出的服装表面，身体、面部、头发

@@ -39,7 +39,14 @@ Install the matching component in each host:
    geometry connectivity and spatial agreement, so the Preview only needs the
    standalone garment Static Mesh and its assigned materials or slot names may
    differ freely from the Driver's. A garment-only Driver remains equally
-   valid. Keep exactly one binding actor in the level and assign the Binding
+   valid. When automatic resolution is ambiguous, the Binding's advanced
+   **Driver Garment Slot Override** list pins the source to specific Driver
+   material slots by their stable imported slot names; an empty list keeps
+   Auto, every name must exist exactly once on the current Driver import, and
+   a stale or duplicated name blocks Refresh with an actionable diagnostic
+   instead of silently returning to Auto. Selected regions still pass the
+   same geometry coverage and alignment validation as automatic results.
+   Keep exactly one binding actor in the level and assign the Binding
    to that actor. For Model preview, select the actor and use **Refresh Preview**
    explicitly. Refresh reads LOD0 source data and creates only actor-owned
    transient data; quality measurement, weight transfer, and Morph projection

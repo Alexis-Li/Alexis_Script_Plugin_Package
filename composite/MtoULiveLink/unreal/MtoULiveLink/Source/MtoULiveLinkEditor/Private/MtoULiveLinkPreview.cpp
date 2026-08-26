@@ -6,16 +6,19 @@
 #include "Distance/DistPoint3Triangle3.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "DynamicMesh/DynamicBoneAttribute.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryScript/GeometryScriptTypes.h"
 #include "GeometryScript/MeshAssetFunctions.h"
+#include "MeshDescription.h"
 #include "Operations/TransferBoneWeights.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "SkeletalMeshAttributes.h"
 #include "Selections/MeshConnectedComponents.h"
+#include "StaticMeshAttributes.h"
 #include "UDynamicMesh.h"
 
 using namespace UE::Geometry;
@@ -160,16 +163,61 @@ struct FMtoUDriverGarmentResolution
 };
 
 /**
+ * Shared admission preflight for both resolution paths: non-empty Driver
+ * geometry and a usable Preview scale. Returns the Preview scale, or 0 with
+ * OutError set.
+ */
+double BeginGarmentSurfaceResolution(
+    const FDynamicMesh3& Driver,
+    const FDynamicMesh3& Preview,
+    FString& OutError)
+{
+    if (Driver.TriangleCount() == 0)
+    {
+        OutError = TEXT("Driver LOD0 source geometry is empty; no garment surface can be resolved.");
+        return 0.0;
+    }
+    const double Scale = Preview.GetBounds().DiagonalLength();
+    if (Scale <= UE_SMALL_NUMBER)
+    {
+        OutError = TEXT("Preview Static Mesh bounding box has no usable size; scale is invalid.");
+        return 0.0;
+    }
+    return Scale;
+}
+
+/**
+ * Shared removal tail: keep only the selected triangles while removing their
+ * isolated vertices, so every resolved-surface vertex ID stays identical to
+ * its original Driver LOD0 import vertex.
+ */
+void FinalizeResolvedGarmentSurface(
+    const FDynamicMesh3& Driver,
+    const TArray<int32>& UnselectedTriangles,
+    FMtoUDriverGarmentResolution& Out)
+{
+    Out.Surface = Driver;
+    TArray<int32> Sorted(UnselectedTriangles);
+    Sorted.Sort(TGreater<int32>());
+    for (const int32 TriangleID : Sorted)
+    {
+        Out.Surface.RemoveTriangle(TriangleID);
+    }
+}
+
+/**
  * Resolve which connected regions of the full-character Driver LOD0 correspond
  * to the garment-only Preview Static Mesh. Geometry connectivity and spatial
  * agreement are the only selection evidence: every Preview vertex belongs to
  * the region containing its nearest Driver triangle, so ownership is unique
  * and the resolved garment is exactly the set of edge-connected regions that
  * own at least one spatially agreeing Preview vertex. Material-slot identity
- * is never consulted, so replaced Preview materials or imported slot-name
- * suffixes cannot change the outcome, and material agreement alone cannot
- * authorize an unrelated region. A garment-only Driver resolves to its whole
- * single region unchanged.
+ * is never consulted on this automatic path, so replaced Preview materials or
+ * imported slot-name suffixes cannot change the outcome, and material
+ * agreement alone cannot authorize an unrelated region. A garment-only Driver
+ * resolves to its whole single region unchanged. The Binding's advanced
+ * manual slot override (ResolveDriverGarmentSurfaceFromSlots) bypasses this
+ * search but keeps the same geometric validation.
  */
 bool ResolveDriverGarmentSurface(
     const FDynamicMesh3& Driver,
@@ -183,15 +231,9 @@ bool ResolveDriverGarmentSurface(
     // MisalignedBound is quoted in the failure text so artists see the
     // calibrated distance bound alongside the measured coverage gap; Issue
     // #22 recalibrates both boundaries for the full-character corpus.
-    if (Driver.TriangleCount() == 0)
-    {
-        OutError = TEXT("Driver LOD0 source geometry is empty; no garment surface can be resolved.");
-        return false;
-    }
-    const double Scale = Preview.GetBounds().DiagonalLength();
+    const double Scale = BeginGarmentSurfaceResolution(Driver, Preview, OutError);
     if (Scale <= UE_SMALL_NUMBER)
     {
-        OutError = TEXT("Preview Static Mesh bounding box has no usable size; scale is invalid.");
         return false;
     }
     const double AgreementRadiusSquared =
@@ -302,7 +344,6 @@ bool ResolveDriverGarmentSurface(
         return false;
     }
 
-    Out.Surface = Driver;
     TArray<int32> UnselectedTriangles;
     for (int32 RegionIndex = 0; RegionIndex < RegionSelected.Num(); ++RegionIndex)
     {
@@ -311,12 +352,259 @@ bool ResolveDriverGarmentSurface(
             UnselectedTriangles.Append(Components.Components[RegionIndex].Indices);
         }
     }
-    UnselectedTriangles.Sort(TGreater<int32>());
-    for (const int32 TriangleID : UnselectedTriangles)
+    FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
+    return true;
+}
+
+/** Stable imported identity of one Driver material slot for override matching. */
+FName GetDriverSlotIdentity(const FSkeletalMaterial& Slot)
+{
+    return Slot.ImportedMaterialSlotName != NAME_None
+        ? Slot.ImportedMaterialSlotName
+        : Slot.MaterialSlotName;
+}
+
+/**
+ * Resolve the Driver garment surface from the Binding's advanced manual
+ * material-slot override. Each entry must name exactly one imported Driver
+ * material slot by its stable imported slot identity; missing, duplicated, or
+ * no-longer-unique identities are hard preflight errors that never fall back
+ * to Auto. The selected slots pick whole LOD0 sections, and the manual result
+ * must pass the same spatial agreement gate as Auto: every Preview vertex has
+ * to lie within the agreement radius of the resolved surface alone, so a
+ * wrong or partial selection fails transactionally instead of transferring
+ * against unrelated body surfaces.
+ */
+bool ResolveDriverGarmentSurfaceFromSlots(
+    const FDynamicMesh3& Driver,
+    USkeletalMesh& DriverAsset,
+    const TArray<FName>& Override,
+    const FDynamicMesh3& Preview,
+    double MisalignedBound,
+    FMtoUDriverGarmentResolution& Out,
+    FString& OutError)
+{
+    const double Scale = BeginGarmentSurfaceResolution(Driver, Preview, OutError);
+    if (Scale <= UE_SMALL_NUMBER)
     {
-        // Removing the resulting isolated vertices keeps every resolved-surface
-        // vertex ID identical to its original Driver LOD0 import vertex.
-        Out.Surface.RemoveTriangle(TriangleID);
+        return false;
+    }
+
+    const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
+    const auto DescribeSlot = [&Slots](int32 SlotIndex)
+    {
+        const FSkeletalMaterial& Slot = Slots[SlotIndex];
+        return Slot.MaterialSlotName == GetDriverSlotIdentity(Slot)
+            ? FString::Printf(TEXT("'%s'"), *Slot.MaterialSlotName.ToString())
+            : FString::Printf(TEXT("'%s' (displayed as '%s')"),
+                *GetDriverSlotIdentity(Slot).ToString(), *Slot.MaterialSlotName.ToString());
+    };
+
+    // Map every override entry to the Driver slots it names; each entry must
+    // resolve to exactly one slot, and no slot may serve two entries.
+    TArray<int32> MatchedSlots;
+    MatchedSlots.Reserve(Override.Num());
+    TSet<FName> AvailableIdentities;
+    for (const FSkeletalMaterial& Slot : Slots)
+    {
+        AvailableIdentities.Add(GetDriverSlotIdentity(Slot));
+    }
+    TSet<int32> UniqueMatchedSlots;
+    for (const FName Entry : Override)
+    {
+        TArray<int32> EntryMatches;
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (GetDriverSlotIdentity(Slots[SlotIndex]) == Entry)
+            {
+                EntryMatches.Add(SlotIndex);
+            }
+        }
+        if (EntryMatches.IsEmpty())
+        {
+            TArray<FString> SortedIdentities;
+            for (const FName Identity : AvailableIdentities)
+            {
+                SortedIdentities.Add(Identity.ToString());
+            }
+            SortedIdentities.Sort();
+            OutError = FString::Printf(
+                TEXT("Manual garment override names unknown Driver material slot '%s'. The current Driver import "
+                    "provides these slot names: %s. Reimporting the Driver may have renamed or removed it; refresh "
+                    "stays blocked instead of silently returning to automatic resolution."),
+                *Entry.ToString(), *FString::Join(SortedIdentities, TEXT(", ")));
+            return false;
+        }
+        if (EntryMatches.Num() > 1)
+        {
+            TArray<FString> MatchDescriptions;
+            for (const int32 SlotIndex : EntryMatches)
+            {
+                MatchDescriptions.Add(DescribeSlot(SlotIndex));
+            }
+            OutError = FString::Printf(
+                TEXT("Manual garment override name '%s' matches more than one Driver material slot (%s); "
+                    "the persisted identity is no longer unique and cannot select a source region."),
+                *Entry.ToString(), *FString::Join(MatchDescriptions, TEXT(", ")));
+            return false;
+        }
+        if (UniqueMatchedSlots.Contains(EntryMatches[0]))
+        {
+            OutError = FString::Printf(
+                TEXT("Manual garment override selects Driver material slot %s more than once; remove the "
+                    "duplicated entry so every selected region stays unambiguous."),
+                *DescribeSlot(EntryMatches[0]));
+            return false;
+        }
+        UniqueMatchedSlots.Add(EntryMatches[0]);
+        MatchedSlots.Add(EntryMatches[0]);
+    }
+
+    // Select whole LOD0 sections. Two engine signals identify a converted
+    // triangle's material slot: the stored MeshDescription polygon-group
+    // imported slot name reached through the per-triangle material ID, and the
+    // triangle-group layer that skeletal builds route sections by. Both stay
+    // name- or slot-index based; no transient section arithmetic is persisted.
+    FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
+    const bool bHasPolygonGroupNames = Description
+        && Description->PolygonGroupAttributes().HasAttribute(
+            MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
+    const FDynamicMeshMaterialAttribute* MaterialIDs = Driver.Attributes()
+        ? Driver.Attributes()->GetMaterialID()
+        : nullptr;
+    if (!bHasPolygonGroupNames || !MaterialIDs)
+    {
+        OutError = TEXT("Driver LOD0 source data has no imported material-slot identities to match the manual "
+            "override against.");
+        return false;
+    }
+
+    // Resolve each polygon-group ordinal to its unique Driver material slot;
+    // an imported name matching several slots stays unresolved on purpose.
+    constexpr int32 AmbiguousSlot = -2;
+    FStaticMeshAttributes DescriptionAttributes(*Description);
+    const TPolygonGroupAttributesConstRef<FName> GroupSlotNames =
+        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
+    int32 MaxOrdinal = INDEX_NONE;
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        MaxOrdinal = FMath::Max(MaxOrdinal, GroupID.GetValue());
+    }
+    TArray<int32> SlotByOrdinal;
+    SlotByOrdinal.Init(INDEX_NONE, MaxOrdinal + 1);
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        const FName ImportedName = GroupSlotNames[GroupID];
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (GetDriverSlotIdentity(Slots[SlotIndex]) != ImportedName)
+            {
+                continue;
+            }
+            int32& Mapped = SlotByOrdinal[GroupID.GetValue()];
+            Mapped = Mapped == INDEX_NONE ? SlotIndex : AmbiguousSlot;
+        }
+    }
+
+    const auto IsMatchedSlot = [&](int32 SlotIndex)
+    {
+        return SlotIndex >= 0 && SlotIndex < Slots.Num()
+            && UniqueMatchedSlots.Contains(SlotIndex);
+    };
+    TBitArray<> SlotSelected(false, Slots.Num());
+    TArray<int32> UnselectedTriangles;
+    for (const int32 TriangleID : Driver.TriangleIndicesItr())
+    {
+        const int32 Ordinal = MaterialIDs->GetValue(TriangleID);
+        const int32 ByName = SlotByOrdinal.IsValidIndex(Ordinal)
+            ? SlotByOrdinal[Ordinal]
+            : INDEX_NONE;
+        if (IsMatchedSlot(ByName))
+        {
+            SlotSelected[ByName] = true;
+            continue;
+        }
+        // Descriptions whose polygon-group identities collapsed to one group
+        // still record the routed slot in the triangle-group layer, which is
+        // what skeletal section builds follow.
+        const int32 ByGroup = Driver.GetTriangleGroup(TriangleID);
+        if (IsMatchedSlot(ByGroup))
+        {
+            SlotSelected[ByGroup] = true;
+            continue;
+        }
+        UnselectedTriangles.Add(TriangleID);
+    }
+    for (const int32 SlotIndex : MatchedSlots)
+    {
+        if (!SlotSelected[SlotIndex])
+        {
+            OutError = FString::Printf(
+                TEXT("Manual garment override names Driver material slot %s, which has no LOD0 triangles in the "
+                    "current import; the persisted identity is stale and refresh stays blocked instead of silently "
+                    "returning to automatic resolution."),
+                *DescribeSlot(SlotIndex));
+            return false;
+        }
+    }
+    Out.TriangleCount = Driver.TriangleCount() - UnselectedTriangles.Num();
+    FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
+
+    // Manual selections never skip geometric validation: count the connected
+    // regions of the resolved surface and require every Preview vertex to sit
+    // within the same agreement radius used by automatic ownership.
+    FMeshConnectedComponents Components(&Out.Surface);
+    Components.FindConnectedTriangles();
+    Out.RegionCount = Components.Components.Num();
+
+    const double AgreementRadiusSquared =
+        FMath::Square(GarmentAgreementRadiusFraction * Scale);
+    const FDynamicMeshAABBTree3 ResolvedSpatial(&Out.Surface, true);
+    int32 AgreeingCount = 0;
+    int32 PreviewVertexCount = 0;
+    for (const int32 VertexID : Preview.VertexIndicesItr())
+    {
+        ++PreviewVertexCount;
+        double DistanceSquared = 0.0;
+        ResolvedSpatial.FindNearestTriangle(Preview.GetVertex(VertexID), DistanceSquared);
+        if (DistanceSquared <= AgreementRadiusSquared)
+        {
+            ++AgreeingCount;
+        }
+    }
+    if (PreviewVertexCount == 0)
+    {
+        OutError = TEXT("Preview Static Mesh has no LOD0 geometry to match against the Driver.");
+        return false;
+    }
+    Out.MatchedPreviewCoverage =
+        static_cast<double>(AgreeingCount) / PreviewVertexCount;
+
+    TArray<FString> IdentitySummaries;
+    for (const int32 SlotIndex : MatchedSlots)
+    {
+        IdentitySummaries.Add(GetDriverSlotIdentity(Slots[SlotIndex]).ToString());
+    }
+    Out.RegionSummary = FString::Printf(
+        TEXT("manual slots %s; %d tris"),
+        *FString::Join(IdentitySummaries, TEXT(", ")),
+        Out.TriangleCount);
+
+    if (AgreeingCount < PreviewVertexCount)
+    {
+        OutError = FString::Printf(
+            TEXT("Manual garment override resolved %d Driver triangle(s) from %d slot(s) [%s], but only %d of %d "
+                "Preview vertices lie within %.4f of the Preview scale or the calibrated misalignment bound %.4f on "
+                "that surface. The selection does not cover the whole Preview garment: check reference pose, origin, "
+                "units, and asset-local import space, or select every Driver material slot of this outfit."),
+            Out.TriangleCount,
+            MatchedSlots.Num(),
+            *FString::Join(IdentitySummaries, TEXT(", ")),
+            AgreeingCount,
+            PreviewVertexCount,
+            GarmentAgreementRadiusFraction,
+            MisalignedBound);
+        return false;
     }
     return true;
 }
@@ -673,19 +961,33 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         return Result;
     }
 
-    // Resolve the unique separable Driver garment surface from geometry
-    // evidence alone. Everything downstream (alignment, weights, Morphs)
-    // measures and transfers against this filtered surface only, so body,
-    // face, and hair cannot contribute nearest-surface data. The filtered
-    // mesh keeps original Driver vertex IDs for lossless Morph projection.
+    // Resolve the unique separable Driver garment surface. Automatic
+    // resolution reads geometry evidence alone; the Binding's advanced
+    // manual slot override replaces the search with named imported material
+    // slots while keeping every geometric gate. Everything downstream
+    // (alignment, weights, Morphs) measures and transfers against this
+    // filtered surface only, so body, face, and hair cannot contribute
+    // nearest-surface data. The filtered mesh keeps original Driver vertex
+    // IDs for lossless Morph projection.
     FMtoUDriverGarmentResolution Garment;
     FString ResolveError;
-    if (!ResolveDriverGarmentSurface(
+    Result.bManualGarmentSource = Binding.DriverGarmentSlotOverride.Num() > 0;
+    const bool bResolvedGarment = Result.bManualGarmentSource
+        ? ResolveDriverGarmentSurfaceFromSlots(
+            DriverDynamic->GetMeshRef(),
+            *Driver,
+            Binding.DriverGarmentSlotOverride,
+            PreviewDynamic->GetMeshRef(),
+            Thresholds.MisalignedNormalizedDistanceAverage,
+            Garment,
+            ResolveError)
+        : ResolveDriverGarmentSurface(
             DriverDynamic->GetMeshRef(),
             PreviewDynamic->GetMeshRef(),
             Thresholds.MisalignedNormalizedDistanceAverage,
             Garment,
-            ResolveError))
+            ResolveError);
+    if (!bResolvedGarment)
     {
         Result.Diagnostics = ResolveError;
         return Result;
@@ -850,7 +1152,8 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
         Result.Quality = EMtoUPreviewQuality::Warning;
     }
     Result.Diagnostics = FString::Printf(
-        TEXT("Resolved %d Driver garment region(s) from %d/%d LOD0 triangles with %.4f matched Preview coverage [%s]. Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
+        TEXT("Resolved %d Driver garment region(s) from %d/%d LOD0 triangles with %.4f matched Preview coverage "
+            "[%s; %s selection]. Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
         Result.GarmentSourceRegionCount,
         Result.GarmentSourceTriangleCount,
         Driver->GetNumSourceModels() > 0 && Driver->HasMeshDescription(0)
@@ -858,6 +1161,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
             : 0,
         Result.MatchedPreviewCoverage,
         *Garment.RegionSummary,
+        Result.bManualGarmentSource ? TEXT("Manual") : TEXT("Auto"),
         Result.LowConfidenceVertexCount,
         Result.VertexCount,
         Result.InpaintLowConfidenceRatio,

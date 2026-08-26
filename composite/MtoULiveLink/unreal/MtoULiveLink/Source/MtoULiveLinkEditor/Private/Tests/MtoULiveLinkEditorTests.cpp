@@ -1812,6 +1812,209 @@ bool FMtoUPreviewGarmentResolutionTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewGarmentOverrideTest,
+    "MtoULiveLink.Editor.Preview.GarmentOverride",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUGarmentOverrideWorld"));
+    FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("garment-override fixtures are created"),
+        MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("garment-override fixtures were not created"));
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUGarmentOverrideWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    if (!Actor || World == nullptr)
+    {
+        AddError(TEXT("garment-override world was not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Binding->SkeletalMesh = Fixtures.FullDriver;
+    Binding->PreviewStaticMesh = Fixtures.Preview;
+    Actor->SetBinding(Binding);
+
+    const FProperty* OverrideProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, DriverGarmentSlotOverride));
+    TestTrue(TEXT("the advanced Driver garment slot override property exists and is editor-visible"),
+        OverrideProperty != nullptr && OverrideProperty->HasAnyPropertyFlags(CPF_Edit));
+    FPropertyChangedEvent OverrideChanged(
+        const_cast<FProperty*>(OverrideProperty));
+
+    const FName UpperA(TEXT("Garment_Upper_A"));
+    const FName UpperB(TEXT("Garment_Upper_B"));
+    const FName Lower(TEXT("Garment_Lower"));
+
+    // Serialization: the override persists stable imported slot names, never
+    // numeric section indices.
+    Binding->DriverGarmentSlotOverride = {UpperA, UpperB, Lower};
+    UMtoULiveLinkBinding* RoundTrip = DuplicateObject<UMtoULiveLinkBinding>(
+        Binding, WorldPackage, TEXT("GarmentOverrideRoundTrip"));
+    TestTrue(TEXT("saving/loading a binding preserves the unambiguous override unchanged"),
+        RoundTrip
+        && RoundTrip->DriverGarmentSlotOverride == TArray<FName>({UpperA, UpperB, Lower}));
+    bool bPersistedWithoutSectionIndices = RoundTrip != nullptr;
+    for (const FName Entry : RoundTrip ? RoundTrip->DriverGarmentSlotOverride
+                                       : TArray<FName>())
+    {
+        bPersistedWithoutSectionIndices &= !Entry.ToString().IsNumeric();
+    }
+    TestTrue(TEXT("persisted override identities are slot names rather than section indices"),
+        bPersistedWithoutSectionIndices);
+    UMtoULiveLinkBinding* Fresh = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TestEqual(TEXT("an empty override keeps automatic resolution"),
+        Fresh->DriverGarmentSlotOverride.Num(), 0);
+
+    // A valid multi-slot override selects every required section of the
+    // multi-material garment and matches the safe automatic result.
+    const FMtoUPreviewPreparationResult Manual =
+        FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+    AddInfo(Manual.Diagnostics);
+    TestTrue(TEXT("a valid multi-slot override builds the complete preview"),
+        Manual.bSucceeded && Manual.GeneratedPreview != nullptr);
+    TestTrue(TEXT("diagnostics distinguish manual from automatic selection"),
+        Manual.bManualGarmentSource
+        && Manual.Diagnostics.Contains(TEXT("Manual"))
+        && Manual.Diagnostics.Contains(TEXT("manual slots")));
+    TestTrue(TEXT("manual diagnostics list the resolved source identities"),
+        Manual.Diagnostics.Contains(TEXT("Garment_Upper_A"))
+        && Manual.Diagnostics.Contains(TEXT("Garment_Upper_B"))
+        && Manual.Diagnostics.Contains(TEXT("Garment_Lower"))
+        && Manual.Diagnostics.Contains(TEXT("matched Preview coverage")));
+    TestTrue(TEXT("the manual result keeps full matched coverage"),
+        Manual.MatchedPreviewCoverage > 0.999);
+    TestTrue(TEXT("the manual surface stays inside the Preview garment"),
+        Manual.GarmentSourceTriangleCount > 0
+        && Manual.GarmentSourceTriangleCount <= Fixtures.PreviewTriangleCount);
+    TestTrue(TEXT("the manual result projects only garment Morphs"),
+        Manual.MorphTargetCount == 1 && Manual.SkippedMorphTargetCount == 3);
+    TestTrue(TEXT("the manual Generated Preview keeps the complete Driver skeleton"),
+        Manual.GeneratedPreview
+        && Manual.GeneratedPreview->GetRefSkeleton().GetNum()
+            == Fixtures.FullDriver->GetRefSkeleton().GetNum());
+
+    // Changing the override invalidates and releases the previous preview
+    // through the existing transactional lifecycle.
+    Actor->SetConnectionStatus(TEXT("Disconnected"));
+    const FMtoUPreviewPreparationResult Ready =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TWeakObjectPtr<USkeletalMesh> StaleMesh = Ready.GeneratedPreview;
+    TestTrue(TEXT("the ready override preview is displayed"),
+        Ready.bSucceeded && Actor->HasReadyGeneratedPreview());
+    Binding->DriverGarmentSlotOverride = {UpperA};
+    Binding->PostEditChangeProperty(OverrideChanged);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("changing the override marks readiness Dirty and releases the stale preview"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview()
+        && !StaleMesh.IsValid()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    // A partial multi-slot selection cannot authorize unchecked closest-surface
+    // transfer: geometric coverage validation rejects it transactionally.
+    const FMtoUPreviewPreparationResult Partial =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    AddInfo(Partial.Diagnostics);
+    TestTrue(TEXT("a partial override fails geometry coverage instead of transferring against the full character"),
+        !Partial.bSucceeded
+        && Partial.GeneratedPreview == nullptr
+        && Partial.bManualGarmentSource
+        && Partial.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
+        && Partial.Diagnostics.Contains(TEXT("whole Preview garment"))
+        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    // A missing persisted identity is a hard preflight error with actionable
+    // diagnostics; Refresh never silently returns to Auto.
+    Binding->DriverGarmentSlotOverride = {UpperA, UpperB, Lower,
+        FName(TEXT("Clothes_09_Missing"))};
+    Binding->PostEditChangeProperty(OverrideChanged);
+    const FMtoUPreviewPreparationResult Missing =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    AddInfo(Missing.Diagnostics);
+    TestTrue(TEXT("a missing override identity blocks refresh with an actionable diagnostic"),
+        !Missing.bSucceeded
+        && Missing.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
+        && Missing.Diagnostics.Contains(TEXT("Clothes_09_Missing"))
+        && Missing.Diagnostics.Contains(TEXT("unknown Driver material slot"))
+        && Missing.Diagnostics.Contains(TEXT("automatic resolution")));
+
+    // A no-longer-unique persisted identity is a hard error as well.
+    TArray<FSkeletalMaterial>& DriverMaterials = Fixtures.FullDriver->GetMaterials();
+    const FName BodyName = DriverMaterials[0].MaterialSlotName;
+    DriverMaterials[0].ImportedMaterialSlotName = Lower;
+    DriverMaterials[0].MaterialSlotName = Lower;
+    const FMtoUPreviewPreparationResult Duplicated =
+        FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+    AddInfo(Duplicated.Diagnostics);
+    DriverMaterials[0].ImportedMaterialSlotName = BodyName;
+    DriverMaterials[0].MaterialSlotName = BodyName;
+    TestTrue(TEXT("a duplicated override identity is a hard error naming both slots"),
+        !Duplicated.bSucceeded
+        && Duplicated.GeneratedPreview == nullptr
+        && Duplicated.Diagnostics.Contains(TEXT("matches more than one")));
+
+    // Driver Reimport invalidates readiness; a stale override keeps failing
+    // until the artist clears it back to Auto.
+    for (FSkeletalMaterial& Slot : DriverMaterials)
+    {
+        if (Slot.MaterialSlotName == UpperA || Slot.MaterialSlotName == UpperB
+            || Slot.MaterialSlotName == Lower)
+        {
+            Slot.ImportedMaterialSlotName = *(Slot.MaterialSlotName.ToString() + TEXT("_Renamed"));
+            Slot.MaterialSlotName = Slot.ImportedMaterialSlotName;
+        }
+    }
+    if (GEditor)
+    {
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Fixtures.FullDriver);
+    }
+    TestTrue(TEXT("Driver Reimport marks readiness Dirty and hides the stale garment"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview());
+    const FMtoUPreviewPreparationResult Stale =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    AddInfo(Stale.Diagnostics);
+    TestTrue(TEXT("a stale override keeps failing after Reimport instead of returning to Auto"),
+        !Stale.bSucceeded
+        && Stale.GeneratedPreview == nullptr
+        && Stale.Diagnostics.Contains(TEXT("unknown Driver material slot"))
+        && Actor->GetPreviewState() == EMtoUPreviewState::Error);
+
+    Binding->DriverGarmentSlotOverride.Reset();
+    Binding->PostEditChangeProperty(OverrideChanged);
+    TestTrue(TEXT("clearing the override leaves readiness Dirty"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview());
+    const FMtoUPreviewPreparationResult AutoAgain =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    AddInfo(AutoAgain.Diagnostics);
+    TestTrue(TEXT("clearing back to Auto recovers the safe automatic preview"),
+        AutoAgain.bSucceeded
+        && AutoAgain.GeneratedPreview != nullptr
+        && !AutoAgain.bManualGarmentSource
+        && AutoAgain.Diagnostics.Contains(TEXT("Auto")));
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCorpusMeasurementTest,
     "MtoULiveLink.Editor.Preview.QualityCorpus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
