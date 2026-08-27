@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Revalidate Model Preview quality and failure boundaries on the full-character
+  Driver workflow: automatic garment resolution now enforces a calibrated
+  source-mass boundary that refuses Refresh transactionally when the selected
+  Driver surface far exceeds the Preview garment (duplicated clothing shells or
+  body geometry pulled through skin-tight proximity), together with a twin-pair
+  boundary for coincident selected regions. Exact duplicate copies resolve
+  stably onto a single garment family instead of flipping between candidates,
+  the resolved-garment normalization keeps quality metrics independent of
+  complete-character bounds, and diagnostics report resolved region and
+  triangle counts in the measurement JSON. The external C01 pair
+  `SK_C01_Clothes_09_All` plus `SM_C01_Clothes_09` measured Ready under the
+  five clothing material slots with every #13 threshold retained; recorded
+  evidence, hashes, rows, and boundary rationale live in the project-history
+  full-character recalibration record.
 - Add an advanced manual Driver garment source override for Model preview:
   when automatic resolution of the full-character Driver's garment surface is
   ambiguous, the Binding now exposes an optional **Driver Garment Slot

@@ -14,12 +14,15 @@ enum class EMtoUPreviewQuality : uint8
 };
 
 /**
- * Calibrated Issue #13 corpus boundaries; see the project-history calibration
- * record. Measured on the stock fixtures plus the external production garment:
- * approved inputs measure at most 0.26532 low-confidence ratio and 0.00468
- * normalized surface-distance average; the seam-heavy diagnostic cubes measure
- * up to 0.66667 ratio; the accepted half-surface fixture measures 0.75000;
- * misaligned negatives measure 1.7113+ distance average.
+ * Calibrated quality boundaries; see the project-history calibration records.
+ * The Issue #13 garment-only corpus established the original anchors and its
+ * recorded numbers remain that baseline. Issue #22 revalidated the full-character
+ * Driver workflow (project-history model-preview-full-character-recalibration
+ * record): resolution measures only the resolved Driver garment surface against
+ * the Preview, normalized by garment/Preview scale rather than complete-character
+ * bounds, and automatic resolution additionally rejects welded mixed regions and
+ * duplicate candidate garments through the failure-boundary gates documented in
+ * the preparation implementation.
  */
 struct MTOULIVELINKEDITOR_API FMtoUPreviewQualityThresholds
 {

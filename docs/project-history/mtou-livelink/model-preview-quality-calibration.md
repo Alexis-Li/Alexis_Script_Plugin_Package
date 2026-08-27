@@ -14,6 +14,11 @@ sign-off items that this issue deliberately leaves to the human acceptance gate
 are listed at the end; Issue #13 closes on this measurement and automation
 evidence together with those explicit deferrals.
 
+> Note: this record's tables and thresholds are the garment-only baseline.
+> The full-character Driver workflow revalidated them in the companion record
+> `model-preview-full-character-recalibration` (Issue #22), which retains every
+> threshold unchanged and adds resolution failure boundaries.
+
 ## Measurement definition
 
 The symmetric surface distance samples, for every Preview LOD0 vertex, the

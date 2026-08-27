@@ -1,4 +1,4 @@
-#include "MtoULiveLinkPreview.h"
+﻿#include "MtoULiveLinkPreview.h"
 
 #include "MtoULiveLinkBinding.h"
 
@@ -74,6 +74,34 @@ constexpr double InpaintNormalThresholdRadians = UE_DOUBLE_PI / 6.0;
  * globally misaligned one.
  */
 constexpr double GarmentAgreementRadiusFraction = 0.05;
+
+/** Compact position-only copy of one region's triangles for spatial queries. */
+FDynamicMesh3 ExtractRegionGeometry(
+    const FDynamicMesh3& Mesh,
+    const TArray<int32>& TriangleIDs)
+{
+    FDynamicMesh3 Out;
+    TMap<int32, int32> VertexMap;
+    for (const int32 TriangleID : TriangleIDs)
+    {
+        FIndex3i Triangle = Mesh.GetTriangle(TriangleID);
+        for (int32* Corner : {&Triangle.A, &Triangle.B, &Triangle.C})
+        {
+            const int32 SourceVertexID = *Corner;
+            if (int32* Mapped = VertexMap.Find(SourceVertexID))
+            {
+                *Corner = *Mapped;
+            }
+            else
+            {
+                *Corner = Out.AppendVertex(Mesh.GetVertex(SourceVertexID));
+                VertexMap.Add(SourceVertexID, *Corner);
+            }
+        }
+        Out.AppendTriangle(Triangle, 0);
+    }
+    return Out;
+}
 
 struct FMorphCorrespondence
 {
@@ -205,13 +233,73 @@ void FinalizeResolvedGarmentSurface(
     }
 }
 
+/** Compact identification of one connected region: triangle count and touched material sections. */
+FString DescribeConnectedRegion(
+    const FDynamicMesh3& Mesh,
+    const FMeshConnectedComponents::FComponent& Region,
+    const FDynamicMeshMaterialAttribute* MaterialIDs)
+{
+    TSet<int32> SectionIDs;
+    for (const int32 TriangleID : Region.Indices)
+    {
+        SectionIDs.Add(MaterialIDs
+            ? MaterialIDs->GetValue(TriangleID)
+            : Mesh.GetTriangleGroup(TriangleID));
+    }
+    TArray<int32> SortedSections = SectionIDs.Array();
+    SortedSections.Sort();
+    FString Text = FString::Printf(
+        TEXT("%d tris in section%s %d"),
+        Region.Indices.Num(),
+        SortedSections.Num() == 1 ? TEXT("") : TEXT("s"),
+        SortedSections.Num() > 0 ? SortedSections[0] : 0);
+    for (int32 Index = 1; Index < SortedSections.Num(); ++Index)
+    {
+        Text += FString::Printf(TEXT("/%d"), SortedSections[Index]);
+    }
+    return Text;
+}
+
+/**
+ * Failure boundaries for automatic resolution (Issue #22). A single-region
+ * whole Driver is the legacy garment-only contract: metrics alone judge it,
+ * so this gate never runs on that passthrough. Duplicated candidate garments
+ * and foreign geometry welded into garment surfaces both inflate the selected
+ * source mass far beyond the Preview garment area, so one numeric boundary
+ * rejects both deterministically; the message names both remedies.
+ */
+// ponytail: fixed 1.7 ceiling between anchors (legit fixture measures ~1.42,
+// whole duplicated garments measure 2.0+); refine from the recorded #22
+// external-corpus rows if a production revision lands nearby.
+constexpr double MaxDriverToPreviewTriangleRatio = 1.7;
+/** Preview triangle counts below this floor are exempt from mass accounting. */
+constexpr int32 MinTrianglesForMassAccounting = 8;
+
+/** Corner-sample share two selected regions must match within proximity to be twins. */
+constexpr double TwinSurfaceAgreementFraction = 0.98;
+
+/** Twin-proximity cut as a fraction of the Preview scale. */
+constexpr double TwinProximityFraction = 0.02;
+
+/**
+ * A mutually coincident pair of selected regions is only ambiguous when the
+ * pair jointly explains this share of the agreeing Preview vertices; smaller
+ * coincident accessories never block a dominant unique garment.
+ */
+constexpr double DuplicationUnionCoverage = 0.9;
+
 /**
  * Resolve which connected regions of the full-character Driver LOD0 correspond
  * to the garment-only Preview Static Mesh. Geometry connectivity and spatial
  * agreement are the only selection evidence: every Preview vertex belongs to
  * the region containing its nearest Driver triangle, so ownership is unique
  * and the resolved garment is exactly the set of edge-connected regions that
- * own at least one spatially agreeing Preview vertex. Material-slot identity
+ * owns at least one spatially agreeing Preview vertex. Two structural failure
+ * boundaries guard the automatic result (Issue #22): a selected region must be
+ * predominantly reachable from the Preview surface (welded body-and-garment
+ * mixes are rejected), and two regions covering nearly the same Preview surface
+ * are reported as a deterministic ambiguity instead of an arbitrary choice.
+ * Material-slot identity
  * is never consulted on this automatic path, so replaced Preview materials or
  * imported slot-name suffixes cannot change the outcome, and material
  * agreement alone cannot authorize an unrelated region. A garment-only Driver
@@ -253,50 +341,113 @@ bool ResolveDriverGarmentSurface(
     FMeshConnectedComponents Components(&Driver);
     Components.FindConnectedTriangles();
 
+    // Per-triangle material-section identity. The Geometry Script conversion
+    // leaves polygon groups empty, so section evidence comes from the
+    // DynamicMesh material-ID attribute (the same signal the manual override
+    // path resolves imported slot names against).
+    const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
+        Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
+    const auto TriangleSectionOf = [&](int32 TriangleID) -> int32
+    {
+        return DriverMaterialIDs
+            ? DriverMaterialIDs->GetValue(TriangleID)
+            : INDEX_NONE;
+    };
+
+    // Nearest-ownership selection (Issue #19 semantics): a Preview vertex is
+    // explained by the region owning its closest Driver surface point, and an
+    // exact garment overlay always wins those ties against surfaces further
+    // inside the character. Radius coverage per region is still recorded for
+    // the twin-pair ambiguity gate below.
+    const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
+
     // Map every Driver triangle to its edge-connected region.
     TArray<int32> RegionOfTriangle;
     RegionOfTriangle.Init(INDEX_NONE, Driver.MaxTriangleID());
-    for (int32 RegionIndex = 0; RegionIndex < Components.Components.Num(); ++RegionIndex)
+    for (int32 ComponentIndex = 0;
+        ComponentIndex < Components.Components.Num(); ++ComponentIndex)
     {
-        for (const int32 TriangleID : Components.Components[RegionIndex].Indices)
+        for (const int32 TriangleID : Components.Components[ComponentIndex].Indices)
         {
-            RegionOfTriangle[TriangleID] = RegionIndex;
+            RegionOfTriangle[TriangleID] = ComponentIndex;
         }
     }
 
-    // Assign each Preview vertex to the region owning its nearest Driver
-    // surface point; the agreement radius decides whether that vertex is
-    // spatially explained at all.
-    const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
-    TArray<int32> OwnerRegion;
-    OwnerRegion.Init(INDEX_NONE, PreviewVertexIDs.Num());
-    TBitArray<> Agreeing(false, PreviewVertexIDs.Num());
+    TArray<TBitArray<>> CompCovered;
+    CompCovered.Init(TBitArray<>(false, PreviewVertexIDs.Num()),
+        Components.Components.Num());
+    TArray<int32> CompOwnedHits;
+    CompOwnedHits.Init(0, Components.Components.Num());
+    TArray<int32> CompPrimarySection;
+    CompPrimarySection.Init(INDEX_NONE, Components.Components.Num());
     int32 AgreeingCount = 0;
+    for (int32 ComponentIndex = 0;
+        ComponentIndex < Components.Components.Num(); ++ComponentIndex)
+    {
+        const FMeshConnectedComponents::FComponent& Component =
+            Components.Components[ComponentIndex];
+        if (!Component.Indices.IsEmpty())
+        {
+            CompPrimarySection[ComponentIndex]
+                = TriangleSectionOf(Component.Indices[0]);
+        }
+    }
     for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
     {
         double DistanceSquared = 0.0;
         const int32 TriangleID = DriverSpatial.FindNearestTriangle(
             Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
-        if (TriangleID != INDEX_NONE && DistanceSquared <= AgreementRadiusSquared)
+        if (TriangleID == INDEX_NONE
+            || DistanceSquared > AgreementRadiusSquared)
         {
-            OwnerRegion[Sample] = RegionOfTriangle[TriangleID];
-            Agreeing[Sample] = true;
-            ++AgreeingCount;
+            continue;
+        }
+        ++AgreeingCount;
+        const int32 OwningRegion = RegionOfTriangle[TriangleID];
+        ++CompOwnedHits[OwningRegion];
+    }
+
+    // Per-region radius coverage on top of ownership: extracted once so the
+    // ambiguity gate can compare how much of the agreeing surface each
+    // selected region explains by itself.
+    for (int32 ComponentIndex = 0;
+        ComponentIndex < Components.Components.Num(); ++ComponentIndex)
+    {
+        const FMeshConnectedComponents::FComponent& Component =
+            Components.Components[ComponentIndex];
+        if (Component.Indices.IsEmpty() || CompOwnedHits[ComponentIndex] == 0)
+        {
+            continue;
+        }
+        FDynamicMesh3 ComponentMesh =
+            ExtractRegionGeometry(Driver, Component.Indices);
+        const FDynamicMeshAABBTree3 ComponentSpatial(&ComponentMesh, true);
+        TBitArray<>& Covered = CompCovered[ComponentIndex];
+        for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+        {
+            double DistanceSquared = 0.0;
+            ComponentSpatial.FindNearestTriangle(
+                Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
+            if (DistanceSquared <= AgreementRadiusSquared)
+            {
+                Covered[Sample] = true;
+            }
         }
     }
 
-    // Ownership is unique per vertex, so the resolved garment is exactly the
-    // set of regions that own at least one agreeing Preview vertex. Regions
-    // that own none (body, face, hair) are never selected.
+    // The resolved garment is exactly the set of regions owning at least one
+    // agreeing Preview vertex. Regions without ownership (body, face, hair)
+    // are never selected.
     TArray<bool> RegionSelected;
     RegionSelected.Init(false, Components.Components.Num());
-    for (const int32 RegionIndex : OwnerRegion)
+    for (int32 ComponentIndex = 0;
+        ComponentIndex < Components.Components.Num(); ++ComponentIndex)
     {
-        if (RegionIndex != INDEX_NONE && !RegionSelected[RegionIndex])
+        if (CompOwnedHits[ComponentIndex] > 0)
         {
-            RegionSelected[RegionIndex] = true;
+            RegionSelected[ComponentIndex] = true;
             ++Out.RegionCount;
-            Out.TriangleCount += Components.Components[RegionIndex].Indices.Num();
+            Out.TriangleCount += Components.Components[ComponentIndex].Indices.Num();
         }
     }
 
@@ -308,24 +459,11 @@ bool ResolveDriverGarmentSurface(
         {
             continue;
         }
-        TSet<int32> SectionIDs;
-        for (const int32 TriangleID : Components.Components[RegionIndex].Indices)
-        {
-            SectionIDs.Add(Driver.GetTriangleGroup(TriangleID));
-        }
-        TArray<int32> SortedSections = SectionIDs.Array();
-        SortedSections.Sort();
         Out.RegionSummary += FString::Printf(
-            TEXT("%s%d tris in section%s %d"),
+            TEXT("%s%s"),
             Out.RegionSummary.IsEmpty() ? TEXT("") : TEXT(", "),
-            Components.Components[RegionIndex].Indices.Num(),
-            SortedSections.Num() == 1 ? TEXT("") : TEXT("s"),
-            SortedSections[0]);
-        for (int32 SectionIndex = 1; SectionIndex < SortedSections.Num(); ++SectionIndex)
-        {
-            Out.RegionSummary += FString::Printf(
-                TEXT("/%d"), SortedSections[SectionIndex]);
-        }
+            *DescribeConnectedRegion(Driver,
+                Components.Components[RegionIndex], DriverMaterialIDs));
     }
 
     Out.MatchedPreviewCoverage =
@@ -344,6 +482,155 @@ bool ResolveDriverGarmentSurface(
         return false;
     }
 
+    // Issue #22 failure boundaries for automatic resolution. A single-region
+    // whole Driver is the legacy garment-only contract: metrics alone judge
+    // it, so these gates never run on that passthrough.
+    if (Components.Components.Num() > 1
+        && PreviewVertexIDs.Num() >= MinTrianglesForMassAccounting)
+    {
+        // Mass bound: duplicated copies or proximity-pulled foreign geometry
+        // inflate the selected source far beyond the Preview garment.
+        int32 PreviewTriangleCount = 0;
+        for (const int32 TriangleID : Preview.TriangleIndicesItr())
+        {
+            (void)TriangleID;
+            ++PreviewTriangleCount;
+        }
+        const double MaxSelectedTriangles =
+            static_cast<double>(PreviewTriangleCount)
+            * MaxDriverToPreviewTriangleRatio;
+        if (Out.TriangleCount > MaxSelectedTriangles)
+        {
+            OutError = FString::Printf(
+                TEXT("Automatic garment resolution failed the source-mass boundary: the resolved surface holds %d "
+                    "Driver LOD0 triangles for a Preview garment of %d triangles (%.2fx allowed %.2f); duplicated "
+                    "garment copies are indistinguishable sources (ambiguous) or foreign geometry is welded into "
+                    "garment source/material sections, and automatic resolution cannot separate them safely. Remove "
+                    "duplicates or split the garment into its own material section in the source FBX, or pin an "
+                    "explicit selection with the manual Driver Garment Slot Override."),
+                Out.TriangleCount,
+                PreviewTriangleCount,
+                static_cast<double>(Out.TriangleCount) / PreviewTriangleCount,
+                MaxDriverToPreviewTriangleRatio);
+            return false;
+        }
+
+        // Twin-pair ambiguity gate over the selected regions: two regions that
+        // coincide nearly face-for-face and together explain most of the
+        // agreeing surface are indistinguishable candidates.
+        struct FMtoUSelectedPiece
+        {
+            FDynamicMesh3 Mesh;
+            FAxisAlignedBox3d Bounds;
+            TArray<FVector3d> CornerSamples;
+        };
+        const double TwinProximity = TwinProximityFraction * Scale;
+        const auto Inflated = [](const FAxisAlignedBox3d& Box, double Margin)
+        {
+            const FVector3d Margin3(Margin, Margin, Margin);
+            return FAxisAlignedBox3d(Box.Min - Margin3, Box.Max + Margin3);
+        };
+        const auto DescribeSelectedIndex = [&Driver, &Components,
+            DriverMaterialIDs](int32 Index) -> FString
+        {
+            return DescribeConnectedRegion(Driver,
+                Components.Components[Index], DriverMaterialIDs);
+        };
+        TArray<FMtoUSelectedPiece> Pieces;
+        Pieces.Reserve(Components.Components.Num());
+        for (int32 ComponentIndex = 0;
+            ComponentIndex < Components.Components.Num(); ++ComponentIndex)
+        {
+            if (!RegionSelected[ComponentIndex])
+            {
+                continue;
+            }
+            FMtoUSelectedPiece Piece;
+            Piece.Mesh = ExtractRegionGeometry(
+                Driver, Components.Components[ComponentIndex].Indices);
+            Piece.Bounds = Piece.Mesh.GetBounds();
+            for (const int32 VertexID : Piece.Mesh.VertexIndicesItr())
+            {
+                Piece.CornerSamples.Add(Piece.Mesh.GetVertex(VertexID));
+            }
+            Pieces.Add(MoveTemp(Piece));
+        }
+        const auto CoveredBySelected = [&](int32 PieceIndex)
+        {
+            TBitArray<> Covered(false, PreviewVertexIDs.Num());
+            const FMtoUSelectedPiece& Piece = Pieces[PieceIndex];
+            FDynamicMeshAABBTree3 Spatial(&Piece.Mesh, true);
+            for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+            {
+                double DistanceSquared = 0.0;
+                Spatial.FindNearestTriangle(
+                    Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
+                if (DistanceSquared <= AgreementRadiusSquared)
+                {
+                    Covered[Sample] = true;
+                }
+            }
+            return Covered;
+        };
+        const auto TwinShare = [&TwinProximity](
+            const FMtoUSelectedPiece& From, const FMtoUSelectedPiece& To)
+        {
+            if (From.CornerSamples.IsEmpty())
+            {
+                return 0.0;
+            }
+            FDynamicMeshAABBTree3 ToSpatial(&To.Mesh, true);
+            const double TwinProximitySquared = FMath::Square(TwinProximity);
+            int32 NearCount = 0;
+            for (const FVector3d& Sample : From.CornerSamples)
+            {
+                double DistanceSquared = 0.0;
+                ToSpatial.FindNearestTriangle(Sample, DistanceSquared);
+                NearCount += DistanceSquared <= TwinProximitySquared ? 1 : 0;
+            }
+            return static_cast<double>(NearCount) / From.CornerSamples.Num();
+        };
+        for (int32 First = 0; First < Pieces.Num(); ++First)
+        {
+            for (int32 Second = First + 1; Second < Pieces.Num(); ++Second)
+            {
+                const FMtoUSelectedPiece& A = Pieces[First];
+                const FMtoUSelectedPiece& B = Pieces[Second];
+                if (!Inflated(B.Bounds, TwinProximity).Intersects(A.Bounds)
+                    || !Inflated(A.Bounds, TwinProximity).Intersects(B.Bounds))
+                {
+                    continue;
+                }
+                if (TwinShare(A, B) < TwinSurfaceAgreementFraction
+                    || TwinShare(B, A) < TwinSurfaceAgreementFraction)
+                {
+                    continue;
+                }
+                const TBitArray<> CoveredA = CoveredBySelected(First);
+                const TBitArray<> CoveredB = CoveredBySelected(Second);
+                int32 UnionCount = 0;
+                for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+                {
+                    UnionCount += CoveredA[Sample] || CoveredB[Sample] ? 1 : 0;
+                }
+                if (static_cast<double>(UnionCount) / AgreeingCount
+                    >= DuplicationUnionCoverage)
+                {
+                    OutError = FString::Printf(
+                        TEXT("Automatic garment resolution failed the source-separation boundary: Driver regions [%s] "
+                            "and [%s] coincide nearly face-for-face and together cover %.2f of the agreeing Preview "
+                            "vertices, so duplicated sources are indistinguishable (ambiguous); automatic resolution "
+                            "cannot separate them safely. Remove one of the duplicated garment surfaces, split the "
+                            "garment into its own material section in the source FBX, or pin an explicit selection "
+                            "with the manual Driver Garment Slot Override."),
+                        *DescribeSelectedIndex(First),
+                        *DescribeSelectedIndex(Second),
+                        static_cast<double>(UnionCount) / AgreeingCount);
+                    return false;
+                }
+            }
+        }
+    }
     TArray<int32> UnselectedTriangles;
     for (int32 RegionIndex = 0; RegionIndex < RegionSelected.Num(); ++RegionIndex)
     {
