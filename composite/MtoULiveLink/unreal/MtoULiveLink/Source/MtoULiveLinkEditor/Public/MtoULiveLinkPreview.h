@@ -20,9 +20,11 @@ enum class EMtoUPreviewQuality : uint8
  * Driver workflow (project-history model-preview-full-character-recalibration
  * record): resolution measures only the resolved Driver garment surface against
  * the Preview, normalized by garment/Preview scale rather than complete-character
- * bounds, and automatic resolution additionally rejects welded mixed regions and
- * duplicate candidate garments through the failure-boundary gates documented in
- * the preparation implementation.
+ * bounds. Automatic resolution enforces two structural boundaries documented in
+ * the preparation implementation: a source-mass limit against duplicated or
+ * proximity-pulled geometry, and a twin-family rule that treats two mutually
+ * coincident garment families each independently explaining most of the agreeing
+ * surface as indistinguishable and fails deterministically.
  */
 struct MTOULIVELINKEDITOR_API FMtoUPreviewQualityThresholds
 {

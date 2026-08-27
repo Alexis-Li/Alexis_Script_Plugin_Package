@@ -32,14 +32,24 @@ boundaries (constants live beside `ResolveDriverGarmentSurface`):
   all rejected deterministically with actionable diagnostics naming both
   remedies (remove duplicates/split sections, or the manual Driver Garment Slot
   Override).
-* Twin-pair boundary — two selected regions that coincide nearly face-for-face
-  (mutual corner-sample share within 2% of Preview scale at or above 98%)
-  covering at least 90% of agreeing vertices are ambiguous and fail.
+* Twin-family boundary — selected regions cluster into families by mutual
+  near-face-for-face coincidence (corner-sample share within 2% of Preview scale
+  at or above 98% both directions). When two or more families each independently
+  cover at least 90% of agreeing vertices, the candidates are indistinguishable
+  and resolution fails deterministically. Because nearest-ownership lets an
+  exact overlay win every vertex, synthetic near-twin shells resolve stably onto
+  the supported family instead; the production hazard equivalent is the mass
+  boundary above, which rejected measured mixing at 2.31x. Legitimate garment
+  pieces neither coincide nor each cover the whole Preview, so a unique garment
+  never forms two qualifying families.
 * Deterministic stability: for exact duplicate copies nearest-ownership hands
-  every vertex to one copy and Refresh resolves stably onto that garment family
-  (verified by repeated Prepare calls with identical region/triangle counts and
-  distances). Selection can therefore map clothing only onto garment-like
-  surfaces, never silently onto the body; a redundant exact twin is inert.
+  every vertex to one family and Refresh resolves stably onto that garment
+  family (verified by repeated Prepare calls with identical region/triangle
+  counts and distances). Selection can therefore map clothing only onto
+  garment-like surfaces, never silently onto the body; a redundant exact twin
+  is inert.
+* Single-region whole Drivers are the legacy passthrough: the structural gates
+  intentionally do not run there, and #13's metric gates alone judge them.
 * A fully enclosed body shell without any distinct section shows no ownership
   or mass evidence on the Preview surface and resolves like a valid local-detail
   garment; this accepted ceiling follows from Issue #18's out-of-scope rule

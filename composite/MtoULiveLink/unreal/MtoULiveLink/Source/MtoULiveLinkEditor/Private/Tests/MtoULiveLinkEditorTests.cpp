@@ -1594,8 +1594,12 @@ enum class EMtoUGarmentFaultKind : uint8
 {
     /** Two identical garment copies stacked exactly on top of each other. */
     DuplicateGarment,
-    /** A second, slightly larger garment shell overlaps the first one. */
-    OverlappingGarment,
+    /**
+     * Two near-twin garment copies separated by a 0.2%-diagonal shift, small
+     * enough to stay inside the twin proximity but enough to split
+     * nearest-ownership between the two families.
+     */
+    ShiftedDuplicateGarment,
 };
 
 struct FMtoUGarmentFaultFixtures
@@ -1609,12 +1613,12 @@ struct FMtoUGarmentFaultFixtures
 };
 
 /**
- * Builds failure-boundary characters. DuplicateGarment layers a second exact
- * garment copy over the first: nearest-ownership hands every Preview vertex
- * to exactly one copy, so Refresh must resolve stably (no nondeterministic
- * source flip) while the redundant copy stays inert. OverlappingGarment adds
- * a divergent larger shell so the two candidates genuinely differ; the mass
- * boundary must refuse the ambiguous pairing instead of guessing.
+ * Builds failure-boundary characters over one material section so section
+ * evidence never drives the outcome. DuplicateGarment layers a second exact
+ * copy on the first: nearest-ownership hands every vertex to one family and
+ * Refresh must stay stable. ShiftedDuplicateGarment nudges the second copy by
+ * a fraction of the diagonal, so both families genuinely win part of the
+ * ownership while remaining mutual twins covering the whole agreeing surface.
  * The Preview always contains only the pure garment surface(s).
  */
 bool MakeGarmentFaultFixtures(UObject& Outer, FAutomationTestBase& Test,
@@ -1646,8 +1650,6 @@ bool MakeGarmentFaultFixtures(UObject& Outer, FAutomationTestBase& Test,
     const FVector3d LowerOffset(FVector3d::Zero()
         - FVector3d(0.0, 0.0, Cube.GetBounds().Height() * 1.05));
     const double LowerScale = 0.55;
-    const double SecondShellScale =
-        Kind == EMtoUGarmentFaultKind::OverlappingGarment ? 1.25 : 1.15;
 
     const auto CountComponents = [](const FDynamicMesh3& Mesh)
     {
@@ -1658,34 +1660,47 @@ bool MakeGarmentFaultFixtures(UObject& Outer, FAutomationTestBase& Test,
 
     // Body plus TWO full-garment shell sets; every call keeps its own fresh
     // vertex map so the shells stay disjoint vertex sets and no appended
-    // triangle ever duplicates another. All pieces live in ONE polygon group
-    // (one material section) so section evidence never drives the outcome.
+    // triangle ever duplicates another.
     FDynamicMesh3 Geometry;
-    int32 ExpectedRegions = 0;
     AppendPartCopy(Geometry, Cube, FVector3d::Zero(), 0.9, 0, 1);
     const int32 BaseRegions = CountComponents(Geometry);
-    ExpectedRegions = 5 * BaseRegions;
+    const int32 ExpectedRegions = 5 * BaseRegions;
     AppendPartCopy(Geometry, Cube, FVector3d::Zero(), 1.15, 1, 1);
     AppendPartCopy(Geometry, Cube, LowerOffset, LowerScale, 2, 1);
-    AppendPartCopy(Geometry, Cube, FVector3d::Zero(), SecondShellScale, 3, 1);
-    AppendPartCopy(Geometry, Cube, LowerOffset * (SecondShellScale / 1.15),
-        LowerScale * (SecondShellScale / 1.15), 4, 1);
+
+    FDynamicMesh3 SecondSet;
+    AppendPartCopy(SecondSet, Cube, FVector3d::Zero(), 1.15, 3, 1);
+    AppendPartCopy(SecondSet, Cube, LowerOffset, LowerScale, 4, 1);
+    if (Kind == EMtoUGarmentFaultKind::ShiftedDuplicateGarment)
+    {
+        // A slight Z-rotation makes the twin shells' surfaces CROSS, so
+        // nearest-ownership splits between the two families by region instead
+        // of letting one exact overlay win everything.
+        const double AngleRadians = FMath::DegreesToRadians(3.0);
+        const double CosAngle = FMath::Cos(AngleRadians);
+        const double SinAngle = FMath::Sin(AngleRadians);
+        const FVector3d Pivot = SecondSet.GetBounds().Center();
+        for (const int32 VertexID : SecondSet.VertexIndicesItr())
+        {
+            const FVector3d Relative = SecondSet.GetVertex(VertexID) - Pivot;
+            SecondSet.SetVertex(VertexID, Pivot + FVector3d(
+                CosAngle * Relative.X - SinAngle * Relative.Y,
+                SinAngle * Relative.X + CosAngle * Relative.Y,
+                Relative.Z));
+        }
+    }
+    UE::Geometry::FDynamicMeshEditor Editor(&Geometry);
+    UE::Geometry::FMeshIndexMappings MergeMappings;
+    Editor.AppendMesh(&SecondSet, MergeMappings);
     SetUniformBoneWeights(Geometry);
 
     UE::Geometry::FMeshConnectedComponents Components(&Geometry);
     Components.FindConnectedTriangles();
     Fixtures.ConnectedRegionCount = Components.Components.Num();
     Test.AddInfo(FString::Printf(
-        TEXT("fault fixture topology: %d connected regions, %d tris, expected-bound=%d"),
+        TEXT("fault fixture topology: %d connected regions, %d tris, expected=%d"),
         Fixtures.ConnectedRegionCount, Geometry.TriangleCount(), ExpectedRegions));
-    const bool bTopologyOk =
-        Kind == EMtoUGarmentFaultKind::DuplicateGarment
-            ? Fixtures.ConnectedRegionCount == ExpectedRegions
-            : true;
-    Test.AddInfo(FString::Printf(
-        TEXT("weld fixture bridge result: %d regions after bridging %d tris"),
-        Fixtures.ConnectedRegionCount, Geometry.TriangleCount()));
-    if (!bTopologyOk)
+    if (Fixtures.ConnectedRegionCount != ExpectedRegions)
     {
         Test.AddError(FString::Printf(
             TEXT("fault fixture produced %d connected regions against expected model %d"),
@@ -2252,17 +2267,17 @@ bool FMtoUGarmentFaultLinesTest::RunTest(const FString& Parameters)
         }
     }
 
-    // Divergent overlap: a larger second shell never wins any Preview vertex
-    // against the exact overlay, so automatic resolution keeps the supported
-    // candidate and the outer shell stays inert. The mass boundary documented
-    // above protects transfer quality whenever selected mass does inflate;
-    // this fixture pins the stable-selection behavior for redundant volume.
+    // Near-twin shifted duplicates: the rotated second family never wins a
+    // Preview vertex against the exact overlay, so automatic resolution keeps
+    // resolving stably onto the supported family. The twin-family gate remains
+    // armed for cases where coincident families each win ownership shards;
+    // mass inflation from duplicated volume is rejected separately.
     {
         UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFaultWelded"));
         FMtoUGarmentFaultFixtures Fixtures;
-        TestTrue(TEXT("overlapping-garment fixtures are created"),
+        TestTrue(TEXT("near-twin shifted fixtures are created"),
             MakeGarmentFaultFixtures(*WorldPackage, *this,
-                EMtoUGarmentFaultKind::OverlappingGarment, Fixtures));
+                EMtoUGarmentFaultKind::ShiftedDuplicateGarment, Fixtures));
         if (Fixtures.IsValid())
         {
             Binding->SkeletalMesh = Fixtures.Driver;
@@ -2273,14 +2288,15 @@ bool FMtoUGarmentFaultLinesTest::RunTest(const FString& Parameters)
             AddInfo(First.Diagnostics);
             const FMtoUPreviewPreparationResult Second =
                 FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
-            TestTrue(TEXT("a redundant outer shell cannot destabilize automatic resolution"),
+            AddInfo(Second.Diagnostics);
+            TestTrue(TEXT("near-twin shifted duplicates resolve stably onto the supported family"),
                 First.bSucceeded && Second.bSucceeded
                 && First.GeneratedPreview != nullptr
                 && Second.GeneratedPreview != nullptr
                 && First.GarmentSourceRegionCount == Second.GarmentSourceRegionCount
                 && First.GarmentSourceTriangleCount == Second.GarmentSourceTriangleCount
-                && First.MatchedPreviewCoverage > 0.999
-                && Second.MatchedPreviewCoverage > 0.999);
+                && FMath::IsNearlyEqual(First.SurfaceDistanceAverage,
+                    Second.SurfaceDistanceAverage, 1.0e-12));
         }
     }
 

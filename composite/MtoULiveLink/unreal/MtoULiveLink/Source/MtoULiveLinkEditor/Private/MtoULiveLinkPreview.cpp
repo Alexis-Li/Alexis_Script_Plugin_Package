@@ -1,4 +1,4 @@
-﻿#include "MtoULiveLinkPreview.h"
+#include "MtoULiveLinkPreview.h"
 
 #include "MtoULiveLinkBinding.h"
 
@@ -347,18 +347,12 @@ bool ResolveDriverGarmentSurface(
     // path resolves imported slot names against).
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
-    const auto TriangleSectionOf = [&](int32 TriangleID) -> int32
-    {
-        return DriverMaterialIDs
-            ? DriverMaterialIDs->GetValue(TriangleID)
-            : INDEX_NONE;
-    };
 
     // Nearest-ownership selection (Issue #19 semantics): a Preview vertex is
     // explained by the region owning its closest Driver surface point, and an
     // exact garment overlay always wins those ties against surfaces further
     // inside the character. Radius coverage per region is still recorded for
-    // the twin-pair ambiguity gate below.
+    // the twin-family ambiguity gate below.
     const FDynamicMeshAABBTree3 DriverSpatial(&Driver, true);
 
     // Map every Driver triangle to its edge-connected region.
@@ -378,20 +372,7 @@ bool ResolveDriverGarmentSurface(
         Components.Components.Num());
     TArray<int32> CompOwnedHits;
     CompOwnedHits.Init(0, Components.Components.Num());
-    TArray<int32> CompPrimarySection;
-    CompPrimarySection.Init(INDEX_NONE, Components.Components.Num());
     int32 AgreeingCount = 0;
-    for (int32 ComponentIndex = 0;
-        ComponentIndex < Components.Components.Num(); ++ComponentIndex)
-    {
-        const FMeshConnectedComponents::FComponent& Component =
-            Components.Components[ComponentIndex];
-        if (!Component.Indices.IsEmpty())
-        {
-            CompPrimarySection[ComponentIndex]
-                = TriangleSectionOf(Component.Indices[0]);
-        }
-    }
     for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
     {
         double DistanceSquared = 0.0;
@@ -490,12 +471,7 @@ bool ResolveDriverGarmentSurface(
     {
         // Mass bound: duplicated copies or proximity-pulled foreign geometry
         // inflate the selected source far beyond the Preview garment.
-        int32 PreviewTriangleCount = 0;
-        for (const int32 TriangleID : Preview.TriangleIndicesItr())
-        {
-            (void)TriangleID;
-            ++PreviewTriangleCount;
-        }
+        const int32 PreviewTriangleCount = Preview.TriangleCount();
         const double MaxSelectedTriangles =
             static_cast<double>(PreviewTriangleCount)
             * MaxDriverToPreviewTriangleRatio;
@@ -515,26 +491,26 @@ bool ResolveDriverGarmentSurface(
             return false;
         }
 
-        // Twin-pair ambiguity gate over the selected regions: two regions that
-        // coincide nearly face-for-face and together explain most of the
-        // agreeing surface are indistinguishable candidates.
+        // Twin-family ambiguity gate over the selected regions. Mutually
+        // coincident regions (nearly face-for-face) cluster into one family;
+        // when two families each independently explain most of the agreeing
+        // surface, the candidates are indistinguishable and resolution must
+        // fail instead of guessing. Legitimate garment pieces neither coincide
+        // nor each cover the whole Preview, so they never form a second family.
         struct FMtoUSelectedPiece
         {
+            int32 ComponentIndex = INDEX_NONE;
             FDynamicMesh3 Mesh;
             FAxisAlignedBox3d Bounds;
             TArray<FVector3d> CornerSamples;
+            TBitArray<> CoveredVertices;
+            int32 FamilyIndex = INDEX_NONE;
         };
         const double TwinProximity = TwinProximityFraction * Scale;
         const auto Inflated = [](const FAxisAlignedBox3d& Box, double Margin)
         {
             const FVector3d Margin3(Margin, Margin, Margin);
             return FAxisAlignedBox3d(Box.Min - Margin3, Box.Max + Margin3);
-        };
-        const auto DescribeSelectedIndex = [&Driver, &Components,
-            DriverMaterialIDs](int32 Index) -> FString
-        {
-            return DescribeConnectedRegion(Driver,
-                Components.Components[Index], DriverMaterialIDs);
         };
         TArray<FMtoUSelectedPiece> Pieces;
         Pieces.Reserve(Components.Components.Num());
@@ -546,6 +522,7 @@ bool ResolveDriverGarmentSurface(
                 continue;
             }
             FMtoUSelectedPiece Piece;
+            Piece.ComponentIndex = ComponentIndex;
             Piece.Mesh = ExtractRegionGeometry(
                 Driver, Components.Components[ComponentIndex].Indices);
             Piece.Bounds = Piece.Mesh.GetBounds();
@@ -555,23 +532,6 @@ bool ResolveDriverGarmentSurface(
             }
             Pieces.Add(MoveTemp(Piece));
         }
-        const auto CoveredBySelected = [&](int32 PieceIndex)
-        {
-            TBitArray<> Covered(false, PreviewVertexIDs.Num());
-            const FMtoUSelectedPiece& Piece = Pieces[PieceIndex];
-            FDynamicMeshAABBTree3 Spatial(&Piece.Mesh, true);
-            for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
-            {
-                double DistanceSquared = 0.0;
-                Spatial.FindNearestTriangle(
-                    Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
-                if (DistanceSquared <= AgreementRadiusSquared)
-                {
-                    Covered[Sample] = true;
-                }
-            }
-            return Covered;
-        };
         const auto TwinShare = [&TwinProximity](
             const FMtoUSelectedPiece& From, const FMtoUSelectedPiece& To)
         {
@@ -590,12 +550,45 @@ bool ResolveDriverGarmentSurface(
             }
             return static_cast<double>(NearCount) / From.CornerSamples.Num();
         };
+        for (FMtoUSelectedPiece& Piece : Pieces)
+        {
+            Piece.CoveredVertices.Init(false, PreviewVertexIDs.Num());
+            FDynamicMeshAABBTree3 Spatial(&Piece.Mesh, true);
+            for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+            {
+                double DistanceSquared = 0.0;
+                Spatial.FindNearestTriangle(
+                    Preview.GetVertex(PreviewVertexIDs[Sample]), DistanceSquared);
+                if (DistanceSquared <= AgreementRadiusSquared)
+                {
+                    Piece.CoveredVertices[Sample] = true;
+                }
+            }
+        }
+        // Union-find over mutual-twin relations.
+        TArray<int32> FamilyOf;
+        FamilyOf.Init(INDEX_NONE, Pieces.Num());
+        const auto FindFamily = [&FamilyOf](int32 Index)
+        {
+            while (FamilyOf[Index] != Index)
+            {
+                FamilyOf[Index] = FamilyOf[FamilyOf[Index]];
+                Index = FamilyOf[Index];
+            }
+            return Index;
+        };
+        int32 NextFamilyIndex = 0;
         for (int32 First = 0; First < Pieces.Num(); ++First)
         {
+            if (FamilyOf[First] == INDEX_NONE)
+            {
+                FamilyOf[First] = First;
+                ++NextFamilyIndex;
+            }
             for (int32 Second = First + 1; Second < Pieces.Num(); ++Second)
             {
                 const FMtoUSelectedPiece& A = Pieces[First];
-                const FMtoUSelectedPiece& B = Pieces[Second];
+                FMtoUSelectedPiece& B = Pieces[Second];
                 if (!Inflated(B.Bounds, TwinProximity).Intersects(A.Bounds)
                     || !Inflated(A.Bounds, TwinProximity).Intersects(B.Bounds))
                 {
@@ -606,29 +599,84 @@ bool ResolveDriverGarmentSurface(
                 {
                     continue;
                 }
-                const TBitArray<> CoveredA = CoveredBySelected(First);
-                const TBitArray<> CoveredB = CoveredBySelected(Second);
-                int32 UnionCount = 0;
-                for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+                if (FamilyOf[Second] == INDEX_NONE)
                 {
-                    UnionCount += CoveredA[Sample] || CoveredB[Sample] ? 1 : 0;
+                    FamilyOf[Second] = Second;
                 }
-                if (static_cast<double>(UnionCount) / AgreeingCount
-                    >= DuplicationUnionCoverage)
+                const int32 RootA = FindFamily(First);
+                const int32 RootB = FindFamily(Second);
+                if (RootA != RootB)
                 {
-                    OutError = FString::Printf(
-                        TEXT("Automatic garment resolution failed the source-separation boundary: Driver regions [%s] "
-                            "and [%s] coincide nearly face-for-face and together cover %.2f of the agreeing Preview "
-                            "vertices, so duplicated sources are indistinguishable (ambiguous); automatic resolution "
-                            "cannot separate them safely. Remove one of the duplicated garment surfaces, split the "
-                            "garment into its own material section in the source FBX, or pin an explicit selection "
-                            "with the manual Driver Garment Slot Override."),
-                        *DescribeSelectedIndex(First),
-                        *DescribeSelectedIndex(Second),
-                        static_cast<double>(UnionCount) / AgreeingCount);
-                    return false;
+                    FamilyOf[RootB] = RootA;
                 }
             }
+        }
+
+        // Per-family union coverage; ambiguity requires two or more families
+        // that each explain the required coverage share on their own.
+        struct FMtoUFamilyCoverage
+        {
+            TBitArray<> Covered;
+            int32 Representative = INDEX_NONE;
+        };
+        TMap<int32, FMtoUFamilyCoverage> FamilyCovered;
+        for (int32 PieceIndex = 0; PieceIndex < Pieces.Num(); ++PieceIndex)
+        {
+            const int32 FamilyRoot = FindFamily(PieceIndex);
+            FMtoUFamilyCoverage& Entry = FamilyCovered.FindOrAdd(FamilyRoot);
+            if (Entry.Covered.Num() != PreviewVertexIDs.Num())
+            {
+                Entry.Covered.Init(false, PreviewVertexIDs.Num());
+            }
+            if (Entry.Representative == INDEX_NONE
+                || PieceIndex < Entry.Representative)
+            {
+                Entry.Representative = PieceIndex;
+            }
+            for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+            {
+                if (Pieces[PieceIndex].CoveredVertices[Sample])
+                {
+                    Entry.Covered[Sample] = true;
+                }
+            }
+        }
+
+        // Largest-index-first deterministic enumeration of qualifying
+        // families keeps the reported representatives stable.
+        TArray<int32> QualifyingFamilies;
+        for (const TPair<int32, FMtoUFamilyCoverage>& FamilyEntry : FamilyCovered)
+        {
+            const FMtoUFamilyCoverage& Coverage = FamilyEntry.Value;
+            int32 CoveredCount = 0;
+            for (int32 Sample = 0; Sample < PreviewVertexIDs.Num(); ++Sample)
+            {
+                CoveredCount += Coverage.Covered[Sample] ? 1 : 0;
+            }
+            if (static_cast<double>(CoveredCount) / AgreeingCount
+                >= DuplicationUnionCoverage)
+            {
+                QualifyingFamilies.Add(Coverage.Representative);
+            }
+        }
+        if (QualifyingFamilies.Num() > 1)
+        {
+            QualifyingFamilies.Sort();
+            OutError = FString::Printf(
+                TEXT("Automatic garment resolution failed the source-separation boundary: %d indistinguishable "
+                    "garment source families both covering most of the agreeing Preview vertices (for example [%s] "
+                    "and [%s]), so the choice between duplicated copies is ambiguous and automatic resolution cannot "
+                    "separate them safely. Remove one of the duplicated garment surfaces, split the garment into its "
+                    "own material section in the source FBX, or pin an explicit selection with the manual Driver "
+                    "Garment Slot Override."),
+                QualifyingFamilies.Num(),
+                *DescribeConnectedRegion(Driver,
+                    Components.Components[Pieces[QualifyingFamilies[0]].ComponentIndex],
+                    DriverMaterialIDs),
+                *DescribeConnectedRegion(Driver,
+                    Components.Components[Pieces[QualifyingFamilies[1]].ComponentIndex],
+                    DriverMaterialIDs));
+            return false;
         }
     }
     TArray<int32> UnselectedTriangles;
