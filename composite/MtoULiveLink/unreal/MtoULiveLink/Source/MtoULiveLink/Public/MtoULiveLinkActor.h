@@ -88,7 +88,6 @@ public:
     void ReleaseGeneratedPreview();
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
-    void ReapplyDisplayTarget();
     void SetModelDiagnostics(
         const FString& Diagnostics,
         EMtoUModelDiagnosticLevel Level);
@@ -96,7 +95,10 @@ public:
     void NotifySourceAssetChanged(const UObject* Asset, const FString& Reason);
 
 private:
+    friend class FMtoULiveLinkSource;
+
     void RefreshBinding();
+    void ReapplyDisplayTarget();
     void RebindInputNotifications();
     void UnbindInputNotifications();
     void HandleDriverMeshChanged();

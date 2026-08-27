@@ -5,6 +5,7 @@
 #include "MtoUConnectionNegotiator.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
+#include "MtoULiveLinkTestAnimInstance.h"
 
 #include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -13,6 +14,7 @@
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/ThreadSafeCounter.h"
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
 #include "LiveLinkInstance.h"
@@ -31,6 +33,17 @@
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #endif
+
+namespace
+{
+FThreadSafeCounter GMtoUConflictingPostProcessEvaluations;
+}
+
+void UMtoULiveLinkConflictingPostProcess::NativeUpdateAnimation(float DeltaSeconds)
+{
+    (void)DeltaSeconds;
+    GMtoUConflictingPostProcessEvaluations.Increment();
+}
 
 #include "MtoUConformanceCorpus.inl"
 
@@ -2212,6 +2225,114 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         {
             GEngine->DestroyWorldContext(World);
         }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPostProcessIsolationTest,
+    "MtoULiveLink.Actor.PostProcessIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPostProcessIsolationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* SourceDriver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UPackage* Package = CreatePackage(TEXT("/Temp/MtoUPostProcessIsolation"));
+    USkeletalMesh* Driver = SourceDriver
+        ? DuplicateObject<USkeletalMesh>(SourceDriver, Package, TEXT("Driver"))
+        : nullptr;
+    const TSubclassOf<UAnimInstance> ConflictingClass =
+        UMtoULiveLinkConflictingPostProcess::StaticClass();
+    if (Driver)
+    {
+        Driver->SetPostProcessAnimBlueprint(ConflictingClass);
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Editor, false, TEXT("MtoUPostProcessIsolationWorld"), Package, true);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = World
+        ? NewObject<UMtoULiveLinkBinding>(World)
+        : nullptr;
+    if (Binding)
+    {
+        Binding->SkeletalMesh = Driver;
+    }
+    if (Actor && Binding)
+    {
+        Actor->SetBinding(Binding);
+    }
+
+    AActor* ProductionActor = World ? World->SpawnActor<AActor>() : nullptr;
+    USkeletalMeshComponent* ProductionComponent = ProductionActor
+        ? NewObject<USkeletalMeshComponent>(ProductionActor, TEXT("ProductionSkeletalMesh"))
+        : nullptr;
+    if (ProductionActor && ProductionComponent)
+    {
+        ProductionActor->AddInstanceComponent(ProductionComponent);
+        ProductionActor->SetRootComponent(ProductionComponent);
+        ProductionComponent->RegisterComponent();
+        ProductionComponent->SetSkeletalMeshAsset(Driver);
+        ProductionComponent->SetUpdateAnimationInEditor(true);
+        ProductionComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint, true);
+        ProductionComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
+        ProductionComponent->InitializeAnimScriptInstance();
+        ProductionComponent->SetDisablePostProcessBlueprint(false);
+    }
+    if (Actor)
+    {
+        Actor->OnConstruction(Actor->GetActorTransform());
+    }
+
+    TestNotNull(TEXT("post-process isolation Driver fixture exists"), Driver);
+    TestNotNull(TEXT("MtoU actor fixture exists"), Actor);
+    TestNotNull(TEXT("ordinary production component fixture exists"), ProductionComponent);
+    if (!Driver || !Actor || !ProductionComponent)
+    {
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+
+    TestTrue(TEXT("Driver keeps its deliberately conflicting post-process class"),
+        Driver->GetPostProcessAnimBlueprint() == ConflictingClass);
+    TestTrue(TEXT("MtoU component disables Driver post-process evaluation"),
+        Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
+    TestFalse(TEXT("ordinary component keeps post-process evaluation enabled"),
+        ProductionComponent->GetDisablePostProcessBlueprint());
+    TestTrue(TEXT("ordinary component resolves the Driver post-process class"),
+        ProductionComponent->GetPostProcessAnimBPClassToBeUsed() == ConflictingClass);
+
+    GMtoUConflictingPostProcessEvaluations.Reset();
+    World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+    TestTrue(TEXT("ordinary component evaluates the conflicting post-process"),
+        GMtoUConflictingPostProcessEvaluations.GetValue() > 0);
+
+    ProductionComponent->UnregisterComponent();
+    GMtoUConflictingPostProcessEvaluations.Reset();
+    World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+    TestEqual(TEXT("MtoU component skips the conflicting post-process"),
+        GMtoUConflictingPostProcessEvaluations.GetValue(), 0);
+    TestTrue(TEXT("Driver post-process assignment remains unchanged after MtoU use"),
+        Driver->GetPostProcessAnimBlueprint() == ConflictingClass);
+
+    World->DestroyWorld(false);
+    if (GEngine)
+    {
+        GEngine->DestroyWorldContext(World);
     }
     return true;
 }

@@ -160,7 +160,6 @@ void AMtoULiveLinkActor::FailPreviewBuild(
 void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
 {
     ReleaseGeneratedPreview();
-    HideDisplay();
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
     PreviewDiagnostics = Diagnostics;
@@ -257,7 +256,6 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         return;
     }
 
-    SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
     switch (DisplayTarget)
     {
     case EMtoUDisplayTarget::Driver:

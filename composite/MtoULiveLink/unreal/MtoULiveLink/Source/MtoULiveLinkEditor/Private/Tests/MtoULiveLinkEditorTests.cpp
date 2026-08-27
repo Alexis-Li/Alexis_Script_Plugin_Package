@@ -563,9 +563,13 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
         UMtoULiveLinkBinding::StaticClass(),
         GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, PreviewStaticMesh));
     FPropertyChangedEvent PreviewInputChanged(PreviewInputProperty);
+    Actor->ShowDriverMesh();
     Binding->PostEditChangeProperty(PreviewInputChanged);
     TestEqual(TEXT("removing an input leaves the preview Dirty"),
         Actor->GetPreviewState(), EMtoUPreviewState::Dirty);
+    TestTrue(TEXT("Binding input edits preserve the Driver display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     TestFalse(TEXT("Binding input changes release and hide stale preview"),
         Actor->HasReadyGeneratedPreview());
     const FMtoUPreviewPreparationResult Failed =
