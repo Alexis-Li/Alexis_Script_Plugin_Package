@@ -23,8 +23,10 @@ complete-character bounds:
 
 ## Resolution failure boundaries
 
-Automatic resolution keeps nearest-ownership selection and adds two structural
-boundaries (constants live beside `ResolveDriverGarmentSurface`):
+Automatic resolution keeps nearest-ownership selection, uses matching imported
+slot names or assigned material assets to narrow geometric candidates only when
+that evidence covers the whole Preview, and applies two structural boundaries
+(constants live beside `ResolveDriverGarmentSurface`):
 
 * Source-mass boundary — selected Driver triangles must stay within 1.70x of
   Preview triangles (`MaxDriverToPreviewTriangleRatio`). Whole duplicated
@@ -32,22 +34,13 @@ boundaries (constants live beside `ResolveDriverGarmentSurface`):
   all rejected deterministically with actionable diagnostics naming both
   remedies (remove duplicates/split sections, or the manual Driver Garment Slot
   Override).
-* Twin-family boundary — selected regions cluster into families by mutual
-  near-face-for-face coincidence (corner-sample share within 2% of Preview scale
-  at or above 98% both directions). When two or more families each independently
-  cover at least 90% of agreeing vertices, the candidates are indistinguishable
-  and resolution fails deterministically. Because nearest-ownership lets an
-  exact overlay win every vertex, synthetic near-twin shells resolve stably onto
-  the supported family instead; the production hazard equivalent is the mass
-  boundary above, which rejected measured mixing at 2.31x. Legitimate garment
-  pieces neither coincide nor each cover the whole Preview, so a unique garment
-  never forms two qualifying families.
-* Deterministic stability: for exact duplicate copies nearest-ownership hands
-  every vertex to one family and Refresh resolves stably onto that garment
-  family (verified by repeated Prepare calls with identical region/triangle
-  counts and distances). Selection can therefore map clothing only onto
-  garment-like surfaces, never silently onto the body; a redundant exact twin
-  is inert.
+* Twin-region boundary — a selected region and an unselected alternative whose
+  surfaces mutually agree within 2% of Preview scale for at least 98% of their
+  vertices are indistinguishable candidates. Exact and near-shifted duplicate
+  fixtures both fail with the same deterministic ambiguity on repeated Prepare
+  calls, even when nearest-ownership gives the selected copy every tie. Two
+  selected disconnected pieces remain parts of one garment rather than
+  competing candidates; duplicated selected mass is still rejected above.
 * Single-region whole Drivers are the legacy passthrough: the structural gates
   intentionally do not run there, and #13's metric gates alone judge them.
 * A fully enclosed body shell without any distinct section shows no ownership
@@ -57,8 +50,8 @@ boundaries (constants live beside `ResolveDriverGarmentSurface`):
   evidence, and heavy mixed-section imports are still caught by the mass
   boundary above.
 
-Boundary tests: `MtoULiveLink.Editor.Preview.GarmentFaultLines` (duplicate
-stability, divergent overlap stability) and the existing quality/boundary tests
+Boundary tests: `MtoULiveLink.Editor.Preview.GarmentFaultLines` (exact and
+near-shifted duplicate ambiguity) and the existing quality/boundary tests
 retain values immediately above and below every calibrated Ready, Warning, and
 Error boundary of `MtoUEvaluatePreviewQuality`.
 
@@ -84,28 +77,25 @@ Logical identities recorded without committing private assets or machine paths:
 | `SK_C01_Clothes_09_All` | imported full-character Skeletal Mesh (Driver), LOD0 150,772 triangles | `24CCBB57E2C0734569F6D9281197FBAB6AD087457CFEDF4C7197A031AFFFFDC4` |
 | `SM_C01_Clothes_09` | imported garment-only Static Mesh (Preview) | `4840BC461952F761B3C7D94619E3239C8A4E374C37D42AC363A9983099ECB34E` |
 
-Automatic resolution rows (harness defaults): Auto selected 64,050 triangles —
-2.31x of the Preview — because skin-tight contact lets underlying body surfaces
-win nearest-ownership ties across tight-fitting regions. That inflation exceeds
-the source-mass boundary, so Auto refuses transactionally instead of letting
-body surfaces inherit weights; MisalignedNegative remains refused by coverage.
-This is precisely the case the manual Driver Garment Slot Override exists for.
-
-Manual override rows via `MTOU_QUALITY_SLOTS` with the five clothing material
-regions `M_C01_Clothes09_ChenShan02`, `M_C01_Clothes09_KuZi`,
+Automatic rows use the five clothing material regions as supporting evidence —
+`M_C01_Clothes09_ChenShan02`, `M_C01_Clothes09_KuZi`,
 `M_C01_Clothes09_MaJia1`, `M_C01_Clothes09_PiDai1`,
-`M_C01_Clothes09_Shoes`:
+`M_C01_Clothes09_Shoes` — then validate the selected geometry against the whole
+Preview. This excludes the skin-tight body surfaces that previously inflated
+nearest-only Auto to 64,050 triangles (2.31x) without making material equality
+mandatory; missing or replaced material evidence still falls back to geometry.
 
 | Case | Vertices | Inpaint ratio | Distance avg | Distance max | Regions | Resolved tris | Morphs (sparse deltas) | Total refresh | Status |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| SameTopology | 14,389 | 0.20988 | 0.000321 | 0.010329 | 45 | 27,630/150,772 | 27 projected (+82 skipped), 5,516 | ~1.70 s | Ready |
-| LocalRetopology | 14,390 | 0.20987 | 0.000321 | 0.010329 | 45 | 27,630/150,772 | 27 projected (+82 skipped), 5,516 | ~1.32 s | Ready |
-| DoubleLayerSeams | rejected | — | — | — | — | coverage 28,075/28,780 within radius | — | ~0.38 s | Error |
-| MisalignedNegative | rejected | — | zero coverage | — | — | — | — | ~0.28 s | Error |
+| SameTopology | 14,389 | 0.20988 | 0.000321 | 0.010329 | 45 | 27,630/150,772 | 27 projected (+82 skipped), 5,516 | ~3.02 s | Ready |
+| LocalRetopology | 14,390 | 0.20987 | 0.000321 | 0.010329 | 45 | 27,630/150,772 | 27 projected (+82 skipped), 5,516 | ~2.81 s | Ready |
+| DoubleLayerSeams | rejected | — | — | — | — | coverage 28,147/28,780 within radius | — | ~1.21 s | Error |
+| MisalignedNegative | rejected | — | zero coverage | — | — | — | — | ~0.53 s | Error |
 
-Resolved-source details captured from diagnostics: 45 connected regions across
-the five slots, matched Preview coverage 1.0000, body/face/hair regions absent
-from the resolved surface. Timings are single-run headless feasibility figures.
+Resolved-source details captured from Auto diagnostics: 45 connected regions
+across the five slots, matched Preview coverage 1.0000, manual source `false`,
+and body/face/hair regions absent from the resolved surface. Timings are
+single-run headless feasibility figures.
 
 ## Threshold decision
 
@@ -118,7 +108,7 @@ Measured evidence retains every Issue #13 threshold unchanged:
   0.000321 on the approved production pairing and remain orders below the
   misalignment bound 0.60; misaligned negatives measure no nearer than the
   coverage bound itself, consistent with the 1.71 anchors of Issue #13.
-* The DoubleLayerSeams layered preview variant rejects during manual
+* The DoubleLayerSeams layered preview variant rejects during automatic
   resolution because its shifted inner-layer vertices fall outside the
   agreement radius of the real asset's garment surface; this documents the
   strict whole-garment coverage contract on production assets rather than any
@@ -126,5 +116,5 @@ Measured evidence retains every Issue #13 threshold unchanged:
   remain covered, as the synthetic rows show.
 
 No constant changed except the new resolution boundaries above (mass 1.70x,
-twin proximity/agreement/union shares), which are first-calibrated here and
+twin proximity/agreement shares), which are first-calibrated here and
 recorded next to their implementation comments.

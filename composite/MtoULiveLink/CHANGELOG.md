@@ -7,12 +7,14 @@
   source-mass boundary that refuses Refresh transactionally when the selected
   Driver surface far exceeds the Preview garment (duplicated clothing shells or
   body geometry pulled through skin-tight proximity), together with a
-  twin-family rule that treats mutually coincident duplicate garment copies —
-  each independently explaining most of the agreeing Preview vertices — as
-  indistinguishable sources and fails deterministically instead of guessing.
-  Exact duplicates resolved onto a single winning family stay stable across
-  refreshes, resolved-garment normalization keeps quality metrics independent
-  of complete-character bounds, and the measurement JSON reports resolved
+  twin-region rule that treats mutually coincident duplicate garment copies as
+  indistinguishable sources even when nearest-ownership gives one copy every
+  tie, and fails deterministically instead of guessing. Imported slot names and
+  assigned materials narrow Auto's geometric candidates when they cover the
+  whole Preview; incomplete or replaced material evidence falls back to pure
+  geometry and never bypasses coverage validation. Resolved-garment
+  normalization keeps quality metrics independent of complete-character bounds,
+  and the measurement JSON reports resolved
   region and triangle counts, matched coverage, and manual flag. The external
   C01 pair `SK_C01_Clothes_09_All` plus `SM_C01_Clothes_09` measured Ready under
   the five clothing material slots with every #13 threshold retained; recorded
@@ -37,11 +39,11 @@
   accepts one Driver Skeletal Mesh containing body, face, hair, and one current
   outfit together with one garment-only Preview Static Mesh. Explicit Refresh
   automatically resolves the unique separable Driver garment surface from
-  edge-connected regions and nearest-surface ownership of the Preview vertices;
-  geometry is the only selection evidence, so replaced Preview materials or
-  imported slot-name suffix differences never block resolution and material
-  agreement alone cannot authorize an unrelated region. Quality measurement,
-  skin-weight transfer, and Preview Morph correspondence run only against the
+  edge-connected regions and nearest-surface ownership of the Preview vertices,
+  with imported slot names and assigned material assets as optional supporting
+  evidence. Replaced Preview materials or slot-name differences fall back to
+  geometry, and material agreement alone cannot authorize an unrelated region.
+  Quality measurement, skin-weight transfer, and Preview Morph correspondence run only against the
   resolved surface with original Driver vertex correspondence preserved, and
   the Generated Preview keeps the complete Driver reference skeleton while
   showing only the garment. Only Driver Morphs with nonzero deltas on the

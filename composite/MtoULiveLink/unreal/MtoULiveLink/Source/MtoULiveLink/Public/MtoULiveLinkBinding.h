@@ -27,7 +27,7 @@ public:
      */
     UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "MtoU_LiveLink",
         meta = (DisplayName = "Driver Garment Slot Override",
-            Tooltip = "Manual selection of Driver source material slots for garment resolution. Leave empty for automatic resolution from geometry. Entries are stable imported Driver slot names (never numeric section indices) and every name must exist exactly once on the current Driver import. Selected regions still pass the same geometry coverage and alignment validation as automatic results."))
+            Tooltip = "Manual selection of Driver source material slots for garment resolution. Leave empty for automatic resolution from geometry with optional material-slot evidence. Entries are stable imported Driver slot names (never numeric section indices) and every name must exist exactly once on the current Driver import. Selected regions still pass the same geometry coverage and alignment validation as automatic results."))
     TArray<FName> DriverGarmentSlotOverride;
 
 #if WITH_EDITOR

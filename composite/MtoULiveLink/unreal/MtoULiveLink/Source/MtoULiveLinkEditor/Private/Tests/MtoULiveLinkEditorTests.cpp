@@ -229,10 +229,21 @@ UStaticMesh* MakeCorpusPreview(
     FGeometryScriptCopyMeshToAssetOptions WriteOptions;
     WriteOptions.bEmitTransaction = false;
     WriteOptions.bReplaceMaterials = true;
-    for (const FSkeletalMaterial& Material : Driver.GetMaterials())
+    if (BasePreview)
     {
-        WriteOptions.NewMaterials.Add(Material.MaterialInterface);
-        WriteOptions.NewMaterialSlotNames.Add(Material.MaterialSlotName);
+        for (const FStaticMaterial& Material : BasePreview->GetStaticMaterials())
+        {
+            WriteOptions.NewMaterials.Add(Material.MaterialInterface);
+            WriteOptions.NewMaterialSlotNames.Add(Material.MaterialSlotName);
+        }
+    }
+    else
+    {
+        for (const FSkeletalMaterial& Material : Driver.GetMaterials())
+        {
+            WriteOptions.NewMaterials.Add(Material.MaterialInterface);
+            WriteOptions.NewMaterialSlotNames.Add(Material.MaterialSlotName);
+        }
     }
     FGeometryScriptMeshWriteLOD WriteLOD;
     EGeometryScriptOutcomePins WriteOutcome = EGeometryScriptOutcomePins::Failure;
@@ -1596,8 +1607,7 @@ enum class EMtoUGarmentFaultKind : uint8
     DuplicateGarment,
     /**
      * Two near-twin garment copies separated by a 0.2%-diagonal shift, small
-     * enough to stay inside the twin proximity but enough to split
-     * nearest-ownership between the two families.
+     * enough to stay inside the twin proximity.
      */
     ShiftedDuplicateGarment,
 };
@@ -1615,10 +1625,9 @@ struct FMtoUGarmentFaultFixtures
 /**
  * Builds failure-boundary characters over one material section so section
  * evidence never drives the outcome. DuplicateGarment layers a second exact
- * copy on the first: nearest-ownership hands every vertex to one family and
- * Refresh must stay stable. ShiftedDuplicateGarment nudges the second copy by
- * a fraction of the diagonal, so both families genuinely win part of the
- * ownership while remaining mutual twins covering the whole agreeing surface.
+ * copy on the first: nearest-ownership hands every vertex to one family, but
+ * the unowned copy must still cause ambiguity. ShiftedDuplicateGarment rotates
+ * the second copy slightly while both remain mutual twins.
  * The Preview always contains only the pure garment surface(s).
  */
 bool MakeGarmentFaultFixtures(UObject& Outer, FAutomationTestBase& Test,
@@ -2231,10 +2240,9 @@ bool FMtoUGarmentFaultLinesTest::RunTest(const FString& Parameters)
         return false;
     }
 
-    // Exact duplicates: nearest-ownership hands every Preview vertex to one
-    // copy, so Refresh resolves stably onto a single garment family and the
-    // redundant twin stays inert. Stability is the contract here: successive
-    // refreshes must not flip between candidates.
+    // Exact duplicates remain equally plausible even when nearest-ownership
+    // hands every Preview vertex to one copy. Refresh must report ambiguity
+    // rather than turning deterministic tie order into a guessed selection.
     {
         UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFaultDuplicate"));
         FMtoUGarmentFaultFixtures Fixtures;
@@ -2249,29 +2257,23 @@ bool FMtoUGarmentFaultLinesTest::RunTest(const FString& Parameters)
             const FMtoUPreviewPreparationResult First =
                 FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
             AddInfo(First.Diagnostics);
-            const FString FirstKeyMetrics = First.Diagnostics;
-            TestTrue(TEXT("exact duplicate copies resolve stably without ambiguous selection"),
-                First.bSucceeded
-                && First.GeneratedPreview != nullptr
-                && First.MatchedPreviewCoverage > 0.999);
+            TestTrue(TEXT("exact duplicate copies fail with stable ambiguity"),
+                !First.bSucceeded
+                && First.GeneratedPreview == nullptr
+                && First.Diagnostics.Contains(TEXT("ambiguous")));
             const FMtoUPreviewPreparationResult Second =
                 FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
             AddInfo(Second.Diagnostics);
-            TestTrue(TEXT("the stable resolution is deterministic across refreshes"),
-                Second.bSucceeded
-                && Second.GeneratedPreview != nullptr
-                && Second.GarmentSourceRegionCount == First.GarmentSourceRegionCount
-                && Second.GarmentSourceTriangleCount == First.GarmentSourceTriangleCount
-                && FMath::IsNearlyEqual(Second.SurfaceDistanceAverage,
-                    First.SurfaceDistanceAverage, 1.0e-12));
+            TestTrue(TEXT("the duplicate ambiguity diagnostic is deterministic across refreshes"),
+                !Second.bSucceeded
+                && Second.GeneratedPreview == nullptr
+                && Second.Diagnostics == First.Diagnostics);
         }
     }
 
-    // Near-twin shifted duplicates: the rotated second family never wins a
-    // Preview vertex against the exact overlay, so automatic resolution keeps
-    // resolving stably onto the supported family. The twin-family gate remains
-    // armed for cases where coincident families each win ownership shards;
-    // mass inflation from duplicated volume is rejected separately.
+    // Near-twin shifted duplicates are also geometrically indistinguishable
+    // inside the calibrated twin proximity even when one wins every ownership
+    // tie, so Auto must fail consistently.
     {
         UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFaultWelded"));
         FMtoUGarmentFaultFixtures Fixtures;
@@ -2289,14 +2291,12 @@ bool FMtoUGarmentFaultLinesTest::RunTest(const FString& Parameters)
             const FMtoUPreviewPreparationResult Second =
                 FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
             AddInfo(Second.Diagnostics);
-            TestTrue(TEXT("near-twin shifted duplicates resolve stably onto the supported family"),
-                First.bSucceeded && Second.bSucceeded
-                && First.GeneratedPreview != nullptr
-                && Second.GeneratedPreview != nullptr
-                && First.GarmentSourceRegionCount == Second.GarmentSourceRegionCount
-                && First.GarmentSourceTriangleCount == Second.GarmentSourceTriangleCount
-                && FMath::IsNearlyEqual(First.SurfaceDistanceAverage,
-                    Second.SurfaceDistanceAverage, 1.0e-12));
+            TestTrue(TEXT("near-twin shifted duplicates fail with deterministic ambiguity"),
+                !First.bSucceeded && !Second.bSucceeded
+                && First.GeneratedPreview == nullptr
+                && Second.GeneratedPreview == nullptr
+                && First.Diagnostics.Contains(TEXT("ambiguous"))
+                && First.Diagnostics == Second.Diagnostics);
         }
     }
 
@@ -2545,7 +2545,11 @@ bool FMtoUCorpusMeasurementTest::RunTest(const FString& Parameters)
     const FMtoUCorpusCase Cases[] = {
         {TEXT("SameTopology"), EMtoUCorpusVariant::SameTopology, false},
         {TEXT("LocalRetopology"), EMtoUCorpusVariant::LocalRetopology, false},
-        {TEXT("DoubleLayerSeams"), EMtoUCorpusVariant::DoubleLayerSeams, false},
+        // The production BasePreview's deliberately inset duplicate layer is
+        // outside whole-garment coverage; the stock synthetic shell remains a
+        // supported layered warning fixture.
+        {TEXT("DoubleLayerSeams"), EMtoUCorpusVariant::DoubleLayerSeams,
+            BasePreview != nullptr},
         {TEXT("MisalignedNegative"), EMtoUCorpusVariant::Misaligned, true},
     };
 
