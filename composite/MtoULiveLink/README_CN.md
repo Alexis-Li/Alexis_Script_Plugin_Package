@@ -30,6 +30,8 @@ Maya 与 Unreal 组件必须来自同一版本。
 
 1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Driver Skeletal Mesh**，
    在关卡中放置一个 MtoU_LiveLink Binding Actor，并为其指定该 Binding。
+   该 Actor 所属的插件显示组件在显示 Maya 已求值数据时会绕过 Driver Skeletal
+   Mesh 的 Post Process Anim Blueprint；Driver 资产和其他生产组件仍保持各自行为。
 2. 在 Maya 中运行 `MtoULiveLink.py`，选择一个变形根骨骼，点击“设置角色”，
    并确认检测到的 Display 控制器、服装、场景帧率和传输上限。
 3. 选择“动画”或“模型”，然后点击“连接”。

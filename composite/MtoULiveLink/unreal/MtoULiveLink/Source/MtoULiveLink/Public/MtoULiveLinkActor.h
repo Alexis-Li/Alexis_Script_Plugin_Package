@@ -41,6 +41,14 @@ enum class EMtoUModelDiagnosticLevel : uint8
     Error
 };
 
+UENUM()
+enum class EMtoUDisplayTarget : uint8
+{
+    Hidden,
+    Driver,
+    GeneratedPreview
+};
+
 UCLASS()
 class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
 {
@@ -67,6 +75,7 @@ public:
     USkeletalMesh* GetGeneratedPreviewMesh() const { return GeneratedPreviewMesh; }
     EMtoUPreviewState GetPreviewState() const { return PreviewState; }
     EMtoUPreviewBuildStage GetPreviewBuildStage() const { return PreviewBuildStage; }
+    EMtoUDisplayTarget GetDisplayTarget() const { return DisplayTarget; }
     const FString& GetPreviewDiagnostics() const { return PreviewDiagnostics; }
     const FString& GetModelDiagnostics() const { return ModelDiagnostics; }
     EMtoUModelDiagnosticLevel GetModelDiagnosticLevel() const { return ModelDiagnosticLevel; }
@@ -79,6 +88,7 @@ public:
     void ReleaseGeneratedPreview();
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+    void ReapplyDisplayTarget();
     void SetModelDiagnostics(
         const FString& Diagnostics,
         EMtoUModelDiagnosticLevel Level);
@@ -109,6 +119,9 @@ private:
     EMtoUPreviewBuildStage PreviewBuildStage = EMtoUPreviewBuildStage::None;
 
     UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    EMtoUDisplayTarget DisplayTarget = EMtoUDisplayTarget::Hidden;
+
+    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
     FString PreviewDiagnostics;
 
     UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
@@ -126,4 +139,6 @@ private:
     FDelegateHandle PreviewMeshChangedHandle;
     FDelegateHandle PreviewMeshBuiltHandle;
     bool bPreviewBuildHasWarning = false;
+
+    void HideDisplay();
 };

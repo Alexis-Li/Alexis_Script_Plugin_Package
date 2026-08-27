@@ -2265,6 +2265,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     USkeletalMesh* VisibleTargetBefore =
         SkeletalMeshComponent ? SkeletalMeshComponent->GetSkeletalMeshAsset() : nullptr;
     TestNotNull(TEXT("animation binding shows its Driver Skeletal Mesh"), VisibleTargetBefore);
+    TestTrue(TEXT("MtoU display component bypasses Driver post-process animation"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
 
     // Earlier automation worlds are only pending destruction at this point;
     // collect them so global actor discovery sees exactly this test's actor.
@@ -2344,6 +2347,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
         Actor && Actor->HasReadyGeneratedPreview());
+    TestTrue(TEXT("Model preview selection records the Generated Preview target"),
+        Actor && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
 
     const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
 
@@ -2366,6 +2371,18 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
         && Actor
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->OnConstruction(Actor->GetActorTransform());
+    TestTrue(TEXT("construction preserves the negotiated Model display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->PostRegisterAllComponents();
+    TestTrue(TEXT("registration preserves the negotiated Model display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
     TestTrue(TEXT("bone-only ready reports zero accepted Morphs despite the full manifest"),
         FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
     TestTrue(TEXT("bone-only result is visibly excluded from model acceptance"),
@@ -2594,7 +2611,26 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         SkeletalMeshComponent
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
 
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->OnConstruction(Actor->GetActorTransform());
+    TestTrue(TEXT("construction preserves the negotiated Animation Driver target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->PostRegisterAllComponents();
+    TestTrue(TEXT("registration preserves the negotiated Animation Driver target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+
     DestroySocket(*SocketSubsystem, AnimationClient);
+    TestTrue(TEXT("source returns to listening after Animation disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    TestTrue(TEXT("Animation disconnect preserves the Driver display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)

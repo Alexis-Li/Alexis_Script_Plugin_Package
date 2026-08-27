@@ -11,6 +11,7 @@ AMtoULiveLinkActor::AMtoULiveLinkActor()
 {
     SkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SkeletalMeshComponent"));
     SetRootComponent(SkeletalMeshComponent);
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
 }
 
 void AMtoULiveLinkActor::OnConstruction(const FTransform& Transform)
@@ -76,7 +77,6 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
         return;
     }
 
-    const bool bInitialBinding = Binding == nullptr;
     ReleaseGeneratedPreview();
     Binding = InBinding;
     PreviewState = Binding && Binding->PreviewStaticMesh
@@ -90,9 +90,13 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
         ? TEXT("Run Refresh Preview to prepare the current Binding inputs.")
         : FString();
     RebindInputNotifications();
-    if (bInitialBinding)
+    if (Binding)
     {
         ShowDriverMesh();
+    }
+    else
+    {
+        HideDisplay();
     }
     RefreshBinding();
 }
@@ -105,7 +109,7 @@ void AMtoULiveLinkActor::SetConnectionStatus(const FString& InStatus)
 void AMtoULiveLinkActor::BeginPreviewBuild()
 {
     ReleaseGeneratedPreview();
-    SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+    HideDisplay();
     PreviewState = EMtoUPreviewState::Building;
     PreviewBuildStage = EMtoUPreviewBuildStage::Preflight;
     PreviewDiagnostics = TEXT("Preparing Generated Preview.");
@@ -137,14 +141,14 @@ void AMtoULiveLinkActor::CompletePreviewBuild(
     PreviewDiagnostics = Diagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
+    ShowGeneratedPreview(false);
 }
 
 void AMtoULiveLinkActor::FailPreviewBuild(
     EMtoUPreviewBuildStage Stage, const FString& Diagnostics)
 {
     ReleaseGeneratedPreview();
-    SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+    HideDisplay();
     PreviewState = EMtoUPreviewState::Error;
     PreviewBuildStage = Stage;
     PreviewDiagnostics = Diagnostics;
@@ -156,6 +160,7 @@ void AMtoULiveLinkActor::FailPreviewBuild(
 void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
 {
     ReleaseGeneratedPreview();
+    HideDisplay();
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
     PreviewDiagnostics = Diagnostics;
@@ -173,11 +178,16 @@ void AMtoULiveLinkActor::ReleaseGeneratedPreview()
         SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
     }
     GeneratedPreviewMesh = nullptr;
+    if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
+    {
+        HideDisplay();
+    }
 }
 
 void AMtoULiveLinkActor::ShowDriverMesh()
 {
-    SkeletalMeshComponent->SetSkeletalMeshAsset(Binding ? Binding->SkeletalMesh : nullptr);
+    DisplayTarget = EMtoUDisplayTarget::Driver;
+    ReapplyDisplayTarget();
 }
 
 void AMtoULiveLinkActor::ShowGeneratedPreview(bool bBoneOnlyDiagnostic)
@@ -186,7 +196,8 @@ void AMtoULiveLinkActor::ShowGeneratedPreview(bool bBoneOnlyDiagnostic)
     {
         return;
     }
-    SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
+    DisplayTarget = EMtoUDisplayTarget::GeneratedPreview;
+    ReapplyDisplayTarget();
     SkeletalMeshComponent->ClearMorphTargets();
     if (bBoneOnlyDiagnostic)
     {
@@ -228,16 +239,7 @@ void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FS
 void AMtoULiveLinkActor::RefreshBinding()
 {
     RebindInputNotifications();
-    if ((PreviewState == EMtoUPreviewState::Ready
-            || PreviewState == EMtoUPreviewState::Warning)
-        && GeneratedPreviewMesh)
-    {
-        SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
-    }
-    else if (PreviewState == EMtoUPreviewState::None)
-    {
-        ShowDriverMesh();
-    }
+    ReapplyDisplayTarget();
     SkeletalMeshComponent->SetUpdateAnimationInEditor(true);
     SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
     SkeletalMeshComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
@@ -246,6 +248,36 @@ void AMtoULiveLinkActor::RefreshBinding()
         Instance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
         Instance->EnableLiveLinkEvaluation(true);
     }
+}
+
+void AMtoULiveLinkActor::ReapplyDisplayTarget()
+{
+    if (!SkeletalMeshComponent)
+    {
+        return;
+    }
+
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
+    switch (DisplayTarget)
+    {
+    case EMtoUDisplayTarget::Driver:
+        SkeletalMeshComponent->SetSkeletalMeshAsset(Binding ? Binding->SkeletalMesh : nullptr);
+        break;
+    case EMtoUDisplayTarget::GeneratedPreview:
+        SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
+        break;
+    case EMtoUDisplayTarget::Hidden:
+    default:
+        SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
+        break;
+    }
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
+}
+
+void AMtoULiveLinkActor::HideDisplay()
+{
+    DisplayTarget = EMtoUDisplayTarget::Hidden;
+    ReapplyDisplayTarget();
 }
 
 void AMtoULiveLinkActor::RebindInputNotifications()

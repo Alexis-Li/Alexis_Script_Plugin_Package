@@ -32,6 +32,9 @@ Install the Maya and Unreal components from the same release.
 1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Driver Skeletal
    Mesh**, place one MtoU_LiveLink Binding Actor in the level, and assign the
    Binding to it.
+   The actor's plugin-owned display component bypasses the Driver Skeletal
+   Mesh's Post Process Anim Blueprint while displaying evaluated Maya data;
+   the Driver asset and other production components keep their own behavior.
 2. In Maya, run `MtoULiveLink.py`, select one deformation root joint, and click
    **Set Character**. Confirm the detected Display controller, outfit, scene
    rate, and transmission cap.

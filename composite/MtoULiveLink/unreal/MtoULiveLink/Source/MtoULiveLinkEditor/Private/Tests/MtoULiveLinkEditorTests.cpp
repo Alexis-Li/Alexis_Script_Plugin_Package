@@ -475,6 +475,10 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     Actor->SetBinding(Binding);
     TestTrue(TEXT("placement marks configured inputs Dirty"),
         Actor->GetPreviewState() == EMtoUPreviewState::Dirty);
+    TestTrue(TEXT("binding selects the Driver display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver);
+    TestTrue(TEXT("MtoU display component bypasses post-process animation"),
+        Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
     TestFalse(TEXT("placement never invokes Refresh automatically"),
         Actor->HasReadyGeneratedPreview());
     TestTrue(TEXT("legacy Animation target remains visible before first Refresh"),
@@ -493,6 +497,19 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
         || Actor->GetPreviewState() == EMtoUPreviewState::Warning);
     TestTrue(TEXT("successful Refresh displays the Generated Preview"),
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == FirstMesh);
+    TestTrue(TEXT("successful Refresh records the Generated Preview display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
+
+    Actor->GetSkeletalMeshComponent()->SetDisablePostProcessBlueprint(false);
+    Actor->OnConstruction(Actor->GetActorTransform());
+    TestTrue(TEXT("construction preserves the Generated Preview target and isolation"),
+        Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == FirstMesh
+        && Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
+    Actor->GetSkeletalMeshComponent()->SetDisablePostProcessBlueprint(false);
+    Actor->PostRegisterAllComponents();
+    TestTrue(TEXT("registration preserves the Generated Preview target and isolation"),
+        Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == FirstMesh
+        && Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
 
     TWeakObjectPtr<USkeletalMesh> ReplacedMesh = FirstMesh;
     const FMtoUPreviewPreparationResult Second =
@@ -519,6 +536,9 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     Actor->SetConnectionStatus(TEXT("Disconnected"));
     TestTrue(TEXT("disconnect keeps the Generated Preview"),
         Actor->HasReadyGeneratedPreview());
+    TestTrue(TEXT("disconnect preserves the Generated Preview display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Second.GeneratedPreview);
     if (GEditor)
     {
         GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Preview);

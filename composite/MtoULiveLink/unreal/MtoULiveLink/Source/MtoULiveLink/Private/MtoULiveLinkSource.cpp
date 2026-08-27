@@ -200,6 +200,7 @@ void FMtoULiveLinkSource::Update()
             {
                 if (Actor.IsValid())
                 {
+                    Actor->ReapplyDisplayTarget();
                     Actor->SetConnectionStatus(TEXT("Disconnected"));
                 }
             }
@@ -319,6 +320,7 @@ void FMtoULiveLinkSource::StopListener()
         {
             if (Actor.IsValid())
             {
+                Actor->ReapplyDisplayTarget();
                 Actor->SetConnectionStatus(TEXT("Disconnected"));
             }
         }
