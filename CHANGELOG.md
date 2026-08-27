@@ -6,6 +6,8 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Scope routine acceptance to the owning project and reserve repository-wide
+  validation for repository tooling, shared rules, metadata, and layout changes.
 - Move MtoU_LiveLink into the new `composite/` category with independently
   installable Maya and Unreal component roots.
 - Standardize composite metadata ownership at the project root while preserving

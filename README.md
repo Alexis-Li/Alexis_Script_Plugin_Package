@@ -48,12 +48,15 @@ implementation cannot support both.
 
 4. Keep Maya user-run project and entry-file names in PascalCase, such as
    `FlattenMeshToUV` and `FlattenMeshToUV.py`.
-5. Run the repository checks before handing off a change:
+5. For repository tooling or structural changes, run the repository checks:
 
    ```powershell
    python -m unittest discover -s tests
    python tools/validate_repository.py
    ```
+
+   For a project change, run only that project's tests, lint, build, and
+   packaging checks.
 
 See [development conventions](docs/development-conventions.md) for the shared
 workflow and the [Unreal plugin guide](docs/unreal-development.md) for project

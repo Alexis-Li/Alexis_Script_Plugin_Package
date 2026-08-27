@@ -67,6 +67,10 @@ roots contain only their implementation, host-required descriptors or assets,
 and tests that must stay beside that implementation. Do not duplicate project
 metadata inside a composite host component.
 
+Every standalone or composite project defines its own acceptance scope through
+colocated tests, build and package commands, applicable platform rules, and any
+stable acceptance record under `docs/project-history/<project-name>/`.
+
 Repository-level scripts may provide shared validation and packaging behavior.
 
 Sibling projects must not depend on each other unless the dependency is
@@ -87,11 +91,19 @@ belong in GitHub Releases, not Git history.
 
 Before considering a task complete:
 
-1. Run the narrowest relevant tests.
-2. Run repository structural validation.
-3. Confirm no generated files were added.
-4. Confirm documentation remains accurate.
-5. Report tests that could not be run and why.
+1. Run only the owning project's relevant tests, lint, build, host, and package
+   checks. Scope generic tools such as Ruff to that project's files.
+2. For a composite project, test each changed host component independently;
+   run cross-host acceptance only for cross-host behavior changes.
+3. Run repository tests and structural validation only for changes to
+   repository tooling, templates, shared rules or workflows, root metadata, or
+   project layout, or when explicitly requested.
+4. Confirm no generated files were added and documentation remains accurate.
+5. Report commands run, pass/fail status, skipped checks, and remaining risks.
+
+Sibling-project failures are outside the acceptance scope of a project change.
+Do not run repository-wide lint or tests as a fallback for missing project
+checks.
 
 ## Git Rules
 

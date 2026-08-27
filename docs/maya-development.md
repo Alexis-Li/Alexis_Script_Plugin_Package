@@ -35,5 +35,5 @@ keep README, changelog, license, and project rules at the composite root.
 
 1. Run pure-Python tests outside Maya when the tested code permits it.
 2. Run integration checks with a supported Maya or `mayapy`.
-3. Run `python tools/validate_repository.py` from the repository root.
+3. Scope lint and packaging checks to the owning Maya project.
 4. Confirm the project documentation states only versions actually tested.
