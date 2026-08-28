@@ -24,12 +24,14 @@ Compatibility with other third-party Unreal Engine 5.7 builds is not guaranteed.
    or run it directly in Maya's Python Script Editor.
 2. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
 3. For stock Unreal, compile the Unreal project. For Topia Engine 5.7.4, close
-   Unreal Editor and run the repository helper from the repository root:
+   Unreal Editor, set `TOPIA_ENGINE_ROOT` to the directory containing `Engine`
+   and `ATHENA_UPROJECT` to the target `.uproject`, then run the repository
+   helper from the repository root:
 
    ```powershell
    pwsh ./tools/build_mtou_topia.ps1 `
-     -EngineRoot "X:\UE_Topia" `
-     -ProjectFile "X:\Project\Project.uproject" `
+     -EngineRoot $env:TOPIA_ENGINE_ROOT `
+     -ProjectFile $env:ATHENA_UPROJECT `
      -Apply
    ```
 

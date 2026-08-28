@@ -81,11 +81,16 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   non-empty manifest with zero generated matches keeps blocking with
   `PREVIEW_MORPH_MISMATCH`. Protocol v6 framing and message shapes are
   unchanged.
+- **2026-08-28:** Compiled both plugin modules and loaded MtoU_LiveLink in the
+  Athena editor with Topia Engine 5.7.4 without modifying engine or host-project
+  source/configuration files. Added a repeatable dry-run-first helper for the
+  same isolated build and binary-install workflow.
 
 ## Stable Records
 
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
+- [Topia-engine build and load acceptance](topia-engine-acceptance.md)
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)
 - [Model Preview quality calibration](model-preview-quality-calibration.md)

@@ -23,12 +23,13 @@ MtoU_LiveLink 是一个 Maya 与 Unreal 复合插件，可通过本机 Live Link
    或直接在 Maya Python 脚本编辑器中执行。
 2. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
 3. 官方原版 Unreal 按正常方式编译项目。使用 Topia Engine 5.7.4 时，先关闭
-   Unreal Editor，再从仓库根目录运行：
+   Unreal Editor，将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，将
+   `ATHENA_UPROJECT` 设为目标 `.uproject`，再从仓库根目录运行：
 
    ```powershell
    pwsh ./tools/build_mtou_topia.ps1 `
-     -EngineRoot "X:\UE_Topia" `
-     -ProjectFile "X:\Project\Project.uproject" `
+     -EngineRoot $env:TOPIA_ENGINE_ROOT `
+     -ProjectFile $env:ATHENA_UPROJECT `
      -Apply
    ```
 

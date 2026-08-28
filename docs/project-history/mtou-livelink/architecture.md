@@ -100,12 +100,14 @@ useful. No abstractions or configuration are added for them now.
 - Windows 64-bit only.
 - Autodesk Maya 2022.4, verified on the current workstation.
 - Stock Unreal Engine 5.7.4, verified on the current workstation.
+- Topia Engine 5.7.4, with Win64 plugin compilation and Athena editor loading
+  verified on the current workstation.
 - Unreal Editor only.
 
-The stock UE 5.7.4 installation is the baseline compilation target. The user's
-production project uses a third-party-modified UE 5.7 build. Compatibility with
-that build must not be claimed until the plugin is also compiled and exercised
-with that engine installation.
+Stock UE 5.7.4 remains the full functional-acceptance baseline. The separate
+Topia record covers compilation and editor loading without engine or host-project
+source/configuration edits; it does not extend the stock end-to-end behavior
+claim to every third-party UE 5.7 build.
 
 ## Names and Repository Locations
 
@@ -450,6 +452,9 @@ Development-only automation tests cover:
 ### Build and repository verification
 
 - Compile both Unreal modules against stock UE 5.7.4.
+- Compile and load both modules against Topia Engine 5.7.4 with
+  `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
+  the engine and production project.
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
 - Run the plugin's Unreal Automation tests.
 - Run the Maya project tests with Maya 2022 `mayapy`.
@@ -477,10 +482,11 @@ Development-only automation tests cover:
 10. Attempt a link with an intentionally wrong Skeletal Mesh and confirm that
     the pose is refused with explicit hierarchy differences.
 
-Compatibility is claimed only for stock Unreal Editor 5.7.4. The user's
-third-party-modified UE 5.7 installation was explicitly excluded from the
-2026-08-11 acceptance scope; it must pass the same checks before compatibility
-with that engine is reported.
+Full functional compatibility is claimed only for stock Unreal Editor 5.7.4.
+The third-party-modified Topia Engine 5.7.4 installation was excluded from the
+2026-08-11 scope; the 2026-08-28 Topia record now adds successful compilation
+and Athena editor loading, while end-to-end production behavior remains outside
+that narrower gate.
 
 ## Version 0.2.0 Addendum
 
@@ -744,5 +750,7 @@ Internal protocol, development, and test details remain in this project history
 and beside the implementation where appropriate.
 
 The Maya and Unreal components are independently packageable with the existing
-repository tools. Generated archives and Unreal build output remain untracked.
-Version updates keep both components on the same public semantic version.
+repository tools. The Topia build helper installs only local Win64 editor output
+under the target plugin. Generated archives and Unreal build output remain
+untracked. Version updates keep both components on the same public semantic
+version.
