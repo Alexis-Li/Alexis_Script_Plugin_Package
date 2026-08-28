@@ -237,6 +237,7 @@ void AMtoULiveLinkActor::NotifyBindingInputsChanged()
 {
     RebindInputNotifications();
     InvalidateGeneratedPreview(TEXT("Binding inputs changed. Run Refresh Preview."));
+    ReapplyDisplayTarget();
 }
 
 void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FString& Reason)

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh placed Binding Actors immediately when their Binding's Driver
+  Skeletal Mesh changes in the asset editor.
 - Add a dry-run-first Topia Engine 5.7.4 build helper that stages the project
   plugin and writable engine intermediates outside the engine and host project,
   verifies the engine/project/plugin BuildId, and installs only the five Win64

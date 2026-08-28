@@ -2810,7 +2810,7 @@ bool FMtoULiveLinkFactoriesTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("editor world is created"), World);
     const FTransform DropTransform(FRotator(10.0, 20.0, 30.0), FVector(100.0, 200.0, 300.0));
     AddExpectedError(TEXT("has no render data"),
-        EAutomationExpectedErrorFlags::Contains, 2);
+        EAutomationExpectedErrorFlags::Contains, 3);
     AMtoULiveLinkActor* Actor = World
         ? Cast<AMtoULiveLinkActor>(ActorFactory->CreateActor(
             Binding, World->GetCurrentLevel(), DropTransform))
@@ -2823,6 +2823,18 @@ bool FMtoULiveLinkFactoriesTest::RunTest(const FString& Parameters)
             Actor->GetActorTransform().Equals(DropTransform));
         TestTrue(TEXT("actor factory resolves the asset from the actor"),
             ActorFactory->GetAssetFromActorInstance(Actor) == Binding);
+
+        USkeletalMesh* ReplacementMesh = NewObject<USkeletalMesh>(GetTransientPackage(),
+            USkeletalMesh::StaticClass(), NAME_None, RF_Transient, TemplateMesh);
+        FProperty* SkeletalMeshProperty = FindFProperty<FProperty>(
+            UMtoULiveLinkBinding::StaticClass(),
+            GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, SkeletalMesh));
+        Binding->PreEditChange(SkeletalMeshProperty);
+        Binding->SkeletalMesh = ReplacementMesh;
+        FPropertyChangedEvent ChangedEvent(SkeletalMeshProperty);
+        Binding->PostEditChangeProperty(ChangedEvent);
+        TestTrue(TEXT("placed actor follows skeletal mesh changes on its binding"),
+            Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == ReplacementMesh);
     }
     if (World)
     {

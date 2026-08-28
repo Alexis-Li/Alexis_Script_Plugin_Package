@@ -22,6 +22,10 @@ One connection attempt that negotiates a character snapshot with an Unreal
 target and, if usable, streams evaluated poses until disconnect or failure.
 _Avoid_: Worker, socket connection, sender thread
 
+**Cached Playback**:
+The Animation preview workflow that captures the Playback Range into a temporary cache, transfers the complete cache to Unreal, and controls Unreal's local replay until the cache is cleared and Real-time Preview resumes.
+_Avoid_: Cache replay, offline playback, sender-paced replay
+
 **Connection negotiation**:
 The compatibility decision between one Maya character description and one Unreal target description before pose streaming begins. Its outcome includes blocking incompatibilities, usable differences, and any bone-name mapping required by the target.
 _Avoid_: Handshake validation, init handling
