@@ -14,16 +14,31 @@ model preview without creating animation or preview assets.
 - Windows 64-bit
 - Autodesk Maya 2022.4
 - Stock Unreal Editor 5.7.4
+- Topia Engine 5.7.4 (Win64 plugin build and editor loading verified)
 
-Compatibility with third-party Unreal Engine 5.7 builds is not guaranteed.
+Compatibility with other third-party Unreal Engine 5.7 builds is not guaranteed.
 
 ## Installation
 
 1. Copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts directory,
    or run it directly in Maya's Python Script Editor.
 2. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
-3. Compile the Unreal project, enable **Live Link** and **MtoU_LiveLink**, then
-   restart Unreal Editor.
+3. For stock Unreal, compile the Unreal project. For Topia Engine 5.7.4, close
+   Unreal Editor and run the repository helper from the repository root:
+
+   ```powershell
+   pwsh ./tools/build_mtou_topia.ps1 `
+     -EngineRoot "X:\UE_Topia" `
+     -ProjectFile "X:\Project\Project.uproject" `
+     -Apply
+   ```
+
+   Without `-Apply`, the command only validates paths and previews the five
+   generated files. Add `-Json` for machine-readable output. The Topia path
+   stages all writable build state in a temporary directory and installs only
+   `Binaries/Win64` under the copied MtoULiveLink plugin; it does not modify
+   engine files or project source/configuration files.
+4. Enable **Live Link** and **MtoU_LiveLink**, then restart Unreal Editor.
 
 Install the Maya and Unreal components from the same release.
 
@@ -35,6 +50,11 @@ Install the Maya and Unreal components from the same release.
    The actor's plugin-owned display component bypasses the Driver Skeletal
    Mesh's Post Process Anim Blueprint while displaying evaluated Maya data;
    the Driver asset and other production components keep their own behavior.
+   Use the **MtoU** Details section to see only the plugin controls. After
+   Refresh, **Modified parts** lists one Preview material slot per line for the
+   parts that replace Driver geometry; internal triangle, timing, and quality
+   metrics stay out of the artist-facing panel. **Delete Preview** releases the
+   generated mesh and immediately restores the Driver Skeletal Mesh display.
 2. In Maya, run `MtoULiveLink.py`, select one deformation root joint, and click
    **Set Character**. Confirm the detected Display controller, outfit, scene
    rate, and transmission cap.

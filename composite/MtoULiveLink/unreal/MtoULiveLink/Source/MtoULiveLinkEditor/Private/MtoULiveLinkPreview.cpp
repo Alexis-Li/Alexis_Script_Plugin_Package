@@ -304,7 +304,7 @@ bool ValidateManualGarmentCoverage(
     TArray<FString> IdentitySummaries;
     for (const int32 SlotIndex : MatchedSlots)
     {
-        IdentitySummaries.Add(GetDriverSlotIdentity(Slots[SlotIndex]).ToString());
+        IdentitySummaries.AddUnique(GetDriverSlotIdentity(Slots[SlotIndex]).ToString());
     }
     Out.RegionSummary = FString::Printf(
         TEXT("manual slots %s; %d tris"),
@@ -1534,6 +1534,22 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     {
         Result.Quality = EMtoUPreviewQuality::Warning;
     }
+    TArray<FString> PreviewParts;
+    for (const FStaticMaterial& Material : Preview->GetStaticMaterials())
+    {
+        const FName PartName = Material.ImportedMaterialSlotName != NAME_None
+            ? Material.ImportedMaterialSlotName
+            : Material.MaterialSlotName;
+        if (PartName != NAME_None)
+        {
+            PreviewParts.AddUnique(PartName.ToString());
+        }
+    }
+    if (PreviewParts.IsEmpty())
+    {
+        PreviewParts.Add(Preview->GetName());
+    }
+    Result.Summary = FString::Join(PreviewParts, TEXT("\n"));
     Result.Diagnostics = FString::Printf(
         TEXT("Resolved %d Driver garment region(s) from %d/%d LOD0 triangles with %.4f matched Preview coverage "
             "[%s; %s selection]. Inpaint selected for V1: %d/%d low-confidence vertices (%.4f ratio) across %d triangles; Closest %.3f ms, Inpaint %.3f ms; projected %d Morph Targets (%lld sparse deltas) and skipped %d without matching Preview surface in %.3f ms; normalized surface distance min %.5f / max %.5f / average %.5f / rms %.5f; verdict %s because %s%s."),
@@ -1610,7 +1626,8 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::RefreshActor(
             Result.Quality == EMtoUPreviewQuality::Warning
                 || Result.SkippedMorphTargetCount > 0
                 || Result.bTransferFallbackToClosest,
-            Result.Diagnostics);
+            Result.Diagnostics,
+            Result.Summary);
     }
     else
     {

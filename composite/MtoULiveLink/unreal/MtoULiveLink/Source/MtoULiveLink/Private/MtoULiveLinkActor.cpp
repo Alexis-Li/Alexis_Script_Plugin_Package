@@ -38,6 +38,7 @@ void AMtoULiveLinkActor::PostLoad()
     PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
         ? TEXT("Level loaded. Run Refresh Preview.")
         : FString();
+    PreviewSummary = PreviewDiagnostics;
     ShowDriverMesh();
     RefreshBinding();
 }
@@ -52,6 +53,7 @@ void AMtoULiveLinkActor::PostDuplicate(bool bDuplicateForPIE)
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     bPreviewBuildHasWarning = false;
     PreviewDiagnostics = TEXT("Actor duplicated or reloaded. Run Refresh Preview.");
+    PreviewSummary = PreviewDiagnostics;
     ShowDriverMesh();
     RefreshBinding();
 }
@@ -89,6 +91,7 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
     PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
         ? TEXT("Run Refresh Preview to prepare the current Binding inputs.")
         : FString();
+    PreviewSummary = PreviewDiagnostics;
     RebindInputNotifications();
     if (Binding)
     {
@@ -113,6 +116,7 @@ void AMtoULiveLinkActor::BeginPreviewBuild()
     PreviewState = EMtoUPreviewState::Building;
     PreviewBuildStage = EMtoUPreviewBuildStage::Preflight;
     PreviewDiagnostics = TEXT("Preparing Generated Preview.");
+    PreviewSummary = PreviewDiagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     bPreviewBuildHasWarning = false;
@@ -124,7 +128,8 @@ void AMtoULiveLinkActor::SetPreviewBuildStage(EMtoUPreviewBuildStage Stage)
 }
 
 void AMtoULiveLinkActor::CompletePreviewBuild(
-    USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics)
+    USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics,
+    const FString& Summary)
 {
     if (!Mesh || Mesh->GetOuter() != this || !Mesh->HasAnyFlags(RF_Transient))
     {
@@ -139,6 +144,7 @@ void AMtoULiveLinkActor::CompletePreviewBuild(
     PreviewState = bHasWarning ? EMtoUPreviewState::Warning : EMtoUPreviewState::Ready;
     PreviewBuildStage = EMtoUPreviewBuildStage::Validation;
     PreviewDiagnostics = Diagnostics;
+    PreviewSummary = Summary.IsEmpty() ? Diagnostics : Summary;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     ShowGeneratedPreview(false);
@@ -152,6 +158,7 @@ void AMtoULiveLinkActor::FailPreviewBuild(
     PreviewState = EMtoUPreviewState::Error;
     PreviewBuildStage = Stage;
     PreviewDiagnostics = Diagnostics;
+    PreviewSummary = Diagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     bPreviewBuildHasWarning = false;
@@ -163,9 +170,17 @@ void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
     PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
     PreviewBuildStage = EMtoUPreviewBuildStage::None;
     PreviewDiagnostics = Diagnostics;
+    PreviewSummary = Diagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
     bPreviewBuildHasWarning = false;
+}
+
+void AMtoULiveLinkActor::DeleteGeneratedPreview()
+{
+    InvalidateGeneratedPreview(TEXT("Generated Preview deleted. Run Refresh Preview to rebuild it."));
+    PreviewSummary.Reset();
+    ShowDriverMesh();
 }
 
 void AMtoULiveLinkActor::ReleaseGeneratedPreview()

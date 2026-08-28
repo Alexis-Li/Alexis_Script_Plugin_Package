@@ -78,6 +78,7 @@ struct MTOULIVELINKEDITOR_API FMtoUPreviewPreparationResult
     double SurfaceDistanceRms = 0.0;
     EMtoUPreviewQuality Quality = EMtoUPreviewQuality::Error;
     FString QualityReason;
+    FString Summary;
     FString Diagnostics;
 };
 

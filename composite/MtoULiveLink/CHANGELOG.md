@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a dry-run-first Topia Engine 5.7.4 build helper that stages the project
+  plugin and writable engine intermediates outside the engine and host project,
+  verifies the engine/project/plugin BuildId, and installs only the five Win64
+  editor binary files. Record the successful Topia compile and Athena editor
+  load while keeping full functional acceptance scoped separately.
+- Add a dedicated **MtoU** Details section for the Binding Actor and replace
+  the Preview category's disabled property controls and duplicate diagnostics
+  with one **Modified parts** row. Successful Refresh lists the unique Preview
+  material slots one per line instead of exposing internal states or metrics;
+  **Delete Preview** releases the generated mesh and restores the Driver display.
 - Revalidate Model Preview quality and failure boundaries on the full-character
   Driver workflow: automatic garment resolution now enforces a calibrated
   source-mass boundary that refuses Refresh transactionally when the selected

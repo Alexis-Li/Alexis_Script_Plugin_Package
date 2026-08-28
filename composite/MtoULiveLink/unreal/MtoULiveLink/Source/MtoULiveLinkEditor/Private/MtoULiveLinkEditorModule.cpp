@@ -14,6 +14,7 @@
 #include "Subsystems/PlacementSubsystem.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "MtoULiveLinkEditor"
@@ -61,66 +62,74 @@ public:
             }
         }
 
-        DetailBuilder.EditCategory("MtoU Preview")
-            .AddCustomRow(LOCTEXT("RefreshPreviewFilter", "Refresh Preview"))
+        IDetailCategoryBuilder& PreviewCategory = DetailBuilder.EditCategory(
+            "MtoU Preview", LOCTEXT("MtoUPreviewCategory", "MtoU Preview"),
+            ECategoryPriority::Important);
+
+        PreviewCategory.AddCustomRow(LOCTEXT("RefreshPreviewFilter", "Refresh Preview"))
             .WholeRowContent()
             [
-                SNew(SButton)
-                .Text(LOCTEXT("RefreshPreview", "Refresh Preview"))
-                .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
-                .OnClicked_Lambda([Actor]()
-                {
-                    if (AMtoULiveLinkActor* Target = Actor.Get())
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("RefreshPreview", "Refresh Preview"))
+                    .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
+                    .OnClicked_Lambda([Actor]()
                     {
-                        FScopedSlowTask Progress(5.0f, LOCTEXT(
-                            "PreparingPreview", "Preparing Generated Preview"));
-                        Progress.MakeDialogDelayed(0.25f);
-                        FMtoUPreviewPreparation::RefreshActor(
-                            *Target,
-                            [&Progress](EMtoUPreviewBuildStage Stage)
-                            {
-                                Progress.EnterProgressFrame(1.0f, StageText(Stage));
-                            });
-                    }
-                    return FReply::Handled();
-                })
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            FScopedSlowTask Progress(5.0f, LOCTEXT(
+                                "PreparingPreview", "Preparing Generated Preview"));
+                            Progress.MakeDialogDelayed(0.25f);
+                            FMtoUPreviewPreparation::RefreshActor(
+                                *Target,
+                                [&Progress](EMtoUPreviewBuildStage Stage)
+                                {
+                                    Progress.EnterProgressFrame(1.0f, StageText(Stage));
+                                });
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("DeletePreview", "Delete Preview"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->HasReadyGeneratedPreview();
+                    })
+                    .OnClicked_Lambda([Actor]()
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            Target->DeleteGeneratedPreview();
+                        }
+                        return FReply::Handled();
+                    })
+                ]
             ];
 
-        DetailBuilder.EditCategory("MtoU Preview")
-            .AddCustomRow(LOCTEXT("ModelDiagnosticsFilter", "Model diagnostics"))
+        PreviewCategory.AddCustomRow(LOCTEXT("ModifiedPartsFilter", "Modified parts"))
             .NameContent()
             [
                 SNew(STextBlock)
-                .Text(LOCTEXT("ModelDiagnostics", "Model diagnostics"))
+                .Text(LOCTEXT("ModifiedParts", "Modified parts"))
             ]
             .ValueContent()
             .MinDesiredWidth(400.0f)
             [
                 SNew(STextBlock)
-                .AutoWrapText(true)
+                .AutoWrapText(false)
                 .Text_Lambda([Actor]()
                 {
-                    return Actor.IsValid()
-                        ? FText::FromString(Actor->GetModelDiagnostics())
-                        : FText::GetEmpty();
-                })
-                .ColorAndOpacity_Lambda([Actor]()
-                {
-                    if (!Actor.IsValid())
-                    {
-                        return FSlateColor::UseForeground();
-                    }
-                    switch (Actor->GetModelDiagnosticLevel())
-                    {
-                    case EMtoUModelDiagnosticLevel::Partial:
-                        return FSlateColor(FLinearColor::Yellow);
-                    case EMtoUModelDiagnosticLevel::BoneOnly:
-                        return FSlateColor(FLinearColor(1.0f, 0.5f, 0.0f));
-                    case EMtoUModelDiagnosticLevel::Error:
-                        return FSlateColor(FLinearColor::Red);
-                    default:
-                        return FSlateColor::UseForeground();
-                    }
+                    return Actor.IsValid() && !Actor->GetPreviewSummary().IsEmpty()
+                        ? FText::FromString(Actor->GetPreviewSummary())
+                        : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
                 })
             ];
     }
@@ -156,6 +165,11 @@ public:
             AMtoULiveLinkActor::StaticClass()->GetFName(),
             FOnGetDetailCustomizationInstance::CreateStatic(
                 &FMtoULiveLinkActorDetails::MakeInstance));
+        TSharedRef<FPropertySection> MtoUSection = PropertyEditor.FindOrCreateSection(
+            AMtoULiveLinkActor::StaticClass()->GetFName(), "MtoU",
+            LOCTEXT("MtoUSection", "MtoU"), 1000);
+        MtoUSection->AddCategory("MtoU_LiveLink");
+        MtoUSection->AddCategory("MtoU Preview");
 
         AssetReimportHandle = GEditor->GetEditorSubsystem<UImportSubsystem>()
             ->OnAssetReimport.AddRaw(this, &FMtoULiveLinkEditorModule::HandleAssetReimport);
@@ -185,8 +199,12 @@ public:
         bRegisteredWithPlacementSubsystem = false;
         if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
         {
-            FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor")
-                .UnregisterCustomClassLayout(AMtoULiveLinkActor::StaticClass()->GetFName());
+            FPropertyEditorModule& PropertyEditor =
+                FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+            PropertyEditor.UnregisterCustomClassLayout(
+                AMtoULiveLinkActor::StaticClass()->GetFName());
+            PropertyEditor.RemoveSection(
+                AMtoULiveLinkActor::StaticClass()->GetFName(), "MtoU");
         }
         for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
         {

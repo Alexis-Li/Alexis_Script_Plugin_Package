@@ -77,14 +77,17 @@ public:
     EMtoUPreviewBuildStage GetPreviewBuildStage() const { return PreviewBuildStage; }
     EMtoUDisplayTarget GetDisplayTarget() const { return DisplayTarget; }
     const FString& GetPreviewDiagnostics() const { return PreviewDiagnostics; }
+    const FString& GetPreviewSummary() const { return PreviewSummary; }
     const FString& GetModelDiagnostics() const { return ModelDiagnostics; }
     EMtoUModelDiagnosticLevel GetModelDiagnosticLevel() const { return ModelDiagnosticLevel; }
 
     void BeginPreviewBuild();
     void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
-    void CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics);
+    void CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning,
+        const FString& Diagnostics, const FString& Summary = FString());
     void FailPreviewBuild(EMtoUPreviewBuildStage Stage, const FString& Diagnostics);
     void InvalidateGeneratedPreview(const FString& Diagnostics);
+    void DeleteGeneratedPreview();
     void ReleaseGeneratedPreview();
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
@@ -114,22 +117,24 @@ private:
     UPROPERTY(Transient, DuplicateTransient, VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMesh> GeneratedPreviewMesh;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    UPROPERTY(Transient, DuplicateTransient)
     EMtoUPreviewState PreviewState = EMtoUPreviewState::None;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    UPROPERTY(Transient, DuplicateTransient)
     EMtoUPreviewBuildStage PreviewBuildStage = EMtoUPreviewBuildStage::None;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    UPROPERTY(Transient, DuplicateTransient)
     EMtoUDisplayTarget DisplayTarget = EMtoUDisplayTarget::Hidden;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    UPROPERTY(Transient, DuplicateTransient)
     FString PreviewDiagnostics;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    FString PreviewSummary;
+
+    UPROPERTY(Transient, DuplicateTransient)
     FString ModelDiagnostics;
 
-    UPROPERTY(VisibleAnywhere, Transient, DuplicateTransient, Category = "MtoU Preview")
+    UPROPERTY(Transient, DuplicateTransient)
     EMtoUModelDiagnosticLevel ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
 
     UPROPERTY(VisibleAnywhere, Transient, Category = "MtoU_LiveLink")

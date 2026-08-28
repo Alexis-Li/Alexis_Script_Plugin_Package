@@ -25,6 +25,7 @@
 #include "MeshDescription.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
+#include "PropertyEditorModule.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
@@ -336,6 +337,39 @@ USkeletalMesh* MakeMorphDriver(UObject& Outer)
 }
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSectionTest,
+    "MtoULiveLink.Editor.Details",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FPropertyEditorModule& PropertyEditor =
+        FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+    for (const FName Category : { FName("MtoU_LiveLink"), FName("MtoU Preview") })
+    {
+        const TArray<TSharedPtr<FPropertySection>> Sections =
+            PropertyEditor.FindSectionsForCategory(AMtoULiveLinkActor::StaticClass(), Category);
+        TestTrue(FString::Printf(TEXT("%s belongs to the MtoU details section"), *Category.ToString()),
+            Sections.ContainsByPredicate([](const TSharedPtr<FPropertySection>& Section)
+            {
+                return Section.IsValid() && Section->GetName() == "MtoU"
+                    && Section->GetOrder() == 1000;
+            }));
+    }
+
+    for (const FName PropertyName : {
+            FName("PreviewState"), FName("PreviewBuildStage"), FName("DisplayTarget"),
+            FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel") })
+    {
+        const FProperty* Property = FindFProperty<FProperty>(
+            AMtoULiveLinkActor::StaticClass(), PropertyName);
+        TestTrue(FString::Printf(TEXT("%s stays out of the default property rows"), *PropertyName.ToString()),
+            Property && !Property->HasAnyPropertyFlags(CPF_Edit));
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewPreparationPreflightTest,
     "MtoULiveLink.Editor.Preview.Preflight",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -595,6 +629,17 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("editor shutdown releases transient preview data"),
         ShutdownMesh.IsValid());
+    TestTrue(TEXT("manual delete fixture has a ready preview"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
+    TWeakObjectPtr<USkeletalMesh> DeletedMesh = Actor->GetGeneratedPreviewMesh();
+    Actor->DeleteGeneratedPreview();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("manual delete releases the preview and restores the Driver"),
+        !DeletedMesh.IsValid()
+        && !Actor->HasReadyGeneratedPreview()
+        && Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     TestTrue(TEXT("final Refresh succeeds before actor destruction"),
         FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
     TWeakObjectPtr<USkeletalMesh> DestroyedMesh = Actor->GetGeneratedPreviewMesh();
@@ -1838,6 +1883,7 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         *Actor, *Binding,
         [&ObservedStages](EMtoUPreviewBuildStage Stage) { ObservedStages.Add(Stage); });
     AddInfo(Result.Diagnostics);
+    AddInfo(Result.Summary);
     TestTrue(TEXT("full-character Driver builds a garment-only Generated Preview"),
         Result.bSucceeded && Result.GeneratedPreview != nullptr);
     TestEqual(TEXT("all five preparation stages remain observable"),
@@ -1854,6 +1900,23 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         Result.Diagnostics.Contains(TEXT("garment region"))
         && Result.Diagnostics.Contains(TEXT("matched Preview coverage"))
         && Result.Diagnostics.Contains(TEXT("verdict")));
+    TestTrue(TEXT("artist summary names the modified Preview parts"),
+        Result.Summary.Contains(TEXT("Cloth09_Top_1"))
+        && Result.Summary.Contains(TEXT("Cloth09_Bottom_2")));
+    TestFalse(TEXT("artist summary omits technical metrics"),
+        Result.Summary.Contains(TEXT("tris"))
+        || Result.Summary.Contains(TEXT("vertices"))
+        || Result.Summary.Contains(TEXT("ms"))
+        || Result.Summary.Contains(TEXT("ratio")));
+    TestTrue(TEXT("artist summary puts each modified part on its own line"),
+        Result.Summary.Contains(TEXT("\n"))
+        && !Result.Summary.Contains(TEXT(",")));
+    for (const TCHAR* Part : { TEXT("Cloth09_Top_1"), TEXT("Cloth09_Bottom_2") })
+    {
+        TestEqual(FString::Printf(TEXT("artist summary lists %s once"), Part),
+            Result.Summary.Find(Part),
+            Result.Summary.Find(Part, ESearchCase::CaseSensitive, ESearchDir::FromEnd));
+    }
 
     // Generated geometry: garment surface only, nothing from other parts.
     const FAxisAlignedBox3d GarmentCheckBounds(
@@ -2142,6 +2205,11 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
     TWeakObjectPtr<USkeletalMesh> StaleMesh = Ready.GeneratedPreview;
     TestTrue(TEXT("the ready override preview is displayed"),
         Ready.bSucceeded && Actor->HasReadyGeneratedPreview());
+    TestTrue(TEXT("the actor keeps artist summary separate from technical diagnostics"),
+        Actor->GetPreviewSummary() == Ready.Summary
+        && Actor->GetPreviewSummary() != Actor->GetPreviewDiagnostics()
+        && Actor->GetPreviewSummary().Contains(TEXT("Cloth09_Top_1"))
+        && Actor->GetPreviewDiagnostics().Contains(TEXT("matched Preview coverage")));
     Binding->DriverGarmentSlotOverride = {UpperA};
     Binding->PostEditChangeProperty(OverrideChanged);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
