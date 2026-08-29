@@ -1999,11 +1999,18 @@ class CachedPlaybackTests(unittest.TestCase):
     def _types(stream):
         return [message["type"] for message in stream.submitted]
 
+    @staticmethod
+    def _capabilities(view):
+        return (view.can_capture, view.can_replay, view.can_stop,
+                view.can_cancel, view.can_leave)
+
     def _capture_to_upload(self, cached, stream):
         cached.enter()
         cached.capture(2.0, lambda unused_size, unused_frames: True)
         self.timer.fire_until(lambda: "cache_end" in self._types(stream))
         self.assertEqual(MODULE._CachedPlayback.UPLOADING, cached.view.state)
+        self.assertEqual((True, False, False, False, True),
+                         self._capabilities(cached.view))
         return [message for message in stream.submitted
                 if message["type"] == "cache_begin"][-1]
 
@@ -2015,13 +2022,16 @@ class CachedPlaybackTests(unittest.TestCase):
         })
         self.timer.fire_until(
             lambda: cached.view.state == MODULE._CachedPlayback.REPLAYING)
+        self.assertEqual((True, False, True, False, True),
+                         self._capabilities(cached.view))
         return begin
 
     def test_ready_attachment_exposes_immutable_realtime_view_without_pausing(self):
         cached, stream = self._attached()
 
         self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
-        self.assertFalse(cached.view.can_capture)
+        self.assertEqual((False, False, False, False, False),
+                         self._capabilities(cached.view))
         self.assertEqual(0, stream.paused)
         with self.assertRaises(AttributeError):
             cached.view.state = MODULE._CachedPlayback.CACHED_IDLE
@@ -2034,8 +2044,8 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
 
         self.assertEqual(MODULE._CachedPlayback.CACHED_IDLE, cached.view.state)
-        self.assertTrue(cached.view.can_capture)
-        self.assertTrue(cached.view.can_leave)
+        self.assertEqual((True, False, False, False, True),
+                         self._capabilities(cached.view))
         self.assertEqual([MODULE._CachedPlayback.CACHED_IDLE], [view.state for view in changes])
         self.assertEqual(1, stream.paused)
         self.assertEqual(["cache_enter"], self._types(stream))
@@ -2063,11 +2073,16 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
         cached.capture(24.0, lambda unused_size, unused_frames: True)
         self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.CAPTURING, cached.view.state)
+        self.assertEqual((False, False, False, True, False),
+                         self._capabilities(cached.view))
 
         cached.cancel_capture()
         self.timer.fire()
 
         self.assertEqual(MODULE._CachedPlayback.CANCELLED, cached.view.state)
+        self.assertEqual((False, False, False, False, False),
+                         self._capabilities(cached.view))
         self.assertEqual(42, self.timeline.current)
         self.assertIsNone(cached.view.cache_summary)
         self.assertLess(stream.actions.index("cache_clear"), stream.actions.index("resume"))
@@ -2152,16 +2167,22 @@ class CachedPlaybackTests(unittest.TestCase):
 
         cached.stop_replay()
         self.assertEqual(MODULE._CachedPlayback.STOPPING, cached.view.state)
+        self.assertEqual((False, False, True, False, True),
+                         self._capabilities(cached.view))
         stream.emit({"type": "cache_stopped", "play_id": play["play_id"] + 1})
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.STOPPING, cached.view.state)
         stream.emit({"type": "cache_stopped", "play_id": play["play_id"]})
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.STOPPED, cached.view.state)
+        self.assertEqual((True, True, False, False, True),
+                         self._capabilities(cached.view))
 
         begin_count = self._types(stream).count("cache_begin")
         cached.replay()
         self.assertEqual(MODULE._CachedPlayback.REPLAYING, cached.view.state)
+        self.assertEqual((True, False, True, False, True),
+                         self._capabilities(cached.view))
         self.assertEqual(begin_count, self._types(stream).count("cache_begin"))
 
     def test_completion_and_performance_failure_are_view_outcomes(self):
@@ -2176,6 +2197,8 @@ class CachedPlaybackTests(unittest.TestCase):
         })
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.COMPLETED, cached.view.state)
+        self.assertEqual((True, True, False, False, True),
+                         self._capabilities(cached.view))
 
         cached.replay()
         play = [message for message in stream.submitted
@@ -2467,6 +2490,26 @@ class ControllerLifecycleTests(unittest.TestCase):
         status = controller._set_connected.call_args[0][1]
         self.assertIn("实时采样已暂停", status)
         self.assertIn("回放时显示缓存", status)
+
+    def test_session_ready_requires_public_is_ready_never_probes_phase(self):
+        class PhaseOnlySession(object):
+            _phase = "ready"
+
+        class GuardedPhaseSession(object):
+            @property
+            def is_ready(self):
+                return True
+
+            @property
+            def _phase(self):
+                raise AssertionError("Controller must not probe the private _phase")
+
+        controller = MODULE._Controller()
+        controller._session = PhaseOnlySession()
+        self.assertFalse(controller._session_ready())
+
+        controller._session = GuardedPhaseSession()
+        self.assertTrue(controller._session_ready())
 
     def test_disconnecting_discards_cached_state_before_stopping_session(self):
         controller = MODULE._Controller()

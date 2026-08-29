@@ -3869,7 +3869,7 @@ class _Controller(object):
                 return False
         if ready is not None:
             return bool(ready)
-        return getattr(session, "_phase", None) == "ready"
+        return False
 
     def _apply_toggle_background(self, control, selected):
         if not self._control_exists(control):
