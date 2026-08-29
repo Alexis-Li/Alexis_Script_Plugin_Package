@@ -1593,9 +1593,43 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
         && Actor->GetPreviewState() == EMtoUPreviewState::Error
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
+    // Driver Reimport invalidates readiness, and a stale override keeps
+    // failing through RefreshActor instead of silently returning to Auto.
+    Binding->DriverGarmentSlotOverride = {UpperA, UpperB, Lower};
+    Binding->PostEditChangeProperty(OverrideChanged);
+    for (FSkeletalMaterial& Slot : Fixtures.FullDriver->GetMaterials())
+    {
+        if (Slot.MaterialSlotName == UpperA || Slot.MaterialSlotName == UpperB
+            || Slot.MaterialSlotName == Lower)
+        {
+            Slot.ImportedMaterialSlotName =
+                *(Slot.MaterialSlotName.ToString() + TEXT("_Renamed"));
+            Slot.MaterialSlotName = Slot.ImportedMaterialSlotName;
+        }
+    }
+    if (GEditor)
+    {
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(
+            Fixtures.FullDriver);
+    }
+    TestTrue(TEXT("Driver Reimport marks readiness Dirty and hides the stale garment"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview());
+    const FMtoUPreviewPreparationResult Stale =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    AddInfo(Stale.Diagnostics);
+    TestTrue(TEXT("a stale override keeps failing after Reimport instead of returning to Auto"),
+        !Stale.bSucceeded
+        && Stale.GeneratedPreview == nullptr
+        && Stale.Diagnostics.Contains(TEXT("unknown Driver material slot"))
+        && Actor->GetPreviewState() == EMtoUPreviewState::Error);
+
     // Clearing the override recovers the safe automatic preview.
     Binding->DriverGarmentSlotOverride.Reset();
     Binding->PostEditChangeProperty(OverrideChanged);
+    TestTrue(TEXT("clearing the override leaves readiness Dirty"),
+        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->HasReadyGeneratedPreview());
     const FMtoUPreviewPreparationResult AutoAgain =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     AddInfo(AutoAgain.Diagnostics);
