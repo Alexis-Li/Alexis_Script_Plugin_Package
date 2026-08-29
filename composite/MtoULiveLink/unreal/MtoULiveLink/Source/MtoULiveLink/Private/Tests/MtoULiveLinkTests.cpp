@@ -11,6 +11,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/PlatformProcess.h"
@@ -24,6 +25,7 @@
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "Tests/EnsureScope.h"
 #include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -46,6 +48,38 @@ void UMtoULiveLinkConflictingPostProcess::NativeUpdateAnimation(float DeltaSecon
 }
 
 #include "MtoUConformanceCorpus.inl"
+
+/**
+ * Development-only test seam. It drives the Binding actor's real private
+ * refresh transition path so Runtime tests can establish readiness without
+ * exposing production mutation methods (Issue #25).
+ */
+class FMtoUPreviewReadinessTestAccess
+{
+public:
+    static bool Begin(AMtoULiveLinkActor& Actor)
+    {
+        return Actor.BeginPreviewBuild();
+    }
+    static void SetStage(AMtoULiveLinkActor& Actor, EMtoUPreviewBuildStage Stage)
+    {
+        Actor.SetPreviewBuildStage(Stage);
+    }
+    static bool Commit(AMtoULiveLinkActor& Actor, USkeletalMesh* Mesh, bool bWarning,
+        const FString& Diagnostics, const FString& Summary = FString())
+    {
+        return Actor.CompletePreviewBuild(Mesh, bWarning, Diagnostics, Summary);
+    }
+    static bool Fail(AMtoULiveLinkActor& Actor, EMtoUPreviewBuildStage Stage,
+        const FString& Diagnostics)
+    {
+        return Actor.FailPreviewBuild(Stage, Diagnostics);
+    }
+    static void Release(AMtoULiveLinkActor& Actor)
+    {
+        Actor.ReleaseGeneratedPreview();
+    }
+};
 
 namespace
 {
@@ -2447,7 +2481,10 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
     TestTrue(TEXT("model rejection keeps the actor disconnected from streaming"),
         Actor && !Actor->GetConnectionStatus().Equals(TEXT("Connected"))
-        && !Actor->HasReadyGeneratedPreview());
+        && !Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("a refused Model connection leaves readiness unmodified"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::None
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
     TestTrue(TEXT("source returns to listening after model rejection"),
         WaitForStatus(Source, TEXT("Listening on")));
 
@@ -2464,12 +2501,16 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
             AddUniformMorph(*GeneratedPreview, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f))
             && AddUniformMorph(*GeneratedPreview, FName(TEXT("Unaccepted")), FVector3f(0.0f, 1.0f, 0.0f))
             && AddUniformMorph(*GeneratedPreview, FName(TEXT("NeverAccepted")), FVector3f(0.0f, 0.0f, 1.0f)));
-        Actor->CompletePreviewBuild(GeneratedPreview, false, TEXT("test preview"));
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+        FMtoUPreviewReadinessTestAccess::Commit(
+            *Actor, GeneratedPreview, false, TEXT("test preview"));
     }
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
-        Actor && Actor->HasReadyGeneratedPreview());
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+    Actor->ShowGeneratedPreview(false);
     TestTrue(TEXT("Model preview selection records the Generated Preview target"),
-        Actor && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
+        Actor && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && Actor->GetPreviewReadiness().IsUsable());
 
     const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
 
@@ -2542,8 +2583,12 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source returns to listening after bone-only disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
     TestTrue(TEXT("bone-only disconnect keeps and displays the Generated Preview"),
-        Actor && Actor->GetGeneratedPreviewMesh() == GeneratedPreview
+        Actor && Actor->GetPreviewReadiness().GeneratedPreview == GeneratedPreview
+        && Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-only comparison is a connection diagnostic outside readiness"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::BoneOnly);
 
     FSocket* BoneDrivenClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("bone-driven model client connects"), BoneDrivenClient);
@@ -2561,7 +2606,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("bone-driven outfit is not labelled an invalid diagnostic"),
         Actor
         && Actor->GetConnectionStatus().Equals(TEXT("Connected"))
-        && Actor->GetPreviewState() == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
     TestTrue(TEXT("bone-driven diagnostics report the declared-zero manifest"),
         Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 0"))
@@ -2613,6 +2658,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("BlendShape rejection closes the session"),
         BlendshapeClient && WaitForClose(*BlendshapeClient));
     DestroySocket(*SocketSubsystem, BlendshapeClient);
+    TestTrue(TEXT("a rejected Model pairing leaves Preview readiness unchanged"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().IsUsable());
     TestTrue(TEXT("source returns to listening after BlendShape rejection"),
         WaitForStatus(Source, TEXT("Listening on")));
 
@@ -2633,8 +2681,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && PartialReply.Contains(TEXT("\"accepted_morph_count\":2"))
         && PartialReply.Contains(TEXT("OtherOutfit"))
         && PartialReply.Contains(TEXT("NeverAccepted")));
-    TestTrue(TEXT("partial Model coverage is visibly yellow-warning quality"),
-        Actor && Actor->GetPreviewState() == EMtoUPreviewState::Warning
+    TestTrue(TEXT("partial Model coverage is a connection diagnostic that keeps readiness Ready"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Partial
         && Actor->GetConnectionStatus().Contains(TEXT("partial Morph coverage")));
     TestTrue(TEXT("Model diagnostics report all five requested counts"),
         Actor && Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 3"))
@@ -2731,6 +2780,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Animation workflow restores the Driver Skeletal Mesh"),
         SkeletalMeshComponent
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
+    TestTrue(TEXT("Animation display selection leaves the ready Generated Preview intact"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().IsUsable());
 
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
     Actor->OnConstruction(Actor->GetActorTransform());
@@ -2761,6 +2813,337 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         {
             GEngine->DestroyWorldContext(World);
         }
+    }
+    return true;
+}
+
+namespace
+{
+USkeletalMesh* MakeTransientGeneratedPreview(USkeletalMesh* Template, AActor& Owner)
+{
+    USkeletalMesh* Mesh = Template
+        ? DuplicateObject<USkeletalMesh>(Template, &Owner)
+        : nullptr;
+    if (Mesh)
+    {
+        Mesh->ClearFlags(RF_Public | RF_Standalone);
+        Mesh->SetFlags(RF_Transient);
+    }
+    return Mesh;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessTest,
+    "MtoULiveLink.Preview.Readiness",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewReadinessTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    if (!Actor || !Driver)
+    {
+        AddError(TEXT("readiness fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Driver;
+
+    TestTrue(TEXT("an actor without a Binding reads None"),
+        !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::None);
+
+    Actor->SetBinding(Binding);
+    TestTrue(TEXT("a Binding missing the Preview input is None"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::None);
+    Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    Actor->NotifyBindingInputsChanged();
+    TestTrue(TEXT("fully configured unrefreshed inputs are Dirty"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().Diagnostics.Contains(TEXT("Run Refresh Preview")));
+
+    TestTrue(TEXT("the seam accepts a refresh start"),
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor));
+    TestTrue(TEXT("build start enters Building at Preflight and hides the display"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Preflight
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Hidden
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    for (const EMtoUPreviewBuildStage Stage : { EMtoUPreviewBuildStage::GeometryConversion,
+            EMtoUPreviewBuildStage::WeightTransfer, EMtoUPreviewBuildStage::SkeletalMeshBuild,
+            EMtoUPreviewBuildStage::Validation })
+    {
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, Stage);
+        TestTrue(TEXT("the build stage stays observable while Building"),
+            Actor->GetPreviewReadiness().Stage == Stage
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+    }
+
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Driver, *Actor);
+    TestTrue(TEXT("a valid commit is accepted while Building"),
+        FMtoUPreviewReadinessTestAccess::Commit(
+            *Actor, Generated, false, TEXT("ready diagnostics"), TEXT("ready summary")));
+    const FMtoUPreviewReadiness Ready = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("Ready exposes the complete coherent snapshot"),
+        Ready.State == EMtoUPreviewState::Ready
+        && Ready.IsUsable()
+        && Ready.GeneratedPreview == Generated
+        && Ready.Summary == TEXT("ready summary")
+        && Ready.Diagnostics == TEXT("ready diagnostics")
+        && Ready.Stage == EMtoUPreviewBuildStage::Validation);
+    TestTrue(TEXT("the readiness commit does not own display selection"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Hidden
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), true, TEXT("warning diagnostics"));
+    TestTrue(TEXT("a Preview quality warning remains usable readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Warning
+        && Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    TestFalse(TEXT("a commit of a non-actor-owned mesh is not accepted as ready"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+            NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient),
+            false, TEXT("invalid")));
+    TestTrue(TEXT("invalid ownership becomes a Validation-stage failure"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    TestFalse(TEXT("a commit of persistent asset data is not accepted as ready"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+            NewObject<USkeletalMesh>(Actor), false, TEXT("persisted")));
+    TestTrue(TEXT("invalid persistence flags become a Validation-stage failure"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::WeightTransfer);
+    TestTrue(TEXT("a failure is accepted while Building"),
+        FMtoUPreviewReadinessTestAccess::Fail(
+            *Actor, EMtoUPreviewBuildStage::WeightTransfer, TEXT("transfer failed")));
+    TestTrue(TEXT("a failed refresh establishes Error with the actionable stage and hides display"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::WeightTransfer
+        && Actor->GetPreviewReadiness().Diagnostics == TEXT("transfer failed")
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    TWeakObjectPtr<USkeletalMesh> Deleted = Actor->GetPreviewReadiness().GeneratedPreview;
+    Actor->NotifyGeneratedPreviewDeleted();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("explicit deletion leaves a configured Binding Dirty and shows the Driver"),
+        !Deleted.IsValid()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Actor->NotifySourceAssetChanged(Binding->PreviewStaticMesh, TEXT("test change"));
+    TestTrue(TEXT("changing either Preview input invalidates the current revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    // A source build completion reentrant to the actor's own synchronous
+    // preparation never self-invalidates, while a real rebuild still does.
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    Binding->PreviewStaticMesh->OnPostMeshBuild().Broadcast(Binding->PreviewStaticMesh);
+    TestTrue(TEXT("a reentrant source build during Building is not a new revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Binding->PreviewStaticMesh->OnPostMeshBuild().Broadcast(Binding->PreviewStaticMesh);
+    TestTrue(TEXT("a source rebuild notification after commit invalidates the revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Actor->PostLoad();
+    TestTrue(TEXT("level load discards transient Preview data and reports Dirty"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().Diagnostics.Contains(TEXT("Level loaded")));
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    AMtoULiveLinkActor* Duplicate = DuplicateObject<AMtoULiveLinkActor>(
+        Actor, World->GetCurrentLevel());
+    TestTrue(TEXT("actor duplication discards transient Preview data and reports Dirty"),
+        Duplicate
+        && Duplicate->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Duplicate->GetPreviewReadiness().IsUsable());
+    if (Duplicate)
+    {
+        Duplicate->Destroy();
+    }
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    USkeletalMesh* Retained = MakeTransientGeneratedPreview(Driver, *Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor, Retained, false, TEXT("ready"));
+    Actor->ShowGeneratedPreview(false);
+    Actor->SetConnectionStatus(TEXT("Disconnected"));
+    TestTrue(TEXT("disconnect preserves an unchanged ready Generated Preview for reuse"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Retained);
+
+    TWeakObjectPtr<USkeletalMesh> Shutdown = Retained;
+    Actor->NotifyTransientPreviewReleased();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("shutdown release discards transient Preview ownership"),
+        !Shutdown.IsValid()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    USkeletalMesh* Teardown = MakeTransientGeneratedPreview(Driver, *Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor, Teardown, false, TEXT("ready"));
+    TWeakObjectPtr<USkeletalMesh> TeardownWeak = Teardown;
+    Actor->Destroy();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestFalse(TEXT("actor teardown releases transient Preview data"), TeardownWeak.IsValid());
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessGuardsTest,
+    "MtoULiveLink.Preview.ReadinessGuards",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewReadinessGuardsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    if (!Actor || !Driver)
+    {
+        AddError(TEXT("readiness guard fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    Actor->SetBinding(Binding);
+
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a commit outside Building is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("stale commit")));
+        TestEqual(TEXT("the rejected commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the rejected commit does not overwrite Dirty readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a failure outside Building is rejected"),
+            FMtoUPreviewReadinessTestAccess::Fail(*Actor,
+                EMtoUPreviewBuildStage::Preflight, TEXT("stale failure")));
+        TestEqual(TEXT("the rejected failure emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the rejected failure does not overwrite Dirty readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty);
+
+    {
+        FEnsureScope Scope;
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::Validation);
+        TestEqual(TEXT("stage observation outside Building is ignored"),
+            static_cast<int32>(Actor->GetPreviewReadiness().Stage),
+            static_cast<int32>(EMtoUPreviewBuildStage::None));
+        TestEqual(TEXT("the ignored stage change emits one ensure"), Scope.GetCount(), 1);
+    }
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::Validation);
+    {
+        FEnsureScope Scope;
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::GeometryConversion);
+        TestTrue(TEXT("an out-of-order stage is ignored"),
+            Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+        TestEqual(TEXT("the out-of-order stage emits one ensure"), Scope.GetCount(), 1);
+    }
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a reentrant refresh start is rejected"),
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor));
+        TestEqual(TEXT("the reentrant start emits one ensure and preserves Building"),
+            Scope.GetCount(), 1);
+        TestTrue(TEXT("the rejected start did not release the running build"),
+            Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building
+            && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation);
+    }
+
+    USkeletalMesh* Current = MakeTransientGeneratedPreview(Driver, *Actor);
+    TestTrue(TEXT("the running build still accepts its commit"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor, Current, false, TEXT("ready")));
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a stale second commit is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), true, TEXT("stale completion")));
+        TestEqual(TEXT("the stale commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the stale completion does not overwrite the successful result"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Current);
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a stale failure after success is rejected"),
+            FMtoUPreviewReadinessTestAccess::Fail(*Actor,
+                EMtoUPreviewBuildStage::WeightTransfer, TEXT("stale failure")));
+        TestEqual(TEXT("the stale failure emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the stale failure does not overwrite the successful result"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Current);
+
+    {
+        // A real input change during a build wins: the newer revision makes
+        // the pending build's completion a stale result.
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+        Actor->NotifyBindingInputsChanged();
+        FEnsureScope Scope;
+        TestFalse(TEXT("a delayed commit after invalidation is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("stale")));
+        TestEqual(TEXT("the delayed commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("invalidation keeps the newer Dirty revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    if (World)
+    {
+        World->DestroyWorld(false);
     }
     return true;
 }

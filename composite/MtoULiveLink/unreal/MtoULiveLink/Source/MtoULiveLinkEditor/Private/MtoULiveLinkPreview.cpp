@@ -1,5 +1,6 @@
 #include "MtoULiveLinkPreview.h"
 
+#include "MtoULiveLinkPreviewDetail.h"
 #include "MtoUDriverGarmentSurface.h"
 
 #include "MtoULiveLinkBinding.h"
@@ -422,7 +423,7 @@ bool GeneratePreviewMorphs(
 }
 }
 
-FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
+FMtoUPreviewPreparationResult MtoUPreparePreview(
     AMtoULiveLinkActor& Owner,
     const UMtoULiveLinkBinding& Binding,
     const FMtoUPreviewStageCallback& OnStage,
@@ -726,22 +727,25 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     return Result;
 }
 
-FMtoUPreviewPreparationResult FMtoUPreviewPreparation::RefreshActor(
+FMtoUPreviewReadiness FMtoUPreviewPreparation::RefreshActor(
     AMtoULiveLinkActor& Actor,
     const FMtoUPreviewStageCallback& OnStage)
 {
-    Actor.BeginPreviewBuild();
+    if (!Actor.BeginPreviewBuild())
+    {
+        // A stale or reentrant start is rejected by the actor; its current
+        // readiness remains authoritative.
+        return Actor.GetPreviewReadiness();
+    }
     UMtoULiveLinkBinding* Binding = Actor.GetBinding();
     if (!Binding)
     {
-        FMtoUPreviewPreparationResult Result;
-        Result.FailureStage = EMtoUPreviewBuildStage::Preflight;
-        Result.Diagnostics = TEXT("The actor has no MtoU_LiveLink Binding.");
-        Actor.FailPreviewBuild(Result.FailureStage, Result.Diagnostics);
-        return Result;
+        Actor.FailPreviewBuild(EMtoUPreviewBuildStage::Preflight,
+            TEXT("The actor has no MtoU_LiveLink Binding."));
+        return Actor.GetPreviewReadiness();
     }
 
-    FMtoUPreviewPreparationResult Result = Prepare(
+    const FMtoUPreviewPreparationResult Result = MtoUPreparePreview(
         Actor,
         *Binding,
         [&Actor, &OnStage](EMtoUPreviewBuildStage Stage)
@@ -754,17 +758,22 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::RefreshActor(
         });
     if (Result.bSucceeded)
     {
-        Actor.CompletePreviewBuild(
+        if (Actor.CompletePreviewBuild(
             Result.GeneratedPreview,
             Result.Quality == EMtoUPreviewQuality::Warning
                 || Result.SkippedMorphTargetCount > 0
                 || Result.bTransferFallbackToClosest,
             Result.Diagnostics,
-            Result.Summary);
+            Result.Summary))
+        {
+            // Readiness commit does not own display selection; the explicit
+            // refresh separately shows the committed Generated Preview.
+            Actor.ShowGeneratedPreview(false);
+        }
     }
     else
     {
         Actor.FailPreviewBuild(Result.FailureStage, Result.Diagnostics);
     }
-    return Result;
+    return Actor.GetPreviewReadiness();
 }

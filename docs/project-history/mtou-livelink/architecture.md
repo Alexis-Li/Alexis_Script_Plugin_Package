@@ -182,8 +182,12 @@ The Runtime module owns:
 - the automatically registered native Live Link source;
 - the fixed `MtoU_Character` Live Link subject;
 - `UMtoULiveLinkBinding`, which references one existing Skeletal Mesh;
-- `AMtoULiveLinkActor`, which owns a Skeletal Mesh Component and applies the
-  subject through Unreal's native `ULiveLinkInstance`.
+- `AMtoULiveLinkActor`, which owns a Skeletal Mesh Component, the coherent
+  Preview readiness state, and the transient Generated Preview Skeletal Mesh,
+  and applies the subject through Unreal's native `ULiveLinkInstance`.
+  Runtime callers read Preview readiness only through one
+  `FMtoUPreviewReadiness` snapshot (state, stage, ready Generated Preview,
+  summary, and diagnostics).
 
 The Editor module owns:
 
@@ -191,6 +195,15 @@ The Editor module owns:
 - the actor factory that turns a binding asset dragged into a viewport into an
   `AMtoULiveLinkActor`;
 - editor-only status presentation and asset validation;
+- the single explicit Preview refresh interface
+  `FMtoUPreviewPreparation::RefreshActor`, which drives the Binding actor's
+  private readiness transitions, selects the Generated Preview for display
+  after a successful commit, and returns the coherent readiness snapshot;
+- the Editor-private focused preparation seam (free function
+  `MtoUPreparePreview`, its detailed `FMtoUPreviewPreparationResult`, quality
+  thresholds, and `MtoUEvaluatePreviewQuality`) in
+  `MtoULiveLinkPreviewDetail.h`, used by the implementation and the
+  Editor-private preparation tests but not part of any public interface;
 - the private `MtoUDriverGarmentSurface` module (`MtoUDriverGarmentSurface.h`
   and `.cpp` in the Editor module's `Private/`), which resolves the Driver
   garment surface for one Preview refresh through one plain function
@@ -206,7 +219,8 @@ The Editor module owns:
   Preview preparation consumes exactly one resolution outcome; it keeps
   owning asset-to-mesh conversion, surface-distance measurement, weight
   transfer, Preview Morph transfer, Generated Preview Skeletal Mesh
-  construction, quality evaluation, and the Preview refresh transaction.
+  construction, and quality evaluation. The Preview refresh transaction and
+  every readiness transition belong to the Binding actor.
 
 The plugin contains code only. Binding assets created by users live under their
 chosen project `/Game/...` folders and reference, rather than copy, the selected
@@ -795,6 +809,48 @@ incompatible Character revisions, and corrupt cache data discard it. A future
 Ready attachment may consume that retention without exposing a cache path or
 deletion interface to Controller. `_PlaybackCache` remains the disk module and
 `_StreamingSession` remains the transport module.
+
+## Deepened Preview Readiness
+
+Date: 2026-08-29
+
+Issue #25 deepened Preview readiness on the Binding Actor without changing
+ADR-0003 actor-owned state, ADR-0004 explicit refresh, ADR-0005 stale-preview
+hiding, ADR-0009 workflow negotiation, ADR-0010 transactional Preview Morph
+transfer, or ADR-0011 Accepted Preview Morph semantics.
+
+The actor exposes one coherent `FMtoUPreviewReadiness` snapshot (state, stage,
+ready Generated Preview, artist summary, and diagnostics). Build start,
+monotonic stage observation, successful commit, failed rejection,
+validation-stage rejection of invalid ownership or persistence flags,
+invalidation, stale-result protection, and transient Generated Preview
+ownership are private transitions; an illegal transition emits an
+`ensureAlways` and is ignored so a stale callback cannot overwrite None,
+Dirty, a newer build, or a successful result. Because a refresh runs
+synchronously on the Game Thread, a source build-completion event that
+arrives while Building is reentrant to the build's own source read and never
+self-invalidates.
+
+State meanings are exhaustive: None (no Binding or a required Preview input
+absent), Dirty (complete inputs, current revision unrefreshed or
+invalidated), Building (explicit refresh running, stage observable), Ready
+(complete Generated Preview, no quality warning), Warning (complete usable
+Generated Preview with a quality warning), and Error (the explicit refresh
+failed for the current revision). Removing either required input enters None;
+changing complete inputs enters Dirty.
+
+The Editor module keeps one explicit refresh interface,
+`FMtoUPreviewPreparation::RefreshActor`, which drives the private transitions
+and separately selects the committed Generated Preview for immediate display;
+readiness commit itself never owns display selection. Detailed preparation
+evidence moved to the Editor-private `MtoULiveLinkPreviewDetail.h` seam.
+Connection status, Driver-versus-Generated display choice, the Accepted
+Preview Morph set, partial Morph coverage, bone-only comparison, and Model
+diagnostics consume readiness and cannot modify Ready or Warning. Runtime
+tests establish readiness through one development-only friend seam that drives
+the same private transition path, and the old exported mutation getters are
+removed without a forwarding shim because 0.4.0 is unreleased. User assets,
+serialized Binding fields, and the artist workflow are unchanged.
 
 ## Documentation and Packaging
 

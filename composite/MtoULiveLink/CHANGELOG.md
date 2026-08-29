@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Deepen Preview readiness on the Binding Actor (unreleased 0.4.0 C++
+  interface change): Runtime callers now read one coherent
+  `FMtoUPreviewReadiness` snapshot (state, build stage, ready Generated
+  Preview, summary, and diagnostics) instead of six independent getters, and
+  the Editor module exposes one explicit `FMtoUPreviewPreparation::RefreshActor`
+  interface that returns that snapshot. Build start, monotonic stage
+  observation, successful commit, failed rejection, validation-stage rejection
+  of invalid ownership, invalidation, stale-result protection, and Generated
+  Preview ownership are private Binding actor implementation; illegal internal
+  transitions emit an `ensure` and never overwrite the current readiness, and
+  a source build completion reentrant to the running refresh no longer
+  self-invalidates. Connection status, display selection, the Accepted Preview
+  Morph set, partial Morph coverage, bone-only comparison, and Model
+  diagnostics now consume readiness without modifying it: a Preview quality
+  warning remains usable readiness, and Model connection negotiation can no
+  longer turn Ready into Warning. Detailed preparation results moved to an
+  Editor-private header, and Runtime tests drive the private transition path
+  through one development-only friend seam. Refresh remains explicit,
+  synchronous, and transactional; user assets, serialized Binding fields, and
+  artist-visible behavior are unchanged.
 - Deepen Maya Cached Playback behind one `_CachedPlayback` action/view seam:
   Controller now attaches it eagerly to each Ready Animation Streaming session,
   forwards only user intent and terminal outcomes, and renders an immutable

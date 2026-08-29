@@ -815,10 +815,12 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     }
 
     const bool bModelWorkflow = Message.Workflow == FMtoUWorkflows::Model;
-    if (bModelWorkflow && !Actor->HasReadyGeneratedPreview())
+    const FMtoUPreviewReadiness Readiness = Actor->GetPreviewReadiness();
+    if (bModelWorkflow && !Readiness.IsUsable())
     {
         // Model preview must refuse without changing the visible target until
-        // an explicit Refresh produces a ready Generated Preview.
+        // an explicit Refresh produces a ready Generated Preview. Negotiation
+        // consumes readiness and never modifies it.
         const FString Details = FString::Printf(
             TEXT("%s has no ready Generated Preview Skeletal Mesh. Run Refresh Preview in Unreal before connecting in the Model workflow."),
             *Actor->GetName());
@@ -833,11 +835,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     // Animation drives the bound Driver Skeletal Mesh. Once a Generated
     // Preview exists, the Model workflow negotiates against its projected
     // Morph library instead of the Driver's own library.
-    USkeletalMesh* Mesh = DriverMesh;
-    if (bModelWorkflow)
-    {
-        Mesh = Actor->GetGeneratedPreviewMesh();
-    }
+    USkeletalMesh* Mesh = bModelWorkflow ? Readiness.GeneratedPreview : DriverMesh;
     FMtoUTargetDescription Target = DescribeTarget(*Mesh);
     const int32 TargetMorphCount = Target.MorphTargetNames.Num();
 

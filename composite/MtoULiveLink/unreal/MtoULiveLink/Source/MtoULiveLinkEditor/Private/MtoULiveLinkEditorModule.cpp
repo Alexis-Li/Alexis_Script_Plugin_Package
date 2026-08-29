@@ -101,13 +101,13 @@ public:
                     .Text(LOCTEXT("DeletePreview", "Delete Preview"))
                     .IsEnabled_Lambda([Actor]()
                     {
-                        return Actor.IsValid() && Actor->HasReadyGeneratedPreview();
+                        return Actor.IsValid() && Actor->GetPreviewReadiness().IsUsable();
                     })
                     .OnClicked_Lambda([Actor]()
                     {
                         if (AMtoULiveLinkActor* Target = Actor.Get())
                         {
-                            Target->DeleteGeneratedPreview();
+                            Target->NotifyGeneratedPreviewDeleted();
                         }
                         return FReply::Handled();
                     })
@@ -127,8 +127,10 @@ public:
                 .AutoWrapText(false)
                 .Text_Lambda([Actor]()
                 {
-                    return Actor.IsValid() && !Actor->GetPreviewSummary().IsEmpty()
-                        ? FText::FromString(Actor->GetPreviewSummary())
+                    const FString Summary = Actor.IsValid()
+                        ? Actor->GetPreviewReadiness().Summary : FString();
+                    return !Summary.IsEmpty()
+                        ? FText::FromString(Summary)
                         : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
                 })
             ];
@@ -210,7 +212,7 @@ public:
         {
             if (!It->HasAnyFlags(RF_ClassDefaultObject))
             {
-                It->ReleaseGeneratedPreview();
+                It->NotifyTransientPreviewReleased();
             }
         }
     }

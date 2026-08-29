@@ -8,15 +8,22 @@ class UMtoULiveLinkBinding;
 class USkeletalMeshComponent;
 class USkeletalMesh;
 class UStaticMesh;
+class FMtoUPreviewPreparation;
 
 UENUM()
 enum class EMtoUPreviewState : uint8
 {
+    /** There is no Binding or either required Preview input is absent. */
     None,
+    /** Both Preview inputs are present, but the current revision is not refreshed. */
     Dirty,
+    /** The current explicit Preview refresh is running and its stage is observable. */
     Building,
+    /** The current revision has a complete Generated Preview without a quality warning. */
     Ready,
+    /** The current revision has a complete usable Generated Preview with a quality warning. */
     Warning,
+    /** An explicit Preview refresh failed for the current revision. */
     Error
 };
 
@@ -49,6 +56,28 @@ enum class EMtoUDisplayTarget : uint8
     GeneratedPreview
 };
 
+/**
+ * One coherent snapshot of the Binding actor's Preview readiness. It describes
+ * only whether the current Preview revision has a complete Generated Preview
+ * Skeletal Mesh; connection status, display selection, and Model diagnostics
+ * remain separate concerns that consume readiness without modifying it.
+ */
+struct MTOULIVELINK_API FMtoUPreviewReadiness
+{
+    EMtoUPreviewState State = EMtoUPreviewState::None;
+    EMtoUPreviewBuildStage Stage = EMtoUPreviewBuildStage::None;
+    USkeletalMesh* GeneratedPreview = nullptr;
+    FString Summary;
+    FString Diagnostics;
+
+    /** True only for a complete current-revision Generated Preview (Ready or Warning). */
+    bool IsUsable() const
+    {
+        return GeneratedPreview != nullptr
+            && (State == EMtoUPreviewState::Ready || State == EMtoUPreviewState::Warning);
+    }
+};
+
 UCLASS()
 class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
 {
@@ -70,35 +99,47 @@ public:
     UMtoULiveLinkBinding* GetBinding() const { return Binding; }
     const FString& GetConnectionStatus() const { return ConnectionStatus; }
 
-    /** True while the actor owns a complete, transactional Generated Preview. */
-    bool HasReadyGeneratedPreview() const { return GeneratedPreviewMesh != nullptr; }
-    USkeletalMesh* GetGeneratedPreviewMesh() const { return GeneratedPreviewMesh; }
-    EMtoUPreviewState GetPreviewState() const { return PreviewState; }
-    EMtoUPreviewBuildStage GetPreviewBuildStage() const { return PreviewBuildStage; }
+    /** The single coherent read of Preview readiness for the current revision. */
+    FMtoUPreviewReadiness GetPreviewReadiness() const;
+
     EMtoUDisplayTarget GetDisplayTarget() const { return DisplayTarget; }
-    const FString& GetPreviewDiagnostics() const { return PreviewDiagnostics; }
-    const FString& GetPreviewSummary() const { return PreviewSummary; }
     const FString& GetModelDiagnostics() const { return ModelDiagnostics; }
     EMtoUModelDiagnosticLevel GetModelDiagnosticLevel() const { return ModelDiagnosticLevel; }
 
-    void BeginPreviewBuild();
-    void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
-    void CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning,
-        const FString& Diagnostics, const FString& Summary = FString());
-    void FailPreviewBuild(EMtoUPreviewBuildStage Stage, const FString& Diagnostics);
-    void InvalidateGeneratedPreview(const FString& Diagnostics);
-    void DeleteGeneratedPreview();
-    void ReleaseGeneratedPreview();
+    /** Display selection is a separate concern that consumes readiness. */
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+
+    /**
+     * Connection-time Model diagnostics are separate evidence; they never
+     * modify Preview readiness.
+     */
     void SetModelDiagnostics(
         const FString& Diagnostics,
         EMtoUModelDiagnosticLevel Level);
+
+    /** Semantic lifecycle notifications that route through the actor's readiness transitions. */
     void NotifyBindingInputsChanged();
     void NotifySourceAssetChanged(const UObject* Asset, const FString& Reason);
+    void NotifyGeneratedPreviewDeleted();
+    void NotifyTransientPreviewReleased();
 
 private:
     friend class FMtoULiveLinkSource;
+    friend class FMtoUPreviewPreparation;
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMtoUPreviewReadinessTestAccess;
+#endif
+
+    /** Readiness transitions owned exclusively by the Binding actor. */
+    bool BeginPreviewBuild();
+    void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
+    bool CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning,
+        const FString& Diagnostics, const FString& Summary = FString());
+    bool FailPreviewBuild(EMtoUPreviewBuildStage Stage, const FString& Diagnostics);
+    void InvalidateGeneratedPreview(const FString& Diagnostics);
+    void EnterUnrefreshedReadiness(const FString& Message);
+    void ReleaseGeneratedPreview();
 
     void RefreshBinding();
     void ReapplyDisplayTarget();
@@ -107,6 +148,7 @@ private:
     void HandleDriverMeshChanged();
     void HandlePreviewMeshChanged();
     void HandlePreviewMeshBuilt(UStaticMesh* Mesh);
+    void HideDisplay();
 
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
@@ -145,7 +187,4 @@ private:
     FDelegateHandle DriverMeshChangedHandle;
     FDelegateHandle PreviewMeshChangedHandle;
     FDelegateHandle PreviewMeshBuiltHandle;
-    bool bPreviewBuildHasWarning = false;
-
-    void HideDisplay();
 };

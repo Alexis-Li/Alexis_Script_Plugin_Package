@@ -4,7 +4,7 @@
 #include "MtoULiveLinkEditorTestFixtures.h"
 
 #include "MtoULiveLinkBinding.h"
-#include "MtoULiveLinkPreview.h"
+#include "MtoULiveLinkPreviewDetail.h"
 
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMeshEditor.h"

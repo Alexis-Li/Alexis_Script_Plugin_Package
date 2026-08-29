@@ -30,15 +30,7 @@ void AMtoULiveLinkActor::PostLoad()
 {
     Super::PostLoad();
     GeneratedPreviewMesh = nullptr;
-    PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
-    PreviewBuildStage = EMtoUPreviewBuildStage::None;
-    ModelDiagnostics.Reset();
-    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
-    PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
-        ? TEXT("Level loaded. Run Refresh Preview.")
-        : FString();
-    PreviewSummary = PreviewDiagnostics;
+    EnterUnrefreshedReadiness(TEXT("Level loaded. Run Refresh Preview."));
     ShowDriverMesh();
     RefreshBinding();
 }
@@ -47,13 +39,7 @@ void AMtoULiveLinkActor::PostDuplicate(bool bDuplicateForPIE)
 {
     Super::PostDuplicate(bDuplicateForPIE);
     GeneratedPreviewMesh = nullptr;
-    PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
-    PreviewBuildStage = EMtoUPreviewBuildStage::None;
-    ModelDiagnostics.Reset();
-    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
-    PreviewDiagnostics = TEXT("Actor duplicated or reloaded. Run Refresh Preview.");
-    PreviewSummary = PreviewDiagnostics;
+    EnterUnrefreshedReadiness(TEXT("Actor duplicated or reloaded. Run Refresh Preview."));
     ShowDriverMesh();
     RefreshBinding();
 }
@@ -81,17 +67,7 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
 
     ReleaseGeneratedPreview();
     Binding = InBinding;
-    PreviewState = Binding && Binding->PreviewStaticMesh
-        ? EMtoUPreviewState::Dirty
-        : EMtoUPreviewState::None;
-    PreviewBuildStage = EMtoUPreviewBuildStage::None;
-    ModelDiagnostics.Reset();
-    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
-    PreviewDiagnostics = PreviewState == EMtoUPreviewState::Dirty
-        ? TEXT("Run Refresh Preview to prepare the current Binding inputs.")
-        : FString();
-    PreviewSummary = PreviewDiagnostics;
+    EnterUnrefreshedReadiness(TEXT("Run Refresh Preview to prepare the current Binding inputs."));
     RebindInputNotifications();
     if (Binding)
     {
@@ -109,8 +85,26 @@ void AMtoULiveLinkActor::SetConnectionStatus(const FString& InStatus)
     ConnectionStatus = InStatus;
 }
 
-void AMtoULiveLinkActor::BeginPreviewBuild()
+FMtoUPreviewReadiness AMtoULiveLinkActor::GetPreviewReadiness() const
 {
+    FMtoUPreviewReadiness Readiness;
+    Readiness.State = PreviewState;
+    Readiness.Stage = PreviewBuildStage;
+    Readiness.GeneratedPreview = GeneratedPreviewMesh;
+    Readiness.Summary = PreviewSummary;
+    Readiness.Diagnostics = PreviewDiagnostics;
+    return Readiness;
+}
+
+bool AMtoULiveLinkActor::BeginPreviewBuild()
+{
+    if (PreviewState == EMtoUPreviewState::Building)
+    {
+        ensureAlwaysMsgf(false, TEXT(
+            "MtoU Preview readiness: ignored a refresh start while the current refresh is still Building."));
+        return false;
+    }
+
     ReleaseGeneratedPreview();
     HideDisplay();
     PreviewState = EMtoUPreviewState::Building;
@@ -119,40 +113,70 @@ void AMtoULiveLinkActor::BeginPreviewBuild()
     PreviewSummary = PreviewDiagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
+    return true;
 }
 
 void AMtoULiveLinkActor::SetPreviewBuildStage(EMtoUPreviewBuildStage Stage)
 {
+    // The enum order matches the preparation pipeline, so stage observation is
+    // monotonic and accepted only while the current refresh is Building.
+    if (PreviewState != EMtoUPreviewState::Building
+        || Stage < PreviewBuildStage)
+    {
+        ensureAlwaysMsgf(false, TEXT(
+            "MtoU Preview readiness: ignored build stage %d observed outside monotonic progression (state %d, stage %d)."),
+            static_cast<int32>(Stage), static_cast<int32>(PreviewState), static_cast<int32>(PreviewBuildStage));
+        return;
+    }
     PreviewBuildStage = Stage;
 }
 
-void AMtoULiveLinkActor::CompletePreviewBuild(
+bool AMtoULiveLinkActor::CompletePreviewBuild(
     USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics,
     const FString& Summary)
 {
-    if (!Mesh || Mesh->GetOuter() != this || !Mesh->HasAnyFlags(RF_Transient))
+    if (PreviewState != EMtoUPreviewState::Building)
     {
+        ensureAlwaysMsgf(false, TEXT(
+            "MtoU Preview readiness: ignored a commit outside Building (state %d); the current readiness is unchanged."),
+            static_cast<int32>(PreviewState));
+        return false;
+    }
+
+    if (!Mesh
+        || Mesh->GetOuter() != this
+        || !Mesh->HasAnyFlags(RF_Transient)
+        || Mesh->HasAnyFlags(RF_Public | RF_Standalone))
+    {
+        // A Generated Preview with invalid ownership or persistence flags is a
+        // Validation-stage failure; it can never become ready.
         FailPreviewBuild(
             EMtoUPreviewBuildStage::Validation,
             TEXT("Preview preparation returned a mesh that is not actor-owned transient data."));
-        return;
+        return false;
     }
 
     GeneratedPreviewMesh = Mesh;
-    bPreviewBuildHasWarning = bHasWarning;
     PreviewState = bHasWarning ? EMtoUPreviewState::Warning : EMtoUPreviewState::Ready;
     PreviewBuildStage = EMtoUPreviewBuildStage::Validation;
     PreviewDiagnostics = Diagnostics;
     PreviewSummary = Summary.IsEmpty() ? Diagnostics : Summary;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    ShowGeneratedPreview(false);
+    return true;
 }
 
-void AMtoULiveLinkActor::FailPreviewBuild(
+bool AMtoULiveLinkActor::FailPreviewBuild(
     EMtoUPreviewBuildStage Stage, const FString& Diagnostics)
 {
+    if (PreviewState != EMtoUPreviewState::Building)
+    {
+        ensureAlwaysMsgf(false, TEXT(
+            "MtoU Preview readiness: ignored a failure outside Building (state %d); the current readiness is unchanged."),
+            static_cast<int32>(PreviewState));
+        return false;
+    }
+
     ReleaseGeneratedPreview();
     HideDisplay();
     PreviewState = EMtoUPreviewState::Error;
@@ -161,26 +185,41 @@ void AMtoULiveLinkActor::FailPreviewBuild(
     PreviewSummary = Diagnostics;
     ModelDiagnostics.Reset();
     ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
+    return true;
 }
 
 void AMtoULiveLinkActor::InvalidateGeneratedPreview(const FString& Diagnostics)
 {
     ReleaseGeneratedPreview();
-    PreviewState = Binding ? EMtoUPreviewState::Dirty : EMtoUPreviewState::None;
-    PreviewBuildStage = EMtoUPreviewBuildStage::None;
-    PreviewDiagnostics = Diagnostics;
-    PreviewSummary = Diagnostics;
-    ModelDiagnostics.Reset();
-    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
-    bPreviewBuildHasWarning = false;
+    EnterUnrefreshedReadiness(Diagnostics);
 }
 
-void AMtoULiveLinkActor::DeleteGeneratedPreview()
+void AMtoULiveLinkActor::EnterUnrefreshedReadiness(const FString& Message)
+{
+    const bool bConfigured = Binding
+        && Binding->SkeletalMesh
+        && Binding->PreviewStaticMesh;
+    PreviewState = bConfigured
+        ? EMtoUPreviewState::Dirty
+        : EMtoUPreviewState::None;
+    PreviewBuildStage = EMtoUPreviewBuildStage::None;
+    PreviewDiagnostics = bConfigured ? Message : FString();
+    PreviewSummary = PreviewDiagnostics;
+    ModelDiagnostics.Reset();
+    ModelDiagnosticLevel = EMtoUModelDiagnosticLevel::None;
+}
+
+void AMtoULiveLinkActor::NotifyGeneratedPreviewDeleted()
 {
     InvalidateGeneratedPreview(TEXT("Generated Preview deleted. Run Refresh Preview to rebuild it."));
     PreviewSummary.Reset();
     ShowDriverMesh();
+}
+
+void AMtoULiveLinkActor::NotifyTransientPreviewReleased()
+{
+    ReleaseGeneratedPreview();
+    EnterUnrefreshedReadiness(TEXT("The transient Generated Preview was released. Run Refresh Preview."));
 }
 
 void AMtoULiveLinkActor::ReleaseGeneratedPreview()
@@ -223,14 +262,10 @@ void AMtoULiveLinkActor::SetModelDiagnostics(
     const FString& Diagnostics,
     EMtoUModelDiagnosticLevel Level)
 {
+    // Connection-time Model evidence is a separate concern: it is recorded
+    // here and never modifies Ready or Warning readiness.
     ModelDiagnostics = Diagnostics;
     ModelDiagnosticLevel = Level;
-    if (GeneratedPreviewMesh)
-    {
-        PreviewState = bPreviewBuildHasWarning || Level == EMtoUModelDiagnosticLevel::Partial
-            ? EMtoUPreviewState::Warning
-            : EMtoUPreviewState::Ready;
-    }
 }
 
 void AMtoULiveLinkActor::NotifyBindingInputsChanged()
@@ -337,15 +372,30 @@ void AMtoULiveLinkActor::UnbindInputNotifications()
 
 void AMtoULiveLinkActor::HandleDriverMeshChanged()
 {
+    // Refresh runs synchronously on the Game Thread, so the only source
+    // rebuild events that can arrive while Building are produced by this
+    // build's own read of the source meshes; they must not self-invalidate.
+    if (PreviewState == EMtoUPreviewState::Building)
+    {
+        return;
+    }
     NotifySourceAssetChanged(ObservedDriverMesh.Get(), TEXT("source rebuild"));
 }
 
 void AMtoULiveLinkActor::HandlePreviewMeshChanged()
 {
+    if (PreviewState == EMtoUPreviewState::Building)
+    {
+        return;
+    }
     NotifySourceAssetChanged(ObservedPreviewMesh.Get(), TEXT("PostEdit change"));
 }
 
 void AMtoULiveLinkActor::HandlePreviewMeshBuilt(UStaticMesh* Mesh)
 {
+    if (PreviewState == EMtoUPreviewState::Building)
+    {
+        return;
+    }
     NotifySourceAssetChanged(Mesh, TEXT("source rebuild"));
 }

@@ -2,6 +2,7 @@
 
 #include "MtoULiveLinkFactories.h"
 #include "MtoULiveLinkPreview.h"
+#include "MtoULiveLinkPreviewDetail.h"
 #include "MtoULiveLinkEditorTestFixtures.h"
 
 #include "MtoULiveLinkActor.h"
@@ -384,7 +385,7 @@ bool FMtoUPreviewPreparationPreflightTest::RunTest(const FString& Parameters)
 
     TArray<EMtoUPreviewBuildStage> ObservedStages;
     const FMtoUPreviewPreparationResult Result = Actor && Binding
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding,
+        ? MtoUPreparePreview(*Actor, *Binding,
             [&ObservedStages](EMtoUPreviewBuildStage Stage) { ObservedStages.Add(Stage); })
         : FMtoUPreviewPreparationResult();
     TestFalse(TEXT("missing binding inputs fail preparation"), Result.bSucceeded);
@@ -443,7 +444,7 @@ bool FMtoUPreviewPreparationSuccessTest::RunTest(const FString& Parameters)
         LegacyRoundTrip && LegacyRoundTrip->SkeletalMesh == Driver);
     TArray<EMtoUPreviewBuildStage> ObservedStages;
     const FMtoUPreviewPreparationResult Result = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding,
+        ? MtoUPreparePreview(*Actor, *Binding,
             [&ObservedStages](EMtoUPreviewBuildStage Stage) { ObservedStages.Add(Stage); })
         : FMtoUPreviewPreparationResult();
 
@@ -508,27 +509,27 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
 
     Actor->SetBinding(Binding);
     TestTrue(TEXT("placement marks configured inputs Dirty"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty);
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty);
     TestTrue(TEXT("binding selects the Driver display target"),
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver);
     TestTrue(TEXT("MtoU display component bypasses post-process animation"),
         Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
     TestFalse(TEXT("placement never invokes Refresh automatically"),
-        Actor->HasReadyGeneratedPreview());
+        Actor->GetPreviewReadiness().IsUsable());
     TestTrue(TEXT("legacy Animation target remains visible before first Refresh"),
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     Actor->OnConstruction(Actor->GetActorTransform());
     TestFalse(TEXT("PostEdit construction never invokes Refresh automatically"),
-        Actor->HasReadyGeneratedPreview());
+        Actor->GetPreviewReadiness().IsUsable());
 
-    const FMtoUPreviewPreparationResult First =
+    const FMtoUPreviewReadiness First =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     USkeletalMesh* FirstMesh = First.GeneratedPreview;
     TestTrue(TEXT("explicit Refresh commits one complete preview"),
-        First.bSucceeded && Actor->HasReadyGeneratedPreview());
+        First.IsUsable() && Actor->GetPreviewReadiness().IsUsable());
     TestTrue(TEXT("inpainted vertices become Warning rather than failure"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Ready
-        || Actor->GetPreviewState() == EMtoUPreviewState::Warning);
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        || Actor->GetPreviewReadiness().State == EMtoUPreviewState::Warning);
     TestTrue(TEXT("successful Refresh displays the Generated Preview"),
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == FirstMesh);
     TestTrue(TEXT("successful Refresh records the Generated Preview display target"),
@@ -546,21 +547,21 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
         && Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
 
     TWeakObjectPtr<USkeletalMesh> ReplacedMesh = FirstMesh;
-    const FMtoUPreviewPreparationResult Second =
+    const FMtoUPreviewReadiness Second =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("repeated Refresh replaces the previous transient mesh"),
-        Second.bSucceeded && Second.GeneratedPreview != FirstMesh);
+        Second.IsUsable() && Second.GeneratedPreview != FirstMesh);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("replacement releases the previous transient mesh"), ReplacedMesh.IsValid());
     TestTrue(TEXT("GC retains the actor-owned current preview"),
-        Actor->HasReadyGeneratedPreview());
+        Actor->GetPreviewReadiness().IsUsable());
 
     AMtoULiveLinkActor* ReloadedActor = DuplicateObject<AMtoULiveLinkActor>(
         Actor, World->GetCurrentLevel());
     TestTrue(TEXT("level save/reload drops transient preview and requires Refresh"),
         ReloadedActor
-        && !ReloadedActor->HasReadyGeneratedPreview()
-        && ReloadedActor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !ReloadedActor->GetPreviewReadiness().IsUsable()
+        && ReloadedActor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
         && ReloadedActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     if (ReloadedActor)
     {
@@ -569,7 +570,7 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
 
     Actor->SetConnectionStatus(TEXT("Disconnected"));
     TestTrue(TEXT("disconnect keeps the Generated Preview"),
-        Actor->HasReadyGeneratedPreview());
+        Actor->GetPreviewReadiness().IsUsable());
     TestTrue(TEXT("disconnect preserves the Generated Preview display target"),
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Second.GeneratedPreview);
@@ -578,19 +579,19 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
         GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Preview);
     }
     TestTrue(TEXT("Reimport marks Dirty and releases stale preview"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
-        && !Actor->HasReadyGeneratedPreview()
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
     TestTrue(TEXT("Refresh can recover after Reimport invalidation"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
     Preview->OnPostMeshBuild().Broadcast(Preview);
     TestTrue(TEXT("source rebuild notification marks Dirty and hides stale preview"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
-        && !Actor->HasReadyGeneratedPreview()
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
     TestTrue(TEXT("Refresh can recover after source rebuild invalidation"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
 
     Binding->PreviewStaticMesh = nullptr;
     FProperty* PreviewInputProperty = FindFProperty<FProperty>(
@@ -599,19 +600,20 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     FPropertyChangedEvent PreviewInputChanged(PreviewInputProperty);
     Actor->ShowDriverMesh();
     Binding->PostEditChangeProperty(PreviewInputChanged);
-    TestEqual(TEXT("removing an input leaves the preview Dirty"),
-        Actor->GetPreviewState(), EMtoUPreviewState::Dirty);
+    TestEqual(TEXT("removing a required input produces the unconfigured None state"),
+        Actor->GetPreviewReadiness().State, EMtoUPreviewState::None);
     TestTrue(TEXT("Binding input edits preserve the Driver display target"),
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     TestFalse(TEXT("Binding input changes release and hide stale preview"),
-        Actor->HasReadyGeneratedPreview());
-    const FMtoUPreviewPreparationResult Failed =
+        Actor->GetPreviewReadiness().IsUsable());
+    const FMtoUPreviewReadiness Failed =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("failed Refresh is transactional"),
-        !Failed.bSucceeded
+        !Failed.IsUsable()
         && Failed.GeneratedPreview == nullptr
-        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && Failed.State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
     const FProperty* GeneratedProperty = FindFProperty<FProperty>(
@@ -623,26 +625,26 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     Binding->PreviewStaticMesh = Preview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
     TestTrue(TEXT("editor shutdown cleanup seam releases the preview"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
-    TWeakObjectPtr<USkeletalMesh> ShutdownMesh = Actor->GetGeneratedPreviewMesh();
-    Actor->ReleaseGeneratedPreview();
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+    TWeakObjectPtr<USkeletalMesh> ShutdownMesh = Actor->GetPreviewReadiness().GeneratedPreview;
+    Actor->NotifyTransientPreviewReleased();
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("editor shutdown releases transient preview data"),
         ShutdownMesh.IsValid());
     TestTrue(TEXT("manual delete fixture has a ready preview"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
-    TWeakObjectPtr<USkeletalMesh> DeletedMesh = Actor->GetGeneratedPreviewMesh();
-    Actor->DeleteGeneratedPreview();
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+    TWeakObjectPtr<USkeletalMesh> DeletedMesh = Actor->GetPreviewReadiness().GeneratedPreview;
+    Actor->NotifyGeneratedPreviewDeleted();
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestTrue(TEXT("manual delete releases the preview and restores the Driver"),
         !DeletedMesh.IsValid()
-        && !Actor->HasReadyGeneratedPreview()
-        && Actor->GetPreviewState() == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
         && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     TestTrue(TEXT("final Refresh succeeds before actor destruction"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
-    TWeakObjectPtr<USkeletalMesh> DestroyedMesh = Actor->GetGeneratedPreviewMesh();
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+    TWeakObjectPtr<USkeletalMesh> DestroyedMesh = Actor->GetPreviewReadiness().GeneratedPreview;
     Actor->Destroy();
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("actor destruction releases transient preview data"),
@@ -651,8 +653,8 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
     AMtoULiveLinkActor* WorldUnloadActor = World->SpawnActor<AMtoULiveLinkActor>();
     WorldUnloadActor->SetBinding(Binding);
     TestTrue(TEXT("world-unload fixture has a ready preview"),
-        FMtoUPreviewPreparation::RefreshActor(*WorldUnloadActor).bSucceeded);
-    TWeakObjectPtr<USkeletalMesh> WorldUnloadMesh = WorldUnloadActor->GetGeneratedPreviewMesh();
+        FMtoUPreviewPreparation::RefreshActor(*WorldUnloadActor).IsUsable());
+    TWeakObjectPtr<USkeletalMesh> WorldUnloadMesh = WorldUnloadActor->GetPreviewReadiness().GeneratedPreview;
     World->DestroyWorld(false);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("world unload releases transient preview data"),
@@ -685,7 +687,7 @@ bool FMtoUPreviewLocalRetopologyTest::RunTest(const FString& Parameters)
         && PreviewDescription->Vertices().Num() == DriverDescription->Vertices().Num() + 1);
 
     const FMtoUPreviewPreparationResult Result = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     AddInfo(Result.Diagnostics);
     TestTrue(TEXT("local-retopology garment builds a skinned LOD0 preview"),
@@ -815,7 +817,7 @@ bool FMtoUPreviewMorphProjectionTest::RunTest(const FString& Parameters)
     Binding->PreviewStaticMesh = Preview;
 
     const FMtoUPreviewPreparationResult Result = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     AddInfo(Result.Diagnostics);
     const TMap<FName, FVector3f> ExpectedDeltas = {
@@ -897,31 +899,50 @@ bool FMtoUPreviewMorphProjectionTest::RunTest(const FString& Parameters)
         && CorrectiveDeltas[0].PositionDelta.Equals(FVector3f(2.0f, 0.0f, 0.0f)));
 
     Actor->SetBinding(Binding);
-    FMtoUPreviewPreparationResult FirstRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const auto SparseDeltaCount = [](const USkeletalMesh* Mesh)
+    {
+        int64 Total = 0;
+        if (Mesh)
+        {
+            for (const TObjectPtr<UMorphTarget>& Morph : Mesh->GetMorphTargets())
+            {
+                if (Morph)
+                {
+                    Total += Morph->GetNumDeltasForLOD(0);
+                }
+            }
+        }
+        return Total;
+    };
+    const FMtoUPreviewReadiness FirstRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     TWeakObjectPtr<USkeletalMesh> FirstLibrary = FirstRefresh.GeneratedPreview;
-    FMtoUPreviewPreparationResult SecondRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const FMtoUPreviewReadiness SecondRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     TWeakObjectPtr<USkeletalMesh> SecondLibrary = SecondRefresh.GeneratedPreview;
+    const int32 FirstMorphCount = FirstRefresh.GeneratedPreview
+        ? FirstRefresh.GeneratedPreview->GetMorphTargets().Num() : 0;
+    const int64 FirstSparse = SparseDeltaCount(FirstRefresh.GeneratedPreview);
+    const int32 SecondMorphCount = SecondRefresh.GeneratedPreview
+        ? SecondRefresh.GeneratedPreview->GetMorphTargets().Num() : 0;
+    const int64 SecondSparse = SparseDeltaCount(SecondRefresh.GeneratedPreview);
     TestTrue(TEXT("repeated Refresh replaces the complete transient Morph library"),
-        FirstRefresh.bSucceeded && SecondRefresh.bSucceeded
+        FirstRefresh.IsUsable() && SecondRefresh.IsUsable()
         && FirstLibrary != SecondLibrary
-        && FirstRefresh.MorphTargetCount == SecondRefresh.MorphTargetCount
-        && FirstRefresh.SparseMorphDeltaCount == SecondRefresh.SparseMorphDeltaCount);
-    FirstRefresh = FMtoUPreviewPreparationResult();
+        && FirstMorphCount == SecondMorphCount
+        && FirstSparse == SecondSparse);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("repeated Refresh releases the previous transient Morph library"),
         FirstLibrary.IsValid());
 
     Driver->GetMorphTargets().Add(NewObject<UMorphTarget>(
         Driver, FName(TEXT("BrokenRequired")), RF_Transient));
-    FMtoUPreviewPreparationResult FailedRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
-    SecondRefresh = FMtoUPreviewPreparationResult();
+    const FMtoUPreviewReadiness FailedRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestTrue(TEXT("one required Morph failure transactionally discards and hides the preview"),
-        !FailedRefresh.bSucceeded
+        !FailedRefresh.IsUsable()
         && FailedRefresh.GeneratedPreview == nullptr
-        && FailedRefresh.FailureStage == EMtoUPreviewBuildStage::SkeletalMeshBuild
-        && Actor->GetPreviewState() == EMtoUPreviewState::Error
-        && !Actor->HasReadyGeneratedPreview()
+        && FailedRefresh.Stage == EMtoUPreviewBuildStage::SkeletalMeshBuild
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
         && !SecondLibrary.IsValid());
 
@@ -960,7 +981,7 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
     }
 
     const FMtoUPreviewPreparationResult Result = Actor
-        ? FMtoUPreviewPreparation::RefreshActor(*Actor)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     AddInfo(Result.Diagnostics);
     TestTrue(TEXT("Refresh succeeds when a local Driver Morph has no Preview surface"),
@@ -972,15 +993,18 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
         Result.GeneratedPreview
             ? Result.GeneratedPreview->FindMorphTarget(FName(TEXT("NoMatchingSurface")))
             : nullptr);
-    TestTrue(TEXT("the Generated Preview remains visible with a warning"),
-        Actor && Actor->GetPreviewState() == EMtoUPreviewState::Warning
+
+    const FMtoUPreviewReadiness Readiness = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("the warning readiness is usable and displayed"),
+        Readiness.State == EMtoUPreviewState::Warning
+        && Readiness.IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
-            == Result.GeneratedPreview);
+            == Readiness.GeneratedPreview);
 
     FMtoUPreviewQualityThresholds UnsafeThresholds;
     UnsafeThresholds.MaxWarningInpaintRatio = Result.InpaintLowConfidenceRatio - 0.01;
     const FMtoUPreviewPreparationResult UnsafeResult = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding, {}, UnsafeThresholds)
+        ? MtoUPreparePreview(*Actor, *Binding, {}, UnsafeThresholds)
         : FMtoUPreviewPreparationResult();
     TestTrue(TEXT("an Error quality verdict transactionally discards the generated preview"),
         !UnsafeResult.bSucceeded
@@ -1043,7 +1067,7 @@ bool FMtoUPreviewMeshDataTest::RunTest(const FString& Parameters)
     Binding->SkeletalMesh = Driver;
     Binding->PreviewStaticMesh = Preview;
     const FMtoUPreviewPreparationResult Result = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     AddInfo(Result.Diagnostics);
     FMeshDescription* GeneratedDescription = Result.GeneratedPreview
@@ -1129,7 +1153,7 @@ bool FMtoUPreviewSourceFailuresTest::RunTest(const FString& Parameters)
     Binding->PreviewStaticMesh = NewObject<UStaticMesh>(WorldPackage);
 
     const FMtoUPreviewPreparationResult MissingSource = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     TestTrue(TEXT("missing LOD0 source data fails without RenderData fallback"),
         !MissingSource.bSucceeded
@@ -1162,7 +1186,7 @@ bool FMtoUPreviewSourceFailuresTest::RunTest(const FString& Parameters)
     Binding->SkeletalMesh = MalformedDriver;
     Binding->PreviewStaticMesh = ValidPreview;
     const FMtoUPreviewPreparationResult MissingInfluence = Actor
-        ? FMtoUPreviewPreparation::Prepare(*Actor, *Binding)
+        ? MtoUPreparePreview(*Actor, *Binding)
         : FMtoUPreviewPreparationResult();
     AddInfo(MissingInfluence.Diagnostics);
     TestTrue(TEXT("a source influence bone absent from target skeleton is blocking"),
@@ -1260,7 +1284,7 @@ bool FMtoUPreviewMisalignmentTest::RunTest(const FString& Parameters)
     FPropertyChangedEvent PreviewInputChanged(PreviewInputProperty);
 
     const FMtoUPreviewPreparationResult Misaligned =
-        FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+        MtoUPreparePreview(*Actor, *Binding);
     AddInfo(Misaligned.Diagnostics);
     TestFalse(TEXT("an intentionally misaligned input cannot produce a usable preview"),
         Misaligned.bSucceeded);
@@ -1275,29 +1299,30 @@ bool FMtoUPreviewMisalignmentTest::RunTest(const FString& Parameters)
     Binding->SkeletalMesh = Driver;
     Binding->PreviewStaticMesh = AlignedPreview;
     {
-        const FMtoUPreviewPreparationResult Aligned =
+        const FMtoUPreviewReadiness Aligned =
             FMtoUPreviewPreparation::RefreshActor(*Actor);
         TestTrue(TEXT("the aligned input recovers with a complete preview"),
-            Aligned.bSucceeded && Actor->HasReadyGeneratedPreview());
+            Aligned.IsUsable() && Actor->GetPreviewReadiness().IsUsable());
     }
 
     Binding->PreviewStaticMesh = MisalignedPreview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
-    TWeakObjectPtr<USkeletalMesh> StaleMesh = Actor->GetGeneratedPreviewMesh();
-    const FMtoUPreviewPreparationResult Failed =
+    TWeakObjectPtr<USkeletalMesh> StaleMesh = Actor->GetPreviewReadiness().GeneratedPreview;
+    const FMtoUPreviewReadiness Failed =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestTrue(TEXT("a misaligned Refresh transactionally discards and hides the stale preview"),
-        !Failed.bSucceeded
+        !Failed.IsUsable()
         && Failed.GeneratedPreview == nullptr
-        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && Failed.State == EMtoUPreviewState::Error
+        && Failed.Stage == EMtoUPreviewBuildStage::GeometryConversion
         && !StaleMesh.IsValid()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
     Binding->PreviewStaticMesh = AlignedPreview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
     TestTrue(TEXT("Refresh recovers after a misaligned attempt"),
-        FMtoUPreviewPreparation::RefreshActor(*Actor).bSucceeded);
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
 
     if (World)
     {
@@ -1357,7 +1382,7 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver);
 
     TArray<EMtoUPreviewBuildStage> ObservedStages;
-    const FMtoUPreviewPreparationResult Result = FMtoUPreviewPreparation::Prepare(
+    const FMtoUPreviewPreparationResult Result = MtoUPreparePreview(
         *Actor, *Binding,
         [&ObservedStages](EMtoUPreviewBuildStage Stage) { ObservedStages.Add(Stage); });
     AddInfo(Result.Diagnostics);
@@ -1467,13 +1492,13 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         GeneratedMorph(TEXT("HairSway")));
 
     // Model preview displays only the generated garment through explicit Refresh.
-    const FMtoUPreviewPreparationResult RefreshResult =
+    const FMtoUPreviewReadiness RefreshResult =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("explicit Refresh readies the garment preview"),
-        RefreshResult.bSucceeded
-        && (Actor->GetPreviewState() == EMtoUPreviewState::Ready
-            || Actor->GetPreviewState() == EMtoUPreviewState::Warning)
-        && Actor->HasReadyGeneratedPreview());
+        RefreshResult.IsUsable()
+        && (RefreshResult.State == EMtoUPreviewState::Ready
+            || RefreshResult.State == EMtoUPreviewState::Warning)
+        && Actor->GetPreviewReadiness().IsUsable());
     TestTrue(TEXT("Model preview displays only the Generated Preview"),
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
             == RefreshResult.GeneratedPreview);
@@ -1484,8 +1509,8 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Fixtures.Preview);
     }
     TestTrue(TEXT("source Reimport marks Dirty and hides the stale garment"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
-        && !Actor->HasReadyGeneratedPreview()
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
     TestFalse(TEXT("normal Refresh creates no .uasset on the filesystem"),
         IFileManager::Get().FileExists(*PackageFilename));
@@ -1556,7 +1581,7 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
     // transfer against the resolved surface, Morph filtering, Generated
     // Preview ownership, and readiness propagation.
     const FMtoUPreviewPreparationResult Manual =
-        FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+        MtoUPreparePreview(*Actor, *Binding);
     AddInfo(Manual.Diagnostics);
     TestTrue(TEXT("a valid multi-slot override builds the complete preview"),
         Manual.bSucceeded && Manual.GeneratedPreview != nullptr);
@@ -1573,24 +1598,26 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
             && Manual.GeneratedPreview->GetRefSkeleton().GetNum()
                 == Fixtures.FullDriver->GetRefSkeleton().GetNum());
 
-    const FMtoUPreviewPreparationResult Ready =
+    const FMtoUPreviewReadiness Ready =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("the ready override preview is displayed"),
-        Ready.bSucceeded && Actor->HasReadyGeneratedPreview());
+        Ready.IsUsable()
+        && Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Ready.GeneratedPreview);
 
     // A partial multi-slot selection fails transactionally across the seam
     // instead of transferring against the full character.
     Binding->DriverGarmentSlotOverride = {UpperA};
     Binding->PostEditChangeProperty(OverrideChanged);
-    const FMtoUPreviewPreparationResult Partial =
+    const FMtoUPreviewReadiness Partial =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     AddInfo(Partial.Diagnostics);
-    TestTrue(TEXT("a partial override fails transactionally through the full preparation seam"),
-        !Partial.bSucceeded
+    TestTrue(TEXT("a partial override fails transactionally through the refresh seam"),
+        !Partial.IsUsable()
         && Partial.GeneratedPreview == nullptr
-        && Partial.bManualGarmentSource
-        && Partial.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
-        && Actor->GetPreviewState() == EMtoUPreviewState::Error
+        && Partial.State == EMtoUPreviewState::Error
+        && Partial.Stage == EMtoUPreviewBuildStage::GeometryConversion
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
     // Driver Reimport invalidates readiness, and a stale override keeps
@@ -1613,31 +1640,31 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
             Fixtures.FullDriver);
     }
     TestTrue(TEXT("Driver Reimport marks readiness Dirty and hides the stale garment"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
-        && !Actor->HasReadyGeneratedPreview());
-    const FMtoUPreviewPreparationResult Stale =
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable());
+    const FMtoUPreviewReadiness Stale =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     AddInfo(Stale.Diagnostics);
     TestTrue(TEXT("a stale override keeps failing after Reimport instead of returning to Auto"),
-        !Stale.bSucceeded
+        !Stale.IsUsable()
         && Stale.GeneratedPreview == nullptr
         && Stale.Diagnostics.Contains(TEXT("unknown Driver material slot"))
-        && Actor->GetPreviewState() == EMtoUPreviewState::Error);
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error);
 
     // Clearing the override recovers the safe automatic preview.
     Binding->DriverGarmentSlotOverride.Reset();
     Binding->PostEditChangeProperty(OverrideChanged);
     TestTrue(TEXT("clearing the override leaves readiness Dirty"),
-        Actor->GetPreviewState() == EMtoUPreviewState::Dirty
-        && !Actor->HasReadyGeneratedPreview());
-    const FMtoUPreviewPreparationResult AutoAgain =
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable());
+    const FMtoUPreviewReadiness AutoAgain =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     AddInfo(AutoAgain.Diagnostics);
     TestTrue(TEXT("clearing back to Auto recovers the safe automatic preview"),
-        AutoAgain.bSucceeded
+        AutoAgain.IsUsable()
             && AutoAgain.GeneratedPreview != nullptr
-            && !AutoAgain.bManualGarmentSource
-            && Actor->HasReadyGeneratedPreview());
+            && AutoAgain.Diagnostics.Contains(TEXT("Auto selection"))
+            && Actor->GetPreviewReadiness().IsUsable());
 
     if (World)
     {
@@ -1700,7 +1727,7 @@ bool FMtoUFullCharacterQualityCorpusTest::RunTest(const FString& Parameters)
         FEnsureScope InpaintEnsureScope;
         const double StartSeconds = FPlatformTime::Seconds();
         const FMtoUPreviewPreparationResult Result =
-            FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+            MtoUPreparePreview(*Actor, *Binding);
         const double TotalMilliseconds = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
 
         AddInfo(FString::Printf(
@@ -1793,10 +1820,10 @@ bool FMtoUFullCharacterQualityCorpusTest::RunTest(const FString& Parameters)
             Binding->SkeletalMesh = IsolatedDriver;
             Binding->PreviewStaticMesh = ShiftedPreview.Get();
             const FMtoUPreviewPreparationResult Full =
-                FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+                MtoUPreparePreview(*Actor, *Binding);
             Binding->SkeletalMesh = Fixtures.GarmentOnlyDriver;
             const FMtoUPreviewPreparationResult Legacy =
-                FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+                MtoUPreparePreview(*Actor, *Binding);
             Binding->SkeletalMesh = Fixtures.FullDriver;
             AddInfo(Full.Diagnostics);
             AddInfo(Legacy.Diagnostics);
@@ -1923,7 +1950,7 @@ bool FMtoUCorpusMeasurementTest::RunTest(const FString& Parameters)
         FEnsureScope InpaintEnsureScope;
         const double StartSeconds = FPlatformTime::Seconds();
         const FMtoUPreviewPreparationResult Result =
-            FMtoUPreviewPreparation::Prepare(*Actor, *Binding);
+            MtoUPreparePreview(*Actor, *Binding);
         const double TotalMilliseconds = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
         const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 
