@@ -759,7 +759,7 @@ bool ResolveDriverGarmentSurfaceFromSlots(
     // imported slot name reached through the per-triangle material ID, and the
     // triangle-group layer that skeletal builds route sections by. Both stay
     // name- or slot-index based; no transient section arithmetic is persisted.
-    const FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
+    FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
     const bool bHasPolygonGroupNames = Description
         && Description->PolygonGroupAttributes().HasAttribute(
             MeshAttribute::PolygonGroup::ImportedMaterialSlotName);

@@ -26,7 +26,9 @@ complete-character bounds:
 Automatic resolution keeps nearest-ownership selection, uses matching imported
 slot names or assigned material assets to narrow geometric candidates only when
 that evidence covers the whole Preview, and applies two structural boundaries
-(constants live beside `ResolveDriverGarmentSurface`):
+(constants live beside `MtoUResolveDriverGarmentSurface` in the private
+`MtoUDriverGarmentSurface` module, which owns all source-selection and
+geometry-validation rules):
 
 * Source-mass boundary — selected Driver triangles must stay within 1.70x of
   Preview triangles (`MaxDriverToPreviewTriangleRatio`). Whole duplicated
@@ -50,10 +52,14 @@ that evidence covers the whole Preview, and applies two structural boundaries
   evidence, and heavy mixed-section imports are still caught by the mass
   boundary above.
 
-Boundary tests: `MtoULiveLink.Editor.Preview.GarmentFaultLines` (exact and
-near-shifted duplicate ambiguity) and the existing quality/boundary tests
-retain values immediately above and below every calibrated Ready, Warning, and
-Error boundary of `MtoUEvaluatePreviewQuality`.
+Boundary tests: `MtoULiveLink.Editor.GarmentSurface.Auto` and
+`MtoULiveLink.Editor.GarmentSurface.Failures` (exact and near-shifted duplicate
+ambiguity, source-mass rejection) replace the former
+`MtoULiveLink.Editor.Preview.GarmentResolution` and
+`MtoULiveLink.Editor.Preview.GarmentFaultLines` rule assertions at the private
+seam, and the existing quality/boundary tests retain values immediately above
+and below every calibrated Ready, Warning, and Error boundary of
+`MtoUEvaluatePreviewQuality`.
 
 ## Stock full-character corpus (synthetic fixture)
 

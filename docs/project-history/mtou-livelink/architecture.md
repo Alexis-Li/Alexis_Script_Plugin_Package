@@ -190,7 +190,23 @@ The Editor module owns:
 - the Content Browser factory for `MtoU_LiveLink Binding` assets;
 - the actor factory that turns a binding asset dragged into a viewport into an
   `AMtoULiveLinkActor`;
-- editor-only status presentation and asset validation.
+- editor-only status presentation and asset validation;
+- the private `MtoUDriverGarmentSurface` module (`MtoUDriverGarmentSurface.h`
+  and `.cpp` in the Editor module's `Private/`), which resolves the Driver
+  garment surface for one Preview refresh through one plain function
+  `MtoUResolveDriverGarmentSurface` and one result struct. It owns the
+  Auto/Manual choice from `Binding.DriverGarmentSlotOverride` (a non-empty
+  override never falls back to Auto), all source-selection and
+  geometry-validation rules (spatial agreement radius, source-mass boundary,
+  twin-region ambiguity, imported-slot identity matching, connected-region
+  ownership, whole-Preview coverage), and filtered-surface construction that
+  preserves original Driver vertex IDs. It returns either a validated surface
+  or an atomic failure with no usable surface plus failure evidence
+  (identity, counts, coverage, diagnostics), and is side-effect free.
+  Preview preparation consumes exactly one resolution outcome; it keeps
+  owning asset-to-mesh conversion, surface-distance measurement, weight
+  transfer, Preview Morph transfer, Generated Preview Skeletal Mesh
+  construction, quality evaluation, and the Preview refresh transaction.
 
 The plugin contains code only. Binding assets created by users live under their
 chosen project `/Game/...` folders and reference, rather than copy, the selected
@@ -447,7 +463,18 @@ Development-only automation tests cover:
   parent-child motion, translation, and unit scale;
 - preservation of actor world transform while root-bone motion changes;
 - end-to-end loopback socket flow, second-client rejection, bind failure, and
-  clean idempotent source shutdown.
+  clean idempotent source shutdown;
+- Driver garment-surface resolution across the private
+  `MtoUResolveDriverGarmentSurface` seam
+  (`MtoULiveLink.Editor.GarmentSurface.Auto/Manual/Failures`): garment-only
+  whole-surface compatibility, full-character selection, material mimicry,
+  complete coverage, source-mass rejection, exact-duplicate and near-twin
+  ambiguity determinism, valid multi-slot overrides, stable imported-identity
+  matching, partial/missing/duplicate/repeated/empty-slot failures with no
+  usable surface escaping, and clearing the override back to Auto. The outer
+  Preview tests (`FullCharacter`, `GarmentOverride`) retain only cross-seam
+  integration, replacing the former `GarmentResolution` and
+  `GarmentFaultLines` rule assertions.
 
 ### Build and repository verification
 

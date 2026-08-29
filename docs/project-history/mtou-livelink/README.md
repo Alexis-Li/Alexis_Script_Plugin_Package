@@ -85,6 +85,14 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   Athena editor with Topia Engine 5.7.4 without modifying engine or host-project
   source/configuration files. Added a repeatable dry-run-first helper for the
   same isolated build and binary-install workflow.
+- **2026-08-29:** Completed Issue #24 by moving Driver garment-surface
+  resolution behind the private `MtoUDriverGarmentSurface` module: Preview
+  preparation consumes one resolution outcome, the old resolution helpers were
+  deleted, focused `MtoULiveLink.Editor.GarmentSurface.Auto/Manual/Failures`
+  tests cross the new seam, and the outer Preview tests keep only cross-seam
+  integration. Compiled against stock UE 5.7.4 and passed all 37 owning
+  `MtoULiveLink` Editor automation tests; the Unreal packaging check passes and
+  no generated output is staged.
 
 ## Stable Records
 

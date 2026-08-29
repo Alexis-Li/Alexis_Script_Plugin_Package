@@ -22,7 +22,7 @@ struct FMtoUDriverGarmentSurfaceResult
     /** True when the Binding's manual Driver Garment Slot Override chose the source. */
     bool bManualSource = false;
     /** The validated Driver LOD0 garment surface; empty when resolution failed. */
-    FDynamicMesh3 Surface;
+    UE::Geometry::FDynamicMesh3 Surface;
     /** Connected Driver LOD0 regions that resolution selected as the garment source. */
     int32 RegionCount = 0;
     /** Driver LOD0 source triangles inside the resolved Driver garment surface. */
@@ -45,9 +45,9 @@ struct FMtoUDriverGarmentSurfaceResult
  * mutate the Binding, source assets, or any persistent project content.
  */
 FMtoUDriverGarmentSurfaceResult MtoUResolveDriverGarmentSurface(
-    const FDynamicMesh3& Driver,
+    const UE::Geometry::FDynamicMesh3& Driver,
     const USkeletalMesh& DriverAsset,
-    const FDynamicMesh3& Preview,
+    const UE::Geometry::FDynamicMesh3& Preview,
     const UStaticMesh& PreviewAsset,
     const UMtoULiveLinkBinding& Binding,
     double MisalignedNormalizedDistanceAverage);
