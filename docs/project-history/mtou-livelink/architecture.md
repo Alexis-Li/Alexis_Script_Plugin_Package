@@ -5,7 +5,7 @@ Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 pending a complete rerun
-Last aligned with implementation: 2026-08-21
+Last aligned with implementation: 2026-08-29
 
 ## Summary
 
@@ -615,7 +615,7 @@ Date: 2026-08-21
 Cached Playback is implemented entirely in the Maya component behind two
 focused internal seams: `_PlaybackCache` owns incrementally written temporary
 files, metadata, atomic completion, ordered iteration, replacement, stale
-removal, and idempotent deletion; `_CachedPlaybackSession` owns connection
+removal, and idempotent deletion; `_CachedPlayback` owns connection
 readiness, character-snapshot revision checks, Playback Range capture,
 timeline restoration, progress/cancellation, and ordered replay. The existing
 `_StreamingSession` pauses its timer and callbacks without renegotiating the
@@ -660,7 +660,7 @@ Date: 2026-08-25
 
 Specification #16 supersedes the transport-paced cached replay above. Maya's
 `_PlaybackCache` keeps owning complete capture, metadata, atomic completion,
-iteration, replacement, and deletion; `_CachedPlaybackSession` no longer paces
+iteration, replacement, and deletion; `_CachedPlayback` no longer paces
 replay with Maya timers. After capture completes it uploads the whole cache
 without a real-time deadline — `cache_begin` declares revision, captured range,
 scene rate, frame count, and encoded size (bounded per-frame size times frame
@@ -741,6 +741,33 @@ The ordered-to-Latest sender transition is lossless: queued controls migrate
 to a carry-over queue so `cache_clear` stays ahead of the first resumed live
 pose, and an explicit `cache_enter` control establishes cached ownership
 (held pose, live-frame isolation, released viewport realtime) before capture.
+
+## Deep Cached Playback Module
+
+Date: 2026-08-29
+
+Issue #26 deepens the Maya Cached Playback boundary without changing protocol
+v6 or user-visible behavior. One `_CachedPlayback` is attached permanently to
+one negotiated Animation `_StreamingSession` when that session becomes Ready;
+attachment validates the negotiated Character snapshot revision but does not
+pause sampling or send `cache_enter` until `enter()`.
+
+Controller forwards only `enter()`, `leave()`, `capture()`, `replay()`,
+`stop_replay()`, `cancel_capture()`, `detach()`, and `discard()`. It observes a
+copied, immutable `_CachedPlaybackView` containing semantic state, progress,
+cache summary, a one-delivery diagnostic, and action capabilities. Controller
+does not inspect a Playback cache, internal phase, reply queue, timer, protocol
+identity, or Streaming session attachment identity.
+
+`_CachedPlayback` owns capture sequencing, temporary-cache handoff, bounded
+declaration and upload, identity-matched outcomes, replay control, ordered
+clear-before-resume, recovery, and cleanup. Unexpected recoverable transport
+loss may return an opaque `_CachedPlaybackRetention` containing only a complete
+compatible local cache; intentional lifecycle exits, partial capture,
+incompatible Character revisions, and corrupt cache data discard it. A future
+Ready attachment may consume that retention without exposing a cache path or
+deletion interface to Controller. `_PlaybackCache` remains the disk module and
+`_StreamingSession` remains the transport module.
 
 ## Documentation and Packaging
 

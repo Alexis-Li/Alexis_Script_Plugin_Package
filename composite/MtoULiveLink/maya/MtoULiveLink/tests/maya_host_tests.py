@@ -497,23 +497,53 @@ class MayaHostTests(unittest.TestCase):
             stream = FakeStream()
             progress = []
 
-            def cancel_after_two(current, total):
-                progress.append((current, total))
-                if current == 2:
-                    session.cancel_capture()
+            class FakeTimer(object):
+                def __init__(self):
+                    self.callbacks = {}
+                    self.next_id = 1
+                    self.removed = []
+
+                def addTimerCallback(self, unused_interval, callback):
+                    timer_id = self.next_id
+                    self.next_id += 1
+                    self.callbacks[timer_id] = callback
+                    return timer_id
+
+                def removeCallback(self, timer_id):
+                    self.removed.append(timer_id)
+                    self.callbacks.pop(timer_id, None)
+
+                def fire(self):
+                    for callback in list(self.callbacks.values()):
+                        callback()
+
+            timer = FakeTimer()
+            holder = {}
+
+            def on_change(view):
+                if view.state == module._CachedPlayback.CAPTURING and view.current:
+                    progress.append((view.current, view.total))
+                    if view.current == 2:
+                        holder["cached"].cancel_capture()
 
             with tempfile.TemporaryDirectory() as directory:
-                session = module._CachedPlaybackSession(
-                    FakeScene(), stream, timeline=timeline, temp_dir=directory,
-                    disk_usage=lambda unused: (1, 1, 1 << 40), timer_api=None)
-                self.assertIsNone(session.capture_and_replay(
-                    scene_fps=24.0, progress=cancel_after_two))
+                cached = module._CachedPlayback(
+                    FakeScene(), stream, on_change=on_change, timeline=timeline,
+                    temp_dir=directory,
+                    disk_usage=lambda unused: (1, 1, 1 << 40), timer_api=timer)
+                holder["cached"] = cached
+                cached.enter()
+                cached.capture(24.0, lambda unused_size, unused_frames: True)
+                while cached.view.state == module._CachedPlayback.CAPTURING:
+                    timer.fire()
                 self.assertEqual([(1, 3), (2, 3)], progress)
                 self.assertFalse(timeline.is_playing())
                 self.assertEqual(original_frame, timeline.current_frame())
                 self.assertEqual(1, stream.resumed)
-                self.assertIsNone(session.cache)
-                session.close()
+                self.assertIsNone(cached.view.cache_summary)
+                self.assertEqual(module._CachedPlayback.CANCELLED, cached.view.state)
+                self.assertEqual([1], timer.removed)
+                cached.discard()
             self.assertFalse(playing["value"])
 
 

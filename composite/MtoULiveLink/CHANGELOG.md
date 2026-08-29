@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Deepen Maya Cached Playback behind one `_CachedPlayback` action/view seam:
+  Controller now attaches it eagerly to each Ready Animation Streaming session,
+  forwards only user intent and terminal outcomes, and renders an immutable
+  coherent view instead of inspecting cache, transport, timer, identity, or
+  phase state. The module exclusively owns capture, upload, replay, retention,
+  recovery, and cleanup decisions while protocol v6, cache files, UI behavior,
+  diagnostics, limits, timing, and reconnect behavior remain unchanged.
 - Refresh placed Binding Actors immediately when their Binding's Driver
   Skeletal Mesh changes in the asset editor.
 - Add a dry-run-first Topia Engine 5.7.4 build helper that stages the project
@@ -87,7 +94,7 @@
 - Restore the Maya Streaming session seam for Cached Playback: the streaming
   session now answers drain questions through `cached_delivery_drained()` and
   installs the cached reply listener atomically inside `pause_for_cached()`,
-  so the cached playback session drives it only through public interface
+  so the Cached Playback module drives it only through public interface
   members instead of probing worker and phase internals. Cached-mode behavior,
   protocol v6, event kinds, and ordering are unchanged.
 - Harden Cached Playback after independent review of the v6 implementation:
