@@ -72,9 +72,7 @@ FMtoUDriverGarmentSurfaceResult ResolveSurface(
     Binding->DriverGarmentSlotOverride = Override;
     return MtoUResolveDriverGarmentSurface(
         Driver,
-        DriverAsset,
         Preview,
-        PreviewAsset,
         *Binding,
         FMtoUPreviewQualityThresholds().MisalignedNormalizedDistanceAverage);
 }
@@ -350,6 +348,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDriverGarmentSurfaceFailuresTest,
 bool FMtoUDriverGarmentSurfaceFailuresTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+
+    {
+        UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>();
+        TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+        const UE::Geometry::FDynamicMesh3 Empty;
+        const FMtoUDriverGarmentSurfaceResult MissingAssets =
+            MtoUResolveDriverGarmentSurface(
+                Empty,
+                Empty,
+                *Binding,
+                FMtoUPreviewQualityThresholds().MisalignedNormalizedDistanceAverage);
+        TestTrue(TEXT("missing Binding assets fail atomically"),
+            !MissingAssets.bSucceeded
+                && HasNoUsableSurface(MissingAssets)
+                && MissingAssets.Diagnostics.Contains(TEXT("required")));
+    }
 
     // Exact duplicates remain equally plausible even when nearest-ownership
     // hands every Preview vertex to one copy, and the diagnostic is

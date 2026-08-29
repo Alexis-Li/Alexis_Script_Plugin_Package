@@ -3,8 +3,6 @@
 #include "CoreMinimal.h"
 #include "DynamicMesh/DynamicMesh3.h"
 
-class UStaticMesh;
-class USkeletalMesh;
 class UMtoULiveLinkBinding;
 
 /**
@@ -46,8 +44,6 @@ struct FMtoUDriverGarmentSurfaceResult
  */
 FMtoUDriverGarmentSurfaceResult MtoUResolveDriverGarmentSurface(
     const UE::Geometry::FDynamicMesh3& Driver,
-    const USkeletalMesh& DriverAsset,
     const UE::Geometry::FDynamicMesh3& Preview,
-    const UStaticMesh& PreviewAsset,
     const UMtoULiveLinkBinding& Binding,
     double MisalignedNormalizedDistanceAverage);

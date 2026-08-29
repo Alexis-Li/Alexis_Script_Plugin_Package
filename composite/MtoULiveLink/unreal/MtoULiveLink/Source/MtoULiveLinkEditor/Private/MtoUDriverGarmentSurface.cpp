@@ -852,9 +852,7 @@ bool ResolveDriverGarmentSurfaceFromSlots(
 
 FMtoUDriverGarmentSurfaceResult MtoUResolveDriverGarmentSurface(
     const FDynamicMesh3& Driver,
-    const USkeletalMesh& DriverAsset,
     const FDynamicMesh3& Preview,
-    const UStaticMesh& PreviewAsset,
     const UMtoULiveLinkBinding& Binding,
     double MisalignedNormalizedDistanceAverage)
 {
@@ -862,11 +860,17 @@ FMtoUDriverGarmentSurfaceResult MtoUResolveDriverGarmentSurface(
     // The module owns the Auto/Manual choice; the selection identity stays on
     // failed results as failure evidence.
     Result.bManualSource = Binding.DriverGarmentSlotOverride.Num() > 0;
+    if (!Binding.SkeletalMesh || !Binding.PreviewStaticMesh)
+    {
+        Result.Diagnostics = TEXT(
+            "Driver Skeletal Mesh and Preview Static Mesh are required for garment-surface resolution.");
+        return Result;
+    }
     FString Error;
     const bool bResolved = Result.bManualSource
         ? ResolveDriverGarmentSurfaceFromSlots(
             Driver,
-            DriverAsset,
+            *Binding.SkeletalMesh,
             Binding.DriverGarmentSlotOverride,
             Preview,
             MisalignedNormalizedDistanceAverage,
@@ -874,9 +878,9 @@ FMtoUDriverGarmentSurfaceResult MtoUResolveDriverGarmentSurface(
             Error)
         : ResolveDriverGarmentSurface(
             Driver,
-            DriverAsset,
+            *Binding.SkeletalMesh,
             Preview,
-            PreviewAsset,
+            *Binding.PreviewStaticMesh,
             MisalignedNormalizedDistanceAverage,
             Result,
             Error);

@@ -499,9 +499,7 @@ FMtoUPreviewPreparationResult FMtoUPreviewPreparation::Prepare(
     // projection.
     FMtoUDriverGarmentSurfaceResult Garment = MtoUResolveDriverGarmentSurface(
         DriverDynamic->GetMeshRef(),
-        *Driver,
         PreviewDynamic->GetMeshRef(),
-        *Preview,
         Binding,
         Thresholds.MisalignedNormalizedDistanceAverage);
     Result.bManualGarmentSource = Garment.bManualSource;
