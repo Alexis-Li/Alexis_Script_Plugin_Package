@@ -21,7 +21,8 @@ enum class EMtoUPreviewQuality : uint8
  * record): resolution measures only the resolved Driver garment surface against
  * the Preview, normalized by garment/Preview scale rather than complete-character
  * bounds. Automatic resolution enforces two structural boundaries documented in
- * the preparation implementation: a source-mass limit against duplicated or
+ * the private Driver garment-surface resolution module
+ * (MtoUDriverGarmentSurface.cpp): a source-mass limit against duplicated or
  * proximity-pulled geometry, and a twin-region rule that rejects a selected
  * region when a mutually coincident unselected alternative remains equally
  * plausible.
@@ -59,7 +60,7 @@ struct MTOULIVELINKEDITOR_API FMtoUPreviewPreparationResult
     int32 MorphTargetCount = 0;
     int32 SkippedMorphTargetCount = 0;
     int64 SparseMorphDeltaCount = 0;
-    /** Connected Driver LOD0 regions that automatic resolution selected as the garment source. */
+    /** Connected Driver LOD0 regions that automatic or manual resolution selected as the garment source. */
     int32 GarmentSourceRegionCount = 0;
     /** Driver LOD0 source triangles inside the resolved Driver garment surface. */
     int32 GarmentSourceTriangleCount = 0;
