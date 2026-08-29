@@ -5,7 +5,7 @@ Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 pending a complete rerun
-Last aligned with implementation: 2026-08-29
+Last aligned with implementation: 2026-08-30
 
 ## Summary
 
@@ -325,26 +325,35 @@ remains the overall offset.
 - Endpoint: `127.0.0.1:54321`.
 - Concurrent clients: one.
 - Encoding: UTF-8 JSON preceded by an unsigned 64-bit, big-endian byte length.
-- Protocol version: `3`.
+- Protocol version: `6`.
 - Subject name: `MtoU_Character`.
 
 Message sequence:
 
-1. `init`: protocol version, an ordered list of bone records containing each
+1. `init`: protocol version, Character snapshot revision, selected workflow,
+   BS-transmission choice, an ordered list of bone records containing each
    normalized name, parent index, and source bind-local transform, plus the
    ordered curve names.
 2. `ready` or `error`: Unreal accepts or rejects the protocol, placed binding,
-   and skeleton hierarchy. An error closes the connection.
-3. `frame`: transforms in accepted bone order and an ordered numeric curve
-   array aligned with the curve names from `init`.
+   workflow, Preview readiness, and skeleton/Morph pairing. `ready` echoes the
+   accepted revision and workflow; a negotiation error closes the connection.
+3. Real-time Preview uses `frame`: transforms in accepted bone order and an
+   ordered numeric curve array aligned with the negotiated curve names.
+4. Cached Playback uses `cache_enter`, an identity-scoped
+   `cache_begin`/`cache_frame`/`cache_end` upload, then `cache_play`,
+   `cache_stop`, and `cache_clear`. Unreal replies with identity-scoped Ready,
+   progress, completion, stopped, cleared, or error outcomes and drives replay
+   locally only after accepting the complete cache.
 
-After `ready`, Maya sends only `frame` messages. Socket closure communicates
-transport or structural failure; Unreal logs the actionable reason locally.
+Socket closure communicates transport or structural failure. Cache validation
+and playback-performance failures remain recoverable inside the negotiated
+connection and identify the upload or play attempt they belong to.
 
-The protocol has no application-defined maximum message, bone, or curve count.
-Collections and buffers are sized from the received data and remain subject
-only to host memory and Unreal container representation limits. The parser
-still enforces three correctness invariants:
+The product has no fixed bone- or curve-count ceiling. Individual framed JSON
+payloads must fit Unreal's signed 32-bit container boundary. Cached Playback is
+additionally limited to 20,000 frames, 1 GiB of encoded frame payload, 1,536
+MiB of predicted parsed transient memory, and a captured rate from 1 through
+60 fps. The parser enforces these resource bounds plus three frame invariants:
 
 - the transform count must equal the accepted skeleton's bone count;
 - the curve-value count must equal the accepted skeleton's curve count;
@@ -529,7 +538,7 @@ The third-party-modified Topia Engine 5.7.4 installation was excluded from the
 and Athena editor loading, while end-to-end production behavior remains outside
 that narrower gate.
 
-## Version 0.2.0 Addendum
+## Historical Version 0.2.0 Addendum
 
 Date: 2026-08-12
 
@@ -570,7 +579,7 @@ suffix candidate below the already matched parent. Live Link publishes the
 actual Unreal bone name while preserving Maya transform order. The connection
 reports every remap as a warning; zero or multiple candidates remain blocking.
 
-## Protocol v4 Contract and Conformance Corpus
+## Historical Protocol v4 Contract and Conformance Corpus
 
 Protocol v4 freezes the following wire fields. Every listed field is required;
 adapters ignore unknown fields so additive transport metadata remains
@@ -616,7 +625,7 @@ on the corpus or on its sibling host directory. Protocol v5 later extends the
 v4 contract with the Cached Playback transfer and control messages documented
 below.
 
-## Reference-Pose Mapping Revision
+## Historical Reference-Pose Mapping Revision
 
 Date: 2026-08-19
 
@@ -649,7 +658,7 @@ Live Link. Therefore `SourceCurrent == SourceBind` produces exactly the target
 reference pose, while arbitrary current animation remains independent of frame
 1 and of the pose visible when the user connects.
 
-## Cached Playback Revision
+## Historical Transport-Paced Cached Playback Revision
 
 Date: 2026-08-21
 
@@ -695,7 +704,7 @@ events. The external C01 production fixture remains required for the
 stock-engine 321-frame production gate; automated pure/host checks do not
 claim that fixture has passed.
 
-## Protocol v5 Upload-then-Play Cached Playback Revision
+## Historical Protocol v5 Upload-then-Play Cached Playback Revision
 
 Date: 2026-08-25
 
@@ -815,9 +824,9 @@ deletion interface to Controller. `_PlaybackCache` remains the disk module and
 Date: 2026-08-29
 
 Issue #25 deepened Preview readiness on the Binding Actor without changing
-ADR-0003 actor-owned state, ADR-0004 explicit refresh, ADR-0005 stale-preview
-hiding, ADR-0009 workflow negotiation, ADR-0010 transactional Preview Morph
-transfer, or ADR-0011 Accepted Preview Morph semantics.
+ADR-0003 actor-owned, explicit, stale-safe readiness, ADR-0009 workflow
+negotiation, ADR-0010 transactional Preview Morph transfer, or ADR-0011
+Accepted Preview Morph semantics.
 
 The actor exposes one coherent `FMtoUPreviewReadiness` snapshot (state, stage,
 ready Generated Preview, artist summary, and diagnostics). Build start,

@@ -93,6 +93,11 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   integration. Compiled against stock UE 5.7.4 and passed all 37 owning
   `MtoULiveLink` Editor automation tests; the Unreal packaging check passes and
   no generated output is staged.
+- **2026-08-29:** Completed Issues #25 and #26 without changing user-visible
+  behavior or protocol v6: Preview readiness now has one Binding-actor-owned
+  snapshot and transition boundary, while Maya Cached Playback now owns its
+  lifecycle behind one action/view seam instead of leaking cache, transport,
+  timer, identity, and phase state into the Controller.
 
 ## Stable Records
 
@@ -102,6 +107,7 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)
 - [Model Preview quality calibration](model-preview-quality-calibration.md)
+- [Model Preview full-character recalibration](model-preview-full-character-recalibration.md)
 
 ## Current Project
 

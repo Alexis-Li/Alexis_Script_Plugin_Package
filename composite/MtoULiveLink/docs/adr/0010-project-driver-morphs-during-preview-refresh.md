@@ -6,16 +6,14 @@ refresh. The builder computes a reusable Driver-surface triangle and barycentric
 mapping, applies Driver Morph deltas to produce Preview-topology morph meshes,
 and writes them to the transient Generated Preview Skeletal Mesh through stock
 Unreal 5.7.4 public APIs. Maya then streams only BlendShape names and values.
-MtoU_LiveLink will not stream garment vertices each frame or add a runtime
+MtoU_LiveLink does not stream garment vertices each frame or add a runtime
 surface-wrap/deformer path for V1.
 
-Preview Morph transfer is a Model preview 0.4.0 release gate rather than an
-optional later enhancement: a bone-only result does not provide the required
-pose reference. Refresh checks the complete Driver Morph Target library and
-projects every Morph whose affected surface exists on the Preview because it
-runs before Maya supplies its selected outfit curve names. If either
-the transient Skin preview or complete Preview Morph transfer Spike fails, the
-Model preview workflow does not ship as a partial feature.
+Preview Morph transfer is part of the Model preview acceptance contract: a
+bone-only result does not provide the required pose reference. Refresh checks
+the complete Driver Morph Target library and projects every Morph whose affected
+surface exists on the Preview because it runs before Maya supplies its selected
+outfit curve names.
 
 Refresh is all-or-nothing across non-empty Driver Morph projections: one failed
 projection or generated Morph build puts the Preview status in `Error`, discards
