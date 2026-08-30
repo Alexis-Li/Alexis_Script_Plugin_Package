@@ -135,7 +135,8 @@ private:
     bool BeginPreviewBuild();
     void SetPreviewBuildStage(EMtoUPreviewBuildStage Stage);
     bool CompletePreviewBuild(USkeletalMesh* Mesh, bool bHasWarning,
-        const FString& Diagnostics, const FString& Summary = FString());
+        const FString& Diagnostics, const FString& Summary = FString(),
+        const TArray<int32>& DriverGarmentMaterialSlots = {});
     bool FailPreviewBuild(EMtoUPreviewBuildStage Stage, const FString& Diagnostics);
     void InvalidateGeneratedPreview(const FString& Diagnostics);
     void EnterUnrefreshedReadiness(const FString& Message);
@@ -153,11 +154,18 @@ private:
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
 
+    /** Original Driver display used behind the generated garment in Model preview. */
+    UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
+    TObjectPtr<USkeletalMeshComponent> DriverMeshComponent;
+
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<UMtoULiveLinkBinding> Binding;
 
     UPROPERTY(Transient, DuplicateTransient, VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMesh> GeneratedPreviewMesh;
+
+    UPROPERTY(Transient, DuplicateTransient)
+    TArray<int32> DriverGarmentMaterialSlots;
 
     UPROPERTY(Transient, DuplicateTransient)
     EMtoUPreviewState PreviewState = EMtoUPreviewState::None;

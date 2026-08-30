@@ -67,6 +67,8 @@ struct FMtoUPreviewPreparationResult
     int32 GarmentSourceRegionCount = 0;
     /** Driver LOD0 source triangles inside the resolved Driver garment surface. */
     int32 GarmentSourceTriangleCount = 0;
+    /** Driver material slots hidden behind the Generated Preview during Model preview. */
+    TArray<int32> DriverGarmentMaterialSlotIndices;
     /** True when the Binding's manual Driver material-slot override chose the source. */
     bool bManualGarmentSource = false;
     /** Fraction of Preview vertices within agreement distance of the resolved Driver garment surface. */

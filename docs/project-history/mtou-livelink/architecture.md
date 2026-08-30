@@ -182,9 +182,14 @@ The Runtime module owns:
 - the automatically registered native Live Link source;
 - the fixed `MtoU_Character` Live Link subject;
 - `UMtoULiveLinkBinding`, which references one existing Skeletal Mesh;
-- `AMtoULiveLinkActor`, which owns a Skeletal Mesh Component, the coherent
-  Preview readiness state, and the transient Generated Preview Skeletal Mesh,
-  and applies the subject through Unreal's native `ULiveLinkInstance`.
+- `AMtoULiveLinkActor`, which owns the Live Link-driven Skeletal Mesh Component,
+  a second Driver display, the coherent Preview readiness state, and the
+  transient Generated Preview Skeletal Mesh. Model preview layers the generated
+  garment over the Driver display with its resolved garment material slots
+  hidden; the Driver display follows the generated mesh's complete pose and
+  curves. Animation preview keeps the original single-Driver display.
+  The primary display applies the subject through Unreal's native
+  `ULiveLinkInstance`.
   Runtime callers read Preview readiness only through one
   `FMtoUPreviewReadiness` snapshot (state, stage, ready Generated Preview,
   summary, and diagnostics).
@@ -860,6 +865,21 @@ tests establish readiness through one development-only friend seam that drives
 the same private transition path, and the old exported mutation getters are
 removed without a forwarding shim because 0.4.0 is unreleased. User assets,
 serialized Binding fields, and the artist workflow are unchanged.
+
+## Full-character Model Display Composition
+
+Date: 2026-08-30
+
+Model preview keeps the Generated Preview as the Live Link-driven garment and
+adds no Binding input. Preview refresh carries the resolved Driver garment
+material-slot indices into the actor-owned transient display state. The actor
+shows the original Driver on a follower Skeletal Mesh Component, hides those
+original garment slots for LOD0, and follows the Generated Preview's complete
+skeleton and curves. Body, face, hair, and other non-garment Driver slots
+therefore remain visible without duplicating asset selection, while Animation
+preview continues to display the complete Driver through the primary component.
+Invalidation and deletion clear both Model display layers transactionally;
+garment-only Drivers simply hide all of their replaced Driver slots.
 
 ## Documentation and Packaging
 

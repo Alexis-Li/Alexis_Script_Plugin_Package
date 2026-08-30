@@ -25,6 +25,8 @@ struct FMtoUDriverGarmentSurfaceResult
     int32 RegionCount = 0;
     /** Driver LOD0 source triangles inside the resolved Driver garment surface. */
     int32 TriangleCount = 0;
+    /** Driver material slots occupied by the resolved garment surface. */
+    TArray<int32> MaterialSlotIndices;
     /** Fraction of Preview vertices within agreement distance of the resolved surface. */
     double MatchedPreviewCoverage = 1.0;
     /** Compact identification of each selected region for diagnostics. */

@@ -220,6 +220,55 @@ double BeginGarmentSurfaceResolution(
     return Scale;
 }
 
+void CollectMaterialSlotIndices(
+    const FDynamicMesh3& Driver,
+    const FDynamicMesh3& Surface,
+    const int32 SlotCount,
+    TArray<int32>& OutSlotIndices)
+{
+    const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
+        Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
+    TSet<int32> MaterialSlots;
+    TSet<int32> TriangleGroups;
+    for (const int32 TriangleID : Driver.TriangleIndicesItr())
+    {
+        const int32 MaterialSlot = DriverMaterialIDs
+            ? DriverMaterialIDs->GetValue(TriangleID)
+            : INDEX_NONE;
+        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
+        if (MaterialSlot >= 0 && MaterialSlot < SlotCount)
+        {
+            MaterialSlots.Add(MaterialSlot);
+        }
+        if (TriangleGroup >= 0 && TriangleGroup < SlotCount)
+        {
+            TriangleGroups.Add(TriangleGroup);
+        }
+    }
+
+    // Geometry Script imports use Material IDs in production, while generated
+    // test/source meshes may collapse that layer and retain slots in triangle
+    // groups. The signal preserving more of the Driver's slots is authoritative.
+    // ponytail: if a future import keeps conflicting non-collapsed signals,
+    // replace this cardinality choice with imported triangle correspondence.
+    const bool bUseTriangleGroups = TriangleGroups.Num() > MaterialSlots.Num();
+    const FDynamicMeshMaterialAttribute* SurfaceMaterialIDs =
+        Surface.Attributes() ? Surface.Attributes()->GetMaterialID() : nullptr;
+    for (const int32 TriangleID : Surface.TriangleIndicesItr())
+    {
+        const int32 SlotIndex = bUseTriangleGroups
+            ? Surface.GetTriangleGroup(TriangleID)
+            : (SurfaceMaterialIDs
+                ? SurfaceMaterialIDs->GetValue(TriangleID)
+                : Surface.GetTriangleGroup(TriangleID));
+        if (SlotIndex >= 0 && SlotIndex < SlotCount)
+        {
+            OutSlotIndices.AddUnique(SlotIndex);
+        }
+    }
+    OutSlotIndices.Sort();
+}
+
 /**
  * Shared removal tail: keep only the selected triangles while removing their
  * isolated vertices, so every resolved-surface vertex ID stays identical to
@@ -712,6 +761,8 @@ bool ResolveDriverGarmentSurface(
         }
     }
     FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
+    CollectMaterialSlotIndices(
+        Driver, Out.Surface, DriverAsset.GetMaterials().Num(), Out.MaterialSlotIndices);
     if (bUsedMaterialEvidence)
     {
         Out.RegionSummary += TEXT("; material evidence narrowed Auto candidates");
@@ -843,6 +894,8 @@ bool ResolveDriverGarmentSurfaceFromSlots(
     }
     Out.TriangleCount = Driver.TriangleCount() - UnselectedTriangles.Num();
     FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
+    Out.MaterialSlotIndices = MatchedSlots;
+    Out.MaterialSlotIndices.Sort();
 
     // Manual selections never skip the same whole-Preview geometry gate.
     return ValidateManualGarmentCoverage(

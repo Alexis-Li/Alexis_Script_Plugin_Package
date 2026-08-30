@@ -56,5 +56,7 @@ Maya 与 Unreal 组件必须来自同一版本。
 4. 在“动画”模式中，可通过 Maya 摆姿、拖动时间轴或播放动画进行实时预览；
    如需复查一段动画，选择“缓存播放”并点击“捕获并回放”。
 5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
-   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。
+   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。使用整角色
+   Driver 时，模型预览会保留显示身体、脸、头发及其他非服装材质槽，并用生成的
+   Preview 替换解析出的原服装材质槽。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。

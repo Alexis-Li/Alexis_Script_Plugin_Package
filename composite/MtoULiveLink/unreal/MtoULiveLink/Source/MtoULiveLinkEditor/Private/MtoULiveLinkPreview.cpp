@@ -512,6 +512,7 @@ FMtoUPreviewPreparationResult MtoUPreparePreview(
     FDynamicMesh3 ResolvedDriver(MoveTemp(Garment.Surface));
     Result.GarmentSourceRegionCount = Garment.RegionCount;
     Result.GarmentSourceTriangleCount = Garment.TriangleCount;
+    Result.DriverGarmentMaterialSlotIndices = Garment.MaterialSlotIndices;
     Result.MatchedPreviewCoverage = Garment.MatchedPreviewCoverage;
 
     FMtoUSurfaceDistanceStats DistanceStats;
@@ -764,7 +765,8 @@ FMtoUPreviewReadiness FMtoUPreviewPreparation::RefreshActor(
                 || Result.SkippedMorphTargetCount > 0
                 || Result.bTransferFallbackToClosest,
             Result.Diagnostics,
-            Result.Summary))
+            Result.Summary,
+            Result.DriverGarmentMaterialSlotIndices))
         {
             // Readiness commit does not own display selection; the explicit
             // refresh separately shows the committed Generated Preview.

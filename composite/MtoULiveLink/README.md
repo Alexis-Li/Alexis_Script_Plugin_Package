@@ -65,5 +65,7 @@ Install the Maya and Unreal components from the same release.
    captured range, choose **Cached Playback** and click **Capture and Play**.
 5. In **Model**, also assign the garment **Preview Static Mesh** in Unreal and
    click **Refresh Preview** before connecting. Use **Transfer BS** to include
-   matching BlendShapes.
+   matching BlendShapes. For a full-character Driver, Model preview keeps its
+   body, face, hair, and other non-garment material slots visible while the
+   Generated Preview replaces the resolved original garment slots.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.

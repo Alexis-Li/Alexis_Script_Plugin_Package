@@ -1389,6 +1389,8 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
     AddInfo(Result.Summary);
     TestTrue(TEXT("full-character Driver builds a garment-only Generated Preview"),
         Result.bSucceeded && Result.GeneratedPreview != nullptr);
+    TestTrue(TEXT("resolved garment slots are retained for full-character display"),
+        Result.DriverGarmentMaterialSlotIndices == TArray<int32>({3, 4, 5}));
     TestEqual(TEXT("all five preparation stages remain observable"),
         ObservedStages.Num(), 5);
     TestTrue(TEXT("diagnostics identify the resolved regions and verdict"),
@@ -1491,7 +1493,8 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
     TestNull(TEXT("hair Morph is absent from the Generated library"),
         GeneratedMorph(TEXT("HairSway")));
 
-    // Model preview displays only the generated garment through explicit Refresh.
+    // Model preview layers the generated garment over the Driver's untouched
+    // body, face, hair, and attachment material slots.
     const FMtoUPreviewReadiness RefreshResult =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("explicit Refresh readies the garment preview"),
@@ -1499,9 +1502,32 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         && (RefreshResult.State == EMtoUPreviewState::Ready
             || RefreshResult.State == EMtoUPreviewState::Warning)
         && Actor->GetPreviewReadiness().IsUsable());
-    TestTrue(TEXT("Model preview displays only the Generated Preview"),
+    TestTrue(TEXT("Model preview displays the Generated Preview garment"),
         Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
             == RefreshResult.GeneratedPreview);
+    TArray<USkeletalMeshComponent*> DisplayMeshes;
+    Actor->GetComponents(DisplayMeshes);
+    USkeletalMeshComponent** DriverDisplayEntry = DisplayMeshes.FindByPredicate(
+        [Actor](const USkeletalMeshComponent* Component)
+        {
+            return Component != Actor->GetSkeletalMeshComponent();
+        });
+    USkeletalMeshComponent* DriverDisplay =
+        DriverDisplayEntry ? *DriverDisplayEntry : nullptr;
+    TestTrue(TEXT("Model preview keeps the original Driver as the character display"),
+        DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver);
+    TestEqual(TEXT("Driver character display stays on the generated garment's LOD0"),
+        DriverDisplay ? DriverDisplay->GetForcedLOD() : 0, 1);
+    for (const int32 VisibleSlot : {0, 1, 2, 6})
+    {
+        TestTrue(FString::Printf(TEXT("Driver slot %d remains visible"), VisibleSlot),
+            DriverDisplay && DriverDisplay->IsMaterialSectionShown(VisibleSlot, 0));
+    }
+    for (const int32 HiddenSlot : {3, 4, 5})
+    {
+        TestFalse(FString::Printf(TEXT("original garment slot %d is hidden"), HiddenSlot),
+            DriverDisplay && DriverDisplay->IsMaterialSectionShown(HiddenSlot, 0));
+    }
 
     // Reimport invalidates and requires explicit Refresh again.
     if (GEditor)
@@ -1511,7 +1537,8 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source Reimport marks Dirty and hides the stale garment"),
         Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
         && !Actor->GetPreviewReadiness().IsUsable()
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+        && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == nullptr);
     TestFalse(TEXT("normal Refresh creates no .uasset on the filesystem"),
         IFileManager::Get().FileExists(*PackageFilename));
 

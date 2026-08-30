@@ -12,6 +12,12 @@ AMtoULiveLinkActor::AMtoULiveLinkActor()
     SkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SkeletalMeshComponent"));
     SetRootComponent(SkeletalMeshComponent);
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
+
+    DriverMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("DriverMeshComponent"));
+    DriverMeshComponent->SetupAttachment(SkeletalMeshComponent);
+    DriverMeshComponent->SetDisablePostProcessBlueprint(true);
+    DriverMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    DriverMeshComponent->SetGenerateOverlapEvents(false);
 }
 
 void AMtoULiveLinkActor::OnConstruction(const FTransform& Transform)
@@ -133,7 +139,7 @@ void AMtoULiveLinkActor::SetPreviewBuildStage(EMtoUPreviewBuildStage Stage)
 
 bool AMtoULiveLinkActor::CompletePreviewBuild(
     USkeletalMesh* Mesh, bool bHasWarning, const FString& Diagnostics,
-    const FString& Summary)
+    const FString& Summary, const TArray<int32>& InDriverGarmentMaterialSlots)
 {
     if (PreviewState != EMtoUPreviewState::Building)
     {
@@ -157,6 +163,7 @@ bool AMtoULiveLinkActor::CompletePreviewBuild(
     }
 
     GeneratedPreviewMesh = Mesh;
+    DriverGarmentMaterialSlots = InDriverGarmentMaterialSlots;
     PreviewState = bHasWarning ? EMtoUPreviewState::Warning : EMtoUPreviewState::Ready;
     PreviewBuildStage = EMtoUPreviewBuildStage::Validation;
     PreviewDiagnostics = Diagnostics;
@@ -231,6 +238,7 @@ void AMtoULiveLinkActor::ReleaseGeneratedPreview()
         SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
     }
     GeneratedPreviewMesh = nullptr;
+    DriverGarmentMaterialSlots.Reset();
     if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
     {
         HideDisplay();
@@ -302,10 +310,15 @@ void AMtoULiveLinkActor::RefreshBinding()
 
 void AMtoULiveLinkActor::ReapplyDisplayTarget()
 {
-    if (!SkeletalMeshComponent)
+    if (!SkeletalMeshComponent || !DriverMeshComponent)
     {
         return;
     }
+
+    DriverMeshComponent->SetLeaderPoseComponent(nullptr);
+    DriverMeshComponent->SetForcedLOD(0);
+    DriverMeshComponent->ShowAllMaterialSections(0);
+    DriverMeshComponent->SetSkeletalMeshAsset(nullptr);
 
     switch (DisplayTarget)
     {
@@ -314,6 +327,17 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         break;
     case EMtoUDisplayTarget::GeneratedPreview:
         SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
+        if (Binding && Binding->SkeletalMesh && !DriverGarmentMaterialSlots.IsEmpty())
+        {
+            DriverMeshComponent->SetSkeletalMeshAsset(Binding->SkeletalMesh);
+            DriverMeshComponent->SetForcedLOD(1);
+            DriverMeshComponent->SetLeaderPoseComponent(SkeletalMeshComponent, true);
+            for (const int32 MaterialSlot : DriverGarmentMaterialSlots)
+            {
+                DriverMeshComponent->ShowMaterialSection(
+                    MaterialSlot, INDEX_NONE, false, 0);
+            }
+        }
         break;
     case EMtoUDisplayTarget::Hidden:
     default:
@@ -321,6 +345,7 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         break;
     }
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
+    DriverMeshComponent->SetDisablePostProcessBlueprint(true);
 }
 
 void AMtoULiveLinkActor::HideDisplay()

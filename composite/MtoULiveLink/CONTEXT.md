@@ -97,7 +97,9 @@ _Avoid_: Animation mode, Driver mode, legacy mode
 **Model preview workflow**:
 The modeler-facing workflow that uses the selected Maya outfit as deformation
 context and displays its modified surface through a Generated Preview Skeletal
-Mesh under the current pose.
+Mesh under the current pose. With a full-character Driver, the original Driver
+also remains visible behind it with the resolved garment material slots hidden,
+preserving body, face, hair, and other non-garment parts without extra inputs.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Show the complete character during Model preview without adding Binding
+  inputs: the Generated Preview remains the Live Link-driven garment, while a
+  second actor-owned display keeps the original full-character Driver's body,
+  face, hair, and other non-garment material slots visible. The resolved
+  garment slots are hidden on that Driver display to avoid overlapping the
+  replacement garment, and the Driver display follows the Generated Preview's
+  complete skeleton and curves. Animation preview, garment-only Drivers,
+  serialized Binding fields, source assets, and protocol v6 are unchanged.
 - Deepen Preview readiness on the Binding Actor (unreleased 0.4.0 C++
   interface change): Runtime callers now read one coherent
   `FMtoUPreviewReadiness` snapshot (state, build stage, ready Generated
