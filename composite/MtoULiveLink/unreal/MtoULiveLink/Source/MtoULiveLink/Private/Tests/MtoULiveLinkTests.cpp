@@ -2417,11 +2417,28 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     }
     AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
     TestNotNull(TEXT("placed binding actor is created"), Actor);
+    USkeletalMesh* SharedDriver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    USkeletalMesh* TransientDriver = Actor && SharedDriver
+        ? DuplicateObject<USkeletalMesh>(SharedDriver, Actor)
+        : nullptr;
+    if (TransientDriver)
+    {
+        TransientDriver->ClearFlags(RF_Public | RF_Standalone);
+        TransientDriver->SetFlags(RF_Transient);
+        Actor->GetBinding()->SkeletalMesh = TransientDriver;
+        Actor->SetBinding(Actor->GetBinding());
+    }
     USkeletalMeshComponent* SkeletalMeshComponent =
         Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
     USkeletalMesh* VisibleTargetBefore =
         SkeletalMeshComponent ? SkeletalMeshComponent->GetSkeletalMeshAsset() : nullptr;
     TestNotNull(TEXT("animation binding shows its Driver Skeletal Mesh"), VisibleTargetBefore);
+    TestTrue(TEXT("workflow negotiation owns transient Driver test data"),
+        VisibleTargetBefore
+            && VisibleTargetBefore->HasAnyFlags(RF_Transient)
+            && VisibleTargetBefore->GetOuter() == Actor);
     TestTrue(TEXT("MtoU display component bypasses Driver post-process animation"),
         SkeletalMeshComponent
         && SkeletalMeshComponent->GetDisablePostProcessBlueprint());

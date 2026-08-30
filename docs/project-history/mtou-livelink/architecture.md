@@ -868,7 +868,7 @@ serialized Binding fields, and the artist workflow are unchanged.
 
 ## Full-character Model Display Composition
 
-Date: 2026-08-30
+Date: 2026-08-31
 
 Model preview keeps the Generated Preview as the Live Link-driven garment and
 adds no Binding input. Preview refresh carries the resolved Driver garment
@@ -886,6 +886,19 @@ selection, while Animation preview continues to display the complete Driver
 through the primary component.
 Invalidation and deletion clear both Model display layers transactionally;
 garment-only Drivers simply hide all of their replaced Driver slots.
+
+Issue #27 hardened that composition boundary without adding a resolver or a
+Binding field. Imported polygon-group names remain the primary identity, while
+collapsed source descriptions fall back to UE 5.7's public current-LOD section
+metadata. Final slots are never inferred from polygon or triangle ordinals.
+Refresh fails transactionally with Preview Error when a selected source group
+cannot be mapped, or when any selected and visible non-garment triangle resolves
+to the same final slot, even if their source ordinals differ. Focused coverage
+holds reordered and unused slots, collapsed descriptions, triangle-group
+fallback, same-slot sharing, and existing Morph projection behavior. The
+Runtime workflow fixture now duplicates its Driver into actor-owned transient
+state before registering Morph Targets, so automation never mutates the shared
+`/Engine` asset.
 
 ## Documentation and Packaging
 

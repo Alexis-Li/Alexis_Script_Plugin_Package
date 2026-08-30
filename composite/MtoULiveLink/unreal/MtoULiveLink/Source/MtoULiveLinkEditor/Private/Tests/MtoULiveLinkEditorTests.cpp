@@ -153,6 +153,7 @@ UStaticMesh* MakeCorpusPreview(
     UObject& Outer,
     EMtoUCorpusVariant Variant)
 {
+    const bool bFullCharacterFixture = BasePreview != nullptr;
     UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(&Outer);
     FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
     ReadOptions.bApplyBuildSettings = false;
@@ -175,7 +176,7 @@ UStaticMesh* MakeCorpusPreview(
         return nullptr;
     }
 
-    DynamicMesh->EditMesh([Variant](UE::Geometry::FDynamicMesh3& Mesh)
+    DynamicMesh->EditMesh([Variant, bFullCharacterFixture](UE::Geometry::FDynamicMesh3& Mesh)
     {
         switch (Variant)
         {
@@ -202,6 +203,23 @@ UStaticMesh* MakeCorpusPreview(
         case EMtoUCorpusVariant::LocalRetopology:
         case EMtoUCorpusVariant::DoubleLayerSeams:
         {
+            if (Variant == EMtoUCorpusVariant::LocalRetopology
+                && bFullCharacterFixture)
+            {
+                for (const int32 EdgeID : Mesh.EdgeIndicesItr())
+                {
+                    if (!Mesh.IsBoundaryEdge(EdgeID))
+                    {
+                        UE::Geometry::FDynamicMesh3::FEdgeFlipInfo FlipInfo;
+                        if (Mesh.FlipEdge(EdgeID, FlipInfo)
+                            == UE::Geometry::EMeshResult::Ok)
+                        {
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
             UE::Geometry::FDynamicMesh3::FPokeTriangleInfo PokeInfo;
             for (const int32 TriangleID : Mesh.TriangleIndicesItr())
             {
@@ -317,13 +335,43 @@ bool AddPositiveXMorph(USkeletalMesh& Driver, FName Name, const FVector3f& Posit
     return !Deltas.IsEmpty() && Driver.RegisterMorphTarget(Morph, false);
 }
 
-USkeletalMesh* MakeMorphDriver(UObject& Outer)
+USkeletalMesh* MakeMorphDriver(UObject& Outer, bool bSplitMissingSurface = false)
 {
     USkeletalMesh* Base = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
-    USkeletalMesh* Driver = Base
-        ? DuplicateObject<USkeletalMesh>(Base, &Outer)
-        : nullptr;
+    USkeletalMesh* Driver = nullptr;
+    if (Base && bSplitMissingSurface)
+    {
+        UDynamicMesh* Source = NewObject<UDynamicMesh>(&Outer);
+        FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+        FGeometryScriptMeshReadLOD ReadLOD;
+        ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+        EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+            Base, Source, ReadOptions, ReadLOD, Outcome);
+        if (Outcome == EGeometryScriptOutcomePins::Success)
+        {
+            Source->EditMesh([](UE::Geometry::FDynamicMesh3& Mesh)
+            {
+                const double CenterX = Mesh.GetBounds().Center().X;
+                for (const int32 TriangleID : Mesh.TriangleIndicesItr())
+                {
+                    const UE::Geometry::FIndex3i Triangle = Mesh.GetTriangle(TriangleID);
+                    const bool bPositiveX = Mesh.GetVertex(Triangle.A).X > CenterX
+                        || Mesh.GetVertex(Triangle.B).X > CenterX
+                        || Mesh.GetVertex(Triangle.C).X > CenterX;
+                    Mesh.SetTriangleGroup(TriangleID, bPositiveX ? 1 : 0);
+                }
+            });
+            Driver = MtoUEditorTest::WriteTransientDriver(
+                Outer, *Base, Source->GetMeshRef(),
+                {FName(TEXT("MaterialSlot")), FName(TEXT("NoMatchingSurface"))});
+        }
+    }
+    else if (Base)
+    {
+        Driver = DuplicateObject<USkeletalMesh>(Base, &Outer);
+    }
     if (!Driver
         || !AddUniformMorph(*Driver, FName(TEXT("Corrective")), FVector3f(2.0f, 0.0f, 0.0f))
         || !AddUniformMorph(*Driver, FName(TEXT("CorrectiveNegative")), FVector3f(-2.0f, 0.0f, 0.0f))
@@ -961,7 +1009,7 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
     UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUMissingMorphSurfaceWorld"));
-    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage, true);
     TestTrue(TEXT("localized Driver Morph fixture is created"), Driver
         && AddPositiveXMorph(
             *Driver, FName(TEXT("NoMatchingSurface")), FVector3f(1.0f, 0.0f, 0.0f)));
@@ -975,6 +1023,7 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
     UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
     Binding->SkeletalMesh = Driver;
     Binding->PreviewStaticMesh = Preview;
+    Binding->DriverGarmentSlotOverride.Add(FName(TEXT("MaterialSlot")));
     if (Actor)
     {
         Actor->SetBinding(Binding);
@@ -1793,80 +1842,43 @@ bool FMtoUFullCharacterQualityCorpusTest::RunTest(const FString& Parameters)
         }
     }
 
-    // Metric normalization evidence: an isolated full-character Driver whose
-    // non-garment parts sit far outside the agreement radius resolves exactly
-    // the same two garment pieces as the legacy garment-only Driver, so a
-    // whole-surface 0.1%-diagonal shift must yield identical normalized
-    // metrics for both pairings despite different complete-character bounds.
+    // Metric normalization evidence: the full-character and garment-only
+    // fixtures contain identical garment pieces, so a whole-surface
+    // 0.1%-diagonal shift must yield identical normalized metrics despite the
+    // full character's larger bounds.
     {
-        USkeletalMesh* Base = LoadObject<USkeletalMesh>(
-            nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
-        UDynamicMesh* BodySource = NewObject<UDynamicMesh>(WorldPackage);
-        FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
-        ReadOptions.bApplyBuildSettings = false;
-        ReadOptions.bRequestTangents = true;
-        FGeometryScriptMeshReadLOD ReadLOD;
-        ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
-        EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
-        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
-            Base, BodySource, ReadOptions, ReadLOD, Outcome);
-        const double FarShift =
-            BodySource->GetMeshRef().GetBounds().DiagonalLength() * 6.0;
-        FDynamicMesh3 IsolatedCharacter;
-        TMap<int32, int32> Discard;
-        AppendPartCopy(IsolatedCharacter, BodySource->GetMeshRef(),
-            FVector3d(0.0, 0.0, -FarShift), 0.9, 0, 1, &Discard);
-        // Identical garment-piece transforms as the legacy Driver fixtures.
-        AppendPartCopy(IsolatedCharacter, BodySource->GetMeshRef(),
-            FVector3d::Zero(), 1.15, 3, 2);
-        AppendPartCopy(IsolatedCharacter, BodySource->GetMeshRef(),
-            BodySource->GetMeshRef().GetBounds().Center()
-                - FVector3d(0.0, 0.0,
-                    BodySource->GetMeshRef().GetBounds().Height() * 1.05),
-            0.55, 5);
-        SetUniformBoneWeights(IsolatedCharacter);
-        USkeletalMesh* IsolatedDriver = WriteTransientDriver(*WorldPackage,
-            *Base, IsolatedCharacter,
-            {FName(TEXT("Iso_Body")),
-                FName(TEXT("Iso_Unused_A")),
-                FName(TEXT("Iso_Unused_B")),
-                FName(TEXT("Iso_Upper_A")),
-                FName(TEXT("Iso_Upper_B")),
-                FName(TEXT("Iso_Lower"))});
-        TestNotNull(TEXT("isolated-character equivalence Driver was written"),
-            IsolatedDriver);
-        if (!Base || Outcome != EGeometryScriptOutcomePins::Success)
-        {
-            return false;
-        }
-        if (IsolatedDriver)
-        {
-            TStrongObjectPtr<UStaticMesh> ShiftedPreview(MakeCorpusPreview(
-                *Fixtures.FullDriver, Fixtures.Preview, *WorldPackage,
-                EMtoUCorpusVariant::SmallMisalignment));
-            Binding->SkeletalMesh = IsolatedDriver;
-            Binding->PreviewStaticMesh = ShiftedPreview.Get();
-            const FMtoUPreviewPreparationResult Full =
-                MtoUPreparePreview(*Actor, *Binding);
-            Binding->SkeletalMesh = Fixtures.GarmentOnlyDriver;
-            const FMtoUPreviewPreparationResult Legacy =
-                MtoUPreparePreview(*Actor, *Binding);
-            Binding->SkeletalMesh = Fixtures.FullDriver;
-            AddInfo(Full.Diagnostics);
-            AddInfo(Legacy.Diagnostics);
-            AddInfo(FString::Printf(
-                TEXT("normalization equivalence (isolated, 0.001 shift): full avg %.12f rms %.12f vs legacy avg %.12f rms %.12f"),
-                Full.SurfaceDistanceAverage, Full.SurfaceDistanceRms,
-                Legacy.SurfaceDistanceAverage, Legacy.SurfaceDistanceRms));
-            TestTrue(TEXT("resolved-garment normalization is unaffected by complete-character bounds"),
-                Full.bSucceeded && Legacy.bSucceeded
-                && Full.GarmentSourceTriangleCount == Legacy.GarmentSourceTriangleCount
-                && Full.SurfaceDistanceAverage > 0.0
-                && FMath::Abs(Full.SurfaceDistanceAverage
-                    - Legacy.SurfaceDistanceAverage) < 1.0e-9
-                && FMath::Abs(Full.SurfaceDistanceRms
-                    - Legacy.SurfaceDistanceRms) < 1.0e-9);
-        }
+        TStrongObjectPtr<UStaticMesh> ShiftedPreview(MakeCorpusPreview(
+            *Fixtures.FullDriver, Fixtures.Preview, *WorldPackage,
+            EMtoUCorpusVariant::SmallMisalignment));
+        Binding->DriverGarmentSlotOverride = {
+            FName(TEXT("Garment_Upper_A")),
+            FName(TEXT("Garment_Upper_B")),
+            FName(TEXT("Garment_Lower"))};
+        Binding->SkeletalMesh = Fixtures.FullDriver;
+        Binding->PreviewStaticMesh = ShiftedPreview.Get();
+        const FMtoUPreviewPreparationResult Full =
+            MtoUPreparePreview(*Actor, *Binding);
+        Binding->DriverGarmentSlotOverride = {
+            FName(TEXT("Garment_Upper_A"))};
+        Binding->SkeletalMesh = Fixtures.GarmentOnlyDriver;
+        const FMtoUPreviewPreparationResult Legacy =
+            MtoUPreparePreview(*Actor, *Binding);
+        Binding->DriverGarmentSlotOverride.Reset();
+        Binding->SkeletalMesh = Fixtures.FullDriver;
+        AddInfo(Full.Diagnostics);
+        AddInfo(Legacy.Diagnostics);
+        AddInfo(FString::Printf(
+            TEXT("normalization equivalence (0.001 shift): full avg %.12f rms %.12f vs legacy avg %.12f rms %.12f"),
+            Full.SurfaceDistanceAverage, Full.SurfaceDistanceRms,
+            Legacy.SurfaceDistanceAverage, Legacy.SurfaceDistanceRms));
+        TestTrue(TEXT("resolved-garment normalization is unaffected by complete-character bounds"),
+            Full.bSucceeded && Legacy.bSucceeded
+            && Full.GarmentSourceTriangleCount == Legacy.GarmentSourceTriangleCount
+            && Full.SurfaceDistanceAverage > 0.0
+            && FMath::Abs(Full.SurfaceDistanceAverage
+                - Legacy.SurfaceDistanceAverage) < 1.0e-9
+            && FMath::Abs(Full.SurfaceDistanceRms
+                - Legacy.SurfaceDistanceRms) < 1.0e-9);
     }
 
     if (World)

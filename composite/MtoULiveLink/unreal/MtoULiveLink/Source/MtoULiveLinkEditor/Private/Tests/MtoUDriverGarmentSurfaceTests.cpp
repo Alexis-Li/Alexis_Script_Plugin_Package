@@ -258,6 +258,114 @@ bool FMtoUDriverGarmentSurfaceAutoTest::RunTest(const FString& Parameters)
         ReorderedSlots.bSucceeded
             && ReorderedSlots.MaterialSlotIndices == TArray<int32>({0}));
 
+    FSkeletalMaterial UnusedSlot;
+    UnusedSlot.MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
+    UnusedSlot.MaterialSlotName = FName(TEXT("Unused_Before_Garment"));
+    UnusedSlot.ImportedMaterialSlotName = UnusedSlot.MaterialSlotName;
+    Fixtures.FullDriver->GetMaterials().Insert(UnusedSlot, 0);
+    const FMtoUDriverGarmentSurfaceResult UnusedSlotResult =
+        ResolveSurface(ReorderedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    Fixtures.FullDriver->GetMaterials().RemoveAt(0);
+    TestTrue(TEXT("an unused material slot cannot shift the resolved garment identity"),
+        UnusedSlotResult.bSucceeded
+            && UnusedSlotResult.MaterialSlotIndices == TArray<int32>({4}));
+
+    UE::Geometry::FDynamicMesh3 SameOrdinalDriver(FullDriver);
+    SameOrdinalDriver.Attributes()->EnableMaterialID();
+    for (const int32 TriangleID : SameOrdinalDriver.TriangleIndicesItr())
+    {
+        SameOrdinalDriver.Attributes()->GetMaterialID()->SetValue(
+            TriangleID, GarmentGroupOrdinal);
+        SameOrdinalDriver.SetTriangleGroup(TriangleID, GarmentGroupOrdinal);
+    }
+    const FMtoUDriverGarmentSurfaceResult SameOrdinalSharedSlot =
+        ResolveSurface(SameOrdinalDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    TestTrue(TEXT("same-ordinal garment and visible geometry fail transactionally"),
+        !SameOrdinalSharedSlot.bSucceeded
+            && HasNoUsableSurface(SameOrdinalSharedSlot)
+            && SameOrdinalSharedSlot.Diagnostics.Contains(TEXT("shares material slot")));
+
+    TMap<int32, FName> OriginalGroupNames;
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        OriginalGroupNames.Add(GroupID.GetValue(), DescriptionSlotNames[GroupID]);
+        if (GroupID.GetValue() != BodyGroupOrdinal)
+        {
+            DescriptionSlotNames[GroupID] = NAME_None;
+        }
+    }
+    UE::Geometry::FDynamicMesh3 CollapsedDriver(FullDriver);
+    CollapsedDriver.Attributes()->EnableMaterialID();
+    for (const int32 TriangleID : CollapsedDriver.TriangleIndicesItr())
+    {
+        CollapsedDriver.Attributes()->GetMaterialID()->SetValue(
+            TriangleID, BodyGroupOrdinal);
+    }
+    const FMtoUDriverGarmentSurfaceResult CollapsedGroups =
+        ResolveSurface(CollapsedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    FSkeletalMeshLODInfo* LODInfo = Fixtures.FullDriver->GetLODInfo(0);
+    const TArray<int32> OriginalLODMaterialMap = LODInfo
+        ? LODInfo->LODMaterialMap
+        : TArray<int32>();
+    if (LODInfo)
+    {
+        LODInfo->LODMaterialMap.Init(
+            INDEX_NONE, Fixtures.FullDriver->GetMaterials().Num());
+        LODInfo->LODMaterialMap[BodyGroupOrdinal] = GarmentGroupOrdinal;
+    }
+    const FMtoUDriverGarmentSurfaceResult CollapsedSharedSlot =
+        ResolveSurface(CollapsedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    if (LODInfo)
+    {
+        LODInfo->LODMaterialMap = OriginalLODMaterialMap;
+    }
+    for (const TPair<int32, FName>& Entry : OriginalGroupNames)
+    {
+        DescriptionSlotNames[FPolygonGroupID(Entry.Key)] = Entry.Value;
+    }
+    TestTrue(TEXT("collapsed polygon groups use current LOD material metadata"),
+        CollapsedGroups.bSucceeded
+            && CollapsedGroups.MaterialSlotIndices == TArray<int32>({3, 4, 5}));
+    TestTrue(TEXT("triangle-group fallback rejects a shared final material slot"),
+        !CollapsedSharedSlot.bSucceeded
+            && HasNoUsableSurface(CollapsedSharedSlot)
+            && CollapsedSharedSlot.Diagnostics.Contains(TEXT("shares material slot")));
+
+    UE::Geometry::FDynamicMesh3 UnmappableDriver(FullDriver);
+    UnmappableDriver.Attributes()->EnableMaterialID();
+    for (const int32 TriangleID : UnmappableDriver.TriangleIndicesItr())
+    {
+        if (Auto.Surface.IsTriangle(TriangleID))
+        {
+            UnmappableDriver.Attributes()->GetMaterialID()->SetValue(TriangleID, 99);
+            UnmappableDriver.SetTriangleGroup(TriangleID, 99);
+        }
+    }
+    const FMtoUDriverGarmentSurfaceResult Unmappable =
+        ResolveSurface(UnmappableDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    TestTrue(TEXT("unmappable garment material metadata fails transactionally"),
+        !Unmappable.bSucceeded
+            && HasNoUsableSurface(Unmappable)
+            && Unmappable.Diagnostics.Contains(TEXT("group(s) [99]"))
+            && Unmappable.Diagnostics.Contains(TEXT("cannot be mapped uniquely")));
+
+    UE::Geometry::FDynamicMesh3 UnmappableVisibleDriver(FullDriver);
+    UnmappableVisibleDriver.Attributes()->EnableMaterialID();
+    for (const int32 TriangleID : UnmappableVisibleDriver.TriangleIndicesItr())
+    {
+        if (!Auto.Surface.IsTriangle(TriangleID))
+        {
+            UnmappableVisibleDriver.Attributes()->GetMaterialID()->SetValue(TriangleID, 99);
+            break;
+        }
+    }
+    const FMtoUDriverGarmentSurfaceResult UnmappableVisible =
+        ResolveSurface(UnmappableVisibleDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    TestTrue(TEXT("unmappable visible material metadata fails transactionally"),
+        !UnmappableVisible.bSucceeded
+            && HasNoUsableSurface(UnmappableVisible)
+            && UnmappableVisible.Diagnostics.Contains(TEXT("group(s) [99]")));
+
     // Material mimicry: giving the Driver body slot the exact Preview slot
     // name and material cannot change the geometric resolution.
     FSkeletalMaterial& BodyMaterial = Fixtures.FullDriver->GetMaterials()[0];

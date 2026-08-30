@@ -6,6 +6,7 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
+#include "GeometryScript/MeshAssetFunctions.h"
 #include "MeshDescription.h"
 #include "Selections/MeshConnectedComponents.h"
 #include "StaticMeshAttributes.h"
@@ -105,6 +106,38 @@ bool BuildPolygonGroupToMaterialSlotMap(
             }
             int32& Mapped = OutSlotByOrdinal[GroupID.GetValue()];
             Mapped = Mapped == INDEX_NONE ? SlotIndex : AmbiguousMaterialSlot;
+        }
+    }
+    return true;
+}
+
+bool BuildTriangleGroupToMaterialSlotMap(
+    const USkeletalMesh& DriverAsset,
+    TArray<int32>& OutSlotByGroup)
+{
+    FGeometryScriptMeshReadLOD SourceLOD;
+    SourceLOD.LODType = EGeometryScriptLODType::SourceModel;
+    SourceLOD.LODIndex = 0;
+    TArray<UMaterialInterface*> SectionMaterials;
+    TArray<FName> SectionSlotNames;
+    EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::GetLODMaterialListFromSkeletalMesh(
+        const_cast<USkeletalMesh*>(&DriverAsset),
+        SourceLOD,
+        SectionMaterials,
+        OutSlotByGroup,
+        SectionSlotNames,
+        Outcome);
+    if (Outcome != EGeometryScriptOutcomePins::Success)
+    {
+        return false;
+    }
+    const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
+    for (int32& SlotIndex : OutSlotByGroup)
+    {
+        if (!Slots.IsValidIndex(SlotIndex))
+        {
+            SlotIndex = INDEX_NONE;
         }
     }
     return true;
@@ -276,87 +309,85 @@ bool CollectMaterialSlotIndices(
     }
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
-    TSet<int32> MaterialSlots;
-    TSet<int32> TriangleGroups;
+    TArray<int32> SlotByTriangleGroup;
+    BuildTriangleGroupToMaterialSlotMap(DriverAsset, SlotByTriangleGroup);
+    TSet<int32> MaterialOrdinals;
+    TSet<int32> PolygonGroupSlots;
+    TSet<int32> TriangleGroupSlots;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
         const int32 MaterialOrdinal = DriverMaterialIDs
             ? DriverMaterialIDs->GetValue(TriangleID)
             : INDEX_NONE;
-        const int32 MaterialSlot = SlotByOrdinal.IsValidIndex(MaterialOrdinal)
+        MaterialOrdinals.Add(MaterialOrdinal);
+        const int32 PolygonGroupSlot = SlotByOrdinal.IsValidIndex(MaterialOrdinal)
             ? SlotByOrdinal[MaterialOrdinal]
             : INDEX_NONE;
+        if (Slots.IsValidIndex(PolygonGroupSlot))
+        {
+            PolygonGroupSlots.Add(PolygonGroupSlot);
+        }
         const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
-        if (MaterialSlot >= 0 && MaterialSlot < Slots.Num())
+        const int32 TriangleGroupSlot = SlotByTriangleGroup.IsValidIndex(TriangleGroup)
+            ? SlotByTriangleGroup[TriangleGroup]
+            : INDEX_NONE;
+        if (Slots.IsValidIndex(TriangleGroupSlot))
         {
-            MaterialSlots.Add(MaterialSlot);
-        }
-        if (TriangleGroup >= 0 && TriangleGroup < Slots.Num())
-        {
-            TriangleGroups.Add(TriangleGroup);
+            TriangleGroupSlots.Add(TriangleGroupSlot);
         }
     }
-
-    // Generated meshes may collapse the MeshDescription to one polygon group
-    // while retaining sections in triangle groups. A real multi-group import
-    // stays name-mapped even when several groups intentionally share one slot.
-    int32 MappedOrdinalCount = 0;
-    for (const int32 SlotIndex : SlotByOrdinal)
-    {
-        MappedOrdinalCount += SlotIndex >= 0 ? 1 : 0;
-    }
-    const bool bUseTriangleGroups = MappedOrdinalCount <= 1
-        && TriangleGroups.Num() > MaterialSlots.Num();
+    const bool bUseTriangleGroupMetadata = MaterialOrdinals.Num() <= 1
+        && TriangleGroupSlots.Num() > PolygonGroupSlots.Num();
     TSet<int32> SelectedSlots;
-    TMap<int32, TSet<int32>> SelectedOrdinalsBySlot;
-    TMap<int32, TSet<int32>> UnselectedOrdinalsBySlot;
-    bool bSelectedSignalUnmapped = false;
+    TSet<int32> UnselectedSlots;
+    TSet<int32> UnmappedOrdinals;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
         const int32 MaterialOrdinal = DriverMaterialIDs
             ? DriverMaterialIDs->GetValue(TriangleID)
             : INDEX_NONE;
-        const int32 SlotIndex = bUseTriangleGroups
-            ? Driver.GetTriangleGroup(TriangleID)
+        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
+        const int32 SlotIndex = bUseTriangleGroupMetadata
+            ? (SlotByTriangleGroup.IsValidIndex(TriangleGroup)
+                ? SlotByTriangleGroup[TriangleGroup]
+                : INDEX_NONE)
             : (SlotByOrdinal.IsValidIndex(MaterialOrdinal)
                 ? SlotByOrdinal[MaterialOrdinal]
                 : INDEX_NONE);
         if (SlotIndex < 0 || SlotIndex >= Slots.Num())
         {
-            bSelectedSignalUnmapped |= Surface.IsTriangle(TriangleID);
+            UnmappedOrdinals.Add(
+                bUseTriangleGroupMetadata ? TriangleGroup : MaterialOrdinal);
             continue;
         }
         if (Surface.IsTriangle(TriangleID))
         {
             SelectedSlots.Add(SlotIndex);
-            if (!bUseTriangleGroups)
-            {
-                SelectedOrdinalsBySlot.FindOrAdd(SlotIndex).Add(MaterialOrdinal);
-            }
         }
-        else if (!bUseTriangleGroups)
+        else
         {
-            UnselectedOrdinalsBySlot.FindOrAdd(SlotIndex).Add(MaterialOrdinal);
+            UnselectedSlots.Add(SlotIndex);
         }
     }
-    if (bSelectedSignalUnmapped || SelectedSlots.IsEmpty())
+    if (!UnmappedOrdinals.IsEmpty() || SelectedSlots.IsEmpty())
     {
-        OutError = TEXT("Resolved garment triangles cannot be mapped uniquely to Driver material slots for safe Model display composition.");
+        TArray<int32> SortedOrdinals = UnmappedOrdinals.Array();
+        SortedOrdinals.Sort();
+        TArray<FString> OrdinalLabels;
+        for (const int32 Ordinal : SortedOrdinals)
+        {
+            OrdinalLabels.Add(FString::FromInt(Ordinal));
+        }
+        OutError = FString::Printf(
+            TEXT("Driver source material group(s) [%s] cannot be mapped uniquely through current Driver "
+                "material metadata to a material slot. Restore unique imported material-slot "
+                "names or split and reimport the Driver before Refresh Preview."),
+            *FString::Join(OrdinalLabels, TEXT(", ")));
         return false;
     }
     for (const int32 SlotIndex : SelectedSlots)
     {
-        const TSet<int32>* SelectedOrdinals = SelectedOrdinalsBySlot.Find(SlotIndex);
-        const TSet<int32>* UnselectedOrdinals = UnselectedOrdinalsBySlot.Find(SlotIndex);
-        bool bSharesSlotAcrossPolygonGroups = false;
-        if (SelectedOrdinals && UnselectedOrdinals)
-        {
-            for (const int32 Ordinal : *UnselectedOrdinals)
-            {
-                bSharesSlotAcrossPolygonGroups |= !SelectedOrdinals->Contains(Ordinal);
-            }
-        }
-        if (bSharesSlotAcrossPolygonGroups)
+        if (UnselectedSlots.Contains(SlotIndex))
         {
             OutError = FString::Printf(
                 TEXT("Resolved garment geometry shares material slot %s with visible non-garment Driver geometry. Split the garment into its own material slot before Refresh Preview."),

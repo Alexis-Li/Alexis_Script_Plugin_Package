@@ -18,8 +18,9 @@ complete-character bounds:
   pieces and yields bit-identical normalized averages (0.001-diagonal shift:
   0.000500001457 average / 0.000707108842 RMS in both pairings).
 * Synthetic anchor: SameTopology through the full-character fixture measures
-  average 0.002199 / max 0.031879 while its legacy pairing measures the same
-  order, confirming character bounds never enter the normalization.
+  average/max 0.000000; applying the same 0.001-diagonal shift to the full and
+  legacy pairings yields bit-identical 0.000400001166 average /
+  0.000632457375 RMS, confirming character bounds never enter normalization.
 
 ## Resolution failure boundaries
 
@@ -65,14 +66,15 @@ and below every calibrated Ready, Warning, and Error boundary of
 
 | Case | Vertices | Inpaint ratio | Distance avg | Distance max | Regions | Resolved tris | Total refresh | Status |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| SameTopology | 48 | 0.66667 | 0.002199 | 0.031879 | 17 | 34/72 | ~4 ms | Warning |
-| LocalRetopology | 49 | 0.65306 | 0.002180 | 0.031879 | 17 | 34/72 | ~4 ms | Warning |
-| DoubleLayerSeams | 98 | 0.65306 | 0.002636 | 0.018220 | 18 | 36/72 | ~4 ms | Warning |
+| SameTopology | 40 | 0.40000 | 0.000000 | 0.000000 | 2 | 72/216 | ~7 ms | Warning |
+| LocalRetopology | 40 | 0.35000 | 0.000000 | 0.000000 | 2 | 72/216 | ~5 ms | Warning |
+| DoubleLayerSeams | 82 | 0.26829 | 0.003297 | 0.023378 | 3 | 108/216 | ~8 ms | Ready |
 | MisalignedNegative | rejected | — | — | — | 0 | 0 | ~2 ms | Error |
 
-The diagnostic cube ratios exceed 0.27 only because the toy shells inpaint
-half their vertices; they demonstrate the warning band rather than approved
-quality.
+The diagnostic SameTopology and LocalRetopology cube ratios exceed 0.27 only
+because the toy shells inpaint a large share of their vertices; they
+demonstrate the warning band rather than approved quality. DoubleLayerSeams is
+the calibrated Ready-side boundary row.
 
 ## External production corpus SK_C01_Clothes_09_All + SM_C01_Clothes_09
 

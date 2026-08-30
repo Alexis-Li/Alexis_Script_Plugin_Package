@@ -7,6 +7,7 @@
 #include "Animation/MorphTarget.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
+#include "DynamicMesh/Operations/MergeCoincidentMeshEdges.h"
 #include "DynamicMeshEditor.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -221,7 +222,23 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
         Test.AddError(TEXT("fixture body conversion failed"));
         return false;
     }
-    const FDynamicMesh3& Cube = BodySource->GetMeshRef();
+    FDynamicMesh3 Cube(BodySource->GetMeshRef());
+    UE::Geometry::FMergeCoincidentMeshEdges WeldCube(&Cube);
+    if (!WeldCube.Apply())
+    {
+        Test.AddError(TEXT("fixture SkeletalCube faces were not welded"));
+        return false;
+    }
+    TArray<int32> CubeTriangles;
+    for (const int32 TriangleID : Cube.TriangleIndicesItr())
+    {
+        CubeTriangles.Add(TriangleID);
+    }
+    for (const int32 TriangleID : CubeTriangles)
+    {
+        FDynamicMesh3::FPokeTriangleInfo PokeInfo;
+        Cube.PokeTriangle(TriangleID, PokeInfo);
+    }
     const FVector3d BodyCenter = Cube.GetBounds().Center();
     const double BodyHeight = Cube.GetBounds().Height();
 

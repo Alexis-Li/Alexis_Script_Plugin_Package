@@ -98,6 +98,12 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   snapshot and transition boundary, while Maya Cached Playback now owns its
   lifecycle behind one action/view seam instead of leaking cache, transport,
   timer, identity, and phase state into the Controller.
+- **2026-08-31:** Completed Issue #27 by resolving hidden Driver slots through
+  stable current-asset metadata, rejecting unmappable or shared final slots
+  transactionally, and isolating Runtime Morph workflow tests from shared
+  `/Engine` fixtures. Stock UE 5.7 compilation, all 39 `MtoULiveLink` tests,
+  and Unreal packaging validation pass; production visual acceptance remains
+  a separate external gate.
 
 ## Stable Records
 
