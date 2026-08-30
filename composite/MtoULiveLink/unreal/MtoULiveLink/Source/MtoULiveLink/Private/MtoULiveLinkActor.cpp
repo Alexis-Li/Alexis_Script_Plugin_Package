@@ -298,14 +298,6 @@ void AMtoULiveLinkActor::RefreshBinding()
 {
     RebindInputNotifications();
     ReapplyDisplayTarget();
-    SkeletalMeshComponent->SetUpdateAnimationInEditor(true);
-    SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-    SkeletalMeshComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
-    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(SkeletalMeshComponent->GetAnimInstance()))
-    {
-        Instance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
-        Instance->EnableLiveLinkEvaluation(true);
-    }
 }
 
 void AMtoULiveLinkActor::ReapplyDisplayTarget()
@@ -331,7 +323,7 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         {
             DriverMeshComponent->SetSkeletalMeshAsset(Binding->SkeletalMesh);
             DriverMeshComponent->SetForcedLOD(1);
-            DriverMeshComponent->SetLeaderPoseComponent(SkeletalMeshComponent, true);
+            DriverMeshComponent->SetLeaderPoseComponent(SkeletalMeshComponent);
             for (const int32 MaterialSlot : DriverGarmentMaterialSlots)
             {
                 DriverMeshComponent->ShowMaterialSection(
@@ -345,7 +337,37 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         break;
     }
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
-    DriverMeshComponent->SetDisablePostProcessBlueprint(true);
+    SkeletalMeshComponent->SetUpdateAnimationInEditor(true);
+    SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+    SkeletalMeshComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
+    if (ULiveLinkInstance* Instance =
+            Cast<ULiveLinkInstance>(SkeletalMeshComponent->GetAnimInstance()))
+    {
+        Instance->SetSubject(
+            FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
+        Instance->EnableLiveLinkEvaluation(true);
+    }
+}
+
+void AMtoULiveLinkActor::ApplyModelMorphCurves(
+    const TArray<FName>& CurveNames,
+    const TArray<float>& CurveValues)
+{
+    USkeletalMesh* DriverMesh = DriverMeshComponent
+        ? DriverMeshComponent->GetSkeletalMeshAsset()
+        : nullptr;
+    if (DisplayTarget != EMtoUDisplayTarget::GeneratedPreview || !DriverMesh)
+    {
+        return;
+    }
+    const int32 CurveCount = FMath::Min(CurveNames.Num(), CurveValues.Num());
+    for (int32 Index = 0; Index < CurveCount; ++Index)
+    {
+        if (DriverMesh->FindMorphTarget(CurveNames[Index]))
+        {
+            DriverMeshComponent->SetMorphTarget(CurveNames[Index], CurveValues[Index]);
+        }
+    }
 }
 
 void AMtoULiveLinkActor::HideDisplay()

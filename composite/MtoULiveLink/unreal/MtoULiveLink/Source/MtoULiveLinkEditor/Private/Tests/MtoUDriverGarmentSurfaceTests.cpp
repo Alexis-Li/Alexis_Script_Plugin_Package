@@ -12,7 +12,9 @@
 #include "Engine/StaticMesh.h"
 #include "GeometryScript/GeometryScriptTypes.h"
 #include "GeometryScript/MeshAssetFunctions.h"
+#include "MeshDescription.h"
 #include "Misc/AutomationTest.h"
+#include "StaticMeshAttributes.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UDynamicMesh.h"
@@ -102,6 +104,30 @@ bool HasNoUsableSurface(const FMtoUDriverGarmentSurfaceResult& Result)
 {
     return Result.Surface.TriangleCount() == 0 && Result.Surface.VertexCount() == 0;
 }
+
+int32 FindPolygonGroupOrdinal(const USkeletalMesh& DriverAsset, const int32 SlotIndex)
+{
+    const FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
+    if (!Description || !DriverAsset.GetMaterials().IsValidIndex(SlotIndex))
+    {
+        return INDEX_NONE;
+    }
+    const FSkeletalMaterial& Slot = DriverAsset.GetMaterials()[SlotIndex];
+    const FName SlotIdentity = Slot.ImportedMaterialSlotName != NAME_None
+        ? Slot.ImportedMaterialSlotName
+        : Slot.MaterialSlotName;
+    FStaticMeshConstAttributes Attributes(*Description);
+    const TPolygonGroupAttributesConstRef<FName> SlotNames =
+        Attributes.GetPolygonGroupMaterialSlotNames();
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        if (SlotNames[GroupID] == SlotIdentity)
+        {
+            return GroupID.GetValue();
+        }
+    }
+    return INDEX_NONE;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDriverGarmentSurfaceAutoTest,
@@ -184,6 +210,54 @@ bool FMtoUDriverGarmentSurfaceAutoTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the region summary identifies every selected region"),
         !Auto.RegionSummary.IsEmpty());
 
+    FMeshDescription* Description = Fixtures.FullDriver->GetMeshDescription(0);
+    TestNotNull(TEXT("material-slot fixtures have a Driver mesh description"), Description);
+    if (!Description)
+    {
+        return false;
+    }
+    while (Description->PolygonGroups().Num() < Fixtures.FullDriver->GetMaterials().Num())
+    {
+        Description->CreatePolygonGroup();
+    }
+    FStaticMeshAttributes DescriptionAttributes(*Description);
+    TPolygonGroupAttributesRef<FName> DescriptionSlotNames =
+        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
+    for (int32 SlotIndex = 0; SlotIndex < Fixtures.FullDriver->GetMaterials().Num(); ++SlotIndex)
+    {
+        const FSkeletalMaterial& Slot = Fixtures.FullDriver->GetMaterials()[SlotIndex];
+        DescriptionSlotNames[FPolygonGroupID(SlotIndex)] =
+            Slot.ImportedMaterialSlotName != NAME_None
+                ? Slot.ImportedMaterialSlotName
+                : Slot.MaterialSlotName;
+    }
+
+    UE::Geometry::FDynamicMesh3 ReorderedDriver(FullDriver);
+    ReorderedDriver.Attributes()->EnableMaterialID();
+    const int32 BodyGroupOrdinal =
+        FindPolygonGroupOrdinal(*Fixtures.FullDriver, 0);
+    const int32 GarmentGroupOrdinal =
+        FindPolygonGroupOrdinal(*Fixtures.FullDriver, 3);
+    TestTrue(TEXT("reordered-slot fixture finds imported polygon groups"),
+        BodyGroupOrdinal != INDEX_NONE && GarmentGroupOrdinal != INDEX_NONE);
+    if (BodyGroupOrdinal == INDEX_NONE || GarmentGroupOrdinal == INDEX_NONE)
+    {
+        return false;
+    }
+    for (const int32 TriangleID : ReorderedDriver.TriangleIndicesItr())
+    {
+        ReorderedDriver.Attributes()->GetMaterialID()->SetValue(
+            TriangleID,
+            Auto.Surface.IsTriangle(TriangleID) ? GarmentGroupOrdinal : BodyGroupOrdinal);
+    }
+    Fixtures.FullDriver->GetMaterials().Swap(0, 3);
+    const FMtoUDriverGarmentSurfaceResult ReorderedSlots =
+        ResolveSurface(ReorderedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    Fixtures.FullDriver->GetMaterials().Swap(0, 3);
+    TestTrue(TEXT("automatic resolution maps imported polygon groups to reordered material slots"),
+        ReorderedSlots.bSucceeded
+            && ReorderedSlots.MaterialSlotIndices == TArray<int32>({0}));
+
     // Material mimicry: giving the Driver body slot the exact Preview slot
     // name and material cannot change the geometric resolution.
     FSkeletalMaterial& BodyMaterial = Fixtures.FullDriver->GetMaterials()[0];
@@ -200,6 +274,34 @@ bool FMtoUDriverGarmentSurfaceAutoTest::RunTest(const FString& Parameters)
             && Mimicry.MatchedPreviewCoverage > 0.999
             && Mimicry.TriangleCount == Auto.TriangleCount
             && Mimicry.RegionCount == Auto.RegionCount);
+
+    if (Description)
+    {
+        FStaticMeshAttributes Attributes(*Description);
+        TPolygonGroupAttributesRef<FName> SlotNames =
+            Attributes.GetPolygonGroupMaterialSlotNames();
+        const FPolygonGroupID BodyGroup(BodyGroupOrdinal);
+        const FName OriginalBodySlot = SlotNames[BodyGroup];
+        SlotNames[BodyGroup] = SlotNames[FPolygonGroupID(GarmentGroupOrdinal)];
+        UE::Geometry::FDynamicMesh3 SharedSlotDriver;
+        TestTrue(TEXT("shared-slot Driver converts for resolution"),
+            ConvertSourceMeshes(
+                *Fixtures.FullDriver, *Fixtures.Preview, SharedSlotDriver, PreviewMesh));
+        SharedSlotDriver.Attributes()->EnableMaterialID();
+        for (const int32 TriangleID : SharedSlotDriver.TriangleIndicesItr())
+        {
+            SharedSlotDriver.Attributes()->GetMaterialID()->SetValue(
+                TriangleID,
+                Auto.Surface.IsTriangle(TriangleID) ? GarmentGroupOrdinal : BodyGroupOrdinal);
+        }
+        const FMtoUDriverGarmentSurfaceResult SharedSlot = ResolveSurface(
+            SharedSlotDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        SlotNames[BodyGroup] = OriginalBodySlot;
+        TestFalse(TEXT("automatic resolution rejects a garment slot shared by visible character geometry"),
+            SharedSlot.bSucceeded);
+        TestTrue(TEXT("shared-slot failure explains why complete display is unsafe"),
+            SharedSlot.Diagnostics.Contains(TEXT("shares material slot")));
+    }
     return true;
 }
 

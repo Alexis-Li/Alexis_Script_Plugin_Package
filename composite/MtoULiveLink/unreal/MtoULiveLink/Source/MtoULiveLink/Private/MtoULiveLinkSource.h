@@ -60,6 +60,7 @@ private:
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
     bool DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command);
+    bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
     void PublishLatestFrameOnGameThread();
     void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
     void EnqueueErrorOnGameThread(
@@ -97,6 +98,7 @@ private:
     TArray<FTransform> TargetRefLocalPose;
     TArray<int32> BoneParents;
     TArray<int32> AcceptedCurveIndices;
+    TArray<FName> AcceptedCurveNames;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.

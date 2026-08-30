@@ -144,6 +144,8 @@ private:
 
     void RefreshBinding();
     void ReapplyDisplayTarget();
+    void ApplyModelMorphCurves(
+        const TArray<FName>& CurveNames, const TArray<float>& CurveValues);
     void RebindInputNotifications();
     void UnbindInputNotifications();
     void HandleDriverMeshChanged();

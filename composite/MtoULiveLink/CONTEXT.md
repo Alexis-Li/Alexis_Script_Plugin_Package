@@ -100,6 +100,7 @@ context and displays its modified surface through a Generated Preview Skeletal
 Mesh under the current pose. With a full-character Driver, the original Driver
 also remains visible behind it with the resolved garment material slots hidden,
 preserving body, face, hair, and other non-garment parts without extra inputs.
+Matching live curves drive Morph Targets on either displayed mesh.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:

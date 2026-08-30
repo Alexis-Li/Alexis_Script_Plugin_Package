@@ -131,19 +131,7 @@ FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
 {
     CacheSession.SetPublish([this](const FMtoUFrameMessage& Frame) -> bool
     {
-        if (!Client || !SourceGuid.IsValid())
-        {
-            return false;
-        }
-        Client->PushSubjectFrameData_AnyThread(
-            SubjectKey,
-            FMtoUProtocol::MakeRetargetedFrameData(
-                Frame,
-                AcceptedCurveIndices,
-                SourceBindLocalPose,
-                TargetRefLocalPose,
-                BoneParents));
-        return true;
+        return PublishFrameOnGameThread(Frame);
     });
     CacheSession.SetProgressSink(
         [this](int32 PlayId, int32 AppliedFrames)
@@ -208,6 +196,8 @@ void FMtoULiveLinkSource::Update()
             SourceBindLocalPose.Reset();
             TargetRefLocalPose.Reset();
             BoneParents.Reset();
+            AcceptedCurveIndices.Reset();
+            AcceptedCurveNames.Reset();
             // The transient cache is scoped to one negotiated streaming
             // session; a newer connection never inherits it.
             CacheSession.ResetToIdle();
@@ -832,11 +822,21 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
-    // Animation drives the bound Driver Skeletal Mesh. Once a Generated
-    // Preview exists, the Model workflow negotiates against its projected
-    // Morph library instead of the Driver's own library.
+    // Animation drives the bound Driver Skeletal Mesh. Model drives the
+    // Generated garment and the original Driver follower, so its accepted
+    // curve set is the union of both displayed Morph libraries.
     USkeletalMesh* Mesh = bModelWorkflow ? Readiness.GeneratedPreview : DriverMesh;
     FMtoUTargetDescription Target = DescribeTarget(*Mesh);
+    if (bModelWorkflow)
+    {
+        for (const TObjectPtr<UMorphTarget>& MorphTarget : DriverMesh->GetMorphTargets())
+        {
+            if (MorphTarget)
+            {
+                Target.MorphTargetNames.AddUnique(MorphTarget->GetFName());
+            }
+        }
+    }
     const int32 TargetMorphCount = Target.MorphTargetNames.Num();
 
     FMtoUCharacterDescription Character;
@@ -905,7 +905,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
                     : TEXT("ORANGE: Bone-only diagnostic; not valid for model acceptance.");
         Actor->SetModelDiagnostics(
             FString::Printf(
-                TEXT("%s\nMaya current BlendShape count: %d\nGenerated Preview Morph total: %d\nAccepted count: %d\nMaya-only count: %d (%s)\nUE-only count: %d (%s)"),
+                TEXT("%s\nMaya current BlendShape count: %d\nModel display Morph total: %d\nAccepted count: %d\nMaya-only count: %d (%s)\nUE-only count: %d (%s)"),
                 *Indicator,
                 Message.Curves.Num(),
                 TargetMorphCount,
@@ -924,7 +924,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         // Morphs is blocking; the user must fix the pairing or explicitly
         // disable BS transmission.
         const FString Details = FString::Printf(
-            TEXT("%s has no Morph Target intersection between Maya and the generated preview.\nMaya-only: %d, Unreal-only: %d."),
+            TEXT("%s has no Morph Target intersection between Maya and the Model display meshes.\nMaya-only: %d, Unreal-only: %d."),
             *Actor->GetName(),
             Outcome.MayaOnlyMorphNames.Num(),
             Outcome.UnrealOnlyMorphNames.Num());
@@ -968,6 +968,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     AcceptedCurveIndices = bBoneOnlySession
         ? TArray<int32>()
         : Outcome.AcceptedCurveIndices;
+    AcceptedCurveNames = bBoneOnlySession
+        ? TArray<FName>()
+        : Outcome.AcceptedCurveNames;
     for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
     {
         Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
@@ -1211,14 +1214,36 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     {
         return;
     }
-    Client->PushSubjectFrameData_AnyThread(
-        SubjectKey,
-        FMtoUProtocol::MakeRetargetedFrameData(
-            Frame->Message,
-            AcceptedCurveIndices,
-            SourceBindLocalPose,
-            TargetRefLocalPose,
-            BoneParents));
+    PublishFrameOnGameThread(Frame->Message);
+}
+
+bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Frame)
+{
+    check(IsInGameThread());
+    if (!Client || !SourceGuid.IsValid())
+    {
+        return false;
+    }
+    FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
+        Frame,
+        AcceptedCurveIndices,
+        SourceBindLocalPose,
+        TargetRefLocalPose,
+        BoneParents);
+    if (const FLiveLinkAnimationFrameData* Animation =
+            FrameData.Cast<FLiveLinkAnimationFrameData>())
+    {
+        for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
+        {
+            if (Actor.IsValid())
+            {
+                Actor->ApplyModelMorphCurves(
+                    AcceptedCurveNames, Animation->PropertyValues);
+            }
+        }
+    }
+    Client->PushSubjectFrameData_AnyThread(SubjectKey, MoveTemp(FrameData));
+    return true;
 }
 
 void FMtoULiveLinkSource::EnqueueErrorOnGameThread(

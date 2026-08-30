@@ -66,9 +66,11 @@ public:
         Actor.SetPreviewBuildStage(Stage);
     }
     static bool Commit(AMtoULiveLinkActor& Actor, USkeletalMesh* Mesh, bool bWarning,
-        const FString& Diagnostics, const FString& Summary = FString())
+        const FString& Diagnostics, const FString& Summary = FString(),
+        const TArray<int32>& DriverGarmentMaterialSlots = {})
     {
-        return Actor.CompletePreviewBuild(Mesh, bWarning, Diagnostics, Summary);
+        return Actor.CompletePreviewBuild(
+            Mesh, bWarning, Diagnostics, Summary, DriverGarmentMaterialSlots);
     }
     static bool Fail(AMtoULiveLinkActor& Actor, EMtoUPreviewBuildStage Stage,
         const FString& Diagnostics)
@@ -2501,9 +2503,12 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
             AddUniformMorph(*GeneratedPreview, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f))
             && AddUniformMorph(*GeneratedPreview, FName(TEXT("Unaccepted")), FVector3f(0.0f, 1.0f, 0.0f))
             && AddUniformMorph(*GeneratedPreview, FName(TEXT("NeverAccepted")), FVector3f(0.0f, 0.0f, 1.0f)));
+        TestTrue(TEXT("the original Driver owns a character-only Morph"),
+            AddUniformMorph(
+                *VisibleTargetBefore, FName(TEXT("DriverOnly")), FVector3f(2.0f, 0.0f, 0.0f)));
         FMtoUPreviewReadinessTestAccess::Begin(*Actor);
         FMtoUPreviewReadinessTestAccess::Commit(
-            *Actor, GeneratedPreview, false, TEXT("test preview"));
+            *Actor, GeneratedPreview, false, TEXT("test preview"), FString(), {0});
     }
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
         Actor && Actor->GetPreviewReadiness().IsUsable());
@@ -2511,6 +2516,17 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Model preview selection records the Generated Preview target"),
         Actor && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
         && Actor->GetPreviewReadiness().IsUsable());
+    TArray<USkeletalMeshComponent*> DisplayMeshes;
+    Actor->GetComponents(DisplayMeshes);
+    USkeletalMeshComponent** DriverDisplayEntry = DisplayMeshes.FindByPredicate(
+        [Actor](const USkeletalMeshComponent* Component)
+        {
+            return Component != Actor->GetSkeletalMeshComponent();
+        });
+    USkeletalMeshComponent* DriverDisplay =
+        DriverDisplayEntry ? *DriverDisplayEntry : nullptr;
+    TestTrue(TEXT("Model preview creates the original Driver follower"),
+        DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == VisibleTargetBefore);
 
     const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
 
@@ -2669,7 +2685,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     const TArray<uint8> PartialInit = DriverInitPacket(
         FMtoUWorkflows::Model,
         true,
-        TEXT("[\"OtherOutfit\",\"Accepted\",\"Unaccepted\"]"));
+        TEXT("[\"OtherOutfit\",\"Accepted\",\"Unaccepted\",\"DriverOnly\"]"));
     TestTrue(TEXT("partial Morph model init is sent"), PartialClient
         && SendBytes(*PartialClient, PartialInit.GetData(), PartialInit.Num()));
     Payload.Reset();
@@ -2677,8 +2693,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         PartialClient && ReceivePacket(*PartialClient, Payload, [&]() { Source->Update(); }));
     const FString PartialReply = FromUtf8(Payload);
     TestTrue(TEXT("partial ready reports v4 Morph counts and both differences"),
-        PartialReply.Contains(TEXT("\"target_morph_count\":3"))
-        && PartialReply.Contains(TEXT("\"accepted_morph_count\":2"))
+        PartialReply.Contains(TEXT("\"target_morph_count\":4"))
+        && PartialReply.Contains(TEXT("\"accepted_morph_count\":3"))
         && PartialReply.Contains(TEXT("OtherOutfit"))
         && PartialReply.Contains(TEXT("NeverAccepted")));
     TestTrue(TEXT("partial Model coverage is a connection diagnostic that keeps readiness Ready"),
@@ -2686,13 +2702,13 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Partial
         && Actor->GetConnectionStatus().Contains(TEXT("partial Morph coverage")));
     TestTrue(TEXT("Model diagnostics report all five requested counts"),
-        Actor && Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 3"))
-        && Actor->GetModelDiagnostics().Contains(TEXT("Generated Preview Morph total: 3"))
-        && Actor->GetModelDiagnostics().Contains(TEXT("Accepted count: 2"))
+        Actor && Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 4"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Model display Morph total: 4"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Accepted count: 3"))
         && Actor->GetModelDiagnostics().Contains(TEXT("Maya-only count: 1"))
         && Actor->GetModelDiagnostics().Contains(TEXT("UE-only count: 1")));
     const TArray<uint8> PartialFrame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75,0.6]}"));
     TestTrue(TEXT("partial Model frame is sent"), PartialClient
         && SendBytes(*PartialClient, PartialFrame.GetData(), PartialFrame.Num()));
     FLiveLinkSubjectFrameData PartialEvaluatedFrame;
@@ -2714,14 +2730,14 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("another-outfit value is excluded and only accepted values are published"),
         PartialStatic
         && PartialStatic->PropertyNames == TArray<FName>({
-            FName(TEXT("Accepted")), FName(TEXT("Unaccepted"))})
+            FName(TEXT("Accepted")), FName(TEXT("Unaccepted")), FName(TEXT("DriverOnly"))})
         && PartialAnimation
         && PartialAnimation->Transforms.Num() == 2
         && !PartialAnimation->Transforms[0].ContainsNaN()
-        && PartialAnimation->PropertyValues == TArray<float>({0.25f, 0.75f}));
+        && PartialAnimation->PropertyValues == TArray<float>({0.25f, 0.75f, 0.6f}));
     float PartialAcceptedValue = 0.0f;
     float PartialUnacceptedValue = 0.0f;
-    const bool bPartialValueApplied = PollUntil([&]()
+    const bool bPreviewValuesApplied = PollUntil([&]()
     {
         Source->Update();
         LiveLinkClient.ForceTick();
@@ -2734,7 +2750,18 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
             && FMath::IsNearlyEqual(PartialUnacceptedValue, 0.75f);
     });
     TestTrue(TEXT("bone and multiple accepted Morph values apply to the displayed Preview"),
-        bPartialValueApplied);
+        bPreviewValuesApplied);
+    const bool bDriverValueApplied = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        return DriverDisplay
+            && FMath::IsNearlyEqual(
+                DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.6f);
+    });
+    TestTrue(TEXT("Driver-only Morph value applies to the complete character display"),
+        bDriverValueApplied);
     float NeverAcceptedValue = 0.0f;
     TestTrue(TEXT("non-accepted Generated Morph remains zero"),
         !SkeletalMeshComponent->GetCurveValue(
@@ -2749,15 +2776,15 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     const TArray<uint8> FullInit = DriverInitPacket(
         FMtoUWorkflows::Model,
         true,
-        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\"]"));
+        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\",\"DriverOnly\"]"));
     TestTrue(TEXT("full Morph model init is sent"), FullClient
         && SendBytes(*FullClient, FullInit.GetData(), FullInit.Num()));
     Payload.Reset();
     TestTrue(TEXT("full Morph intersection produces ready response"),
         FullClient && ReceivePacket(*FullClient, Payload, [&]() { Source->Update(); }));
     TestTrue(TEXT("full ready reports complete accepted intersection"),
-        FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":3"))
-        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":3")));
+        FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":4"))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":4")));
     DestroySocket(*SocketSubsystem, FullClient);
     TestTrue(TEXT("source returns to listening after full Model disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
@@ -2774,7 +2801,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animation workflow selects the Driver Skeletal Mesh"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
         && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"animation\""))
-        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":0")));
+        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":1")));
     TestTrue(TEXT("animation connection marks the actor connected"),
         Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
     TestTrue(TEXT("Animation workflow restores the Driver Skeletal Mesh"),

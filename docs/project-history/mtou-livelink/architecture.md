@@ -875,9 +875,15 @@ adds no Binding input. Preview refresh carries the resolved Driver garment
 material-slot indices into the actor-owned transient display state. The actor
 shows the original Driver on a follower Skeletal Mesh Component, hides those
 original garment slots for LOD0, and follows the Generated Preview's complete
-skeleton and curves. Body, face, hair, and other non-garment Driver slots
-therefore remain visible without duplicating asset selection, while Animation
-preview continues to display the complete Driver through the primary component.
+skeleton through Leader Pose. Imported polygon-group identities map resolved
+geometry to final material slots; Refresh rejects a slot shared across garment
+and visible non-garment groups. Model negotiation uses the union of Generated
+Preview and Driver Morph Targets, and accepted frame curves are also applied to
+matching Driver Morph Targets because Unreal 5.7 follower curve propagation is
+not reliable without material curves. Body, face, hair, and other non-garment
+Driver slots and Morphs therefore remain visible without duplicating asset
+selection, while Animation preview continues to display the complete Driver
+through the primary component.
 Invalidation and deletion clear both Model display layers transactionally;
 garment-only Drivers simply hide all of their replaced Driver slots.
 

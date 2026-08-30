@@ -70,6 +70,46 @@ FString DescribeDriverSlot(
             *GetDriverSlotIdentity(Slot).ToString(), *Slot.MaterialSlotName.ToString());
 }
 
+constexpr int32 AmbiguousMaterialSlot = -2;
+
+bool BuildPolygonGroupToMaterialSlotMap(
+    const USkeletalMesh& DriverAsset,
+    TArray<int32>& OutSlotByOrdinal)
+{
+    FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
+    if (!Description
+        || !Description->PolygonGroupAttributes().HasAttribute(
+            MeshAttribute::PolygonGroup::ImportedMaterialSlotName))
+    {
+        return false;
+    }
+
+    FStaticMeshAttributes DescriptionAttributes(*Description);
+    const TPolygonGroupAttributesConstRef<FName> GroupSlotNames =
+        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
+    int32 MaxOrdinal = INDEX_NONE;
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        MaxOrdinal = FMath::Max(MaxOrdinal, GroupID.GetValue());
+    }
+    OutSlotByOrdinal.Init(INDEX_NONE, MaxOrdinal + 1);
+    const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (GetDriverSlotIdentity(Slots[SlotIndex])
+                != GroupSlotNames[GroupID])
+            {
+                continue;
+            }
+            int32& Mapped = OutSlotByOrdinal[GroupID.GetValue()];
+            Mapped = Mapped == INDEX_NONE ? SlotIndex : AmbiguousMaterialSlot;
+        }
+    }
+    return true;
+}
+
 bool MatchManualOverrideSlots(
     const TArray<FSkeletalMaterial>& Slots,
     const TArray<FName>& Override,
@@ -220,53 +260,113 @@ double BeginGarmentSurfaceResolution(
     return Scale;
 }
 
-void CollectMaterialSlotIndices(
+bool CollectMaterialSlotIndices(
     const FDynamicMesh3& Driver,
     const FDynamicMesh3& Surface,
-    const int32 SlotCount,
-    TArray<int32>& OutSlotIndices)
+    const USkeletalMesh& DriverAsset,
+    TArray<int32>& OutSlotIndices,
+    FString& OutError)
 {
+    const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
+    TArray<int32> SlotByOrdinal;
+    if (!BuildPolygonGroupToMaterialSlotMap(DriverAsset, SlotByOrdinal))
+    {
+        OutError = TEXT("Driver LOD0 source data has no imported material-slot identities for safe Model display composition.");
+        return false;
+    }
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
     TSet<int32> MaterialSlots;
     TSet<int32> TriangleGroups;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
-        const int32 MaterialSlot = DriverMaterialIDs
+        const int32 MaterialOrdinal = DriverMaterialIDs
             ? DriverMaterialIDs->GetValue(TriangleID)
             : INDEX_NONE;
+        const int32 MaterialSlot = SlotByOrdinal.IsValidIndex(MaterialOrdinal)
+            ? SlotByOrdinal[MaterialOrdinal]
+            : INDEX_NONE;
         const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
-        if (MaterialSlot >= 0 && MaterialSlot < SlotCount)
+        if (MaterialSlot >= 0 && MaterialSlot < Slots.Num())
         {
             MaterialSlots.Add(MaterialSlot);
         }
-        if (TriangleGroup >= 0 && TriangleGroup < SlotCount)
+        if (TriangleGroup >= 0 && TriangleGroup < Slots.Num())
         {
             TriangleGroups.Add(TriangleGroup);
         }
     }
 
-    // Geometry Script imports use Material IDs in production, while generated
-    // test/source meshes may collapse that layer and retain slots in triangle
-    // groups. The signal preserving more of the Driver's slots is authoritative.
-    // ponytail: if a future import keeps conflicting non-collapsed signals,
-    // replace this cardinality choice with imported triangle correspondence.
-    const bool bUseTriangleGroups = TriangleGroups.Num() > MaterialSlots.Num();
-    const FDynamicMeshMaterialAttribute* SurfaceMaterialIDs =
-        Surface.Attributes() ? Surface.Attributes()->GetMaterialID() : nullptr;
-    for (const int32 TriangleID : Surface.TriangleIndicesItr())
+    // Generated meshes may collapse the MeshDescription to one polygon group
+    // while retaining sections in triangle groups. A real multi-group import
+    // stays name-mapped even when several groups intentionally share one slot.
+    int32 MappedOrdinalCount = 0;
+    for (const int32 SlotIndex : SlotByOrdinal)
     {
+        MappedOrdinalCount += SlotIndex >= 0 ? 1 : 0;
+    }
+    const bool bUseTriangleGroups = MappedOrdinalCount <= 1
+        && TriangleGroups.Num() > MaterialSlots.Num();
+    TSet<int32> SelectedSlots;
+    TMap<int32, TSet<int32>> SelectedOrdinalsBySlot;
+    TMap<int32, TSet<int32>> UnselectedOrdinalsBySlot;
+    bool bSelectedSignalUnmapped = false;
+    for (const int32 TriangleID : Driver.TriangleIndicesItr())
+    {
+        const int32 MaterialOrdinal = DriverMaterialIDs
+            ? DriverMaterialIDs->GetValue(TriangleID)
+            : INDEX_NONE;
         const int32 SlotIndex = bUseTriangleGroups
-            ? Surface.GetTriangleGroup(TriangleID)
-            : (SurfaceMaterialIDs
-                ? SurfaceMaterialIDs->GetValue(TriangleID)
-                : Surface.GetTriangleGroup(TriangleID));
-        if (SlotIndex >= 0 && SlotIndex < SlotCount)
+            ? Driver.GetTriangleGroup(TriangleID)
+            : (SlotByOrdinal.IsValidIndex(MaterialOrdinal)
+                ? SlotByOrdinal[MaterialOrdinal]
+                : INDEX_NONE);
+        if (SlotIndex < 0 || SlotIndex >= Slots.Num())
         {
-            OutSlotIndices.AddUnique(SlotIndex);
+            bSelectedSignalUnmapped |= Surface.IsTriangle(TriangleID);
+            continue;
+        }
+        if (Surface.IsTriangle(TriangleID))
+        {
+            SelectedSlots.Add(SlotIndex);
+            if (!bUseTriangleGroups)
+            {
+                SelectedOrdinalsBySlot.FindOrAdd(SlotIndex).Add(MaterialOrdinal);
+            }
+        }
+        else if (!bUseTriangleGroups)
+        {
+            UnselectedOrdinalsBySlot.FindOrAdd(SlotIndex).Add(MaterialOrdinal);
         }
     }
+    if (bSelectedSignalUnmapped || SelectedSlots.IsEmpty())
+    {
+        OutError = TEXT("Resolved garment triangles cannot be mapped uniquely to Driver material slots for safe Model display composition.");
+        return false;
+    }
+    for (const int32 SlotIndex : SelectedSlots)
+    {
+        const TSet<int32>* SelectedOrdinals = SelectedOrdinalsBySlot.Find(SlotIndex);
+        const TSet<int32>* UnselectedOrdinals = UnselectedOrdinalsBySlot.Find(SlotIndex);
+        bool bSharesSlotAcrossPolygonGroups = false;
+        if (SelectedOrdinals && UnselectedOrdinals)
+        {
+            for (const int32 Ordinal : *UnselectedOrdinals)
+            {
+                bSharesSlotAcrossPolygonGroups |= !SelectedOrdinals->Contains(Ordinal);
+            }
+        }
+        if (bSharesSlotAcrossPolygonGroups)
+        {
+            OutError = FString::Printf(
+                TEXT("Resolved garment geometry shares material slot %s with visible non-garment Driver geometry. Split the garment into its own material slot before Refresh Preview."),
+                *DescribeDriverSlot(Slots, SlotIndex));
+            return false;
+        }
+    }
+    OutSlotIndices = SelectedSlots.Array();
     OutSlotIndices.Sort();
+    return true;
 }
 
 /**
@@ -761,8 +861,11 @@ bool ResolveDriverGarmentSurface(
         }
     }
     FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
-    CollectMaterialSlotIndices(
-        Driver, Out.Surface, DriverAsset.GetMaterials().Num(), Out.MaterialSlotIndices);
+    if (!CollectMaterialSlotIndices(
+            Driver, Out.Surface, DriverAsset, Out.MaterialSlotIndices, OutError))
+    {
+        return false;
+    }
     if (bUsedMaterialEvidence)
     {
         Out.RegionSummary += TEXT("; material evidence narrowed Auto candidates");
@@ -810,45 +913,16 @@ bool ResolveDriverGarmentSurfaceFromSlots(
     // imported slot name reached through the per-triangle material ID, and the
     // triangle-group layer that skeletal builds route sections by. Both stay
     // name- or slot-index based; no transient section arithmetic is persisted.
-    FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
-    const bool bHasPolygonGroupNames = Description
-        && Description->PolygonGroupAttributes().HasAttribute(
-            MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
     const FDynamicMeshMaterialAttribute* MaterialIDs = Driver.Attributes()
         ? Driver.Attributes()->GetMaterialID()
         : nullptr;
-    if (!bHasPolygonGroupNames || !MaterialIDs)
+    TArray<int32> SlotByOrdinal;
+    if (!MaterialIDs
+        || !BuildPolygonGroupToMaterialSlotMap(DriverAsset, SlotByOrdinal))
     {
         OutError = TEXT("Driver LOD0 source data has no imported material-slot identities to match the manual "
             "override against.");
         return false;
-    }
-
-    // Resolve each polygon-group ordinal to its unique Driver material slot;
-    // an imported name matching several slots stays unresolved on purpose.
-    constexpr int32 AmbiguousSlot = -2;
-    FStaticMeshAttributes DescriptionAttributes(*Description);
-    const TPolygonGroupAttributesConstRef<FName> GroupSlotNames =
-        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
-    int32 MaxOrdinal = INDEX_NONE;
-    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
-    {
-        MaxOrdinal = FMath::Max(MaxOrdinal, GroupID.GetValue());
-    }
-    TArray<int32> SlotByOrdinal;
-    SlotByOrdinal.Init(INDEX_NONE, MaxOrdinal + 1);
-    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
-    {
-        const FName ImportedName = GroupSlotNames[GroupID];
-        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
-        {
-            if (GetDriverSlotIdentity(Slots[SlotIndex]) != ImportedName)
-            {
-                continue;
-            }
-            int32& Mapped = SlotByOrdinal[GroupID.GetValue()];
-            Mapped = Mapped == INDEX_NONE ? SlotIndex : AmbiguousSlot;
-        }
     }
 
     const auto IsMatchedSlot = [&](int32 SlotIndex)

@@ -7,9 +7,14 @@
   second actor-owned display keeps the original full-character Driver's body,
   face, hair, and other non-garment material slots visible. The resolved
   garment slots are hidden on that Driver display to avoid overlapping the
-  replacement garment, and the Driver display follows the Generated Preview's
-  complete skeleton and curves. Animation preview, garment-only Drivers,
-  serialized Binding fields, source assets, and protocol v6 are unchanged.
+  replacement garment. Imported polygon-group identities map the resolved
+  geometry to final Skeletal Mesh slots, and Refresh rejects a slot shared by
+  garment and visible non-garment groups instead of hiding character geometry.
+  The Driver display follows the Generated Preview's complete skeleton, while
+  Model negotiation and frame application include Morph Targets from both
+  display meshes so face, hair, and other Driver-only curves remain visible.
+  Animation preview, garment-only Drivers, serialized Binding fields, source
+  assets, and protocol v6 are unchanged.
 - Deepen Preview readiness on the Binding Actor (unreleased 0.4.0 C++
   interface change): Runtime callers now read one coherent
   `FMtoUPreviewReadiness` snapshot (state, build stage, ready Generated

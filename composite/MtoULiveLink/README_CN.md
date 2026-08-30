@@ -58,5 +58,7 @@ Maya 与 Unreal 组件必须来自同一版本。
 5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
    **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。使用整角色
    Driver 时，模型预览会保留显示身体、脸、头发及其他非服装材质槽，并用生成的
-   Preview 替换解析出的原服装材质槽。
+   Preview 替换解析出的原服装材质槽；Driver 独有的脸部、头发 Morph Target 也会
+   继续接收 Maya 中的同名曲线。服装与非服装几何体应使用不同的导入材质槽；若二者
+   共用一个槽，Refresh 会报告问题，而不会隐藏角色的其他部分。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。

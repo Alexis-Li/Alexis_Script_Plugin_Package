@@ -67,5 +67,8 @@ Install the Maya and Unreal components from the same release.
    click **Refresh Preview** before connecting. Use **Transfer BS** to include
    matching BlendShapes. For a full-character Driver, Model preview keeps its
    body, face, hair, and other non-garment material slots visible while the
-   Generated Preview replaces the resolved original garment slots.
+   Generated Preview replaces the resolved original garment slots. Driver-only
+   face and hair Morph Targets continue to receive matching Maya curves. Keep
+   garment and non-garment geometry in separate imported material slots;
+   Refresh reports a shared slot instead of hiding part of the character.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
