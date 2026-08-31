@@ -105,6 +105,35 @@ bool HasNoUsableSurface(const FMtoUDriverGarmentSurfaceResult& Result)
     return Result.Surface.TriangleCount() == 0 && Result.Surface.VertexCount() == 0;
 }
 
+/**
+ * Gives the Driver description one polygon group per material slot, each named
+ * with that slot's stable imported identity, the way a fresh FBX import does.
+ */
+FMeshDescription* WriteImportedSlotIdentities(
+    USkeletalMesh& DriverAsset,
+    TPolygonGroupAttributesRef<FName>& OutSlotNames)
+{
+    FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
+    if (!Description)
+    {
+        return nullptr;
+    }
+    while (Description->PolygonGroups().Num() < DriverAsset.GetMaterials().Num())
+    {
+        Description->CreatePolygonGroup();
+    }
+    FStaticMeshAttributes Attributes(*Description);
+    OutSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+    for (int32 SlotIndex = 0; SlotIndex < DriverAsset.GetMaterials().Num(); ++SlotIndex)
+    {
+        const FSkeletalMaterial& Slot = DriverAsset.GetMaterials()[SlotIndex];
+        OutSlotNames[FPolygonGroupID(SlotIndex)] = Slot.ImportedMaterialSlotName != NAME_None
+            ? Slot.ImportedMaterialSlotName
+            : Slot.MaterialSlotName;
+    }
+    return Description;
+}
+
 int32 FindPolygonGroupOrdinal(const USkeletalMesh& DriverAsset, const int32 SlotIndex)
 {
     const FMeshDescription* Description = DriverAsset.GetMeshDescription(0);
@@ -210,26 +239,13 @@ bool FMtoUDriverGarmentSurfaceAutoTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the region summary identifies every selected region"),
         !Auto.RegionSummary.IsEmpty());
 
-    FMeshDescription* Description = Fixtures.FullDriver->GetMeshDescription(0);
+    TPolygonGroupAttributesRef<FName> DescriptionSlotNames;
+    FMeshDescription* Description =
+        WriteImportedSlotIdentities(*Fixtures.FullDriver, DescriptionSlotNames);
     TestNotNull(TEXT("material-slot fixtures have a Driver mesh description"), Description);
     if (!Description)
     {
         return false;
-    }
-    while (Description->PolygonGroups().Num() < Fixtures.FullDriver->GetMaterials().Num())
-    {
-        Description->CreatePolygonGroup();
-    }
-    FStaticMeshAttributes DescriptionAttributes(*Description);
-    TPolygonGroupAttributesRef<FName> DescriptionSlotNames =
-        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
-    for (int32 SlotIndex = 0; SlotIndex < Fixtures.FullDriver->GetMaterials().Num(); ++SlotIndex)
-    {
-        const FSkeletalMaterial& Slot = Fixtures.FullDriver->GetMaterials()[SlotIndex];
-        DescriptionSlotNames[FPolygonGroupID(SlotIndex)] =
-            Slot.ImportedMaterialSlotName != NAME_None
-                ? Slot.ImportedMaterialSlotName
-                : Slot.MaterialSlotName;
     }
 
     UE::Geometry::FDynamicMesh3 ReorderedDriver(FullDriver);
@@ -510,26 +526,13 @@ bool FMtoUDriverGarmentSurfaceManualTest::RunTest(const FString& Parameters)
             && Manual.RegionSummary.Contains(TEXT("Garment_Upper_B"))
             && Manual.RegionSummary.Contains(TEXT("Garment_Lower")));
 
-    FMeshDescription* Description = Fixtures.FullDriver->GetMeshDescription(0);
+    TPolygonGroupAttributesRef<FName> DescriptionSlotNames;
+    FMeshDescription* Description =
+        WriteImportedSlotIdentities(*Fixtures.FullDriver, DescriptionSlotNames);
     TestNotNull(TEXT("manual remap fixture has a Driver mesh description"), Description);
     if (!Description)
     {
         return false;
-    }
-    while (Description->PolygonGroups().Num() < Fixtures.FullDriver->GetMaterials().Num())
-    {
-        Description->CreatePolygonGroup();
-    }
-    FStaticMeshAttributes DescriptionAttributes(*Description);
-    TPolygonGroupAttributesRef<FName> DescriptionSlotNames =
-        DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
-    for (int32 SlotIndex = 0; SlotIndex < Fixtures.FullDriver->GetMaterials().Num(); ++SlotIndex)
-    {
-        const FSkeletalMaterial& Slot = Fixtures.FullDriver->GetMaterials()[SlotIndex];
-        DescriptionSlotNames[FPolygonGroupID(SlotIndex)] =
-            Slot.ImportedMaterialSlotName != NAME_None
-                ? Slot.ImportedMaterialSlotName
-                : Slot.MaterialSlotName;
     }
 
     const int32 BodyGroupOrdinal = FindPolygonGroupOrdinal(*Fixtures.FullDriver, 0);
@@ -599,6 +602,40 @@ bool FMtoUDriverGarmentSurfaceManualTest::RunTest(const FString& Parameters)
         !ConflictingMetadata.bSucceeded
             && HasNoUsableSurface(ConflictingMetadata)
             && ConflictingMetadata.Diagnostics.Contains(TEXT("conflicting current Driver material metadata")));
+
+    // A collapsed source must also prove every triangle in Manual mode: one
+    // unmappable current-LOD triangle group blocks the refresh even though
+    // all remaining metadata agrees on the overridden slot.
+    const FName OriginalBodyGroupName =
+        DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)];
+    DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] =
+        DescriptionSlotNames[FPolygonGroupID(GarmentGroupOrdinal)];
+    UE::Geometry::FDynamicMesh3 PartiallyUnmappableManualDriver(Driver);
+    PartiallyUnmappableManualDriver.Attributes()->EnableMaterialID();
+    bool bInjectedUnmappableGroup = false;
+    for (const int32 TriangleID : PartiallyUnmappableManualDriver.TriangleIndicesItr())
+    {
+        PartiallyUnmappableManualDriver.Attributes()->GetMaterialID()->SetValue(
+            TriangleID, BodyGroupOrdinal);
+        PartiallyUnmappableManualDriver.SetTriangleGroup(
+            TriangleID,
+            bInjectedUnmappableGroup ? GarmentGroupOrdinal : 99);
+        bInjectedUnmappableGroup = true;
+    }
+    const FMtoUDriverGarmentSurfaceResult PartiallyUnmappableManual = ResolveSurface(
+        PartiallyUnmappableManualDriver,
+        *Fixtures.FullDriver,
+        PreviewMesh,
+        *Fixtures.Preview,
+        {UpperA});
+    DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] = OriginalBodyGroupName;
+    AddInfo(PartiallyUnmappableManual.Diagnostics);
+    TestTrue(TEXT("manual override fails closed when one collapsed triangle group cannot be mapped"),
+        bInjectedUnmappableGroup
+            && !PartiallyUnmappableManual.bSucceeded
+            && HasNoUsableSurface(PartiallyUnmappableManual)
+            && PartiallyUnmappableManual.Diagnostics.Contains(TEXT("cannot be mapped uniquely"))
+            && PartiallyUnmappableManual.Diagnostics.Contains(TEXT("group(s) [99]")));
 
     // Matching keys on the stable imported identity, not the displayed name.
     const FName DisplayedName = Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName;

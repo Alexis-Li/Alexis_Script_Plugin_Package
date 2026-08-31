@@ -73,8 +73,8 @@ _Avoid_: Garment section, source region index, resolved LOD
 The Binding's optional advanced list of stable imported Driver material-slot
 names that manually identifies the garment source when automatic resolution is
 ambiguous. An empty list keeps automatic resolution; a missing, duplicated, or
-no-longer-unique name is a hard preflight error that never silently returns to
-Auto.
+no-longer-unique name, or a Driver triangle that maps to no final material
+slot, is a hard preflight error that never silently returns to Auto.
 _Avoid_: Slot index override, section selection, source mesh picker
 
 **Preview Static Mesh**:

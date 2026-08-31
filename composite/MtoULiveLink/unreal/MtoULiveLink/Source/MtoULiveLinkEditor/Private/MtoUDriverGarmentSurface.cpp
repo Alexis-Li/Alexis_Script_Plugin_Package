@@ -235,8 +235,7 @@ struct FDriverMaterialSlotResolver
     EDriverMaterialSlotResolutionResult Resolve(
         const int32 TriangleID,
         const EDriverMaterialSlotResolutionMode Mode,
-        const bool bUseTriangleGroupMetadata,
-        const bool bCollapsedMaterialMetadata,
+        const FDriverMaterialSlotMetadata& Metadata,
         int32& OutSlot,
         FString& OutError) const
     {
@@ -269,13 +268,13 @@ struct FDriverMaterialSlotResolver
         // A collapsed source must prove every triangle through its current LOD
         // section metadata. When that metadata is the richer signal, a
         // polygon-group mismatch is expected; otherwise both signals must agree.
-        if (bCollapsedMaterialMetadata)
+        if (Metadata.bCollapsedMaterialMetadata)
         {
             if (!bTriangleGroupSlotValid)
             {
                 return EDriverMaterialSlotResolutionResult::Unmapped;
             }
-            if (!bUseTriangleGroupMetadata
+            if (!Metadata.bUseTriangleGroupMetadata
                 && bPolygonSlotValid
                 && PolygonGroupSlot != TriangleGroupSlot)
             {
@@ -308,7 +307,36 @@ struct FDriverMaterialSlotResolver
         OutSlot = PolygonGroupSlot;
         return EDriverMaterialSlotResolutionResult::Resolved;
     }
+
+    /** Which group identity to report for a triangle this resolver could not map. */
+    int32 UnmappedGroupOrdinal(
+        const int32 TriangleID,
+        const FDriverMaterialSlotMetadata& Metadata) const
+    {
+        return Metadata.bCollapsedMaterialMetadata
+            ? Driver.GetTriangleGroup(TriangleID)
+            : (MaterialIDs ? MaterialIDs->GetValue(TriangleID) : INDEX_NONE);
+    }
 };
+
+/** Shared fail-closed diagnostic for source groups that map to no final slot. */
+void BuildUnmappableMaterialGroupsError(
+    const TSet<int32>& UnmappedOrdinals,
+    FString& OutError)
+{
+    TArray<int32> SortedOrdinals = UnmappedOrdinals.Array();
+    SortedOrdinals.Sort();
+    TArray<FString> OrdinalLabels;
+    for (const int32 Ordinal : SortedOrdinals)
+    {
+        OrdinalLabels.Add(FString::FromInt(Ordinal));
+    }
+    OutError = FString::Printf(
+        TEXT("Driver source material group(s) [%s] cannot be mapped uniquely through current Driver "
+            "material metadata to a material slot. Restore unique imported material-slot "
+            "names or split and reimport the Driver before Refresh Preview."),
+        *FString::Join(OrdinalLabels, TEXT(", ")));
+}
 
 bool MatchManualOverrideSlots(
     const TArray<FSkeletalMaterial>& Slots,
@@ -490,17 +518,12 @@ bool CollectMaterialSlotIndices(
     TSet<int32> UnmappedOrdinals;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
-        const int32 MaterialOrdinal = DriverMaterialIDs
-            ? DriverMaterialIDs->GetValue(TriangleID)
-            : INDEX_NONE;
-        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
         int32 SlotIndex = INDEX_NONE;
         const EDriverMaterialSlotResolutionResult Resolution =
             SlotResolver.Resolve(
                 TriangleID,
                 EDriverMaterialSlotResolutionMode::Automatic,
-                Metadata.bUseTriangleGroupMetadata,
-                Metadata.bCollapsedMaterialMetadata,
+                Metadata,
                 SlotIndex,
                 OutError);
         if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
@@ -510,7 +533,7 @@ bool CollectMaterialSlotIndices(
         if (Resolution == EDriverMaterialSlotResolutionResult::Unmapped)
         {
             UnmappedOrdinals.Add(
-                Metadata.bCollapsedMaterialMetadata ? TriangleGroup : MaterialOrdinal);
+                SlotResolver.UnmappedGroupOrdinal(TriangleID, Metadata));
             continue;
         }
         if (Surface.IsTriangle(TriangleID))
@@ -524,18 +547,7 @@ bool CollectMaterialSlotIndices(
     }
     if (!UnmappedOrdinals.IsEmpty() || SelectedSlots.IsEmpty())
     {
-        TArray<int32> SortedOrdinals = UnmappedOrdinals.Array();
-        SortedOrdinals.Sort();
-        TArray<FString> OrdinalLabels;
-        for (const int32 Ordinal : SortedOrdinals)
-        {
-            OrdinalLabels.Add(FString::FromInt(Ordinal));
-        }
-        OutError = FString::Printf(
-            TEXT("Driver source material group(s) [%s] cannot be mapped uniquely through current Driver "
-                "material metadata to a material slot. Restore unique imported material-slot "
-                "names or split and reimport the Driver before Refresh Preview."),
-            *FString::Join(OrdinalLabels, TEXT(", ")));
+        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, OutError);
         return false;
     }
     for (const int32 SlotIndex : SelectedSlots)
@@ -1062,11 +1074,12 @@ bool ResolveDriverGarmentSurface(
  * material-slot override. Each entry must name exactly one imported Driver
  * material slot by its stable imported slot identity; missing, duplicated, or
  * no-longer-unique identities are hard preflight errors that never fall back
- * to Auto. The selected slots pick whole LOD0 sections, and the manual result
- * must pass the same spatial agreement gate as Auto: every Preview vertex has
- * to lie within the agreement radius of the resolved surface alone, so a
- * wrong or partial selection fails transactionally instead of transferring
- * against unrelated body surfaces.
+ * to Auto. The selected slots pick whole LOD0 sections, every Driver triangle
+ * must map to a final material slot through the shared per-triangle resolver,
+ * and the manual result must pass the same spatial agreement gate as Auto:
+ * every Preview vertex has to lie within the agreement radius of the resolved
+ * surface alone, so a wrong, partial, or unmappable selection fails
+ * transactionally instead of transferring against unrelated body surfaces.
  */
 bool ResolveDriverGarmentSurfaceFromSlots(
     const FDynamicMesh3& Driver,
@@ -1128,6 +1141,7 @@ bool ResolveDriverGarmentSurfaceFromSlots(
         SlotMaps.SlotByTriangleGroup};
     TBitArray<> SlotSelected(false, Slots.Num());
     TArray<int32> UnselectedTriangles;
+    TSet<int32> UnmappedOrdinals;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
         int32 SlotIndex = INDEX_NONE;
@@ -1135,21 +1149,33 @@ bool ResolveDriverGarmentSurfaceFromSlots(
             SlotResolver.Resolve(
                 TriangleID,
                 EDriverMaterialSlotResolutionMode::Manual,
-                Metadata.bUseTriangleGroupMetadata,
-                Metadata.bCollapsedMaterialMetadata,
+                Metadata,
                 SlotIndex,
                 OutError);
         if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
         {
             return false;
         }
-        if (Resolution == EDriverMaterialSlotResolutionResult::Resolved
-            && IsMatchedSlot(SlotIndex))
+        if (Resolution == EDriverMaterialSlotResolutionResult::Unmapped)
+        {
+            // An unmappable triangle may still lie inside an overridden slot,
+            // so the override can never be proven to select only garment
+            // geometry; the refresh fails like Auto instead of ignoring it.
+            UnmappedOrdinals.Add(
+                SlotResolver.UnmappedGroupOrdinal(TriangleID, Metadata));
+            continue;
+        }
+        if (IsMatchedSlot(SlotIndex))
         {
             SlotSelected[SlotIndex] = true;
             continue;
         }
         UnselectedTriangles.Add(TriangleID);
+    }
+    if (!UnmappedOrdinals.IsEmpty())
+    {
+        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, OutError);
+        return false;
     }
     for (const int32 SlotIndex : MatchedSlots)
     {

@@ -894,7 +894,9 @@ shared per-triangle resolver requires every collapsed triangle to map, rejects
 conflicting stable metadata, and allows the richer current-LOD signal to
 explain an intentional polygon-group collapse. Final slots are never inferred
 from polygon or triangle ordinals; Manual Override uses the same resolver and
-current-LOD mapping. Refresh fails transactionally with Preview Error when a
+current-LOD mapping, and a triangle that maps to no final slot blocks the
+override with the same fail-closed error as Auto. Refresh fails
+transactionally with Preview Error when a
 selected source group cannot be mapped, or when any selected and visible
 non-garment triangle resolves to the same final slot, even if their source
 ordinals differ. Focused coverage holds reordered and unused slots, collapsed

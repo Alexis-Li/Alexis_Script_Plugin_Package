@@ -12,7 +12,9 @@
   per-triangle resolver requires collapsed sources to map every triangle
   through current-LOD metadata, rejects conflicting stable metadata, and lets
   Manual Override use the same current-LOD mapping without treating
-  triangle-group ordinals as slots. Refresh rejects any final slot shared by
+  triangle-group ordinals as slots; a triangle that maps to no final slot
+  blocks the Manual override with the same fail-closed error as Auto.
+  Refresh rejects any final slot shared by
   garment and visible non-garment geometry instead of guessing from polygon or
   triangle ordinals or hiding character geometry.
   The Driver display follows the Generated Preview's complete skeleton, while
