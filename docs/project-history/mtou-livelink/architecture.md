@@ -887,19 +887,20 @@ through the primary component.
 Invalidation and deletion clear both Model display layers transactionally;
 garment-only Drivers simply hide all of their replaced Driver slots.
 
-Issue #27 hardened that composition boundary without adding a resolver or a
-Binding field. Imported polygon-group names remain the primary identity, while
-collapsed source descriptions fall back to UE 5.7's public current-LOD section
-  metadata. Final slots are never inferred from polygon or triangle ordinals;
-  conflicting PolygonGroup and current-LOD mappings fail closed, and Manual
-  Override resolves collapsed triangle groups through that same current-LOD
-  metadata. Refresh fails transactionally with Preview Error when a selected
-  source group cannot be mapped, or when any selected and visible non-garment
-  triangle resolves to the same final slot, even if their source ordinals
-  differ. Focused coverage holds reordered and unused slots, collapsed
-  descriptions, conflicting metadata, LOD-remapped Manual Override,
-  triangle-group fallback, same-slot sharing, and existing Morph projection
-  behavior. The
+Issue #27 hardened that composition boundary without adding a Binding field.
+Imported polygon-group names remain the primary identity, while collapsed
+source descriptions use UE 5.7's public current-LOD section metadata. One
+shared per-triangle resolver requires every collapsed triangle to map, rejects
+conflicting stable metadata, and allows the richer current-LOD signal to
+explain an intentional polygon-group collapse. Final slots are never inferred
+from polygon or triangle ordinals; Manual Override uses the same resolver and
+current-LOD mapping. Refresh fails transactionally with Preview Error when a
+selected source group cannot be mapped, or when any selected and visible
+non-garment triangle resolves to the same final slot, even if their source
+ordinals differ. Focused coverage holds reordered and unused slots, collapsed
+descriptions, partial and conflicting metadata, LOD-remapped Manual Override,
+triangle-group fallback, same-slot sharing, and existing Morph projection
+behavior. The
 Runtime workflow fixture now duplicates its Driver into actor-owned transient
 state before registering Morph Targets, so automation never mutates the shared
 `/Engine` asset.

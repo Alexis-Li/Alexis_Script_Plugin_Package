@@ -143,6 +143,173 @@ bool BuildTriangleGroupToMaterialSlotMap(
     return true;
 }
 
+struct FDriverMaterialSlotMaps
+{
+    TArray<int32> SlotByPolygonGroup;
+    TArray<int32> SlotByTriangleGroup;
+    bool bHasTriangleGroupMapping = false;
+};
+
+bool BuildDriverMaterialSlotMaps(
+    const USkeletalMesh& DriverAsset,
+    FDriverMaterialSlotMaps& OutMaps)
+{
+    if (!BuildPolygonGroupToMaterialSlotMap(
+            DriverAsset, OutMaps.SlotByPolygonGroup))
+    {
+        return false;
+    }
+    OutMaps.bHasTriangleGroupMapping =
+        BuildTriangleGroupToMaterialSlotMap(
+            DriverAsset, OutMaps.SlotByTriangleGroup)
+        && !OutMaps.SlotByTriangleGroup.IsEmpty();
+    return true;
+}
+
+struct FDriverMaterialSlotMetadata
+{
+    bool bCollapsedMaterialMetadata = false;
+    bool bUseTriangleGroupMetadata = false;
+};
+
+FDriverMaterialSlotMetadata AnalyzeDriverMaterialSlotMetadata(
+    const FDynamicMesh3& Driver,
+    const TArray<FSkeletalMaterial>& Slots,
+    const FDynamicMeshMaterialAttribute* MaterialIDs,
+    const FDriverMaterialSlotMaps& SlotMaps)
+{
+    TSet<int32> MaterialOrdinals;
+    TSet<int32> PolygonGroupSlots;
+    TSet<int32> TriangleGroupSlots;
+    for (const int32 TriangleID : Driver.TriangleIndicesItr())
+    {
+        const int32 MaterialOrdinal = MaterialIDs
+            ? MaterialIDs->GetValue(TriangleID)
+            : INDEX_NONE;
+        MaterialOrdinals.Add(MaterialOrdinal);
+        const int32 PolygonGroupSlot = SlotMaps.SlotByPolygonGroup.IsValidIndex(MaterialOrdinal)
+            ? SlotMaps.SlotByPolygonGroup[MaterialOrdinal]
+            : INDEX_NONE;
+        if (Slots.IsValidIndex(PolygonGroupSlot))
+        {
+            PolygonGroupSlots.Add(PolygonGroupSlot);
+        }
+        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
+        const int32 TriangleGroupSlot = SlotMaps.SlotByTriangleGroup.IsValidIndex(TriangleGroup)
+            ? SlotMaps.SlotByTriangleGroup[TriangleGroup]
+            : INDEX_NONE;
+        if (Slots.IsValidIndex(TriangleGroupSlot))
+        {
+            TriangleGroupSlots.Add(TriangleGroupSlot);
+        }
+    }
+    FDriverMaterialSlotMetadata Metadata;
+    Metadata.bCollapsedMaterialMetadata = MaterialOrdinals.Num() <= 1;
+    Metadata.bUseTriangleGroupMetadata = Metadata.bCollapsedMaterialMetadata
+        && TriangleGroupSlots.Num() > PolygonGroupSlots.Num();
+    return Metadata;
+}
+
+enum class EDriverMaterialSlotResolutionMode : uint8
+{
+    Automatic,
+    Manual,
+};
+
+enum class EDriverMaterialSlotResolutionResult : uint8
+{
+    Resolved,
+    Unmapped,
+    Conflict,
+};
+
+/** Resolves both stable metadata signals for one triangle without ordinal guessing. */
+struct FDriverMaterialSlotResolver
+{
+    const FDynamicMesh3& Driver;
+    const TArray<FSkeletalMaterial>& Slots;
+    const FDynamicMeshMaterialAttribute* MaterialIDs;
+    const TArray<int32>& SlotByPolygonGroup;
+    const TArray<int32>& SlotByTriangleGroup;
+
+    EDriverMaterialSlotResolutionResult Resolve(
+        const int32 TriangleID,
+        const EDriverMaterialSlotResolutionMode Mode,
+        const bool bUseTriangleGroupMetadata,
+        const bool bCollapsedMaterialMetadata,
+        int32& OutSlot,
+        FString& OutError) const
+    {
+        const int32 MaterialOrdinal = MaterialIDs
+            ? MaterialIDs->GetValue(TriangleID)
+            : INDEX_NONE;
+        const int32 PolygonGroupSlot = SlotByPolygonGroup.IsValidIndex(MaterialOrdinal)
+            ? SlotByPolygonGroup[MaterialOrdinal]
+            : INDEX_NONE;
+        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
+        const int32 TriangleGroupSlot = SlotByTriangleGroup.IsValidIndex(TriangleGroup)
+            ? SlotByTriangleGroup[TriangleGroup]
+            : INDEX_NONE;
+        const bool bPolygonSlotValid = Slots.IsValidIndex(PolygonGroupSlot);
+        const bool bTriangleGroupSlotValid = Slots.IsValidIndex(TriangleGroupSlot);
+        const auto ReportConflict = [&]()
+        {
+            OutError = FString::Printf(
+                TEXT("Driver triangle %d has conflicting current Driver material metadata: "
+                    "polygon-group %d resolves to material slot %s, while current LOD triangle-group %d "
+                    "resolves to %s. Restore unique imported material-slot names or correct the current LOD "
+                    "material mapping before Refresh Preview."),
+                TriangleID,
+                MaterialOrdinal,
+                *DescribeDriverSlot(Slots, PolygonGroupSlot),
+                TriangleGroup,
+                *DescribeDriverSlot(Slots, TriangleGroupSlot));
+        };
+
+        // A collapsed source must prove every triangle through its current LOD
+        // section metadata. When that metadata is the richer signal, a
+        // polygon-group mismatch is expected; otherwise both signals must agree.
+        if (bCollapsedMaterialMetadata)
+        {
+            if (!bTriangleGroupSlotValid)
+            {
+                return EDriverMaterialSlotResolutionResult::Unmapped;
+            }
+            if (!bUseTriangleGroupMetadata
+                && bPolygonSlotValid
+                && PolygonGroupSlot != TriangleGroupSlot)
+            {
+                ReportConflict();
+                return EDriverMaterialSlotResolutionResult::Conflict;
+            }
+            OutSlot = TriangleGroupSlot;
+            return EDriverMaterialSlotResolutionResult::Resolved;
+        }
+
+        if (Mode == EDriverMaterialSlotResolutionMode::Manual)
+        {
+            if (bPolygonSlotValid)
+            {
+                OutSlot = PolygonGroupSlot;
+                return EDriverMaterialSlotResolutionResult::Resolved;
+            }
+            if (bTriangleGroupSlotValid)
+            {
+                OutSlot = TriangleGroupSlot;
+                return EDriverMaterialSlotResolutionResult::Resolved;
+            }
+            return EDriverMaterialSlotResolutionResult::Unmapped;
+        }
+
+        if (!bPolygonSlotValid)
+        {
+            return EDriverMaterialSlotResolutionResult::Unmapped;
+        }
+        OutSlot = PolygonGroupSlot;
+        return EDriverMaterialSlotResolutionResult::Resolved;
+    }
+};
+
 bool MatchManualOverrideSlots(
     const TArray<FSkeletalMaterial>& Slots,
     const TArray<FName>& Override,
@@ -301,64 +468,23 @@ bool CollectMaterialSlotIndices(
     FString& OutError)
 {
     const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
-    TArray<int32> SlotByOrdinal;
-    if (!BuildPolygonGroupToMaterialSlotMap(DriverAsset, SlotByOrdinal))
+    FDriverMaterialSlotMaps SlotMaps;
+    if (!BuildDriverMaterialSlotMaps(DriverAsset, SlotMaps))
     {
         OutError = TEXT("Driver LOD0 source data has no imported material-slot identities for safe Model display composition.");
         return false;
     }
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
-    TArray<int32> SlotByTriangleGroup;
-    BuildTriangleGroupToMaterialSlotMap(DriverAsset, SlotByTriangleGroup);
-    TSet<int32> MaterialOrdinals;
-    TSet<int32> PolygonGroupSlots;
-    TSet<int32> TriangleGroupSlots;
-    for (const int32 TriangleID : Driver.TriangleIndicesItr())
-    {
-        const int32 MaterialOrdinal = DriverMaterialIDs
-            ? DriverMaterialIDs->GetValue(TriangleID)
-            : INDEX_NONE;
-        MaterialOrdinals.Add(MaterialOrdinal);
-        const int32 PolygonGroupSlot = SlotByOrdinal.IsValidIndex(MaterialOrdinal)
-            ? SlotByOrdinal[MaterialOrdinal]
-            : INDEX_NONE;
-        if (Slots.IsValidIndex(PolygonGroupSlot))
-        {
-            PolygonGroupSlots.Add(PolygonGroupSlot);
-        }
-        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
-        const int32 TriangleGroupSlot = SlotByTriangleGroup.IsValidIndex(TriangleGroup)
-            ? SlotByTriangleGroup[TriangleGroup]
-            : INDEX_NONE;
-        if (Slots.IsValidIndex(TriangleGroupSlot))
-        {
-            TriangleGroupSlots.Add(TriangleGroupSlot);
-        }
-    }
-    const bool bCollapsedMaterialMetadata = MaterialOrdinals.Num() <= 1;
-    if (bCollapsedMaterialMetadata
-        && PolygonGroupSlots.Num() == 1
-        && TriangleGroupSlots.Num() == 1)
-    {
-        const int32 PolygonGroupSlot = PolygonGroupSlots.Array()[0];
-        const int32 TriangleGroupSlot = TriangleGroupSlots.Array()[0];
-        if (PolygonGroupSlot != TriangleGroupSlot)
-        {
-            const int32 MaterialOrdinal = MaterialOrdinals.Array()[0];
-            OutError = FString::Printf(
-                TEXT("Driver source material group %d has conflicting current Driver material metadata: "
-                    "polygon-group identity resolves to material slot %s, while current LOD triangle-group "
-                    "metadata resolves to %s. Restore unique imported material-slot names or correct the "
-                    "current LOD material mapping before Refresh Preview."),
-                MaterialOrdinal,
-                *DescribeDriverSlot(Slots, PolygonGroupSlot),
-                *DescribeDriverSlot(Slots, TriangleGroupSlot));
-            return false;
-        }
-    }
-    const bool bUseTriangleGroupMetadata = bCollapsedMaterialMetadata
-        && TriangleGroupSlots.Num() > PolygonGroupSlots.Num();
+    const FDriverMaterialSlotMetadata Metadata =
+        AnalyzeDriverMaterialSlotMetadata(
+            Driver, Slots, DriverMaterialIDs, SlotMaps);
+    const FDriverMaterialSlotResolver SlotResolver{
+        Driver,
+        Slots,
+        DriverMaterialIDs,
+        SlotMaps.SlotByPolygonGroup,
+        SlotMaps.SlotByTriangleGroup};
     TSet<int32> SelectedSlots;
     TSet<int32> UnselectedSlots;
     TSet<int32> UnmappedOrdinals;
@@ -368,17 +494,23 @@ bool CollectMaterialSlotIndices(
             ? DriverMaterialIDs->GetValue(TriangleID)
             : INDEX_NONE;
         const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
-        const int32 SlotIndex = bUseTriangleGroupMetadata
-            ? (SlotByTriangleGroup.IsValidIndex(TriangleGroup)
-                ? SlotByTriangleGroup[TriangleGroup]
-                : INDEX_NONE)
-            : (SlotByOrdinal.IsValidIndex(MaterialOrdinal)
-                ? SlotByOrdinal[MaterialOrdinal]
-                : INDEX_NONE);
-        if (SlotIndex < 0 || SlotIndex >= Slots.Num())
+        int32 SlotIndex = INDEX_NONE;
+        const EDriverMaterialSlotResolutionResult Resolution =
+            SlotResolver.Resolve(
+                TriangleID,
+                EDriverMaterialSlotResolutionMode::Automatic,
+                Metadata.bUseTriangleGroupMetadata,
+                Metadata.bCollapsedMaterialMetadata,
+                SlotIndex,
+                OutError);
+        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
+        {
+            return false;
+        }
+        if (Resolution == EDriverMaterialSlotResolutionResult::Unmapped)
         {
             UnmappedOrdinals.Add(
-                bUseTriangleGroupMetadata ? TriangleGroup : MaterialOrdinal);
+                Metadata.bCollapsedMaterialMetadata ? TriangleGroup : MaterialOrdinal);
             continue;
         }
         if (Surface.IsTriangle(TriangleID))
@@ -960,59 +1092,61 @@ bool ResolveDriverGarmentSurfaceFromSlots(
         return false;
     }
 
-    // Select whole LOD0 sections. Two engine signals identify a converted
-    // triangle's material slot: the stored MeshDescription polygon-group
-    // imported slot name reached through the per-triangle material ID, and the
-    // triangle-group layer that skeletal builds route sections by. Both stay
-    // name- or current-LOD-metadata based; no transient ordinal arithmetic is
-    // persisted.
+    // Select whole LOD0 sections through the shared per-triangle resolver. It
+    // checks the stored MeshDescription polygon-group identity and the current
+    // LOD triangle-group metadata before either signal can select a slot.
     const FDynamicMeshMaterialAttribute* MaterialIDs = Driver.Attributes()
         ? Driver.Attributes()->GetMaterialID()
         : nullptr;
-    TArray<int32> SlotByOrdinal;
-    if (!MaterialIDs
-        || !BuildPolygonGroupToMaterialSlotMap(DriverAsset, SlotByOrdinal))
+    FDriverMaterialSlotMaps SlotMaps;
+    if (!MaterialIDs || !BuildDriverMaterialSlotMaps(DriverAsset, SlotMaps))
     {
         OutError = TEXT("Driver LOD0 source data has no imported material-slot identities to match the manual "
             "override against.");
         return false;
     }
-    TArray<int32> SlotByTriangleGroup;
-    if (!BuildTriangleGroupToMaterialSlotMap(DriverAsset, SlotByTriangleGroup))
+    if (!SlotMaps.bHasTriangleGroupMapping)
     {
         OutError = TEXT("Driver LOD0 source data has no current material-slot metadata to match the manual "
             "override against.");
         return false;
     }
+    const FDriverMaterialSlotMetadata Metadata =
+        AnalyzeDriverMaterialSlotMetadata(
+            Driver, Slots, MaterialIDs, SlotMaps);
 
     const auto IsMatchedSlot = [&](int32 SlotIndex)
     {
         return SlotIndex >= 0 && SlotIndex < Slots.Num()
             && UniqueMatchedSlots.Contains(SlotIndex);
     };
+    const FDriverMaterialSlotResolver SlotResolver{
+        Driver,
+        Slots,
+        MaterialIDs,
+        SlotMaps.SlotByPolygonGroup,
+        SlotMaps.SlotByTriangleGroup};
     TBitArray<> SlotSelected(false, Slots.Num());
     TArray<int32> UnselectedTriangles;
     for (const int32 TriangleID : Driver.TriangleIndicesItr())
     {
-        const int32 Ordinal = MaterialIDs->GetValue(TriangleID);
-        const int32 ByName = SlotByOrdinal.IsValidIndex(Ordinal)
-            ? SlotByOrdinal[Ordinal]
-            : INDEX_NONE;
-        if (IsMatchedSlot(ByName))
+        int32 SlotIndex = INDEX_NONE;
+        const EDriverMaterialSlotResolutionResult Resolution =
+            SlotResolver.Resolve(
+                TriangleID,
+                EDriverMaterialSlotResolutionMode::Manual,
+                Metadata.bUseTriangleGroupMetadata,
+                Metadata.bCollapsedMaterialMetadata,
+                SlotIndex,
+                OutError);
+        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
         {
-            SlotSelected[ByName] = true;
-            continue;
+            return false;
         }
-        // Descriptions whose polygon-group identities collapsed to one group
-        // still record the routed slot in the triangle-group layer, which is
-        // what skeletal section builds follow.
-        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
-        const int32 ByGroup = SlotByTriangleGroup.IsValidIndex(TriangleGroup)
-            ? SlotByTriangleGroup[TriangleGroup]
-            : INDEX_NONE;
-        if (IsMatchedSlot(ByGroup))
+        if (Resolution == EDriverMaterialSlotResolutionResult::Resolved
+            && IsMatchedSlot(SlotIndex))
         {
-            SlotSelected[ByGroup] = true;
+            SlotSelected[SlotIndex] = true;
             continue;
         }
         UnselectedTriangles.Add(TriangleID);
