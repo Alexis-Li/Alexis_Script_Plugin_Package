@@ -157,7 +157,7 @@ private:
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
 
     /** Original Driver display used behind the generated garment in Model preview. */
-    UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
+    UPROPERTY()
     TObjectPtr<USkeletalMeshComponent> DriverMeshComponent;
 
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")

@@ -409,7 +409,8 @@ bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
 
     for (const FName PropertyName : {
             FName("PreviewState"), FName("PreviewBuildStage"), FName("DisplayTarget"),
-            FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel") })
+            FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel"),
+            FName("DriverMeshComponent") })
     {
         const FProperty* Property = FindFProperty<FProperty>(
             AMtoULiveLinkActor::StaticClass(), PropertyName);
@@ -1544,6 +1545,8 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
 
     // Model preview layers the generated garment over the Driver's untouched
     // body, face, hair, and attachment material slots.
+    Actor->GetSkeletalMeshComponent()->SetLightingChannels(false, true, false);
+    Actor->GetSkeletalMeshComponent()->SetCastInsetShadow(true);
     const FMtoUPreviewReadiness RefreshResult =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     TestTrue(TEXT("explicit Refresh readies the garment preview"),
@@ -1567,6 +1570,12 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver);
     TestEqual(TEXT("Driver character display stays on the generated garment's LOD0"),
         DriverDisplay ? DriverDisplay->GetForcedLOD() : 0, 1);
+    TestTrue(TEXT("hidden Driver display inherits the editable display lighting settings"),
+        DriverDisplay
+        && !DriverDisplay->LightingChannels.bChannel0
+        && DriverDisplay->LightingChannels.bChannel1
+        && !DriverDisplay->LightingChannels.bChannel2
+        && DriverDisplay->bCastInsetShadow);
     for (const int32 VisibleSlot : {0, 1, 2, 6})
     {
         TestTrue(FString::Printf(TEXT("Driver slot %d remains visible"), VisibleSlot),

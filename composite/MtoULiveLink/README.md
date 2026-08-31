@@ -57,6 +57,9 @@ Install the Maya and Unreal components from the same release.
    parts that replace Driver geometry; internal triangle, timing, and quality
    metrics stay out of the artist-facing panel. **Delete Preview** releases the
    generated mesh and immediately restores the Driver Skeletal Mesh display.
+   Configure rendering once on **SkeletalMeshComponent**. The internal Driver
+   display stays hidden from Details and inherits its Lighting Channels and
+   Dynamic Inset Shadow setting when Model preview needs both meshes.
 2. In Maya, run `MtoULiveLink.py`, select one deformation root joint, and click
    **Set Character**. Confirm the detected Display controller, outfit, scene
    rate, and transmission cap.

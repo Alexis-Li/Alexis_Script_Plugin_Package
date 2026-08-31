@@ -311,6 +311,11 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
     DriverMeshComponent->SetForcedLOD(0);
     DriverMeshComponent->ShowAllMaterialSections(0);
     DriverMeshComponent->SetSkeletalMeshAsset(nullptr);
+    DriverMeshComponent->SetLightingChannels(
+        SkeletalMeshComponent->LightingChannels.bChannel0,
+        SkeletalMeshComponent->LightingChannels.bChannel1,
+        SkeletalMeshComponent->LightingChannels.bChannel2);
+    DriverMeshComponent->SetCastInsetShadow(SkeletalMeshComponent->bCastInsetShadow);
 
     switch (DisplayTarget)
     {

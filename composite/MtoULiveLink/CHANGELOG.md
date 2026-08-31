@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use the Binding Actor's `SkeletalMeshComponent` as the single editable
+  rendering-settings surface. The internal full-character Driver display no
+  longer duplicates every component category in Details and inherits Lighting
+  Channels and Dynamic Inset Shadow when Model preview layers both meshes.
 - Show the complete character during Model preview without adding Binding
   inputs: the Generated Preview remains the Live Link-driven garment, while a
   second actor-owned display keeps the original full-character Driver's body,
