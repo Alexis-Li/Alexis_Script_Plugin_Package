@@ -336,7 +336,28 @@ bool CollectMaterialSlotIndices(
             TriangleGroupSlots.Add(TriangleGroupSlot);
         }
     }
-    const bool bUseTriangleGroupMetadata = MaterialOrdinals.Num() <= 1
+    const bool bCollapsedMaterialMetadata = MaterialOrdinals.Num() <= 1;
+    if (bCollapsedMaterialMetadata
+        && PolygonGroupSlots.Num() == 1
+        && TriangleGroupSlots.Num() == 1)
+    {
+        const int32 PolygonGroupSlot = PolygonGroupSlots.Array()[0];
+        const int32 TriangleGroupSlot = TriangleGroupSlots.Array()[0];
+        if (PolygonGroupSlot != TriangleGroupSlot)
+        {
+            const int32 MaterialOrdinal = MaterialOrdinals.Array()[0];
+            OutError = FString::Printf(
+                TEXT("Driver source material group %d has conflicting current Driver material metadata: "
+                    "polygon-group identity resolves to material slot %s, while current LOD triangle-group "
+                    "metadata resolves to %s. Restore unique imported material-slot names or correct the "
+                    "current LOD material mapping before Refresh Preview."),
+                MaterialOrdinal,
+                *DescribeDriverSlot(Slots, PolygonGroupSlot),
+                *DescribeDriverSlot(Slots, TriangleGroupSlot));
+            return false;
+        }
+    }
+    const bool bUseTriangleGroupMetadata = bCollapsedMaterialMetadata
         && TriangleGroupSlots.Num() > PolygonGroupSlots.Num();
     TSet<int32> SelectedSlots;
     TSet<int32> UnselectedSlots;
@@ -943,7 +964,8 @@ bool ResolveDriverGarmentSurfaceFromSlots(
     // triangle's material slot: the stored MeshDescription polygon-group
     // imported slot name reached through the per-triangle material ID, and the
     // triangle-group layer that skeletal builds route sections by. Both stay
-    // name- or slot-index based; no transient section arithmetic is persisted.
+    // name- or current-LOD-metadata based; no transient ordinal arithmetic is
+    // persisted.
     const FDynamicMeshMaterialAttribute* MaterialIDs = Driver.Attributes()
         ? Driver.Attributes()->GetMaterialID()
         : nullptr;
@@ -952,6 +974,13 @@ bool ResolveDriverGarmentSurfaceFromSlots(
         || !BuildPolygonGroupToMaterialSlotMap(DriverAsset, SlotByOrdinal))
     {
         OutError = TEXT("Driver LOD0 source data has no imported material-slot identities to match the manual "
+            "override against.");
+        return false;
+    }
+    TArray<int32> SlotByTriangleGroup;
+    if (!BuildTriangleGroupToMaterialSlotMap(DriverAsset, SlotByTriangleGroup))
+    {
+        OutError = TEXT("Driver LOD0 source data has no current material-slot metadata to match the manual "
             "override against.");
         return false;
     }
@@ -977,7 +1006,10 @@ bool ResolveDriverGarmentSurfaceFromSlots(
         // Descriptions whose polygon-group identities collapsed to one group
         // still record the routed slot in the triangle-group layer, which is
         // what skeletal section builds follow.
-        const int32 ByGroup = Driver.GetTriangleGroup(TriangleID);
+        const int32 TriangleGroup = Driver.GetTriangleGroup(TriangleID);
+        const int32 ByGroup = SlotByTriangleGroup.IsValidIndex(TriangleGroup)
+            ? SlotByTriangleGroup[TriangleGroup]
+            : INDEX_NONE;
         if (IsMatchedSlot(ByGroup))
         {
             SlotSelected[ByGroup] = true;

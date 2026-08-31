@@ -8,10 +8,11 @@
   face, hair, and other non-garment material slots visible. The resolved
   garment slots are hidden on that Driver display to avoid overlapping the
   replacement garment. Current LOD section metadata maps collapsed, reordered,
-  and unused imported polygon groups to final Skeletal Mesh slots; Refresh
-  rejects unmappable selections and any final slot shared by garment and
-  visible non-garment geometry instead of guessing from polygon ordinals or
-  hiding character geometry.
+  and unused imported polygon groups to final Skeletal Mesh slots; conflicting
+  metadata and unmappable selections fail closed, while Manual Override uses
+  the same current-LOD mapping for collapsed groups. Refresh rejects any final
+  slot shared by garment and visible non-garment geometry instead of guessing
+  from polygon or triangle ordinals or hiding character geometry.
   The Driver display follows the Generated Preview's complete skeleton, while
   Model negotiation and frame application include Morph Targets from both
   display meshes so face, hair, and other Driver-only curves remain visible.
