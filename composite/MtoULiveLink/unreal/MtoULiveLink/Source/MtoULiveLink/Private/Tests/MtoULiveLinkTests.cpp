@@ -175,6 +175,24 @@ FString TransformJson(const FTransform& Transform)
         Scale.Z);
 }
 
+FString ReferenceSkeletonBonesJson(const FReferenceSkeleton& Skeleton)
+{
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index > 0)
+        {
+            Bones += TEXT(",");
+        }
+        Bones += FString::Printf(
+            TEXT("[\"%s\",%d,%s]"),
+            *Skeleton.GetBoneName(Index).ToString(),
+            Skeleton.GetParentIndex(Index),
+            *TransformJson(Skeleton.GetRefBonePose()[Index]));
+    }
+    return Bones;
+}
+
 bool AddUniformMorph(USkeletalMesh& Mesh, FName Name, const FVector3f& PositionDelta)
 {
     UMorphTarget* Morph = NewObject<UMorphTarget>(&Mesh, Name, RF_Transient);
@@ -3331,6 +3349,323 @@ bool FMtoUSourceBindRecoveryTest::RunTest(const FString& Parameters)
     First->StopListener();
     TestTrue(TEXT("second source listens after the port is released"), WaitForStatus(Second, TEXT("Listening on")));
     Second->StopListener();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSessionTerminationBoundaryTest,
+    "MtoULiveLink.Source.SessionTerminationBoundary",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    UMtoULiveLinkBinding* Binding = Actor ? Actor->GetBinding() : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    TestNotNull(TEXT("actor exposes its Binding"), Binding);
+    USkeletalMesh* Driver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    TestNotNull(TEXT("binding supplies the Driver Skeletal Mesh"), Driver);
+    if (Binding)
+    {
+        Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    }
+
+    auto MakeReadyRevision = [&](USkeletalMesh*& OutGenerated)
+    {
+        OutGenerated = Driver ? DuplicateObject<USkeletalMesh>(Driver, Actor) : nullptr;
+        if (OutGenerated)
+        {
+            OutGenerated->ClearFlags(RF_Public | RF_Standalone);
+            OutGenerated->SetFlags(RF_Transient);
+            OutGenerated->SetSkeleton(Driver->GetSkeleton());
+            OutGenerated->SetRefSkeleton(Driver->GetRefSkeleton());
+            AddUniformMorph(*OutGenerated, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f));
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+            FMtoUPreviewReadinessTestAccess::Commit(
+                *Actor, OutGenerated, false, TEXT("test preview"));
+        }
+    };
+    USkeletalMesh* FirstGenerated = nullptr;
+    MakeReadyRevision(FirstGenerated);
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> ModelInit = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    auto NegotiateModelReady = [&](FSocket* Client) -> FString
+    {
+        if (!Client)
+        {
+            return FString();
+        }
+        TestTrue(TEXT("model init is sent"),
+            SendBytes(*Client, ModelInit.GetData(), ModelInit.Num()));
+        TArray<uint8> Payload;
+        if (!ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), Primary);
+    TestTrue(TEXT("ready Model revision negotiates a streaming session"),
+        NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("connected actor reports the live session"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+
+    // ADR-0002 boundary: a relevant reimport of a Preview input ends the
+    // active session without implicitly generating a new Preview.
+    TestNotNull(TEXT("test Generated Preview exists for the reimport"), FirstGenerated);
+    Actor->NotifySourceAssetChanged(Binding->PreviewStaticMesh, TEXT("test reimport"));
+    TestTrue(TEXT("reimport ends the negotiated session on the wire"),
+        Primary && WaitForClose(*Primary));
+    const bool bReturnedToListening = PollUntil([&]()
+    {
+        Source->Update();
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+    });
+    TestTrue(TEXT("source returns to listening after the boundary termination"), bReturnedToListening);
+    TestTrue(TEXT("terminated actor shows the true disconnected state"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+    const FMtoUPreviewReadiness AfterReimport = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("reimport invalidates the previous revision without a new Preview"),
+        AfterReimport.State == EMtoUPreviewState::Dirty
+        && AfterReimport.GeneratedPreview == nullptr
+        && !AfterReimport.IsUsable());
+
+    // A new connection must negotiate against the new revision; the older
+    // Character snapshot can never resume streaming into it.
+    FSocket* StaleRevisionClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("stale-revision client connects"), StaleRevisionClient);
+    TestTrue(TEXT("a new connection on the dirty revision refuses the old snapshot"),
+        NegotiateModelReady(StaleRevisionClient).Contains(TEXT("PREVIEW_NOT_READY")));
+    TestTrue(TEXT("refused stale revision closes immediately"),
+        StaleRevisionClient && WaitForClose(*StaleRevisionClient));
+    DestroySocket(*SocketSubsystem, StaleRevisionClient);
+
+    // Binding actor deletion is the same terminal boundary.
+    USkeletalMesh* SecondGenerated = nullptr;
+    MakeReadyRevision(SecondGenerated);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("an explicit refresh prepares the new revision"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+    FSocket* Second = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("second model client connects"), Second);
+    TestTrue(TEXT("refreshed revision negotiates ready again"),
+        NegotiateModelReady(Second).Contains(TEXT("\"type\":\"ready\"")));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    Actor->Destroy();
+    TestTrue(TEXT("actor destruction ends the live session on the wire"),
+        Second && WaitForClose(*Second));
+    const bool bDestroyedCleanup = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData StaleFrame;
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"))
+            && !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+    });
+    TestTrue(TEXT("actor destruction leaves no active subject"), bDestroyedCleanup);
+    DestroySocket(*SocketSubsystem, Second);
+
+    // Late duplicate requests stay idempotent and never affect a later host.
+    MtoURequestStreamingSessionEnd();
+    MtoURequestStreamingSessionEnd();
+    FSocket* AfterDestroyClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("post-destruction client connects"), AfterDestroyClient);
+    TestTrue(TEXT("a deleted Binding actor leaves no streaming target"),
+        NegotiateModelReady(AfterDestroyClient).Contains(TEXT("NO_BINDING_ACTOR")));
+    DestroySocket(*SocketSubsystem, AfterDestroyClient);
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPieTargetPolicyTest,
+    "MtoULiveLink.Source.PieTargetPolicy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* EditorWorld = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), EditorWorld);
+    if (EditorWorld && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(EditorWorld);
+        EditorWorld->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* EditorActor = EditorWorld ? AddBoundActor(*EditorWorld) : nullptr;
+    TestNotNull(TEXT("editor binding actor is created"), EditorActor);
+    // The PIE duplicated world is the same actor a real Play would create.
+    UWorld* PieWorld = UWorld::CreateWorld(EWorldType::PIE, false);
+    TestNotNull(TEXT("PIE world is created"), PieWorld);
+    AMtoULiveLinkActor* PieActor = PieWorld ? AddBoundActor(*PieWorld) : nullptr;
+    TestNotNull(TEXT("PIE duplicate binding actor is created"), PieActor);
+
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    USkeletalMesh* Driver = EditorActor
+        ? EditorActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    // PIE is not supported: its duplicated Binding actor must not be treated
+    // as an additional editor target.
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("PIE-era client connects"), Client);
+    TestTrue(TEXT("init is sent"), Client && SendBytes(*Client, Init.GetData(), Init.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("PIE-era validation client receives a reply"),
+        Client && ReceivePacket(*Client, Payload, [&]() { Source->Update(); }));
+    const FString PieReply = FromUtf8(Payload);
+    TestFalse(TEXT("a duplicated PIE world never produces a multiple-Binding failure"),
+        PieReply.Contains(TEXT("MULTIPLE_BINDING_ACTORS")));
+    TestTrue(TEXT("the editor Binding actor alone negotiates ready during PIE"),
+        PieReply.Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("the editor actor is the connected target"),
+        EditorActor && EditorActor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && PieActor && PieActor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("source returns to listening after the PIE-era session"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+        }));
+
+    // Discovery still fails closed for a genuine second editor target.
+    AMtoULiveLinkActor* ExtraEditorActor = EditorWorld ? AddBoundActor(*EditorWorld) : nullptr;
+    TestNotNull(TEXT("second editor binding actor is created"), ExtraEditorActor);
+    FSocket* DuplicateClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("duplicate-target client connects"), DuplicateClient);
+    TestTrue(TEXT("duplicate init is sent"), DuplicateClient
+        && SendBytes(*DuplicateClient, Init.GetData(), Init.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("duplicate-target client receives a reply"),
+        DuplicateClient && ReceivePacket(
+            *DuplicateClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("two editor-world actors still fail as multiple Binding actors"),
+        FromUtf8(Payload).Contains(TEXT("MULTIPLE_BINDING_ACTORS")));
+    DestroySocket(*SocketSubsystem, DuplicateClient);
+
+    if (ExtraEditorActor)
+    {
+        ExtraEditorActor->Destroy();
+    }
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (PieWorld)
+    {
+        PieWorld->DestroyWorld(false);
+    }
+    if (EditorWorld)
+    {
+        EditorWorld->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(EditorWorld);
+        }
+    }
     return true;
 }
 

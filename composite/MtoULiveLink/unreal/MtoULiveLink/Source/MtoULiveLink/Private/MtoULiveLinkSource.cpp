@@ -120,9 +120,17 @@ bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
         return false;
     }
     const UWorld* World = Actor.GetWorld();
-    return World
-        && (World->WorldType == EWorldType::Editor || World->WorldType == EWorldType::PIE);
+    // PIE is not supported for this release: duplicated PIE-world actors are
+    // excluded so entering PIE can never present a second streaming target.
+    return World && World->WorldType == EWorldType::Editor;
 }
+
+TAtomic<uint64> GStreamingSessionEndRequests{0};
+}
+
+void MtoURequestStreamingSessionEnd()
+{
+    ++GStreamingSessionEndRequests;
 }
 
 FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
@@ -380,6 +388,11 @@ uint32 FMtoULiveLinkSource::Run()
 
     uint64 SessionCounter = 0;
     uint64 ActiveSession = 0;
+    // Each worker tracks the shared counter independently, so one listener
+    // can never swallow a termination request meant for another. Requests
+    // made before this accept belong to older sessions and are never applied
+    // retroactively.
+    uint64 LastSeenSessionEndRequests = GStreamingSessionEndRequests.Load();
     bool bInitReceived = false;
     bool bReady = false;
     int32 WorkerExpectedBoneCount = 0;
@@ -430,6 +443,20 @@ uint32 FMtoULiveLinkSource::Run()
     {
         bool bDidWork = false;
 
+        // One shared idempotent termination boundary: a Preview revision
+        // invalidation or Binding actor lifetime end closes the socket here,
+        // and the existing disconnect path performs the Game Thread cleanup.
+        const uint64 SessionEndRequests = GStreamingSessionEndRequests.Load();
+        if (SessionEndRequests != LastSeenSessionEndRequests)
+        {
+            LastSeenSessionEndRequests = SessionEndRequests;
+            if (ActiveSession != 0)
+            {
+                MarkDisconnected();
+                continue;
+            }
+        }
+
         bool bPendingConnection = false;
         if (ListenSocket->HasPendingConnection(bPendingConnection) && bPendingConnection)
         {
@@ -452,6 +479,7 @@ uint32 FMtoULiveLinkSource::Run()
                 {
                     ClientSocket = Accepted;
                     ActiveSession = ++SessionCounter;
+                    LastSeenSessionEndRequests = GStreamingSessionEndRequests.Load();
                     bInitReceived = false;
                     bReady = false;
                     Decoder = FMtoUFrameDecoder();
@@ -753,7 +781,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     {
         EnqueueErrorOnGameThread(
             TEXT("NO_BINDING_ACTOR"),
-            TEXT("Place an MtoU_LiveLink binding actor in an Editor or PIE world before connecting."));
+            TEXT("Place an MtoU_LiveLink binding actor in the Editor world before connecting. PIE is not supported."));
         return;
     }
     if (Actors.Num() > 1)

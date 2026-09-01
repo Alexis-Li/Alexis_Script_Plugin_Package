@@ -11,6 +11,16 @@ class FRunnableThread;
 class ILiveLinkClient;
 class FSocket;
 
+/**
+ * The one idempotent session-termination boundary shared by the Live Link
+ * source and the Binding actor. Any active streaming session ends when its
+ * Preview revision is invalidated or the Binding actor's lifetime ends, so a
+ * new Preview revision can never receive frames negotiated for an older
+ * Character snapshot. Requests made while no session is active are no-ops;
+ * a new connection is always required to stream the newer revision.
+ */
+void MtoURequestStreamingSessionEnd();
+
 struct FMtoUOutgoing
 {
     uint64 SessionId = 0;

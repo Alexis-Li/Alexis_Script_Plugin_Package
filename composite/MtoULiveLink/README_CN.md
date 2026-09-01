@@ -14,6 +14,7 @@ MtoU_LiveLink 是一个 Maya 与 Unreal 复合插件，可通过本机 Live Link
 - Autodesk Maya 2022.4
 - 官方原版 Unreal Editor 5.7.4
 - Topia Engine 5.7.4（已验证 Win64 插件编译和编辑器加载）
+- 仅限 Unreal 编辑器。不支持 PIE（Play In Editor）：PIE 世界不会参与流送目标发现。
 
 不保证兼容其他第三方修改版 Unreal Engine 5.7。
 
@@ -64,4 +65,7 @@ Maya 与 Unreal 组件必须来自同一版本。
    Preview 替换解析出的原服装材质槽；Driver 独有的脸部、头发 Morph Target 也会
    继续接收 Maya 中的同名曲线。服装与非服装几何体应使用不同的导入材质槽；若二者
    共用一个槽，Refresh 会报告问题，而不会隐藏角色的其他部分。
-6. 更换服装、工作流或“传递 BS”设置后，请重新连接。
+6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
+   Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor 时，当前
+   Streaming 会话会立即结束且当前 Preview 版本失效：请重新点击
+   **Refresh Preview** 并重新连接。

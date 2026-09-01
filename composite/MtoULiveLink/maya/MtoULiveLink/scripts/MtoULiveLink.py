@@ -4168,13 +4168,16 @@ class _Controller(object):
                 enable=bool(paths))
 
     def select_duplicate_bones(self):
+        # A diagnostic action renders the real connection state; it never
+        # falsifies the indicator independently of the Streaming session.
+        connected = self._session_ready()
         existing = [path for path in self._duplicate_paths() if cmds.objExists(path)]
         if not existing:
             self._refresh_duplicate_button()
-            self._set_connected(False, "重名骨骼已不存在，请重新设置角色")
+            self._set_connected(connected, "重名骨骼已不存在，请重新设置角色")
             return
         cmds.select(existing, replace=True)
-        self._set_connected(False, "已选中 {0} 个重名骨骼".format(len(existing)))
+        self._set_connected(connected, "已选中 {0} 个重名骨骼".format(len(existing)))
 
     def _scene_diagnostic(self, error, default_code="ROLE_SETUP_FAILED"):
         code = error.code if error.code in DIAGNOSTICS else default_code
@@ -4246,10 +4249,21 @@ class _Controller(object):
                 "INTERNAL_ERROR", "请先选择根骨骼并设置角色。"))
             return
         try:
+            # Validate the requested selection first: an invalid selection
+            # must never tear down the live session or a usable scene.
+            display = self._selected_display()
+        except (RuntimeError, ValueError) as exc:
+            code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
+            self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
+            return
+        try:
+            # One clean termination before the replacement: the old Streaming
+            # session ends while the old Character scene is still usable, so
+            # a late old-session event can never close the new capture.
+            self.disconnect(status="正在更换 Display 控制器，请重新连接")
             self._clear_scene(keep_pending=True)
             self._pending_root = root
-            snapshot = self._capture_scene(
-                root, display=self._selected_display()).snapshot()
+            snapshot = self._capture_scene(root, display=display).snapshot()
             status = "Display 控制器已设置，可以连接"
             self._set_connected(False, status + _bind_conflict_status(snapshot))
         except _CharacterSceneError as error:

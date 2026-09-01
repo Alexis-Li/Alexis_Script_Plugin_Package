@@ -1,6 +1,7 @@
 #include "MtoULiveLinkActor.h"
 
 #include "MtoULiveLinkBinding.h"
+#include "MtoULiveLinkSource.h"
 
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -52,6 +53,7 @@ void AMtoULiveLinkActor::PostDuplicate(bool bDuplicateForPIE)
 
 void AMtoULiveLinkActor::Destroyed()
 {
+    MtoURequestStreamingSessionEnd();
     ReleaseGeneratedPreview();
     Super::Destroyed();
 }
@@ -71,6 +73,7 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
         return;
     }
 
+    MtoURequestStreamingSessionEnd();
     ReleaseGeneratedPreview();
     Binding = InBinding;
     EnterUnrefreshedReadiness(TEXT("Run Refresh Preview to prepare the current Binding inputs."));
@@ -218,6 +221,7 @@ void AMtoULiveLinkActor::EnterUnrefreshedReadiness(const FString& Message)
 
 void AMtoULiveLinkActor::NotifyGeneratedPreviewDeleted()
 {
+    MtoURequestStreamingSessionEnd();
     InvalidateGeneratedPreview(TEXT("Generated Preview deleted. Run Refresh Preview to rebuild it."));
     PreviewSummary.Reset();
     ShowDriverMesh();
@@ -225,6 +229,7 @@ void AMtoULiveLinkActor::NotifyGeneratedPreviewDeleted()
 
 void AMtoULiveLinkActor::NotifyTransientPreviewReleased()
 {
+    MtoURequestStreamingSessionEnd();
     ReleaseGeneratedPreview();
     EnterUnrefreshedReadiness(TEXT("The transient Generated Preview was released. Run Refresh Preview."));
 }
@@ -278,6 +283,7 @@ void AMtoULiveLinkActor::SetModelDiagnostics(
 
 void AMtoULiveLinkActor::NotifyBindingInputsChanged()
 {
+    MtoURequestStreamingSessionEnd();
     RebindInputNotifications();
     InvalidateGeneratedPreview(TEXT("Binding inputs changed. Run Refresh Preview."));
     ReapplyDisplayTarget();
@@ -290,6 +296,10 @@ void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FS
     {
         return;
     }
+    // One terminal boundary for every relevant Preview revision change
+    // (ADR-0002): the active session ends before the revision is dirtied,
+    // and only an explicit Refresh plus a fresh connection can stream again.
+    MtoURequestStreamingSessionEnd();
     InvalidateGeneratedPreview(FString::Printf(
         TEXT("%s changed (%s). Run Refresh Preview."), *Asset->GetName(), *Reason));
 }

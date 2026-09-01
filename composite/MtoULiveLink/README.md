@@ -15,6 +15,8 @@ model preview without creating animation or preview assets.
 - Autodesk Maya 2022.4
 - Stock Unreal Editor 5.7.4
 - Topia Engine 5.7.4 (Win64 plugin build and editor loading verified)
+- Unreal Editor only. Play In Editor (PIE) is not supported: PIE worlds are
+  excluded from streaming target discovery.
 
 Compatibility with other third-party Unreal Engine 5.7 builds is not guaranteed.
 
@@ -75,3 +77,7 @@ Install the Maya and Unreal components from the same release.
    garment and non-garment geometry in separate imported material slots;
    Refresh reports a shared slot instead of hiding part of the character.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
+   Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
+   reimport), or deleting the Binding Actor, ends the active streaming session
+   and invalidates the current Preview revision: run **Refresh Preview** and
+   connect again.

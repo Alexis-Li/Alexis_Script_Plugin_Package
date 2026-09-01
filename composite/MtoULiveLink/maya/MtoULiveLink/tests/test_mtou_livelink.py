@@ -2777,6 +2777,118 @@ class ControllerLifecycleTests(unittest.TestCase):
         status = controller._set_connected.call_args[0][1]
         self.assertIn("已按绑定姿势解析 3 处蒙皮绑定矩阵冲突", status)
 
+    def test_display_controller_replacement_terminates_active_session_first(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.control.return_value = True
+        calls = []
+        session = mock.Mock()
+        session.is_ready = True
+        session.stop.side_effect = lambda: calls.append("stop")
+        snapshot = character_snapshot(
+            1, "|root", "Clothes01", [("root", -1)], [])
+        scene = mock.Mock()
+        scene.snapshot.return_value = snapshot
+
+        controller = MODULE._Controller()
+        controller._session = session
+        controller._pending_root = "|root"
+        controller._selected_display = mock.Mock(return_value="|Display_ctrl")
+
+        def clear_scene(**kwargs):
+            calls.append("clear")
+
+        def capture_scene(*args, **kwargs):
+            calls.append("capture")
+            return scene
+
+        controller._clear_scene = clear_scene
+        controller._capture_scene = capture_scene
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.set_display_controller()
+
+        self.assertEqual(["stop", "clear", "capture"], calls)
+
+    def test_invalid_display_selection_keeps_live_session_and_scene(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.control.return_value = True
+        session = mock.Mock()
+        session.is_ready = True
+        controller = MODULE._Controller()
+        controller._session = session
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            1, "|root", "Clothes01", [("root", -1)], [])
+        controller._scene = scene
+        controller._clear_scene = mock.Mock()
+        controller._capture_scene = mock.Mock()
+        controller._show_error = mock.Mock()
+        controller._selected_display = mock.Mock(
+            side_effect=ValueError("请只选择一个 Display 曲线控制器。"))
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.set_display_controller()
+
+        session.stop.assert_not_called()
+        controller._clear_scene.assert_not_called()
+        controller._capture_scene.assert_not_called()
+        self.assertIs(scene, controller._scene)
+        controller._show_error.assert_called_once()
+
+    def test_replaced_scene_stale_failure_leaves_new_state_untouched(self):
+        controller = MODULE._Controller()
+        old_session = object()
+        new_session = object()
+        controller._session = new_session
+        controller._set_connected = mock.Mock()
+        controller._show_error = mock.Mock()
+        stale_event = MODULE._StreamingSessionEvent(
+            "failed", diagnostic=MODULE.make_diagnostic("CHARACTER_SCENE_CLOSED"),
+            recapture_scene=True)
+
+        controller._on_streaming_session_event(old_session, stale_event)
+
+        self.assertIs(new_session, controller._session)
+        controller._set_connected.assert_not_called()
+        controller._show_error.assert_not_called()
+
+    def test_duplicate_bone_diagnostic_keeps_true_connection_state(self):
+        fake_cmds = mock.MagicMock()
+        fake_cmds.control.return_value = True
+        fake_cmds.objExists.return_value = True
+        duplicate_paths = ["|root|arm|joint", "|root|arm|joint_1"]
+        snapshot = character_snapshot(
+            1, "|root", "Clothes01", [("root", -1)], [],
+            duplicate_paths=duplicate_paths)
+        scene = mock.Mock()
+        scene.snapshot.return_value = snapshot
+
+        class ReadySession(object):
+            is_ready = True
+
+        controller = MODULE._Controller()
+        controller._scene = scene
+        controller._session = ReadySession()
+        controller._duplicate_button = "duplicateButton"
+        controller._set_connected = mock.Mock()
+
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.select_duplicate_bones()
+
+        self.assertTrue(controller._set_connected.call_args[0][0])
+        fake_cmds.select.assert_called_once_with(duplicate_paths, replace=True)
+
+        fake_cmds.objExists.return_value = False
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.select_duplicate_bones()
+
+        self.assertTrue(controller._set_connected.call_args[0][0])
+
+        controller._session = None
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            controller.select_duplicate_bones()
+
+        self.assertFalse(controller._set_connected.call_args[0][0])
+
     def test_bind_pose_diagnostic_describes_current_failure_causes(self):
         diagnostic = MODULE.make_diagnostic("BIND_POSE_INVALID")
 
