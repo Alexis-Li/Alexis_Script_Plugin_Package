@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Correct Driver garment-surface resolution and Preview quality gates: Auto
+  material evidence now resolves every Driver triangle to its FINAL material
+  slot through the same shared per-triangle resolver the Manual Override and
+  display composition use, so reordered, unused, collapsed, or LOD-remapped
+  slots can never shift the selected garment surface through a polygon-group
+  or triangle-group ordinal. The minimum mass-accounting gate now uses the
+  Preview TRIANGLE count consistently (a sub-floor Preview is exempt), and the
+  shared resolution admission rejects zero-triangle Preview geometry and NaN
+  or infinite Driver/Preview coordinates before any coverage or mass
+  accounting can divide by zero or report a false Ready outcome. A failed
+  refresh still commits no partial Generated Preview and preserves
+  actor-owned readiness.
 - Make Model connection and retargeting reject only genuinely unusable input:
   disabling BS transmission now negotiates as the labelled Bone-only
   comparison even when the outfit manifest has no name intersection with the

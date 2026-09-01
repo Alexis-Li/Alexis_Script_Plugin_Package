@@ -464,10 +464,28 @@ bool ValidateManualGarmentCoverage(
     return false;
 }
 
+/** True when every vertex position is finite; NaN or infinite coordinates fail closed. */
+bool MeshHasFinitePositions(const FDynamicMesh3& Mesh)
+{
+    for (const int32 VertexID : Mesh.VertexIndicesItr())
+    {
+        const FVector3d Position = Mesh.GetVertex(VertexID);
+        if (!FMath::IsFinite(Position.X)
+            || !FMath::IsFinite(Position.Y)
+            || !FMath::IsFinite(Position.Z))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /**
- * Shared admission preflight for both resolution paths: non-empty Driver
- * geometry and a usable Preview scale. Returns the Preview scale, or 0 with
- * OutError set.
+ * Shared admission preflight for both resolution paths: non-empty finite
+ * Driver and Preview geometry with a usable Preview scale. Returns the
+ * Preview scale, or 0 with OutError set. Zero-triangle, degenerate, NaN, and
+ * infinite-coordinate inputs fail here so no later coverage or mass
+ * accounting can divide by zero or report a misleading outcome.
  */
 double BeginGarmentSurfaceResolution(
     const FDynamicMesh3& Driver,
@@ -477,6 +495,21 @@ double BeginGarmentSurfaceResolution(
     if (Driver.TriangleCount() == 0)
     {
         OutError = TEXT("Driver LOD0 source geometry is empty; no garment surface can be resolved.");
+        return 0.0;
+    }
+    if (Preview.TriangleCount() == 0)
+    {
+        OutError = TEXT("Preview Static Mesh has no LOD0 triangles; no garment surface can be resolved.");
+        return 0.0;
+    }
+    if (!MeshHasFinitePositions(Driver))
+    {
+        OutError = TEXT("Driver LOD0 source geometry contains non-finite vertex coordinates (NaN or infinite); no garment surface can be resolved.");
+        return 0.0;
+    }
+    if (!MeshHasFinitePositions(Preview))
+    {
+        OutError = TEXT("Preview Static Mesh LOD0 geometry contains non-finite vertex coordinates (NaN or infinite); no garment surface can be resolved.");
         return 0.0;
     }
     const double Scale = Preview.GetBounds().DiagonalLength();
@@ -492,21 +525,14 @@ bool CollectMaterialSlotIndices(
     const FDynamicMesh3& Driver,
     const FDynamicMesh3& Surface,
     const USkeletalMesh& DriverAsset,
+    const FDriverMaterialSlotMaps& SlotMaps,
+    const FDriverMaterialSlotMetadata& Metadata,
     TArray<int32>& OutSlotIndices,
     FString& OutError)
 {
     const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
-    FDriverMaterialSlotMaps SlotMaps;
-    if (!BuildDriverMaterialSlotMaps(DriverAsset, SlotMaps))
-    {
-        OutError = TEXT("Driver LOD0 source data has no imported material-slot identities for safe Model display composition.");
-        return false;
-    }
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
-    const FDriverMaterialSlotMetadata Metadata =
-        AnalyzeDriverMaterialSlotMetadata(
-            Driver, Slots, DriverMaterialIDs, SlotMaps);
     const FDriverMaterialSlotResolver SlotResolver{
         Driver,
         Slots,
@@ -780,7 +806,8 @@ void SelectAutomaticGarmentRegions(
     const UStaticMesh& PreviewAsset,
     const TArray<int32>& PreviewVertexIDs,
     const FMeshConnectedComponents& Components,
-    const FDynamicMeshMaterialAttribute* DriverMaterialIDs,
+    const FDriverMaterialSlotResolver& SlotResolver,
+    const FDriverMaterialSlotMetadata& SlotMetadata,
     const double AgreementRadiusSquared,
     TArray<bool>& OutRegionSelected,
     int32& OutAgreeingCount,
@@ -814,10 +841,22 @@ void SelectAutomaticGarmentRegions(
     {
         for (const int32 TriangleID : Components.Components[ComponentIndex].Indices)
         {
-            const int32 MaterialID = DriverMaterialIDs
-                ? DriverMaterialIDs->GetValue(TriangleID)
-                : Driver.GetTriangleGroup(TriangleID);
-            if (SupportedSlots.IsValidIndex(MaterialID) && SupportedSlots[MaterialID])
+            // Material evidence is judged on the triangle's FINAL material
+            // slot, never on its polygon-group or triangle-group ordinal.
+            // Unmapped or conflicting triangles contribute no evidence; the
+            // later fail-closed slot collection still rejects them.
+            int32 SlotIndex = INDEX_NONE;
+            FString ResolveError;
+            const EDriverMaterialSlotResolutionResult Resolution =
+                SlotResolver.Resolve(
+                    TriangleID,
+                    EDriverMaterialSlotResolutionMode::Automatic,
+                    SlotMetadata,
+                    SlotIndex,
+                    ResolveError);
+            if (Resolution == EDriverMaterialSlotResolutionResult::Resolved
+                && SupportedSlots.IsValidIndex(SlotIndex)
+                && SupportedSlots[SlotIndex])
             {
                 CompMaterialSupported[ComponentIndex] = true;
                 ++MaterialSupportedRegionCount;
@@ -956,9 +995,6 @@ bool ResolveDriverGarmentSurface(
         return false;
     }
 
-    FMeshConnectedComponents Components(&Driver);
-    Components.FindConnectedTriangles();
-
     // Per-triangle material-section identity. The Geometry Script conversion
     // leaves polygon groups empty, so section evidence comes from the
     // DynamicMesh material-ID attribute (the same signal the manual override
@@ -966,12 +1002,36 @@ bool ResolveDriverGarmentSurface(
     const FDynamicMeshMaterialAttribute* DriverMaterialIDs =
         Driver.Attributes() ? Driver.Attributes()->GetMaterialID() : nullptr;
 
+    // Every material-evidence and slot-collection signal below resolves each
+    // Driver triangle to its FINAL material slot through the shared
+    // per-triangle resolver; no polygon-group or triangle-group ordinal is
+    // ever treated as a slot index.
+    const TArray<FSkeletalMaterial>& Slots = DriverAsset.GetMaterials();
+    FDriverMaterialSlotMaps SlotMaps;
+    if (!BuildDriverMaterialSlotMaps(DriverAsset, SlotMaps))
+    {
+        OutError = TEXT("Driver LOD0 source data has no imported material-slot identities for safe Model display composition.");
+        return false;
+    }
+    const FDriverMaterialSlotMetadata SlotMetadata =
+        AnalyzeDriverMaterialSlotMetadata(
+            Driver, Slots, DriverMaterialIDs, SlotMaps);
+    const FDriverMaterialSlotResolver SlotResolver{
+        Driver,
+        Slots,
+        DriverMaterialIDs,
+        SlotMaps.SlotByPolygonGroup,
+        SlotMaps.SlotByTriangleGroup};
+
+    FMeshConnectedComponents Components(&Driver);
+    Components.FindConnectedTriangles();
+
     TArray<bool> RegionSelected;
     int32 AgreeingCount = 0;
     bool bUsedMaterialEvidence = false;
     SelectAutomaticGarmentRegions(
         Driver, DriverAsset, Preview, PreviewAsset, PreviewVertexIDs,
-        Components, DriverMaterialIDs, AgreementRadiusSquared,
+        Components, SlotResolver, SlotMetadata, AgreementRadiusSquared,
         RegionSelected, AgreeingCount, bUsedMaterialEvidence);
     for (int32 ComponentIndex = 0;
         ComponentIndex < Components.Components.Num(); ++ComponentIndex)
@@ -1016,30 +1076,36 @@ bool ResolveDriverGarmentSurface(
 
     // Issue #22 failure boundaries for automatic resolution. A single-region
     // whole Driver is the legacy garment-only contract: metrics alone judge
-    // it, so these gates never run on that passthrough.
-    if (Components.Components.Num() > 1
-        && PreviewVertexIDs.Num() >= MinTrianglesForMassAccounting)
+    // it, so these gates never run on that passthrough. The mass-accounting
+    // floor is a PREVIEW TRIANGLE count; vertex counts or zero-triangle
+    // degenerate inputs must never enter or bypass this gate (Issue #32).
+    // The twin-ambiguity rule stays outside the mass floor: two
+    // indistinguishable copies of a tiny garment are still ambiguous.
+    if (Components.Components.Num() > 1)
     {
-        // Mass bound: duplicated copies or proximity-pulled foreign geometry
-        // inflate the selected source far beyond the Preview garment.
-        const int32 PreviewTriangleCount = Preview.TriangleCount();
-        const double MaxSelectedTriangles =
-            static_cast<double>(PreviewTriangleCount)
-            * MaxDriverToPreviewTriangleRatio;
-        if (Out.TriangleCount > MaxSelectedTriangles)
+        if (Preview.TriangleCount() >= MinTrianglesForMassAccounting)
         {
-            OutError = FString::Printf(
-                TEXT("Automatic garment resolution failed the source-mass boundary: the resolved surface holds %d "
-                    "Driver LOD0 triangles for a Preview garment of %d triangles (%.2fx allowed %.2f); duplicated "
-                    "garment copies are indistinguishable sources (ambiguous) or foreign geometry is welded into "
-                    "garment source/material sections, and automatic resolution cannot separate them safely. Remove "
-                    "duplicates or split the garment into its own material section in the source FBX, or pin an "
-                    "explicit selection with the manual Driver Garment Slot Override."),
-                Out.TriangleCount,
-                PreviewTriangleCount,
-                static_cast<double>(Out.TriangleCount) / PreviewTriangleCount,
-                MaxDriverToPreviewTriangleRatio);
-            return false;
+            // Mass bound: duplicated copies or proximity-pulled foreign geometry
+            // inflate the selected source far beyond the Preview garment.
+            const int32 PreviewTriangleCount = Preview.TriangleCount();
+            const double MaxSelectedTriangles =
+                static_cast<double>(PreviewTriangleCount)
+                * MaxDriverToPreviewTriangleRatio;
+            if (Out.TriangleCount > MaxSelectedTriangles)
+            {
+                OutError = FString::Printf(
+                    TEXT("Automatic garment resolution failed the source-mass boundary: the resolved surface holds %d "
+                        "Driver LOD0 triangles for a Preview garment of %d triangles (%.2fx allowed %.2f); duplicated "
+                        "garment copies are indistinguishable sources (ambiguous) or foreign geometry is welded into "
+                        "garment source/material sections, and automatic resolution cannot separate them safely. Remove "
+                        "duplicates or split the garment into its own material section in the source FBX, or pin an "
+                        "explicit selection with the manual Driver Garment Slot Override."),
+                    Out.TriangleCount,
+                    PreviewTriangleCount,
+                    static_cast<double>(Out.TriangleCount) / PreviewTriangleCount,
+                    MaxDriverToPreviewTriangleRatio);
+                return false;
+            }
         }
 
         if (FindAmbiguousTwinRegion(
@@ -1058,7 +1124,8 @@ bool ResolveDriverGarmentSurface(
     }
     FinalizeResolvedGarmentSurface(Driver, UnselectedTriangles, Out);
     if (!CollectMaterialSlotIndices(
-            Driver, Out.Surface, DriverAsset, Out.MaterialSlotIndices, OutError))
+            Driver, Out.Surface, DriverAsset, SlotMaps, SlotMetadata,
+            Out.MaterialSlotIndices, OutError))
     {
         return false;
     }

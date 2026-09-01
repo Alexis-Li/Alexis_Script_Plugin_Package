@@ -41,6 +41,8 @@
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UnrealType.h"
 
+#include <limits>
+
 namespace
 {
 UStaticMesh* MakePreview(
@@ -2158,6 +2160,170 @@ bool FMtoULiveLinkFactoriesTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("placed actor follows skeletal mesh changes on its binding"),
             Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == ReplacementMesh);
     }
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewInvalidGeometryTest,
+    "MtoULiveLink.Editor.Preview.InvalidGeometry",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUInvalidGeometryWorld"));
+    UStaticMesh* ValidPreview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUInvalidGeometryWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    FProperty* PreviewInputProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, PreviewStaticMesh));
+    FPropertyChangedEvent PreviewInputChanged(PreviewInputProperty);
+    if (!Driver || !ValidPreview || !Actor)
+    {
+        AddError(TEXT("invalid-geometry fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = ValidPreview;
+    Actor->SetBinding(Binding);
+    TestTrue(TEXT("valid geometry prepares and readies the preview"),
+        MtoUPreparePreview(*Actor, *Binding).bSucceeded
+            && FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+
+    // NaN Preview coordinates fail at geometry admission, before any weight
+    // transfer, Morph projection, or Generated Preview allocation.
+    UStaticMesh* NaNPreview = MakePreview(*Driver, *WorldPackage);
+    TStrongObjectPtr<UStaticMesh> NaNPreviewGuard(NaNPreview);
+    TestNotNull(TEXT("NaN Preview fixture is created"), NaNPreview);
+    if (NaNPreview)
+    {
+        FMeshDescription* Description = NaNPreview->GetMeshDescription(0);
+        TVertexAttributesRef<FVector3f> Positions = Description->GetVertexPositions();
+        for (const FVertexID VertexID : Description->Vertices().GetElementIDs())
+        {
+            Positions[VertexID] = FVector3f(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
+            break;
+        }
+        NaNPreview->CommitMeshDescription(0);
+    }
+    Binding->PreviewStaticMesh = NaNPreview;
+    const FMtoUPreviewPreparationResult NaNPreparation = MtoUPreparePreview(*Actor, *Binding);
+    AddInfo(NaNPreparation.Diagnostics);
+    TestFalse(TEXT("a NaN Preview fails preparation"), NaNPreparation.bSucceeded);
+    TestNull(TEXT("a NaN Preview returns no Generated Preview"), NaNPreparation.GeneratedPreview);
+    TestEqual(TEXT("a NaN Preview is rejected at geometry conversion"),
+        NaNPreparation.FailureStage, EMtoUPreviewBuildStage::GeometryConversion);
+    TestTrue(TEXT("the NaN diagnostic names non-finite geometry"),
+        NaNPreparation.Diagnostics.Contains(TEXT("non-finite")));
+
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    const FMtoUPreviewReadiness NaNRefresh =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("a NaN Refresh commits no partial Generated Preview and preserves actor readiness"),
+        !NaNRefresh.IsUsable()
+        && NaNRefresh.GeneratedPreview == nullptr
+        && NaNRefresh.State == EMtoUPreviewState::Error
+        && NaNRefresh.Stage == EMtoUPreviewBuildStage::GeometryConversion
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    Binding->PreviewStaticMesh = ValidPreview;
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    TestTrue(TEXT("Refresh recovers after non-finite geometry rejection"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+
+    // NaN Driver coordinates fail the same shared admission gate.
+    USkeletalMesh* NaNDriver = NewObject<USkeletalMesh>(
+        WorldPackage, NAME_None, RF_Transient);
+    TStrongObjectPtr<USkeletalMesh> NaNDriverGuard(NaNDriver);
+    NaNDriver->SetSkeleton(Driver->GetSkeleton());
+    NaNDriver->SetRefSkeleton(Driver->GetRefSkeleton());
+    NaNDriver->CalculateInvRefMatrices();
+    FMeshDescription IndependentDescription;
+    if (Driver->CloneMeshDescription(0, IndependentDescription))
+    {
+        NaNDriver->SetNumSourceModels(1);
+        NaNDriver->CreateMeshDescription(0, MoveTemp(IndependentDescription));
+    }
+    FMeshDescription* NaNDriverDescription = NaNDriver->GetMeshDescription(0);
+    TestNotNull(TEXT("NaN Driver fixture has LOD0 source data"), NaNDriverDescription);
+    if (NaNDriverDescription)
+    {
+        TVertexAttributesRef<FVector3f> Positions =
+            NaNDriverDescription->GetVertexPositions();
+        for (const FVertexID VertexID : NaNDriverDescription->Vertices().GetElementIDs())
+        {
+            Positions[VertexID] = FVector3f(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
+            break;
+        }
+    }
+    Binding->SkeletalMesh = NaNDriver;
+    Binding->PreviewStaticMesh = ValidPreview;
+    const FMtoUPreviewPreparationResult NaNDriverPreparation =
+        MtoUPreparePreview(*Actor, *Binding);
+    AddInfo(NaNDriverPreparation.Diagnostics);
+    TestFalse(TEXT("a NaN Driver fails preparation"), NaNDriverPreparation.bSucceeded);
+    TestNull(TEXT("a NaN Driver returns no Generated Preview"),
+        NaNDriverPreparation.GeneratedPreview);
+    TestEqual(TEXT("a NaN Driver is rejected at geometry conversion"),
+        NaNDriverPreparation.FailureStage, EMtoUPreviewBuildStage::GeometryConversion);
+    TestTrue(TEXT("the NaN Driver diagnostic names non-finite geometry"),
+        NaNDriverPreparation.Diagnostics.Contains(TEXT("non-finite")));
+    Binding->SkeletalMesh = Driver;
+
+    // A valid source mesh whose LOD0 has vertices but no triangles fails
+    // cleanly instead of entering mass accounting or reporting Ready.
+    UStaticMesh* ZeroTrianglePreview = NewObject<UStaticMesh>(
+        WorldPackage, NAME_None, RF_Transient);
+    TStrongObjectPtr<UStaticMesh> ZeroTriangleGuard(ZeroTrianglePreview);
+    FMeshDescription ZeroDescription;
+    FStaticMeshAttributes ZeroAttributes(ZeroDescription);
+    ZeroAttributes.Register();
+    TVertexAttributesRef<FVector3f> ZeroPositions = ZeroAttributes.GetVertexPositions();
+    for (const FVector3f Position : {
+            FVector3f(0.0f, 0.0f, 0.0f), FVector3f(1.0f, 0.0f, 0.0f),
+            FVector3f(0.0f, 1.0f, 0.0f), FVector3f(1.0f, 1.0f, 0.0f) })
+    {
+        ZeroPositions[ZeroDescription.CreateVertex()] = Position;
+    }
+    ZeroTrianglePreview->SetNumSourceModels(1);
+    ZeroTrianglePreview->CreateMeshDescription(0, MoveTemp(ZeroDescription));
+    ZeroTrianglePreview->CommitMeshDescription(0);
+    TestTrue(TEXT("zero-triangle Preview exposes LOD0 source data"),
+        ZeroTrianglePreview->IsSourceModelValid(0)
+            && ZeroTrianglePreview->IsMeshDescriptionValid(0));
+    Binding->PreviewStaticMesh = ZeroTrianglePreview;
+    const FMtoUPreviewPreparationResult ZeroTrianglePreparation =
+        MtoUPreparePreview(*Actor, *Binding);
+    AddInfo(ZeroTrianglePreparation.Diagnostics);
+    TestFalse(TEXT("a zero-triangle Preview fails preparation"),
+        ZeroTrianglePreparation.bSucceeded);
+    TestNull(TEXT("a zero-triangle Preview returns no Generated Preview"),
+        ZeroTrianglePreparation.GeneratedPreview);
+    TestEqual(TEXT("a zero-triangle Preview is rejected at geometry conversion"),
+        ZeroTrianglePreparation.FailureStage, EMtoUPreviewBuildStage::GeometryConversion);
+    TestTrue(TEXT("the zero-triangle diagnostic names the missing triangles"),
+        ZeroTrianglePreparation.Diagnostics.Contains(TEXT("no LOD0 triangles")));
+
+    Binding->PreviewStaticMesh = ValidPreview;
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    TestTrue(TEXT("Refresh recovers after the zero-triangle rejection"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+
     if (World)
     {
         World->DestroyWorld(false);

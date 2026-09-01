@@ -104,6 +104,15 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   `/Engine` fixtures. Stock UE 5.7 compilation, all 39 `MtoULiveLink` tests,
   and Unreal packaging validation pass; production visual acceptance remains
   a separate external gate.
+- **2026-09-01:** Completed Issue #32 by routing every Auto material-evidence
+  triangle through the shared per-triangle final material-slot resolver,
+  gating mass accounting on the Preview triangle count, and rejecting
+  zero-triangle, degenerate, NaN, and infinite-coordinate geometry
+  transactionally at the shared resolution admission. Focused resolver tests
+  cover reordered-slot evidence disambiguation and the low-triangle edge
+  cases; a preparation test proves invalid geometry commits no partial
+  Generated Preview. Stock UE 5.7 compilation, all 43 `MtoULiveLink` tests,
+  and the Unreal packaging dry-run pass.
 
 ## Stable Records
 

@@ -32,7 +32,11 @@ that evidence covers the whole Preview, and applies two structural boundaries
 geometry-validation rules):
 
 * Source-mass boundary — selected Driver triangles must stay within 1.70x of
-  Preview triangles (`MaxDriverToPreviewTriangleRatio`). Whole duplicated
+  Preview triangles (`MaxDriverToPreviewTriangleRatio`), measured only when
+  the Preview holds at least `MinTrianglesForMassAccounting` (8) triangles:
+  the floor is a Preview TRIANGLE count, so sparse sub-floor Previews stay
+  exempt from mass accounting while vertex counts or zero-triangle degenerate
+  inputs can never enter or bypass the gate (Issue #32). Whole duplicated
   garments measure 2.00x+ and production proximity mixing measured 2.31x/4.49x,
   all rejected deterministically with actionable diagnostics naming both
   remedies (remove duplicates/split sections, or the manual Driver Garment Slot

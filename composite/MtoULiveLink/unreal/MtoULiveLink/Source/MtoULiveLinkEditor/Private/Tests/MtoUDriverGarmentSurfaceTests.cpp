@@ -7,6 +7,7 @@
 #include "MtoULiveLinkPreviewDetail.h"
 
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "DynamicMeshEditor.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -18,6 +19,8 @@
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UDynamicMesh.h"
+
+#include <limits>
 
 namespace
 {
@@ -943,6 +946,457 @@ bool FMtoUDriverGarmentSurfaceFailuresTest::RunTest(const FString& Parameters)
                 && Misaligned.Diagnostics.Contains(TEXT("no unique separable Driver surface"))
                 && Misaligned.Diagnostics.Contains(TEXT("misaligned")));
         }
+    }
+    return true;
+}
+
+/**
+ * Builds the material-evidence disambiguation fixture: a full-character-style
+ * Driver whose garment copy A carries the Preview's material-slot identity
+ * while a shifted duplicate copy B does not. The Driver's final material
+ * slots are reordered AFTER import, so polygon-group and triangle-group
+ * ordinals no longer line up with the supported slots; only the shared
+ * per-triangle final-slot resolver can feed the evidence pass correctly.
+ */
+struct FMtoUMaterialEvidenceFixture
+{
+    USkeletalMesh* Driver = nullptr;
+    UStaticMesh* Preview = nullptr;
+    /** Final material-slot indices of garment copy A after the reorder. */
+    TArray<int32> ExpectedSlotIndices;
+
+    bool IsValid() const { return Driver && Preview; }
+};
+
+bool MakeMaterialEvidenceFixtures(
+    UObject& Outer, FAutomationTestBase& Test, FMtoUMaterialEvidenceFixture& Fixtures)
+{
+    using MtoUEditorTest::AppendPartCopy;
+    using MtoUEditorTest::SetUniformBoneWeights;
+    using MtoUEditorTest::WriteTransientDriver;
+    USkeletalMesh* Base = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!Base)
+    {
+        Test.AddError(TEXT("material-evidence fixture SkeletalCube was not loaded"));
+        return false;
+    }
+    UDynamicMesh* BodySource = NewObject<UDynamicMesh>(&Outer);
+    FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+    ReadOptions.bApplyBuildSettings = false;
+    ReadOptions.bRequestTangents = true;
+    FGeometryScriptMeshReadLOD ReadLOD;
+    ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+    EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+        Base, BodySource, ReadOptions, ReadLOD, Outcome);
+    if (Outcome != EGeometryScriptOutcomePins::Success)
+    {
+        Test.AddError(TEXT("material-evidence fixture body conversion failed"));
+        return false;
+    }
+    const UE::Geometry::FDynamicMesh3& CubeSource = BodySource->GetMeshRef();
+    // Weld and poke the cube the way the full-character fixture does: every
+    // face gets an interior vertex, so nearest-surface ownership cannot drop
+    // a face through shared-corner ties, and each cube becomes one region.
+    UE::Geometry::FDynamicMesh3 Cube(CubeSource);
+    UE::Geometry::FMergeCoincidentMeshEdges WeldCube(&Cube);
+    if (!WeldCube.Apply())
+    {
+        Test.AddError(TEXT("material-evidence fixture SkeletalCube was not welded"));
+        return false;
+    }
+    TArray<int32> CubeTriangles;
+    for (const int32 TriangleID : Cube.TriangleIndicesItr())
+    {
+        CubeTriangles.Add(TriangleID);
+    }
+    for (const int32 TriangleID : CubeTriangles)
+    {
+        UE::Geometry::FDynamicMesh3::FPokeTriangleInfo PokeInfo;
+        Cube.PokeTriangle(TriangleID, PokeInfo);
+    }
+    const FVector3d BodyCenter = Cube.GetBounds().Center();
+    const double BodyHeight = Cube.GetBounds().Height();
+    const double UpperScale = 1.15;
+    const double LowerScale = 0.55;
+    const FVector3d LowerOffset =
+        BodyCenter - FVector3d(0.0, 0.0, BodyHeight * 1.05);
+
+    // The Preview holds only garment copy A's surface.
+    UE::Geometry::FDynamicMesh3 PreviewGeometry;
+    AppendPartCopy(PreviewGeometry, Cube, FVector3d::Zero(), UpperScale, 0);
+    AppendPartCopy(PreviewGeometry, Cube, LowerOffset, LowerScale, 1);
+    // Copy B is offset just outside the twin proximity (2% of the scale) but
+    // still inside the agreement radius (5%), so geometry alone cannot decide
+    // between the copies and only the material evidence can pick the right one.
+    const double Shift = 0.03 * PreviewGeometry.GetBounds().DiagonalLength();
+
+    UE::Geometry::FDynamicMesh3 Geometry;
+    // Appending pieces with distinct group IDs only persists them when the
+    // groups buffer is enabled up front; a default mesh drops every group.
+    Geometry.EnableTriangleGroups();
+    AppendPartCopy(Geometry, Cube, FVector3d::Zero(), 0.9, 0);
+    AppendPartCopy(Geometry, Cube, FVector3d::Zero(), UpperScale, 1);
+    AppendPartCopy(Geometry, Cube, LowerOffset, LowerScale, 2);
+    AppendPartCopy(Geometry, Cube, FVector3d(Shift, 0.0, 0.0), UpperScale, 3);
+    AppendPartCopy(Geometry, Cube, LowerOffset + FVector3d(Shift, 0.0, 0.0), LowerScale, 4);
+    SetUniformBoneWeights(Geometry);
+    Fixtures.Driver = WriteTransientDriver(Outer, *Base, Geometry,
+        {
+            FName(TEXT("Body")),
+            FName(TEXT("Cloth09_Top_1")),
+            FName(TEXT("Cloth09_Bottom_2")),
+            FName(TEXT("Dup09_Top_1")),
+            FName(TEXT("Dup09_Bottom_2")),
+        });
+    if (!Fixtures.Driver)
+    {
+        Test.AddError(TEXT("material-evidence Driver was not written"));
+        return false;
+    }
+    // The cloth identities live at slots 3 and 4, the duplicates at 1 and 2.
+    // The final material slots are reordered AFTER import by the test, the way
+    // the automatic-resolution reorder case does, so any path that reads a
+    // polygon-group or triangle-group ordinal as a slot index selects the
+    // wrong copy. Material-asset equality must not mask the name evidence:
+    // only the cloth identities of copy A match the Preview slot names.
+    Fixtures.ExpectedSlotIndices = {3, 4};
+    for (FSkeletalMaterial& Slot : Fixtures.Driver->GetMaterials())
+    {
+        Slot.MaterialInterface = nullptr;
+    }
+
+    Fixtures.Preview = NewObject<UStaticMesh>(&Outer, NAME_None, RF_Transient);
+    FGeometryScriptCopyMeshToAssetOptions PreviewWriteOptions;
+    PreviewWriteOptions.bEmitTransaction = false;
+    PreviewWriteOptions.bEnableRecomputeNormals = true;
+    PreviewWriteOptions.bEnableRecomputeTangents = true;
+    PreviewWriteOptions.bReplaceMaterials = true;
+    PreviewWriteOptions.NewMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+    PreviewWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Cloth09_Top_1")));
+    PreviewWriteOptions.NewMaterials.Add(nullptr);
+    PreviewWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Cloth09_Bottom_2")));
+    FGeometryScriptMeshWriteLOD PreviewWriteLOD;
+    EGeometryScriptOutcomePins PreviewOutcome = EGeometryScriptOutcomePins::Failure;
+    UDynamicMesh* PreviewSource = NewObject<UDynamicMesh>(&Outer);
+    PreviewSource->SetMesh(MoveTemp(PreviewGeometry));
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+        PreviewSource, Fixtures.Preview, PreviewWriteOptions, PreviewWriteLOD, PreviewOutcome, false);
+    if (PreviewOutcome != EGeometryScriptOutcomePins::Success)
+    {
+        Test.AddError(TEXT("material-evidence Preview was not written"));
+        return false;
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDriverGarmentSurfaceMaterialEvidenceTest,
+    "MtoULiveLink.Editor.GarmentSurface.MaterialEvidence",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDriverGarmentSurfaceMaterialEvidenceTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUGarmentSurfaceMaterialEvidence"));
+    FMtoUMaterialEvidenceFixture Fixtures;
+    TestTrue(TEXT("material-evidence fixtures are created"),
+        MakeMaterialEvidenceFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("material-evidence fixtures were not created"));
+        return false;
+    }
+    UE::Geometry::FDynamicMesh3 Driver;
+    UE::Geometry::FDynamicMesh3 PreviewMesh;
+    TestTrue(TEXT("material-evidence sources convert for resolution"),
+        ConvertSourceMeshes(*Fixtures.Driver, *Fixtures.Preview, Driver, PreviewMesh));
+
+    // Rebuild the import-time material evidence the way the automatic
+    // resolution reorder case does: the Geometry Script round trip collapses
+    // polygon groups, so name the stored polygon groups with the imported
+    // slot identities and restore the per-section material ordinals from the
+    // preserved triangle groups. The final material slots are then reordered
+    // AFTER import, so only the shared per-triangle final-slot resolver can
+    // feed the evidence pass correctly.
+    TPolygonGroupAttributesRef<FName> DescriptionSlotNames;
+    FMeshDescription* Description =
+        WriteImportedSlotIdentities(*Fixtures.Driver, DescriptionSlotNames);
+    TestNotNull(TEXT("material-evidence Driver has import-time polygon groups"), Description);
+    if (!Description)
+    {
+        return false;
+    }
+    if (Driver.Attributes() && Driver.Attributes()->GetMaterialID())
+    {
+        for (const int32 TriangleID : Driver.TriangleIndicesItr())
+        {
+            Driver.Attributes()->GetMaterialID()->SetValue(
+                TriangleID, Driver.GetTriangleGroup(TriangleID));
+        }
+    }
+    Fixtures.Driver->GetMaterials().Swap(1, 3);
+    Fixtures.Driver->GetMaterials().Swap(2, 4);
+    const FMtoUDriverGarmentSurfaceResult Evidence = ResolveSurface(
+        Driver, *Fixtures.Driver, PreviewMesh, *Fixtures.Preview, {});
+    AddInfo(Evidence.Diagnostics);
+    TestTrue(TEXT("reordered slots select the correct garment copy through final-slot evidence"),
+        Evidence.bSucceeded
+            && !Evidence.bManualSource
+            && Evidence.MaterialSlotIndices == Fixtures.ExpectedSlotIndices
+            && Evidence.RegionSummary.Contains(TEXT("material evidence narrowed")));
+    TestTrue(TEXT("the evidence-selected surface keeps full Preview coverage"),
+        Evidence.MatchedPreviewCoverage > 0.999);
+    TestTrue(TEXT("the evidence-selected surface contains only garment copy A"),
+        Evidence.TriangleCount == PreviewMesh.TriangleCount());
+    TestTrue(TEXT("the evidence-selected surface preserves Driver vertex correspondence"),
+        PreservesDriverVertexCorrespondence(Driver, Evidence.Surface));
+
+    // Removing the material evidence (renaming the Preview slots) must fall
+    // back to geometry ownership, which still selects copy A alone: the
+    // shifted copy owns no Preview vertex and is not a twin. Evidence must
+    // never be required, only ever narrow candidates correctly.
+    for (FStaticMaterial& Slot : Fixtures.Preview->GetStaticMaterials())
+    {
+        Slot.ImportedMaterialSlotName = NAME_None;
+        Slot.MaterialSlotName = FName(TEXT("Renamed_Cloth"));
+    }
+    const FMtoUDriverGarmentSurfaceResult NoEvidence = ResolveSurface(
+        Driver, *Fixtures.Driver, PreviewMesh, *Fixtures.Preview, {});
+    AddInfo(NoEvidence.Diagnostics);
+    TestTrue(TEXT("without discriminating evidence geometry still selects the correct copy"),
+        NoEvidence.bSucceeded
+            && NoEvidence.MaterialSlotIndices == Fixtures.ExpectedSlotIndices
+            && NoEvidence.TriangleCount == PreviewMesh.TriangleCount()
+            && !NoEvidence.RegionSummary.Contains(TEXT("material evidence narrowed")));
+    Fixtures.Driver->GetMaterials().Swap(1, 3);
+    Fixtures.Driver->GetMaterials().Swap(2, 4);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDriverGarmentSurfaceGeometryEdgeCasesTest,
+    "MtoULiveLink.Editor.GarmentSurface.GeometryEdgeCases",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDriverGarmentSurfaceGeometryEdgeCasesTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUGarmentSurfaceGeometryEdgeCases"));
+    MtoUEditorTest::FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("geometry-edge-case fixtures are created"),
+        MtoUEditorTest::MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("geometry-edge-case fixtures were not created"));
+        return false;
+    }
+    UE::Geometry::FDynamicMesh3 Driver;
+    UE::Geometry::FDynamicMesh3 PreviewMesh;
+    TestTrue(TEXT("geometry-edge-case sources convert for resolution"),
+        ConvertSourceMeshes(*Fixtures.FullDriver, *Fixtures.Preview, Driver, PreviewMesh));
+
+    // A Preview with vertices but no triangles must fail cleanly before any
+    // mass accounting can divide by zero or report a misleading outcome.
+    {
+        UE::Geometry::FDynamicMesh3 ZeroTrianglePreview;
+        for (int32 Index = 0; Index < 12; ++Index)
+        {
+            ZeroTrianglePreview.AppendVertex(FVector3d(Index * 0.5, 0.0, 0.0));
+        }
+        const FMtoUDriverGarmentSurfaceResult ZeroTriangle = ResolveSurface(
+            Driver, *Fixtures.FullDriver, ZeroTrianglePreview, *Fixtures.Preview, {});
+        AddInfo(ZeroTriangle.Diagnostics);
+        TestTrue(TEXT("a zero-triangle Preview fails cleanly without mass accounting"),
+            !ZeroTriangle.bSucceeded
+                && HasNoUsableSurface(ZeroTriangle)
+                && ZeroTriangle.Diagnostics.Contains(TEXT("no LOD0 triangles")));
+    }
+
+    // A degenerate Preview whose distinct vertices all coincide has no usable
+    // scale and fails cleanly instead of reporting a misleading outcome.
+    {
+        UE::Geometry::FDynamicMesh3 DegeneratePreview;
+        const int32 DA = DegeneratePreview.AppendVertex(FVector3d(1.0, 2.0, 3.0));
+        const int32 DB = DegeneratePreview.AppendVertex(FVector3d(1.0, 2.0, 3.0));
+        const int32 DC = DegeneratePreview.AppendVertex(FVector3d(1.0, 2.0, 3.0));
+        DegeneratePreview.AppendTriangle(DA, DB, DC);
+        const FMtoUDriverGarmentSurfaceResult Degenerate = ResolveSurface(
+            Driver, *Fixtures.FullDriver, DegeneratePreview, *Fixtures.Preview, {});
+        AddInfo(Degenerate.Diagnostics);
+        TestTrue(TEXT("a degenerate zero-size Preview fails cleanly"),
+            !Degenerate.bSucceeded
+                && HasNoUsableSurface(Degenerate)
+                && Degenerate.Diagnostics.Contains(TEXT("no usable size")));
+    }
+
+    // NaN and infinite coordinates fail closed at the shared admission gate.
+    // The public DynamicMesh API refuses non-finite SetVertex writes, so the
+    // corrupted inputs are built by appending non-finite vertices directly —
+    // the same way a broken asset conversion can produce them.
+    const auto AppendNonFiniteMesh = [](const FVector3d& BadPosition)
+    {
+        UE::Geometry::FDynamicMesh3 Mesh;
+        const int32 A = Mesh.AppendVertex(FVector3d(0.0, 0.0, 0.0));
+        const int32 B = Mesh.AppendVertex(FVector3d(1.0, 0.0, 0.0));
+        const int32 C = Mesh.AppendVertex(FVector3d(0.0, 1.0, 0.0));
+        const int32 D = Mesh.AppendVertex(BadPosition);
+        Mesh.AppendTriangle(A, B, C);
+        Mesh.AppendTriangle(A, C, D);
+        return Mesh;
+    };
+    {
+        const UE::Geometry::FDynamicMesh3 NaNDriver = AppendNonFiniteMesh(
+            FVector3d(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0));
+        const FMtoUDriverGarmentSurfaceResult NaNDriverResult = ResolveSurface(
+            NaNDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        AddInfo(NaNDriverResult.Diagnostics);
+        TestTrue(TEXT("a NaN-coordinate Driver fails transactionally"),
+            !NaNDriverResult.bSucceeded
+                && HasNoUsableSurface(NaNDriverResult)
+                && NaNDriverResult.Diagnostics.Contains(TEXT("non-finite")));
+    }
+    {
+        const UE::Geometry::FDynamicMesh3 NaNPreview = AppendNonFiniteMesh(
+            FVector3d(0.0, std::numeric_limits<double>::quiet_NaN(), 0.0));
+        const FMtoUDriverGarmentSurfaceResult NaNPreviewResult = ResolveSurface(
+            Driver, *Fixtures.FullDriver, NaNPreview, *Fixtures.Preview, {});
+        AddInfo(NaNPreviewResult.Diagnostics);
+        TestTrue(TEXT("a NaN-coordinate Preview fails transactionally"),
+            !NaNPreviewResult.bSucceeded
+                && HasNoUsableSurface(NaNPreviewResult)
+                && NaNPreviewResult.Diagnostics.Contains(TEXT("non-finite")));
+    }
+    {
+        const UE::Geometry::FDynamicMesh3 InfinitePreview = AppendNonFiniteMesh(
+            FVector3d(std::numeric_limits<double>::infinity(), 0.0, 0.0));
+        const FMtoUDriverGarmentSurfaceResult InfinitePreviewResult = ResolveSurface(
+            Driver, *Fixtures.FullDriver, InfinitePreview, *Fixtures.Preview, {});
+        AddInfo(InfinitePreviewResult.Diagnostics);
+        TestTrue(TEXT("an infinite-coordinate Preview fails transactionally"),
+            !InfinitePreviewResult.bSucceeded
+                && HasNoUsableSurface(InfinitePreviewResult)
+                && InfinitePreviewResult.Diagnostics.Contains(TEXT("non-finite")));
+    }
+
+    // The mass-accounting floor is a Preview TRIANGLE count: a multi-region
+    // Driver with a sub-floor Preview must resolve by geometry and evidence
+    // instead of entering the source-mass gate on its vertex count.
+    {
+        using MtoUEditorTest::AppendPartCopy;
+        using MtoUEditorTest::SetUniformBoneWeights;
+        using MtoUEditorTest::WriteTransientDriver;
+        USkeletalMesh* Base = LoadObject<USkeletalMesh>(
+            nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+        UDynamicMesh* BodySource = NewObject<UDynamicMesh>(WorldPackage);
+        FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+        ReadOptions.bApplyBuildSettings = false;
+        ReadOptions.bRequestTangents = true;
+        FGeometryScriptMeshReadLOD ReadLOD;
+        ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+        EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+            Base, BodySource, ReadOptions, ReadLOD, Outcome);
+        if (Outcome != EGeometryScriptOutcomePins::Success)
+        {
+            AddError(TEXT("low-triangle fixture body conversion failed"));
+            return false;
+        }
+        const UE::Geometry::FDynamicMesh3& Cube = BodySource->GetMeshRef();
+        // Weld each cube into one connected region so a piece is selected as
+        // a whole: per-face SkeletalCube fragments would leave unselected
+        // faces in the garment slot and trip the shared-slot guard.
+        UE::Geometry::FDynamicMesh3 WeldedCube(Cube);
+        UE::Geometry::FMergeCoincidentMeshEdges Weld(&WeldedCube);
+        if (!Weld.Apply())
+        {
+            AddError(TEXT("low-triangle fixture cube was not welded"));
+            return false;
+        }
+        const FVector3d BodyCenter = WeldedCube.GetBounds().Center();
+        const double BodyHeight = WeldedCube.GetBounds().Height();
+        const FVector3d LowerOffset =
+            BodyCenter - FVector3d(0.0, 0.0, BodyHeight * 1.05);
+
+        // Multi-region Driver: welded garment, body, and lower cubes each
+        // form one connected region with its own material slot.
+        UE::Geometry::FDynamicMesh3 LowTriGeometry;
+        LowTriGeometry.EnableTriangleGroups();
+        const UE::Geometry::FAxisAlignedBox3d UpperBounds =
+            AppendPartCopy(LowTriGeometry, WeldedCube, FVector3d::Zero(), 1.15, 1);
+        AppendPartCopy(LowTriGeometry, WeldedCube, FVector3d::Zero(), 0.9, 0);
+        AppendPartCopy(LowTriGeometry, WeldedCube, LowerOffset, 0.55, 2);
+        SetUniformBoneWeights(LowTriGeometry);
+        USkeletalMesh* LowTriDriver = WriteTransientDriver(*WorldPackage, *Base, LowTriGeometry,
+            {
+                FName(TEXT("LowTri_Body")),
+                FName(TEXT("LowTri_Garment_Upper")),
+                FName(TEXT("LowTri_Garment_Lower")),
+            });
+        TestNotNull(TEXT("low-triangle Driver was written"), LowTriDriver);
+        if (!LowTriDriver)
+        {
+            return false;
+        }
+
+        // Sub-floor Preview: 8 vertices and 7 triangles as a fan lying on the
+        // upper garment piece's top face. A vertex-count gate would enter the
+        // mass check here (8 >= 8) and wrongly reject the 12-triangle piece
+        // (12 > 1.7 * 7); the triangle-count gate exempts it.
+        UE::Geometry::FDynamicMesh3 FanPreview;
+        const double FanRadius = (UpperBounds.Max.X - UpperBounds.Min.X) * 0.4;
+        const int32 FanCenter = FanPreview.AppendVertex(
+            FVector3d(0.0, 0.0, UpperBounds.Max.Z));
+        TArray<int32> FanRim;
+        for (int32 Index = 0; Index < 7; ++Index)
+        {
+            const double Angle = UE_DOUBLE_PI * 2.0 * Index / 7.0;
+            FanRim.Add(FanPreview.AppendVertex(FVector3d(
+                FMath::Cos(Angle) * FanRadius,
+                FMath::Sin(Angle) * FanRadius,
+                UpperBounds.Max.Z)));
+        }
+        for (int32 Index = 0; Index < 7; ++Index)
+        {
+            FanPreview.AppendTriangle(FanCenter, FanRim[Index], FanRim[(Index + 1) % 7]);
+        }
+        TestTrue(TEXT("low-triangle Preview converts with 8 vertices and 7 triangles"),
+            FanPreview.VertexCount() == 8 && FanPreview.TriangleCount() == 7);
+        UStaticMesh* FanPreviewAsset = NewObject<UStaticMesh>(WorldPackage, NAME_None, RF_Transient);
+        FGeometryScriptCopyMeshToAssetOptions PreviewWriteOptions;
+        PreviewWriteOptions.bEmitTransaction = false;
+        PreviewWriteOptions.bEnableRecomputeNormals = true;
+        PreviewWriteOptions.bEnableRecomputeTangents = true;
+        PreviewWriteOptions.bReplaceMaterials = true;
+        PreviewWriteOptions.NewMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+        PreviewWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Fan_Preview")));
+        FGeometryScriptMeshWriteLOD PreviewWriteLOD;
+        EGeometryScriptOutcomePins PreviewOutcome = EGeometryScriptOutcomePins::Failure;
+        UDynamicMesh* PreviewSource = NewObject<UDynamicMesh>(WorldPackage);
+        PreviewSource->SetMesh(MoveTemp(FanPreview));
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+            PreviewSource, FanPreviewAsset, PreviewWriteOptions, PreviewWriteLOD, PreviewOutcome, false);
+        if (PreviewOutcome != EGeometryScriptOutcomePins::Success)
+        {
+            AddError(TEXT("low-triangle Preview was not written"));
+            return false;
+        }
+
+        UE::Geometry::FDynamicMesh3 LowTriDriverMesh;
+        UE::Geometry::FDynamicMesh3 LowTriPreviewMesh;
+        TestTrue(TEXT("low-triangle sources convert for resolution"),
+            ConvertSourceMeshes(*LowTriDriver, *FanPreviewAsset,
+                LowTriDriverMesh, LowTriPreviewMesh));
+        TestTrue(TEXT("the converted sub-floor Preview keeps its triangle count"),
+            LowTriPreviewMesh.TriangleCount() == 7);
+        const FMtoUDriverGarmentSurfaceResult LowTri = ResolveSurface(
+            LowTriDriverMesh, *LowTriDriver, LowTriPreviewMesh, *FanPreviewAsset, {});
+        AddInfo(LowTri.Diagnostics);
+        TestTrue(TEXT("a sub-floor Preview exempts the mass-accounting gate"),
+            LowTri.bSucceeded
+                && LowTri.MatchedPreviewCoverage > 0.999
+                && LowTri.TriangleCount == 12
+                && LowTri.MaterialSlotIndices == TArray<int32>({1})
+                && !LowTri.Diagnostics.Contains(TEXT("source-mass boundary")));
     }
     return true;
 }
