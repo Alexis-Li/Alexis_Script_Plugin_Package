@@ -142,10 +142,14 @@ public:
     static FLiveLinkFrameDataStruct MakeFrameData(
         const FMtoUFrameMessage& Frame,
         const TArray<int32>& AcceptedCurveIndices);
-    static FLiveLinkFrameDataStruct MakeRetargetedFrameData(
+    // Returns false and publishes nothing when any local transform needed by
+    // retargeting is singular; OutError then names the offending bone.
+    static bool MakeRetargetedFrameData(
         const FMtoUFrameMessage& Frame,
         const TArray<int32>& AcceptedCurveIndices,
         const TArray<FTransform>& SourceBindLocalPose,
         const TArray<FTransform>& TargetRefLocalPose,
-        const TArray<int32>& BoneParents);
+        const TArray<int32>& BoneParents,
+        FLiveLinkFrameDataStruct& OutFrameData,
+        FString& OutError);
 };

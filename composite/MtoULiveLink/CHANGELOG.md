@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Make Model connection and retargeting reject only genuinely unusable input:
+  disabling BS transmission now negotiates as the labelled Bone-only
+  comparison even when the outfit manifest has no name intersection with the
+  Model display Morphs, while BS transmission with a non-empty manifest and no
+  accepted Preview Morph keeps blocking with `PREVIEW_MORPH_MISMATCH`, an
+  intentionally zero-name manifest stays Ready, and partial coverage keeps its
+  non-blocking warning. Retargeting now validates every local source current,
+  source bind, and target reference transform before publishing: a finite but
+  singular matrix stops the session with a `BIND_POSE_INVALID` diagnostic that
+  names the offending bone index instead of silently substituting an identity
+  inversion and publishing wrong descendant transforms. Protocol v6 message
+  shapes and valid bind-pose and animated-pose retargeting results are
+  unchanged.
 - Use the Binding Actor's `SkeletalMeshComponent` as the single editable
   rendering-settings surface. The internal full-character Driver display no
   longer duplicates every component category in Details and inherits Lighting

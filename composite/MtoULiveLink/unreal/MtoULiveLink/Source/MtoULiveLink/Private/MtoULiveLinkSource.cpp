@@ -917,7 +917,8 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             DiagnosticLevel);
     }
 
-    if (bModelWorkflow && !bZeroMorphManifest
+    if (bModelWorkflow && Message.bBlendshapesEnabled
+        && !bZeroMorphManifest
         && Outcome.AcceptedCurveIndices.IsEmpty())
     {
         // BS transmission with a non-empty manifest and zero accepted Preview
@@ -1224,12 +1225,27 @@ bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Fram
     {
         return false;
     }
-    FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
-        Frame,
-        AcceptedCurveIndices,
-        SourceBindLocalPose,
-        TargetRefLocalPose,
-        BoneParents);
+    FLiveLinkFrameDataStruct FrameData;
+    FString RetargetError;
+    if (!FMtoUProtocol::MakeRetargetedFrameData(
+            Frame,
+            AcceptedCurveIndices,
+            SourceBindLocalPose,
+            TargetRefLocalPose,
+            BoneParents,
+            FrameData,
+            RetargetError))
+    {
+        // Fail closed: publishing a partially wrong pose is worse than
+        // refusing the frame, and silently dropping the pose instead would
+        // hide a deterministic content fault that the user must fix, so the
+        // session stops with an actionable diagnostic.
+        EnqueueErrorOnGameThread(
+            TEXT("BIND_POSE_INVALID"),
+            TEXT("A pose transform cannot be inverted; streaming stopped."),
+            RetargetError);
+        return false;
+    }
     if (const FLiveLinkAnimationFrameData* Animation =
             FrameData.Cast<FLiveLinkAnimationFrameData>())
     {

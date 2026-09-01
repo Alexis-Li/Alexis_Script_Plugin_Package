@@ -342,8 +342,12 @@ TArray<FTransform> RetargetPose(
     const TArray<FTransform>& TargetRefPose,
     const TArray<int32>& BoneParents)
 {
-    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
-        FrameFromPose(CurrentPose), {}, SourceBindPose, TargetRefPose, BoneParents);
+    FLiveLinkFrameDataStruct FrameData;
+    FString Error;
+    const bool bBuilt = FMtoUProtocol::MakeRetargetedFrameData(
+        FrameFromPose(CurrentPose), {}, SourceBindPose, TargetRefPose, BoneParents,
+        FrameData, Error);
+    ensureMsgf(bBuilt, TEXT("shared retarget test input rejected: %s"), *Error);
     const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
     return Animation ? Animation->Transforms : TArray<FTransform>();
 }
@@ -1369,8 +1373,11 @@ bool FMtoUBindPoseInvariantTest::RunTest(const FString& Parameters)
             Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
     }
 
-    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
-        SourceBindFrame, {}, SourceBindLocalPose, TargetRefLocalPose, {INDEX_NONE, 0});
+    FLiveLinkFrameDataStruct FrameData;
+    FString Error;
+    TestTrue(TEXT("a valid bind pose retargets"), FMtoUProtocol::MakeRetargetedFrameData(
+        SourceBindFrame, {}, SourceBindLocalPose, TargetRefLocalPose, {INDEX_NONE, 0},
+        FrameData, Error));
     const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
     TestNotNull(TEXT("retargeted animation data is built"), Animation);
     if (!Animation)
@@ -1536,6 +1543,73 @@ bool FMtoUUnitScaleRetargetingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("uniform animated scale is transferred"),
         UniformScaleOutput.IsValidIndex(0)
         && UniformScaleOutput[0].GetScale3D().Equals(FVector(1.25), 1.0e-3f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSingularRetargetTransformTest,
+    "MtoULiveLink.PoseRetargeting.SingularTransformRejected",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSingularRetargetTransformTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TArray<FTransform> SourceBind = {
+        FTransform(FRotator(0.0, 20.0, 0.0), FVector(1.0, 2.0, 3.0)),
+        FTransform(FRotator(10.0, 0.0, 25.0), FVector(0.0, 8.0, 0.0)),
+    };
+    const TArray<FTransform> TargetRef = {
+        FTransform(FRotator(0.0, -15.0, 5.0), FVector(4.0, 0.0, 2.0)),
+        FTransform(FRotator(-20.0, 10.0, 0.0), FVector(0.0, 12.0, 0.0)),
+    };
+    const TArray<FTransform> Current = {
+        FTransform(FRotator(5.0, 15.0, 10.0), FVector(7.0, 0.0, 0.0)),
+        FTransform(FRotator(-8.0, 12.0, 20.0), FVector(0.0, 2.0, 1.0)),
+    };
+    const TArray<int32> Parents = {INDEX_NONE, 0};
+    const auto WithScale = [](const TArray<FTransform>& Pose, int32 Bone, FVector Scale)
+    {
+        TArray<FTransform> Modified = Pose;
+        Modified[Bone].SetScale3D(Scale);
+        return Modified;
+    };
+    const auto RetargetAttempt = [&](
+        const TArray<FTransform>& CurrentPose,
+        const TArray<FTransform>& BindPose,
+        const TArray<FTransform>& RefPose,
+        FString& OutError)
+    {
+        FLiveLinkFrameDataStruct FrameData;
+        const bool bBuilt = FMtoUProtocol::MakeRetargetedFrameData(
+            FrameFromPose(CurrentPose), {}, BindPose, RefPose, Parents, FrameData, OutError);
+        TestNull(TEXT("a rejected pose publishes no frame data"),
+            bBuilt ? nullptr : FrameData.Cast<FLiveLinkAnimationFrameData>());
+        return bBuilt;
+    };
+
+    FString Error;
+    TestTrue(TEXT("the valid parent-child pose still retargets"),
+        RetargetAttempt(Current, SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the valid pose reports no error"), Error.IsEmpty());
+
+    TestFalse(TEXT("a zero-scale source current parent is rejected"),
+        RetargetAttempt(WithScale(Current, 0, FVector(0.0, 1.0, 1.0)), SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the source current rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("source current")));
+
+    TestFalse(TEXT("a zero-scale source current leaf is rejected"),
+        RetargetAttempt(WithScale(Current, 1, FVector(1.0, 1.0, 0.0)), SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the source current leaf rejection names the bone"),
+        Error.Contains(TEXT("Bone 1")) && Error.Contains(TEXT("source current")));
+
+    TestFalse(TEXT("a zero-scale source bind transform is rejected"),
+        RetargetAttempt(Current, WithScale(SourceBind, 0, FVector(0.0, 0.0, 0.0)), TargetRef, Error));
+    TestTrue(TEXT("the bind rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("source bind")));
+
+    TestFalse(TEXT("a zero-scale target reference transform is rejected"),
+        RetargetAttempt(Current, SourceBind, WithScale(TargetRef, 0, FVector(1.0, 0.0, 1.0)), Error));
+    TestTrue(TEXT("the target reference rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("target reference")));
     return true;
 }
 
@@ -2623,6 +2697,30 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
         && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::BoneOnly);
 
+    FSocket* EmptyIntersectionClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("empty-intersection bone-only model client connects"), EmptyIntersectionClient);
+    const TArray<uint8> EmptyIntersectionInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        false,
+        TEXT("[\"GhostOne\",\"GhostTwo\"]"));
+    TestTrue(TEXT("empty-intersection bone-only model init is sent"), EmptyIntersectionClient
+        && SendBytes(*EmptyIntersectionClient, EmptyIntersectionInit.GetData(), EmptyIntersectionInit.Num()));
+    Payload.Reset();
+    const bool bEmptyIntersectionReady = EmptyIntersectionClient && ReceivePacket(
+        *EmptyIntersectionClient, Payload, [&]() { Source->Update(); });
+    TestTrue(TEXT("disabled BS transmission lets an empty Morph intersection negotiate Ready"),
+        bEmptyIntersectionReady
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
+    TestTrue(TEXT("empty-intersection connection is labelled a Bone-only comparison"),
+        Actor && Actor->GetConnectionStatus().Contains(TEXT("bone-only diagnostic"))
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::BoneOnly
+        && Actor->GetModelDiagnostics().Contains(TEXT("ORANGE: Bone-only diagnostic")));
+    DestroySocket(*SocketSubsystem, EmptyIntersectionClient);
+    TestTrue(TEXT("source returns to listening after empty-intersection bone-only disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
     FSocket* BoneDrivenClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("bone-driven model client connects"), BoneDrivenClient);
     const TArray<uint8> BoneDrivenInit = DriverInitPacket(
@@ -2672,6 +2770,19 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && BoneDrivenAnimation->Transforms.Num() == 2
         && !BoneDrivenAnimation->Transforms[0].ContainsNaN()
         && BoneDrivenAnimation->PropertyValues.IsEmpty());
+    const TArray<uint8> SingularFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,0,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
+    TestTrue(TEXT("singular-parent frame is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, SingularFrame.GetData(), SingularFrame.Num()));
+    Payload.Reset();
+    const bool bSingularRejected = BoneDrivenClient && ReceivePacket(
+        *BoneDrivenClient, Payload, [&]() { Source->Update(); });
+    TestTrue(TEXT("a singular source current transform is rejected before publication"),
+        bSingularRejected
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("BIND_POSE_INVALID")));
+    TestTrue(TEXT("singular transform rejection closes the session"),
+        BoneDrivenClient && WaitForClose(*BoneDrivenClient));
     DestroySocket(*SocketSubsystem, BoneDrivenClient);
     TestTrue(TEXT("source returns to listening after bone-driven disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));

@@ -966,13 +966,17 @@ FLiveLinkFrameDataStruct FMtoUProtocol::MakeFrameData(
     return FrameData;
 }
 
-FLiveLinkFrameDataStruct FMtoUProtocol::MakeRetargetedFrameData(
+bool FMtoUProtocol::MakeRetargetedFrameData(
     const FMtoUFrameMessage& Frame,
     const TArray<int32>& AcceptedCurveIndices,
     const TArray<FTransform>& SourceBindLocalPose,
     const TArray<FTransform>& TargetRefLocalPose,
-    const TArray<int32>& BoneParents)
+    const TArray<int32>& BoneParents,
+    FLiveLinkFrameDataStruct& OutFrameData,
+    FString& OutError)
 {
+    OutFrameData = FLiveLinkFrameDataStruct();
+    OutError.Reset();
     const int32 BoneCount = Frame.Transforms.Num();
     check(SourceBindLocalPose.Num() == BoneCount);
     check(TargetRefLocalPose.Num() == BoneCount);
@@ -998,6 +1002,30 @@ FLiveLinkFrameDataStruct FMtoUProtocol::MakeRetargetedFrameData(
             SourceCurrent.Scale).ToMatrixWithScale();
         const FMatrix SourceBindLocal = SourceBindLocalPose[Index].ToMatrixWithScale();
         const FMatrix TargetRefLocal = TargetRefLocalPose[Index].ToMatrixWithScale();
+        // A component pose is a product of local transforms, so it is
+        // invertible exactly when every local transform on its ancestor chain
+        // is invertible, and every retargeted local decomposes from a
+        // non-singular matrix. Inverse() silently substitutes identity for
+        // singular input, so one zero-scale bone would corrupt every descendant
+        // without a trace; fail closed before publishing anything.
+        if (FMath::IsNearlyZero(SourceCurrentLocal.Determinant()))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d source current transform is not invertible."), Index);
+            return false;
+        }
+        if (FMath::IsNearlyZero(SourceBindLocal.Determinant()))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d source bind transform is not invertible."), Index);
+            return false;
+        }
+        if (FMath::IsNearlyZero(TargetRefLocal.Determinant()))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d target reference transform is not invertible."), Index);
+            return false;
+        }
 
         if (ParentIndex == INDEX_NONE)
         {
@@ -1038,5 +1066,6 @@ FLiveLinkFrameDataStruct FMtoUProtocol::MakeRetargetedFrameData(
         RetargetedFrame.Transforms.Add({
             Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
     }
-    return MakeFrameData(RetargetedFrame, AcceptedCurveIndices);
+    OutFrameData = MakeFrameData(RetargetedFrame, AcceptedCurveIndices);
+    return true;
 }
