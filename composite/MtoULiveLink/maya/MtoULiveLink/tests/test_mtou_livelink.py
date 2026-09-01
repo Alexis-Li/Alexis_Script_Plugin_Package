@@ -2069,7 +2069,8 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertIn(MODULE._CachedPlayback.UPLOADING, [view.state for view in changes])
 
     def test_cancel_restores_frame_deletes_partial_cache_and_clears_before_resume(self):
-        cached, stream = self._attached()
+        changes = []
+        cached, stream = self._attached(changes.append)
         cached.enter()
         cached.capture(24.0, lambda unused_size, unused_frames: True)
         self.timer.fire()
@@ -2080,13 +2081,18 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.cancel_capture()
         self.timer.fire()
 
-        self.assertEqual(MODULE._CachedPlayback.CANCELLED, cached.view.state)
+        # Cancellation already resumed Real-time Preview, so the controller
+        # completes that transition: a REALTIME view carrying the truthful
+        # cancellation diagnostic, not a FAILED view implying disconnection.
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
         self.assertEqual((False, False, False, False, False),
                          self._capabilities(cached.view))
         self.assertEqual(42, self.timeline.current)
         self.assertIsNone(cached.view.cache_summary)
         self.assertLess(stream.actions.index("cache_clear"), stream.actions.index("resume"))
         self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+        cancelled = [view.diagnostic for view in changes if view.diagnostic]
+        self.assertEqual("CACHED_PLAYBACK_CANCELLED", cancelled[-1]["code"])
 
     def test_large_cache_decline_and_disk_preflight_publish_stable_failures(self):
         confirmations = []
@@ -2095,7 +2101,7 @@ class CachedPlaybackTests(unittest.TestCase):
         with mock.patch.object(MODULE, "CACHE_CONFIRMATION_BYTES", 1):
             cached.capture(24.0, lambda size, frames: confirmations.append((size, frames)) or False)
             self.timer.fire()
-        self.assertEqual(MODULE._CachedPlayback.CANCELLED, cached.view.state)
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
         self.assertEqual(4, confirmations[0][1])
 
         diagnostics = []
@@ -2105,7 +2111,9 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
         cached.capture(24.0, lambda unused_size, unused_frames: True)
         self.timer.fire()
-        self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
+        # The space failure deleted the partial cache, cleared Unreal
+        # ownership, and resumed Real-time Preview; the view says exactly that.
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
         diagnostic = [item for item in diagnostics if item][-1]
         self.assertEqual("CACHED_PLAYBACK_SPACE", diagnostic["code"])
 
@@ -2155,7 +2163,12 @@ class CachedPlaybackTests(unittest.TestCase):
 
         self.timer.fire()
 
-        self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
+        # Upload rejection dropped Unreal ownership and resumed Real-time
+        # Preview, so the truthful post-failure view is REALTIME with the
+        # upload-failure diagnostic, and the workflow stays usable.
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
+        self.assertEqual(1, stream.resumed)
+        self.assertLess(stream.actions.index("cache_clear"), stream.actions.index("resume"))
         diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
         self.assertEqual("CACHED_UPLOAD_FAILED", diagnostic["code"])
 
@@ -2324,15 +2337,123 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
         cached.capture(24.0, lambda unused_size, unused_frames: True)
 
-        self.timer.fire_until(
-            lambda: cached.view.state == MODULE._CachedPlayback.FAILED)
+        def failed_realtime_view():
+            return any(
+                view.state == MODULE._CachedPlayback.REALTIME and view.diagnostic
+                for view in changes)
 
+        self.timer.fire_until(failed_realtime_view)
+
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
         self.assertIsNone(cached.view.cache_summary)
         self.assertTrue(CorruptFactory.cache.deleted)
         self.assertEqual(["cache_enter", "cache_begin", "cache_clear"],
                          self._types(stream))
         diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
         self.assertEqual("CACHED_PLAYBACK_NO_CACHE", diagnostic["code"])
+
+    def test_capture_stops_before_start_when_range_exceeds_frame_limit(self):
+        cached, stream = self._attached()
+        cached.enter()
+        self.timeline.ranges = (0, MODULE.MAX_CACHE_FRAME_COUNT)
+
+        with self.assertRaises(MODULE._CachedPlaybackError) as caught:
+            cached.capture(24.0, lambda unused_size, unused_frames: True)
+
+        self.assertEqual("CACHED_PLAYBACK_FRAME_LIMIT", caught.exception.code)
+        # Zero frames were captured, no owned data exists, and the cached
+        # workflow remains usable for a shorter range or leaving.
+        self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+        self.assertNotIn("cache_frame", self._types(stream))
+        self.assertEqual(MODULE._CachedPlayback.CACHED_IDLE, cached.view.state)
+        self.assertEqual((True, False, False, False, True),
+                         self._capabilities(cached.view))
+
+    def test_capture_stops_as_soon_as_encoded_bytes_cross_the_payload_limit(self):
+        changes = []
+        cached, stream = self._attached(changes.append)
+        cached.enter()
+        first_frame_bytes = MODULE.cache_frame_wire_size(
+            0, [[0.0] * 10], [])
+        budget = first_frame_bytes * 2
+        with mock.patch.object(MODULE, "MAX_CACHE_PAYLOAD_BYTES", budget):
+            cached.capture(24.0, lambda unused_size, unused_frames: True)
+            self.timer.fire_until(
+                lambda: any(view.diagnostic for view in changes))
+
+        self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
+        diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
+        self.assertEqual("CACHED_PLAYBACK_PAYLOAD_LIMIT", diagnostic["code"])
+        self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+        self.assertLess(stream.actions.index("cache_clear"), stream.actions.index("resume"))
+
+    def test_cached_idle_observes_transport_termination_without_user_action(self):
+        changes = []
+        cached, stream = self._attached(changes.append)
+        cached.enter()
+        self.assertEqual(MODULE._CachedPlayback.CACHED_IDLE, cached.view.state)
+
+        stream.is_ready = False
+        self.timer.fire()
+
+        detached = [view for view in changes
+                    if view.state == MODULE._CachedPlayback.DETACHED]
+        self.assertEqual("STREAM_INTERRUPTED", detached[-1].diagnostic["code"])
+        self.assertEqual(1, stream.stopped)
+
+    def test_completed_and_stopped_states_keep_observing_the_connection(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        play = [message for message in stream.submitted
+                if message["type"] == "cache_play"][-1]
+        stream.emit({
+            "type": "cache_complete", "play_id": play["play_id"],
+            "applied_frame_count": 4, "elapsed_seconds": 1.5,
+        })
+        self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.COMPLETED, cached.view.state)
+
+        stream.is_ready = False
+        self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.DETACHED, cached.view.state)
+        self.assertEqual(1, stream.stopped)
+
+    def test_stopped_cached_state_observes_transport_termination(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        play = [message for message in stream.submitted
+                if message["type"] == "cache_play"][-1]
+        cached.stop_replay()
+        stream.emit({"type": "cache_stopped", "play_id": play["play_id"]})
+        self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.STOPPED, cached.view.state)
+
+        stream.is_ready = False
+        self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.DETACHED, cached.view.state)
+
+    def test_runtime_playback_failure_stays_cached_with_leave_and_retry(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        play = [message for message in stream.submitted
+                if message["type"] == "cache_play"][-1]
+        stream.emit({
+            "type": "error", "code": "CACHED_PLAYBACK_PERFORMANCE",
+            "message": "Local playback fell behind.", "details": "frame 3",
+            "play_id": play["play_id"],
+        })
+
+        self.timer.fire()
+
+        # A failure that keeps Unreal cache ownership stays cached and must
+        # leave retrying and leaving possible, and the connection is real.
+        self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
+        self.assertEqual((True, True, False, False, True),
+                         self._capabilities(cached.view))
+        self.assertIsNotNone(cached.view.cache_summary)
+        self.assertEqual(0, stream.resumed)
+        self.timer.fire()
+        self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
 
     def test_discard_is_idempotent_and_rejected_actions_keep_stable_errors(self):
         cached, unused_stream = self._attached()
@@ -2570,19 +2691,30 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertIs(retention, controller._cached_retention)
         self.assertFalse(hasattr(controller, "_cached_cache"))
 
-    def test_cancelled_view_clears_cache_text_and_restores_realtime_mode(self):
+    def test_failed_capture_view_clears_cache_text_and_restores_realtime_mode(self):
         fake_cmds = mock.MagicMock()
         fake_cmds.control.return_value = True
         controller = MODULE._Controller()
+        session = mock.Mock()
+        session.is_ready = True
+        controller._session = session
         controller._mode = MODULE.CACHED_MODE
         controller._cache_text = "cacheText"
+        controller._light = "light"
+        controller._status_text = "statusText"
         with mock.patch.object(MODULE, "cmds", fake_cmds):
+            # A recoverable capture failure that already resumed Real-time
+            # Preview publishes a REALTIME view with the truthful diagnostic;
+            # the controller completes the same transition in the UI.
             controller._on_cached_playback_view(MODULE._CachedPlaybackView(
-                MODULE._CachedPlayback.CANCELLED))
+                MODULE._CachedPlayback.REALTIME,
+                diagnostic=MODULE.make_diagnostic("CACHED_PLAYBACK_CANCELLED")))
 
         self.assertEqual(MODULE.REALTIME_MODE, controller._mode)
         self.assertIn("缓存：无", [call[1]["label"]
                                   for call in fake_cmds.text.call_args_list])
+        labels = [call[1].get("label") for call in fake_cmds.text.call_args_list]
+        self.assertIn("●  已连接", [label for label in labels if label])
 
     def test_switching_cached_mode_pauses_and_resumes_the_same_connection(self):
         class ReadySession(object):

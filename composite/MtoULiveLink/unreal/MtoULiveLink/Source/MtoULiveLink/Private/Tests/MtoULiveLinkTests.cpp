@@ -2,12 +2,14 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUCacheCommandQueue.h"
 #include "MtoUConnectionNegotiator.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 #include "MtoULiveLinkTestAnimInstance.h"
 
 #include "Animation/MorphTarget.h"
+#include "Async/Async.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
@@ -971,6 +973,20 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("memory-rejected upload identity reuse code"),
         Code, FString(TEXT("CACHE_METADATA_INVALID")));
 
+    // A documented large production Character (701 bones, 500 BlendShapes)
+    // stays supported at the maximum frozen frame count within the fixed
+    // parsed-memory budget.
+    double ProductionClock = 10.0;
+    TArray<float> ProductionApplied;
+    TArray<int32> ProductionProgress;
+    TSharedRef<FMtoUCacheSession> ProductionSession =
+        MakeSession(ProductionClock, ProductionApplied, ProductionProgress);
+    ProductionSession->SetValidationCounts(701, 500);
+    TestTrue(TEXT("a 701-bone production character at the maximum frame count"
+                  " stays inside the fixed cache budget"),
+        ProductionSession->HandleCommand(
+            MakeCacheBeginCommand(7, 20000, 30.0, 1), Code, Details));
+
     // Atomic Ready then identity-matched playback.
     TestTrue(TEXT("complete upload becomes Ready"),
         UploadFrames(*Session, 7, 8, {50.0f, 51.0f, 52.0f}, Code, Details));
@@ -1069,6 +1085,101 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheQueueAdmissionTest,
+    "MtoULiveLink.CachedPlayback.QueueAdmission",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheQueueAdmissionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    auto FrameCommand = [](int32 Index, int32 UploadId, int64 EncodedBytes)
+    {
+        FMtoUCacheCommand Command;
+        Command.SessionId = 1;
+        Command.Kind = FMtoUCacheCommand::EKind::Frame;
+        Command.Index = Index;
+        Command.UploadId = UploadId;
+        Command.EncodedBytes = EncodedBytes;
+        return Command;
+    };
+    const auto Never = []() { return false; };
+    // A produce attempt that cannot admit must be released by its abort
+    // predicate, so test producers use a short time-box instead of blocking.
+    const auto BriefWait = []()
+    {
+        static thread_local double Deadline = 0.0;
+        if (Deadline == 0.0)
+        {
+            Deadline = FPlatformTime::Seconds() + 0.05;
+        }
+        const bool bExpired = FPlatformTime::Seconds() > Deadline;
+        if (bExpired)
+        {
+            Deadline = 0.0;
+        }
+        return bExpired;
+    };
+    const int64 PerFrame = FMtoUProtocol::MaxQueuedCacheBytes
+        / FMtoUProtocol::MaxQueuedCacheFrames;
+
+    // A stalled consumer can never grow queued parsed-frame ownership past
+    // the frozen frame/byte budget: once full, the producer's wait is
+    // released by its abort predicate instead of allocating another frame.
+    FMtoUCacheCommandQueue Queue;
+    int32 Admitted = 0;
+    for (int32 Index = 0; Index < FMtoUProtocol::MaxQueuedCacheFrames + 32; ++Index)
+    {
+        if (Queue.Produce(FrameCommand(Index, 7, PerFrame), BriefWait))
+        {
+            ++Admitted;
+        }
+    }
+    TestEqual(TEXT("frame admission stops at the frozen budget"),
+        Admitted, static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestEqual(TEXT("queued frame count matches the budget"),
+        Queue.GetPendingFrameCount(), static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestTrue(TEXT("queued byte ownership stays within budget"),
+        Queue.GetPendingBytes() <= FMtoUProtocol::MaxQueuedCacheBytes);
+
+    // A shutdown request aborts a would-be blocking producer immediately, so
+    // teardown cannot be wedged by backpressure.
+    TestFalse(TEXT("abort predicate releases the waiting producer"),
+        Queue.Produce(FrameCommand(999, 7, PerFrame), []() { return true; }));
+
+    // Control commands (a cache_clear carries weight 0) always make progress
+    // even while the frame budget is saturated.
+    {
+        FMtoUCacheCommand Clear;
+        Clear.SessionId = 1;
+        Clear.Kind = FMtoUCacheCommand::EKind::Clear;
+        TestTrue(TEXT("clear control is admitted despite a full frame budget"),
+            Queue.Produce(Clear, Never));
+    }
+    TestTrue(TEXT("the full queue is cancellable wholesale by session"),
+        Queue.CancelSession(1) > 0);
+    TestEqual(TEXT("cancelling the session frees every queued frame"),
+        Queue.GetPendingFrameCount(), 0);
+
+    // A rejected or superseded upload discards exactly its own queued frames;
+    // a newer upload identity is untouched and can still be admitted.
+    Queue.Produce(FrameCommand(0, 5, PerFrame), Never);
+    Queue.Produce(FrameCommand(1, 5, PerFrame), Never);
+    Queue.Produce(FrameCommand(0, 6, PerFrame), Never);
+    FMtoUCacheCommand End5;
+    End5.SessionId = 1;
+    End5.Kind = FMtoUCacheCommand::EKind::End;
+    End5.UploadId = 5;
+    Queue.Produce(End5, Never);
+    TestEqual(TEXT("cancelling one upload drops only its frame/end commands"),
+        Queue.CancelUpload(1, 5), 3);
+    FMtoUCacheCommand Consumed;
+    TestTrue(TEXT("the newer upload's frame survives"),
+        Queue.TryConsume(Consumed));
+    TestEqual(TEXT("surviving frame belongs to the newer upload"),
+        Consumed.UploadId, 6);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUFramingTest,
     "MtoULiveLink.Protocol.PartialAndMultiplePackets",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1101,18 +1212,23 @@ bool FMtoUFramingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("second combined payload"), FromUtf8(Payload), SecondText);
     TestTrue(TEXT("later bytes are exhausted exactly"), Decoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
 
+    // The frozen per-message framing ceiling is enforced at the length header
+    // before any payload accumulation: a maximal legal message still waits,
+    // and one byte beyond the ceiling is rejected without allocation.
     FMtoUFrameDecoder MaximumDecoder;
-    const TArray<uint8> MaximumPrefix = Prefix(static_cast<uint64>(MAX_int32) - 8);
+    const TArray<uint8> MaximumPrefix =
+        Prefix(static_cast<uint64>(FMtoUProtocol::MaxMessageBytes));
     MaximumDecoder.Append(MaximumPrefix.GetData(), MaximumPrefix.Num());
     TestTrue(TEXT("maximum representable packet waits for its payload"),
         MaximumDecoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
 
     FMtoUFrameDecoder OverflowDecoder;
-    const TArray<uint8> OverflowPrefix = Prefix(static_cast<uint64>(MAX_int32) - 7);
+    const TArray<uint8> OverflowPrefix =
+        Prefix(static_cast<uint64>(FMtoUProtocol::MaxMessageBytes) + 1);
     OverflowDecoder.Append(OverflowPrefix.GetData(), OverflowPrefix.Num());
-    TestTrue(TEXT("packet one byte beyond the int32 container is rejected"),
+    TestTrue(TEXT("packet one byte beyond the frozen message ceiling is rejected"),
         OverflowDecoder.Pop(Payload, Error) == EMtoUDecodeResult::Error);
-    TestTrue(TEXT("packet length error is actionable"), Error.Contains(TEXT("int32")));
+    TestTrue(TEXT("packet length error is actionable"), Error.Contains(TEXT("length")));
     return true;
 }
 
@@ -2345,6 +2461,149 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 
     DestroySocket(*SocketSubsystem, Primary);
     Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheBackpressureSocketTest,
+    "MtoULiveLink.Source.CacheBackpressure",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheBackpressureSocketTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("Maya client connects"), Primary);
+    if (!Primary)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        return false;
+    }
+    const FString InitText = TEXT(
+        "{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\","
+        "\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,"
+        "[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+    const TArray<uint8> InitBytes = Packet(InitText);
+    TestTrue(TEXT("init is sent"),
+        SendBytes(*Primary, InitBytes.GetData(), InitBytes.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("ready response is received"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("connection reached ready"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+
+    // The Game Thread is now stalled: no Update() runs. A flood sender thread
+    // uploads far more cache frames than the frozen intake budget allows.
+    auto SendLine = [&](const FString& Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return SendBytes(*Primary, Bytes.GetData(), Bytes.Num());
+    };
+    TestTrue(TEXT("cache entry is sent"), SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("cache begin is sent"), SendLine(TEXT(
+        "{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,"
+        "\"start_frame\":1,\"end_frame\":1000,\"frame_count\":1000,\"payload_size\":2000000}")));
+    const int32 FloodCount = static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames) * 2;
+    TAtomic<bool> bStopSender{false};
+    TAtomic<bool> bSenderDone{false};
+    Async(EAsyncExecution::Thread, [&, FloodCount]()
+    {
+        for (int32 Index = 0; Index < FloodCount; ++Index)
+        {
+            if (bStopSender.Load())
+            {
+                break;
+            }
+            const FString FrameText = FString::Printf(TEXT(
+                "{\"type\":\"cache_frame\",\"index\":%d,"
+                "\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+                Index);
+            const TArray<uint8> Bytes = Packet(FrameText);
+            if (!SendBytes(*Primary, Bytes.GetData(), Bytes.Num()) || bStopSender.Load())
+            {
+                break;
+            }
+        }
+        bSenderDone.Store(true);
+    });
+
+    int32 ObservedQueuedPeak = 0;
+    const double SampleEnd = FPlatformTime::Seconds() + 0.5;
+    while (FPlatformTime::Seconds() < SampleEnd)
+    {
+        ObservedQueuedPeak = FMath::Max(
+            ObservedQueuedPeak, Source->GetQueuedCacheFrameCount());
+        FPlatformProcess::Sleep(0.005f);
+    }
+    TestTrue(TEXT("the stalled Game Thread never lets queued parsed frames"
+                  " exceed the frozen intake budget"),
+        ObservedQueuedPeak <= static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestTrue(TEXT("the worker held back real demand (queue actually filled)"),
+        ObservedQueuedPeak > 0);
+    TestTrue(TEXT("the streaming session is still open during backpressure"),
+        Source->GetSourceStatus().ToString().Contains(TEXT("Connected to Maya")));
+
+    // Worker teardown completes while the producer is mid-backpressure.
+    const double TeardownStart = FPlatformTime::Seconds();
+    Source->StopListener();
+    TestTrue(TEXT("worker teardown does not deadlock during backpressure"),
+        FPlatformTime::Seconds() - TeardownStart < 2.0);
+    bStopSender.Store(true);
+    PollUntil([&]() { return bSenderDone.Load(); });
+
+    DestroySocket(*SocketSubsystem, Primary);
     LiveLinkClient.RemoveSource(Source);
     if (World)
     {

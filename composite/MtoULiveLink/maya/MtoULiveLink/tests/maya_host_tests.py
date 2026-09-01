@@ -541,8 +541,8 @@ class MayaHostTests(unittest.TestCase):
                 self.assertEqual(original_frame, timeline.current_frame())
                 self.assertEqual(1, stream.resumed)
                 self.assertIsNone(cached.view.cache_summary)
-                self.assertEqual(module._CachedPlayback.CANCELLED, cached.view.state)
-                self.assertEqual([1], timer.removed)
+                self.assertEqual(module._CachedPlayback.REALTIME, cached.view.state)
+                self.assertEqual([1, 2], timer.removed)
                 cached.discard()
             self.assertFalse(playing["value"])
 

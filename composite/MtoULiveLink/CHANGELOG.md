@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Make Cached Playback recoverable, resource-bounded, and hardened against
+  malformed localhost intake. Capture, upload, and cache-invalidation failures
+  now complete one truthful transition: whichever already resumed Real-time
+  Preview and cleared Unreal cache ownership render as Real-time with the
+  failure reason, while failures that keep the negotiated cached session
+  remain leaveable and retryable, and no recoverable failure leaves a
+  disconnected-looking controller with disabled actions. Every Cached
+  Playback state that owns the negotiated session (idle, uploading, replaying,
+  completed, stopped, or cached failure) now continuously observes transport
+  termination instead of waiting for the next user action. Maya enforces the
+  frozen cache limits incrementally: a Playback Range over 20,000 frames is
+  refused before capture, and encoded frame bytes crossing 1 GiB stop the
+  capture immediately and delete the partial owned cache. On the Unreal side a
+  bounded producer/consumer intake queue admits parsed cache frames before
+  they gain queued ownership, so a stalled Game Thread can never grow queued
+  parsed memory beyond the frozen frame/byte budget; the throttle holds at
+  most one raw, never-parsed frame and is released by shutdown and
+  session-termination checks that keep running every worker pass, and control
+  commands are never held behind the frame budget, so no disconnect, clear,
+  Editor shutdown, or worker teardown can wedge; rejected,
+  superseded, or cleared uploads discard all pending commands for their
+  session/upload identity so they can never affect a newer attempt. Intake
+  validation is message-appropriate and happens before allocation or
+  conversion: a fixed 32 MiB per-message framing ceiling, overflow-safe
+  `cache_begin` capture-range arithmetic, and overflow-safe `int64` integer
+  conversion. Protocol v6 message identities and connection-closing semantics
+  are preserved; the conformance corpus gains the framing and overflow cases.
 - Keep the Streaming session and both hosts' connection state coherent:
   changing either complete Preview input (including a relevant reimport),
   deleting or releasing the Generated Preview, replacing the Binding, or

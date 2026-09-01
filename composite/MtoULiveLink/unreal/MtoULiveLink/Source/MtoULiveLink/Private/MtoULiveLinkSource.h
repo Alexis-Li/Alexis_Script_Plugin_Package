@@ -3,6 +3,7 @@
 #include "Containers/Queue.h"
 #include "HAL/Runnable.h"
 #include "ILiveLinkSource.h"
+#include "MtoUCacheCommandQueue.h"
 #include "MtoUCacheSession.h"
 #include "MtoULiveLinkProtocol.h"
 
@@ -66,6 +67,10 @@ public:
     bool StartListener();
     void StopListener();
 
+    // Admission intake gauge used by automation to prove a stalled Game Thread
+    // cannot grow queued parsed-cache ownership beyond the frozen budget.
+    int32 GetQueuedCacheFrameCount() const;
+
 private:
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
@@ -94,7 +99,7 @@ private:
     TOptional<FMtoUPendingFrame> PendingFrame;
     TQueue<uint64, EQueueMode::Spsc> DisconnectedSessions;
     TQueue<FMtoUOutgoing, EQueueMode::Spsc> OutgoingReplies;
-    TQueue<FMtoUCacheCommand, EQueueMode::Spsc> PendingCacheCommands;
+    FMtoUCacheCommandQueue CacheCommands;
 
     ILiveLinkClient* Client = nullptr;
     FGuid SourceGuid;

@@ -92,7 +92,15 @@ bool GetExactInt64(const TSharedPtr<FJsonValue>& Value, int64& OutValue)
 {
     double Number = 0.0;
     if (!Value.IsValid() || Value->Type != EJson::Number || !Value->TryGetNumber(Number)
-        || !FMath::IsFinite(Number) || Number < MIN_int64 || Number > MAX_int64)
+        || !FMath::IsFinite(Number))
+    {
+        return false;
+    }
+    // Keep the comparison inside the exactly representable int64 window:
+    // 2^63 is representable as a double but not as an int64, so casting a
+    // value equal to MAX_int64 rounded-up would be undefined conversion.
+    constexpr double MaxInt64Exclusive = 9223372036854775808.0;
+    if (!(Number >= -MaxInt64Exclusive && Number < MaxInt64Exclusive))
     {
         return false;
     }
@@ -235,6 +243,13 @@ EMtoUDecodeResult FMtoUFrameDecoder::Pop(TArray<uint8>& OutPayload, FString& Out
     for (int32 Index = 0; Index < 8; ++Index)
     {
         PayloadLength = (PayloadLength << 8) | Buffer[Index];
+    }
+    // Apply the fixed message ceiling before accumulating or copying any
+    // payload: an oversized length header can never grow the buffer.
+    if (PayloadLength > static_cast<uint64>(FMtoUProtocol::MaxMessageBytes))
+    {
+        OutError = TEXT("Packet length exceeds the maximum message length.");
+        return EMtoUDecodeResult::Error;
     }
     if (PayloadLength > static_cast<uint64>(MAX_int32) - 8)
     {
@@ -589,8 +604,12 @@ bool FMtoUProtocol::ParseCacheBegin(
     {
         return Fail(TEXT("CACHE_METADATA_INVALID"), OutError);
     }
-    if (OutMessage.EndFrame < OutMessage.StartFrame
-        || OutMessage.FrameCount != OutMessage.EndFrame - OutMessage.StartFrame + 1)
+    // Overflow-safe range validation before any allocation: compute the span
+    // in int64 so extreme start/end frames can never wrap in int32.
+    const int64 FrameSpan = static_cast<int64>(OutMessage.EndFrame)
+        - static_cast<int64>(OutMessage.StartFrame) + 1;
+    if (FrameSpan < 1
+        || FrameSpan != static_cast<int64>(OutMessage.FrameCount))
     {
         return Fail(
             TEXT("CACHE_METADATA_INVALID"),

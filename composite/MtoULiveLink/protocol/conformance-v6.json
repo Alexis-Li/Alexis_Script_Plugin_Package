@@ -82,6 +82,23 @@
       }
     },
     {
+      "id": "framing-length-over-message-limit",
+      "operation": "framing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "raw_hex": "0000000002000001",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "length"
+        ]
+      }
+    },
+    {
       "id": "init-basic-animation-workflow",
       "operation": "init",
       "applies_to": [
@@ -1377,6 +1394,56 @@
         "end_frame": 1021,
         "frame_count": 21,
         "payload_size": "small"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "payload_size"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-range-overflow-wraps-to-one",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": -2147483648,
+        "end_frame": 2147483647,
+        "frame_count": 1,
+        "payload_size": 64
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-payload-size-extreme-integer",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 0,
+        "end_frame": 0,
+        "frame_count": 1,
+        "payload_size": 9223372036854775808
       },
       "expected": {
         "accepted": false,

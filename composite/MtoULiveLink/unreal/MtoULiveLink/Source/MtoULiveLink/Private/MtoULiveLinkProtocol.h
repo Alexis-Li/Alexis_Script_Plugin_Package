@@ -82,6 +82,16 @@ public:
     static constexpr int32 MaxCacheFrameCount = 20000;
     static constexpr double MinCacheFps = 1.0;
     static constexpr double MaxCacheFps = 60.0;
+    // Fixed per-message framing ceiling enforced at the decoder before any
+    // JSON parse or allocation; oversized messages close the connection just
+    // like a container-range violation. Matches Maya's MAX_MESSAGE_BYTES.
+    static constexpr int64 MaxMessageBytes = 32ll * 1024ll * 1024ll;
+    // Bounded admission budget for parsed cache frames queued between the
+    // network worker and the Game Thread. A stalled Game Thread can never
+    // grow queued parsed-frame ownership beyond these limits; the producer
+    // waits (interruptibly) and the sender sees TCP backpressure instead.
+    static constexpr int64 MaxQueuedCacheFrames = 512;
+    static constexpr int64 MaxQueuedCacheBytes = 64ll * 1024ll * 1024ll;
 
     static bool ParseInit(
         const TArray<uint8>& Payload,

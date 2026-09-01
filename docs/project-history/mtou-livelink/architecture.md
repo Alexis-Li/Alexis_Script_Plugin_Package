@@ -5,7 +5,7 @@ Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 pending a complete rerun
-Last aligned with implementation: 2026-08-30
+Last aligned with implementation: 2026-09-01
 
 ## Summary
 
@@ -355,7 +355,10 @@ and playback-performance failures remain recoverable inside the negotiated
 connection and identify the upload or play attempt they belong to.
 
 The product has no fixed bone- or curve-count ceiling. Individual framed JSON
-payloads must fit Unreal's signed 32-bit container boundary. Cached Playback is
+payloads are limited by a frozen 32 MiB per-message framing ceiling enforced
+by both adapters at the length header before any parse or allocation (a
+violation closes the connection like the previous signed 32-bit container
+boundary). Cached Playback is
 additionally limited to 20,000 frames, 1 GiB of encoded frame payload, 1,536
 MiB of predicted parsed transient memory, and a captured rate from 1 through
 60 fps. The parser enforces these resource bounds plus three frame invariants:
@@ -906,6 +909,55 @@ behavior. The
 Runtime workflow fixture now duplicates its Driver into actor-owned transient
 state before registering Morph Targets, so automation never mutates the shared
 `/Engine` asset.
+
+## Cached Playback Recovery, Limits, and Protocol Intake Hardening
+
+Date: 2026-09-01
+
+Issue #30 makes Cached Playback recoverable, resource-bounded, and safe
+against malformed localhost input from capture through Unreal admission, while
+preserving Protocol v6 message identities and connection-closing semantics.
+
+One truthful post-failure transition governs Maya's `_CachedPlayback`: any
+failure path that resumes Real-time Preview and clears Unreal cache ownership
+(capture cancellation, disk-space and sampling failures, upload rejection, and
+corrupt or incompatible cache invalidation) now renders as the REALTIME state
+carrying the failure diagnostic, so the semantic state, enabled actions,
+sender mode, Unreal cache ownership, status text, and actual Real-time Preview
+behavior always agree. Only a runtime playback failure that intentionally
+keeps the negotiated cached session renders as FAILED, where leaving and
+retrying remain available. A dedicated CANCELLED view state was removed. Every
+Cached Playback state that owns the negotiated session keeps a lightweight
+transport observer running, so idle, ready, completed, stopped, and cached
+failure states surface transport termination without waiting for a user
+action; detection completes a DETACHED transition and retains a compatible
+completed cache.
+
+Maya now enforces the frozen cache limits incrementally: a Playback Range
+whose inclusive frame count would exceed 20,000 is refused before any capture
+work begins, and accumulated per-frame encoded bytes crossing 1 GiB stop the
+capture at that frame with the partial owned cache deleted. Unreal gains a
+bounded producer/consumer intake queue between the network worker and the
+Game Thread: a parsed cache frame gains queued ownership only after a frozen
+frame/byte admission budget accepts it, so a stalled Game Thread can never
+grow queued parsed memory without limit. The primary throttle holds one raw
+(never-parsed) frame and pauses the socket reader so the sender experiences TCP
+backpressure, while shutdown and session-termination checks keep running every
+worker pass; the in-queue wait is only reachable under a control-message flood
+and is released by shutdown or a session swap, and control commands
+(cache_clear, cache_end, and similar) are never held behind the frame budget,
+so no disconnect, clear, Editor shutdown, or teardown can wedge. Cache frame
+and end commands carry the worker-observed upload identity, and a rejected,
+superseded, or cleared upload discards all pending commands of that session
+and upload identity at once, never affecting a newer attempt. Intake
+validation is message-appropriate and happens before allocation or unsafe
+conversion: a 32 MiB per-message framing ceiling is enforced at the length
+header on both hosts, `cache_begin` capture-range arithmetic is overflow-safe
+in 64-bit, and `int64` JSON integer conversion rejects out-of-range values
+before casting. The conformance corpus adds the framing ceiling, the
+overflow-wrapping range, and the extreme-integer cases; a documented 701-bone
+production Character remains supported within the fixed parsed-memory budget
+at the maximum frame count.
 
 ## Documentation and Packaging
 

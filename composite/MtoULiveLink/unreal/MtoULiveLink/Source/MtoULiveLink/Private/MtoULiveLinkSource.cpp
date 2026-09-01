@@ -325,6 +325,11 @@ void FMtoULiveLinkSource::StopListener()
     }
 }
 
+int32 FMtoULiveLinkSource::GetQueuedCacheFrameCount() const
+{
+    return CacheCommands.GetPendingFrameCount();
+}
+
 uint32 FMtoULiveLinkSource::Run()
 {
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
@@ -398,11 +403,24 @@ uint32 FMtoULiveLinkSource::Run()
     int32 WorkerExpectedBoneCount = 0;
     int32 WorkerExpectedCurveCount = 0;
     FMtoUFrameDecoder Decoder;
+    // Upload identity observed at intake; frame/end commands are stamped with
+    // it so a rejected, superseded, or cleared upload can be cancelled as a
+    // unit and can never affect a newer attempt.
+    int32 WorkerCacheUploadId = 0;
+    // One raw (never parsed) cache_frame held while the Game Thread drains
+    // the bounded intake queue; the sender experiences TCP backpressure
+    // until then, so queued parsed ownership stays inside the budget.
+    TOptional<TArray<uint8>> HeldCacheFrame;
 
     auto MarkDisconnected = [&]()
     {
+        HeldCacheFrame.Reset();
+        WorkerCacheUploadId = 0;
         if (ActiveSession != 0)
         {
+            // Cancel every queued command of the dead session immediately so
+            // disconnect or teardown can never leave parsed frames in flight.
+            CacheCommands.CancelSession(ActiveSession);
             {
                 FScopeLock Lock(&PendingMutex);
                 if (CurrentWorkerSession == ActiveSession)
@@ -439,6 +457,80 @@ uint32 FMtoULiveLinkSource::Run()
         MarkDisconnected();
     };
 
+    // Bounded admission enqueue: the producer never blocks the loop for
+    // control messages, and a pre-admitted frame is always accepted. Only a
+    // shutdown request can abort intake, which keeps disconnect, clear,
+    // Editor shutdown, and worker teardown deadlock-free.
+    auto EnqueueCacheCommand = [&](FMtoUCacheCommand Command) -> bool
+    {
+        Command.SessionId = ActiveSession;
+        if (Command.Kind == FMtoUCacheCommand::EKind::Frame
+            || Command.Kind == FMtoUCacheCommand::EKind::End)
+        {
+            Command.UploadId = WorkerCacheUploadId;
+        }
+        {
+            FScopeLock Lock(&PendingMutex);
+            if (CurrentWorkerSession != ActiveSession)
+            {
+                return true;
+            }
+        }
+        const bool bEnqueued = CacheCommands.Produce(
+            MoveTemp(Command),
+            [this, ActiveSession]()
+            {
+                // Frames never reach this wait (CanAdmitFrame pre-gates them
+                // through the non-blocking HeldCacheFrame path), so only a
+                // control-message flood can block here; shutdown or a session
+                // swap releases it so teardown and disconnect stay responsive.
+                if (bStopRequested.Load())
+                {
+                    return true;
+                }
+                FScopeLock Lock(&PendingMutex);
+                return CurrentWorkerSession != ActiveSession;
+            });
+        if (!bEnqueued)
+        {
+            MarkDisconnected();
+        }
+        return bEnqueued;
+    };
+
+    // Parse-and-intake one cache_frame payload. Returns false when decoding
+    // must stop: a disconnect, or a backpressure hold that keeps the raw
+    // payload (never its parsed form) until the Game Thread drains.
+    auto HandleCacheFrame = [&](TArray<uint8>&& Payload) -> bool
+    {
+        if (!CacheCommands.CanAdmitFrame(Payload.Num()))
+        {
+            HeldCacheFrame = MoveTemp(Payload);
+            return false;
+        }
+        FMtoUCacheCommand Command;
+        Command.Kind = FMtoUCacheCommand::EKind::Frame;
+        Command.EncodedBytes = Payload.Num();
+        FString CacheError;
+        FString ErrorCode = TEXT("INVALID_MESSAGE");
+        const bool bShapeValid = FMtoUProtocol::ParseCacheFrame(
+            Payload, Command.Index, Command.Frame, CacheError, &ErrorCode);
+        // A negative index follows the production cache-session rejection
+        // path: the stable code is echoed by the session itself while it
+        // atomically discards the partial upload, and the negotiated
+        // connection stays open.
+        if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_INDEX_INVALID"))
+        {
+            return EnqueueCacheCommand(MoveTemp(Command));
+        }
+        if (!bShapeValid)
+        {
+            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+            return false;
+        }
+        return EnqueueCacheCommand(MoveTemp(Command));
+    };
+
     while (!bStopRequested.Load())
     {
         bool bDidWork = false;
@@ -455,6 +547,19 @@ uint32 FMtoULiveLinkSource::Run()
                 MarkDisconnected();
                 continue;
             }
+        }
+
+        // Resolve backpressure first: once the Game Thread has drained the
+        // bounded intake queue, admit the held raw frame before touching the
+        // socket again. Replies, termination, and shutdown keep being served
+        // on every pass while a frame is held.
+        if (HeldCacheFrame.IsSet()
+            && CacheCommands.CanAdmitFrame(HeldCacheFrame.GetValue().Num()))
+        {
+            TArray<uint8> Retry = MoveTemp(HeldCacheFrame.GetValue());
+            HeldCacheFrame.Reset();
+            bDidWork = true;
+            HandleCacheFrame(MoveTemp(Retry));
         }
 
         bool bPendingConnection = false;
@@ -524,7 +629,12 @@ uint32 FMtoULiveLinkSource::Run()
             }
         }
 
-        if (ClientSocket)
+        // While a cache frame is held for backpressure the socket reader
+        // pauses: the sender experiences TCP flow control instead of growing
+        // parsed ownership on Unreal's side. Reply delivery, termination
+        // requests, and shutdown checks above still run every pass, so no
+        // disconnect, clear, Editor shutdown, or teardown can wedge here.
+        if (ClientSocket && !HeldCacheFrame.IsSet())
         {
             uint8 ReceiveBuffer[ReceiveBufferSize];
             int32 Read = 0;
@@ -533,10 +643,16 @@ uint32 FMtoULiveLinkSource::Run()
                 bDidWork = true;
                 MarkDisconnected();
             }
-            else if (Read > 0)
+            else
             {
-                bDidWork = true;
-                Decoder.Append(ReceiveBuffer, Read);
+                if (Read > 0)
+                {
+                    bDidWork = true;
+                    Decoder.Append(ReceiveBuffer, Read);
+                }
+                // Drain complete messages whenever any exist, not only when
+                // fresh bytes arrive: messages already buffered behind a
+                // released backpressure hold must keep flowing immediately.
                 while (ClientSocket)
                 {
                     TArray<uint8> Payload;
@@ -574,14 +690,6 @@ uint32 FMtoULiveLinkSource::Run()
                         break;
                     }
 
-                    if (!bReady)
-                    {
-                        SendErrorAndDisconnect(
-                            TEXT("INVALID_MESSAGE"),
-                            TEXT("A frame was received before the init message was accepted."));
-                        break;
-                    }
-
                     FString MessageType;
                     {
                         FString TypeError;
@@ -592,20 +700,19 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                     }
 
-                    auto EnqueueCacheCommand = [&](FMtoUCacheCommand Command)
+                    if (MessageType == TEXT("cache_frame"))
                     {
-                        bDidWork = true;
-                        Command.SessionId = ActiveSession;
-                        FScopeLock Lock(&PendingMutex);
-                        if (CurrentWorkerSession == ActiveSession)
+                        // Admission happens before parsing: a held frame
+                        // never gains parsed-queue ownership beyond the
+                        // frozen budget.
+                        if (!HandleCacheFrame(MoveTemp(Payload)))
                         {
-                            PendingCacheCommands.Enqueue(MoveTemp(Command));
+                            break;
                         }
-                    };
-
+                        continue;
+                    }
                     if (MessageType == TEXT("cache_enter")
-                        || MessageType == TEXT("cache_begin")
-                        || MessageType == TEXT("cache_frame"))
+                        || MessageType == TEXT("cache_begin"))
                     {
                         FMtoUCacheCommand Command;
                         Command.EncodedBytes = Payload.Num();
@@ -635,21 +742,11 @@ uint32 FMtoULiveLinkSource::Run()
                                     bStopRequested);
                                 continue;
                             }
-                        }
-                        else if (MessageType == TEXT("cache_frame"))
-                        {
-                            Command.Kind = FMtoUCacheCommand::EKind::Frame;
-                            bShapeValid = FMtoUProtocol::ParseCacheFrame(
-                                Payload, Command.Index, Command.Frame, CacheError, &ErrorCode);
-                            // A negative index follows the production
-                            // cache-session rejection path: the stable code is
-                            // echoed by the session itself while it atomically
-                            // discards the partial upload, and the negotiated
-                            // connection stays open.
-                            if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_INDEX_INVALID"))
+                            if (bShapeValid)
                             {
-                                EnqueueCacheCommand(MoveTemp(Command));
-                                continue;
+                                // Later frame/end commands carry this upload
+                                // identity for wholesale cancellation.
+                                WorkerCacheUploadId = Command.Begin.UploadId;
                             }
                         }
                         else
@@ -1046,10 +1143,20 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
 {
     check(IsInGameThread());
     FMtoUCacheCommand Command;
-    while (PendingCacheCommands.Dequeue(Command))
+    while (CacheCommands.TryConsume(Command))
     {
         if (Command.SessionId != GameThreadSession || GameThreadSession == 0)
         {
+            continue;
+        }
+        if ((Command.Kind == FMtoUCacheCommand::EKind::Frame
+             || Command.Kind == FMtoUCacheCommand::EKind::End)
+            && Command.UploadId != CacheSession.GetActiveUploadId())
+        {
+            // Rejected, superseded, or cleared upload: discard every pending
+            // command of that identity at once. They can never produce a
+            // flood of stale errors or touch a newer upload attempt.
+            CacheCommands.CancelUpload(Command.SessionId, Command.UploadId);
             continue;
         }
         if (!DispatchCacheCommandOnGameThread(Command))

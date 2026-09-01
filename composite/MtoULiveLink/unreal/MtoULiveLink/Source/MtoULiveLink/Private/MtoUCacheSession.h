@@ -40,6 +40,10 @@ struct FMtoUCacheCommand
     EKind Kind = EKind::Enter;
     int32 Index = 0;
     int32 PlayId = 0;
+    // Owning upload identity stamped by the worker at intake so a rejected,
+    // superseded, or cleared upload can drop all of its queued frame/end
+    // commands together and can never affect a newer attempt.
+    int32 UploadId = 0;
     // Actual encoded payload bytes of this message, metered at the framing
     // boundary and accumulated into the upload's resource accounting.
     int64 EncodedBytes = 0;

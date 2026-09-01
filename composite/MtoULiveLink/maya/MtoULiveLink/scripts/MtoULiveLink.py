@@ -20,7 +20,9 @@ PROTOCOL_VERSION = 6
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
-MAX_PAYLOAD_SIZE = (2 ** 31) - 9
+# Frozen per-message framing ceiling enforced by both adapters before any
+# JSON parse or allocation; oversized messages close the connection.
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 HOST = "127.0.0.1"
 PORT = 54321
 SUBJECT_NAME = "MtoU_Character"
@@ -137,6 +139,12 @@ DIAGNOSTICS = {
     "CACHED_UPLOAD_FAILED": (
         "缓存上传被 Unreal 拒绝",
         "Unreal 已丢弃未完成的缓存；请重新捕获后再试。"),
+    "CACHED_PLAYBACK_FRAME_LIMIT": (
+        "缓存帧数超过 20,000 上限，捕获已提前停止",
+        "请缩短 Playback Range 后重新捕获。"),
+    "CACHED_PLAYBACK_PAYLOAD_LIMIT": (
+        "缓存编码体积超过 1 GiB 上限，捕获已提前停止",
+        "请缩短 Playback Range 或减少 BlendShape 数量后重新捕获。"),
     "CACHED_PLAYBACK_PERFORMANCE": (
         "缓存回放跟不上捕获帧率，已停止",
         "已完整保留缓存；请关闭占用性能的程序后点击“再次回放”重试。"),
@@ -463,8 +471,8 @@ def _recv_exact(sock, size):
 
 def recv_message(sock):
     size = struct.unpack(">Q", _recv_exact(sock, 8))[0]
-    if size > MAX_PAYLOAD_SIZE:
-        raise ValueError("protocol message length exceeds the supported container range")
+    if size > MAX_MESSAGE_BYTES:
+        raise ValueError("protocol message length exceeds the supported message size")
     return json.loads(_recv_exact(sock, size).decode("utf-8"))
 
 
@@ -1846,7 +1854,6 @@ class _CachedPlayback(object):
     STOPPING = "STOPPING"
     COMPLETED = "COMPLETED"
     STOPPED = "STOPPED"
-    CANCELLED = "CANCELLED"
     FAILED = "FAILED"
     DETACHED = "DETACHED"
 
@@ -1918,10 +1925,12 @@ class _CachedPlayback(object):
             return self.COMPLETED
         if self._phase == "stopped":
             return self.STOPPED
-        if self._phase == "cancelled":
-            return self.CANCELLED
-        if self._phase in ("failed", "upload_failed", "playback_failed"):
-            return self.FAILED
+        if self._phase in ("failed", "upload_failed", "playback_failed", "cancelled"):
+            # One truthful post-failure transition: a failure that already
+            # resumed Real-time Preview and dropped Unreal cache ownership is
+            # Real-time state carrying a diagnostic; only a failure that
+            # remains cached renders as FAILED.
+            return self.FAILED if self._paused_streaming else self.REALTIME
         return self.CACHED_IDLE if self._paused_streaming else self.REALTIME
 
     def _cache_summary(self):
@@ -2017,6 +2026,11 @@ class _CachedPlayback(object):
         self._pause_streaming()
         self._phase = "idle"
         self._send_enter_best_effort()
+        # Every Cached Playback state that owns the negotiated session keeps
+        # the lightweight transport observer running, so a disconnected
+        # socket is detected while idle instead of surviving until the next
+        # user action.
+        self._add_playback_poller()
         self._publish(current=0, total=0)
         return self
 
@@ -2147,6 +2161,16 @@ class _CachedPlayback(object):
             raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_CAPTURE_RANGE",
                 "Maya Playback Range must end at or after its start.")
+        if end_frame - start_frame + 1 > MAX_CACHE_FRAME_COUNT:
+            # Enforce the frozen frame limit before any capture work: a range
+            # that Unreal must reject never costs time or disk.
+            raise _CachedPlaybackError(
+                "CACHED_PLAYBACK_FRAME_LIMIT",
+                "The Playback Range spans {0} frames; the fixed cache limit"
+                " is {1} frames.".format(
+                    end_frame - start_frame + 1, MAX_CACHE_FRAME_COUNT),
+                details="start {0}, end {1}, limit {2}".format(
+                    start_frame, end_frame, MAX_CACHE_FRAME_COUNT))
         scene_fps = validate_frame_rate(scene_fps)
         self.enter()
         if self._phase in ("replaying", "stopping"):
@@ -2225,8 +2249,10 @@ class _CachedPlayback(object):
         diagnostic = make_diagnostic(
             error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
             error.message, details=error.details)
-        # Cancelled capture still leaves Unreal owning cached entry state;
-        # drop it in order before live poses flow again.
+        # A failed capture leaves Unreal owning cached entry state; drop it in
+        # order before live poses flow again. Resuming Real-time Preview here
+        # and clearing Unreal ownership is the complete, truthful transition:
+        # the published view renders as REALTIME with this diagnostic.
         self._send_clear_best_effort()
         self._resume_streaming()
         self._publish(current=0, total=0, diagnostic=diagnostic)
@@ -2258,10 +2284,27 @@ class _CachedPlayback(object):
             # Exact wire size of this frame's cache_frame message (real index
             # width included, no file newline) accumulated for the upload
             # declaration so it matches what Unreal meters on the socket.
-            self._capture_encoded_bytes += cache_frame_wire_size(
+            encoded_size = cache_frame_wire_size(
                 frame_number - self._capture_start,
                 frame_message["transforms"],
                 frame_message["curves"])
+            if (encoded_size < 0
+                    or encoded_size > MAX_MESSAGE_BYTES
+                    or self._capture_encoded_bytes + encoded_size
+                    > MAX_CACHE_PAYLOAD_BYTES):
+                # Stop as soon as a single frame would cross the per-message
+                # framing ceiling or the encoded total would cross the frozen
+                # 1 GiB budget; the partial owned cache is deleted below.
+                raise _CachedPlaybackError(
+                    "CACHED_PLAYBACK_PAYLOAD_LIMIT",
+                    "Captured frames would exceed the fixed cache limits.",
+                    details="frame {0} bytes, encoded total {1} + {2} bytes"
+                            " against limits {3} per message and {4} per"
+                            " cache".format(
+                                encoded_size, self._capture_encoded_bytes,
+                                encoded_size, MAX_MESSAGE_BYTES,
+                                MAX_CACHE_PAYLOAD_BYTES))
+            self._capture_encoded_bytes += encoded_size
             if self._capture_estimated_size is None:
                 self._capture_estimated_size = frame_size
             else:
@@ -2397,7 +2440,6 @@ class _CachedPlayback(object):
             elapsed = _finite_float(reply.get("elapsed_seconds"))
             if (total_frames is None or applied != total_frames
                     or elapsed is None or elapsed <= 0.0):
-                self._remove_playback_poller()
                 self._phase = "failed"
                 self._publish(diagnostic=make_diagnostic(
                     "INTERNAL_ERROR",
@@ -2406,7 +2448,6 @@ class _CachedPlayback(object):
                             " elapsed_seconds={1}, expected {2} applied"
                             " frames".format(applied, elapsed, total_frames)))
                 return
-            self._remove_playback_poller()
             self._applied_frames = applied
             self._phase = "completed"
             self._publish(current=applied, total=total_frames)
@@ -2416,7 +2457,8 @@ class _CachedPlayback(object):
             if self._phase == "stopping" and play_id == self._active_play_id:
                 # Success is reported only once Unreal acknowledges this
                 # exact attempt; a late ack for an older attempt is dropped.
-                self._remove_playback_poller()
+                # The poller keeps running so completed and stopped states
+                # still observe transport termination.
                 self._phase = "stopped"
                 self._applied_frames = None
                 self._publish(current=0,
@@ -2439,7 +2481,9 @@ class _CachedPlayback(object):
                 "CACHED_UPLOAD_FAILED", message, details=details))
             return
         if self._phase in ("replaying", "stopping"):
-            self._remove_playback_poller()
+            # Runtime playback failures keep the negotiated cached session:
+            # the poller stays running so this state also observes transport
+            # termination, and leave/retry remain available capabilities.
             if code == "CACHED_PLAYBACK_PERFORMANCE":
                 self._phase = "playback_failed"
                 self._publish(diagnostic=make_diagnostic(
@@ -2460,7 +2504,7 @@ class _CachedPlayback(object):
         """
         self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
         self._phase = "upload_failed"
-        self._publish(diagnostic=diagnostic)
+        self._publish(current=0, total=0, diagnostic=diagnostic)
 
     def _begin_upload(self):
         try:
@@ -2625,8 +2669,13 @@ class _CachedPlayback(object):
             processed = True
         self._stop_draining_this_round = False
         session = self._streaming_session
-        if (self._phase in ("replaying", "stopping")
+        if (self._paused_streaming and not self._closed
+                and self._phase != "transport_failed"
                 and (session is None or not session.is_ready)):
+            # Continuous observation in every state that owns the negotiated
+            # session: idle, captured, uploading, replaying, completed, or
+            # stopped all surface transport termination immediately instead of
+            # rendering a stale connected indication until the next action.
             self._handle_transport_failure(make_diagnostic(
                 "STREAM_INTERRUPTED", "The streaming connection ended."))
             return processed
@@ -2796,8 +2845,15 @@ class _CachedPlayback(object):
     def _handle_transport_failure(self, error):
         if self._closed:
             return
-        if self._phase not in ("uploading", "ready_to_play", "replaying",
-                               "stopping"):
+        if not self._paused_streaming:
+            return
+        if self._phase == "capturing":
+            # A capture interrupted by transport loss is a capture failure:
+            # it owns the partial-cache cleanup and the clear-before-resume
+            # ordering.
+            self._capture_failure(_CachedPlaybackError(
+                "STREAM_INTERRUPTED",
+                "The streaming connection ended during capture."))
             return
         self._remove_playback_poller()
         self._close_upload_iter()
@@ -4085,16 +4141,25 @@ class _Controller(object):
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
         elif view.state == _CachedPlayback.STOPPED:
             self._set_connected(True, "缓存播放已停止，已保留缓存，可再次回放")
-        elif view.state == _CachedPlayback.CANCELLED:
-            self._mode = REALTIME_MODE
-            self._update_mode_selection()
-            self._set_connected(True, "缓存捕获已取消，已恢复实时预览")
         elif view.state == _CachedPlayback.FAILED:
+            # A FAILED cached view always keeps the negotiated connection: the
+            # capture/upload paths that resume Real-time Preview now render as
+            # REALTIME. This state still permits leaving or retrying.
             diagnostic = view.diagnostic or make_diagnostic("INTERNAL_ERROR")
             self._last_diagnostic = diagnostic
+            self._set_connected(True, diagnostic["summary"])
+        elif view.state == _CachedPlayback.REALTIME and view.diagnostic:
+            # A recoverable capture/upload/invalidation failure already resumed
+            # Real-time Preview and cleared Unreal ownership; complete the same
+            # transition in the UI and expose the reason, leaving the cached
+            # workflow available.
+            diagnostic = view.diagnostic
+            self._last_diagnostic = diagnostic
+            self._mode = REALTIME_MODE
+            self._update_mode_selection()
             self._set_connected(
-                diagnostic["code"] == "CACHED_PLAYBACK_PERFORMANCE",
-                diagnostic["summary"])
+                self._session_ready(),
+                "{0}（已恢复实时预览）".format(diagnostic["summary"]))
         elif view.state == _CachedPlayback.DETACHED and view.diagnostic:
             diagnostic = view.diagnostic
             self._last_diagnostic = diagnostic

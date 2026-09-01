@@ -68,6 +68,10 @@ Install the Maya and Unreal components from the same release.
 3. Choose **Animation** or **Model**, then click **Connect**.
 4. In **Animation**, pose, scrub, or play in Maya for live preview. To review a
    captured range, choose **Cached Playback** and click **Capture and Play**.
+   A capture or upload failure resumes Real-time Preview and shows the reason;
+   a runtime playback failure keeps the cache so you can retry or leave cached
+   mode. Captures stop as soon as the fixed 20,000-frame or 1 GiB cache limits
+   would be crossed.
 5. In **Model**, also assign the garment **Preview Static Mesh** in Unreal and
    click **Refresh Preview** before connecting. Use **Transfer BS** to include
    matching BlendShapes. For a full-character Driver, Model preview keeps its
