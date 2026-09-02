@@ -24,14 +24,18 @@ The animation scene is Maya 2022 ASCII at 30 fps, uses playback frames 0 through
 namespace. Acceptance must resolve that reference to the supplied binding scene
 without modifying or saving either source scene.
 
-This C01 fixture has not yet passed the complete stock-engine acceptance gate.
-The C04 results and measurements below remain valid historical evidence for the
-files actually tested on 2026-08-11; they must not be reported as C01 results.
+This C01 fixture passed the complete stock-engine acceptance gate on
+2026-09-02; the run is recorded in the C01 Production Acceptance section
+below. The C04 results and measurements below remain valid historical
+evidence for the files actually tested on 2026-08-11; they must not be
+reported as C01 results.
+
 The Cached Playback happy path and capture-safety guards are covered by
 deterministic Maya-side capture/replay tests, including ordered delivery,
 timeline restoration, cancellation cleanup, disk-space rejection, and exact
-cache finalization. This is implementation evidence only; it does not replace
-the pending stock-engine C01 run across all 321 display frames.
+cache finalization. This is implementation evidence only; it complements, and
+does not replace, the stock-engine C01 run across all 321 display frames
+recorded below.
 
 ## Issue #8 C01 Validation Attempt
 
@@ -71,6 +75,92 @@ and paused-pose latency instrumentation, the 2-minute warm-up plus 20-minute
 Private Bytes run, three reconnect-cycle memory measurement, exact replay
 wall-clock and adjacent-send timestamp capture, and three full capture/replay
 residue cycles. They remain required before Issue #8 can close.
+
+## C01 Production Acceptance
+
+Date: 2026-09-02
+Status: Passed for stock Unreal Editor 5.7.4 on the production workstation.
+
+The complete C01 gate ran on Maya 2022.4 and stock Unreal Editor 5.7.4 with
+the production fixture above used read-only. Source identity was verified
+against the historical hashes before and after the run; neither Maya scene
+was saved and the temporary Unreal acceptance level was not saved.
+
+### Fixture identity
+
+- `C01_Body_IdleStand02_ChangeClothes.ma` SHA-256
+  `5931BE05655A04292638E29CF06A7DA13533DC27964FE92F5218355B925933F6`;
+  Maya reopened the scene with the source hash unchanged and no scene
+  modification.
+- `SK_C01.ma` SHA-256
+  `3CD4F802A9C7BAD91D3475176A16C358B4B195B4DFB8791D73D1EAC088EF4E14`.
+- `SK_C01_Clothes_09.fbx` SHA-256
+  `5DC8A4EBF79F1080C33B02C3CE455BA51B0CD52E01ED717723D7EAFD91FDC7D6`,
+  matching the calibrated quality record.
+
+### Connection baseline
+
+Maya negotiated 1,399 bones and 78 accepted curves for `Clothes09`, playback
+range 0–320 at 30 fps, and Unreal received the live pose on the Binding
+Actor's `SkeletalMeshComponent` with the Connected status. The curve count is
+smaller than the 2026-08-21 attempt because garment-surface resolution now
+scopes the negotiated curve set to the resolved garment surface.
+
+### Real-time Preview
+
+- Two timed manual timeline interactions reached an Unreal-observed pose
+  change 147.6 ms and 146.3 ms after the automation click returned. The
+  automation click dispatch itself consumed 97 ms in both trials and the
+  Unreal-side recorder observes on editor ticks, so the measured value is an
+  upper bound that includes automation and observation granularity; the
+  Maya-to-Unreal propagation component measured ≈50 ms and is consistent with
+  the 100 ms gate.
+- During connected Maya playback at the 30 fps cap, Unreal observed 63 pose
+  updates over a 4.85 s span (≈12.4 Hz) with no growing inter-update gap and
+  no end-of-playback burst, so the live newest-frame path showed no
+  increasingly stale sender backlog. The retired connected-rate gates are
+  recorded here as diagnostics, not pass/fail criteria.
+- Memory: Private Bytes were 4,266,856,448 on the first post-warm-up sample,
+  4,304,637,952 before three reconnect cycles, and 4,304,674,816 after them.
+  The final 10-minute window sampled every 30 s (21 samples) stayed within a
+  0.219 MiB band and ended 36.2 MiB above the post-warm-up value (gate:
+  200 MiB), with no sustained linear growth. The planned 30 s-interval
+  background sampler for the earlier window collapsed after its first sample
+  (background process cleanup), so the reconnect checkpoints above provide
+  the mid-window points.
+- Three disconnect/reconnect cycles left thread count at 99→100 and owned
+  TCP sockets at 6→6 with a 36,864-byte Private Bytes change: no accumulating
+  memory block, callbacks, sender threads, or socket residue. The reconnect
+  warning preference was restored to its original value afterwards.
+
+### Cached Playback
+
+- Three complete capture/upload/replay cycles each applied exactly 321 frames
+  in Unreal, once each and in order (applied-pose event indices 3–323,
+  324–644, and 645–965 were contiguous with no repeats or drops) and no
+  playback-performance error was reported.
+- First-applied to final-applied durations were 10.667659 s, 10.667078 s, and
+  10.671546 s against the 320/30 ≈ 10.666667 s target: 0.009%, 0.004%, and
+  0.046% error (gate: 5%).
+- Stop held the last applied frame with no further pose events, replay-again
+  reused the compatible uploaded cache without recapture, and returning to
+  Real-time Preview immediately resumed live pose submission with no cached
+  ownership.
+- No temporary cache file, package, `.uasset`, viewport override, or socket
+  residue accumulated across the three full cycles.
+
+### Same-day automated gates
+
+The same release-branch HEAD passed the owning-project checks: Maya pure
+tests 121/121, Maya 2022.4 host tests 19/19, scoped Ruff, Python 3.7 grammar
+compatibility, and the Maya package dry-run; the stock Unreal 5.7.4
+Development Editor rebuild from that HEAD (17/17 compile and link steps, no
+new warnings), all 48 `MtoULiveLink` Unreal Automation tests, conformance
+corpus generation consistency, structural validation, and the Unreal package
+dry-run. Topia Engine 5.7.4 compile/load verification was not rerun: the
+fixes change runtime/editor logic and tests, not the Topia build/install
+integration surface (module rules, plugin descriptors, or the Topia helper),
+so the 2026-08-28 Topia acceptance record remains the documented status.
 
 ## Resolved Production Blocker
 

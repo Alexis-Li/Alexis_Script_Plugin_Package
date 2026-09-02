@@ -44,7 +44,9 @@ Maya 与 Unreal 组件必须来自同一版本。
 ## 使用方法
 
 1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Driver Skeletal Mesh**，
-   在关卡中放置一个 MtoU_LiveLink Binding Actor，并为其指定该 Binding。
+   然后将该 Binding 资产从内容浏览器拖入关卡。此操作会自动创建
+   MtoU_LiveLink Binding Actor 并指定该 Binding；Actor 的 Binding 引用不是
+   可编辑的设置字段。
    该 Actor 所属的插件显示组件在显示 Maya 已求值数据时会绕过 Driver Skeletal
    Mesh 的 Post Process Anim Blueprint；Driver 资产和其他生产组件仍保持各自行为。
    可通过细节面板顶部的 **MtoU** 分类仅查看插件控件。刷新后，**Modified parts**
@@ -62,11 +64,14 @@ Maya 与 Unreal 组件必须来自同一版本。
    自动恢复实时预览并显示原因；回放运行失败会保留缓存，可重试或退出缓存模式。
    捕获一超过固定的 20,000 帧或 1 GiB 上限就会立即停止。
 5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
-   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。使用整角色
-   Driver 时，模型预览会保留显示身体、脸、头发及其他非服装材质槽，并用生成的
-   Preview 替换解析出的原服装材质槽；Driver 独有的脸部、头发 Morph Target 也会
-   继续接收 Maya 中的同名曲线。服装与非服装几何体应使用不同的导入材质槽；若二者
-   共用一个槽，Refresh 会报告问题，而不会隐藏角色的其他部分。
+   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。未传输
+   BlendShape 时（关闭“传递 BS”，或服装未声明 BlendShape），连接会作为标注为
+   bone-only 诊断的会话建立：此时服装预览仅由骨骼驱动，不驱动任何 Morph
+   Target。使用整角色 Driver 时，模型预览会保留显示身体、脸、头发及其他非服装
+   材质槽，并用生成的 Preview 替换解析出的原服装材质槽；Driver 独有的脸部、
+   头发 Morph Target 也会继续接收 Maya 中的同名曲线。服装与非服装几何体应使用
+   不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
+   其他部分。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
    Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
    所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：

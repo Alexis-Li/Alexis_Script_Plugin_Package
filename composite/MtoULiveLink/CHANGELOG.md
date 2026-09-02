@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Align the English and Chinese user documentation with the supported
+  workflow: the MtoU_LiveLink Binding Actor is created by dragging a Binding
+  asset into the level, the actor's Binding reference is visible but not an
+  editable setup field, and Model sessions without transmitted BlendShapes are
+  documented as the labelled bone-only diagnostic.
 - Make Cached Playback recoverable, resource-bounded, and hardened against
   malformed localhost intake. Capture, upload, and cache-invalidation failures
   now complete one truthful transition: whichever already resumed Real-time

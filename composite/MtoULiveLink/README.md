@@ -49,8 +49,9 @@ Install the Maya and Unreal components from the same release.
 ## Usage
 
 1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Driver Skeletal
-   Mesh**, place one MtoU_LiveLink Binding Actor in the level, and assign the
-   Binding to it.
+   Mesh**, then drag the Binding asset from the Content Browser into the level.
+   This creates the MtoU_LiveLink Binding Actor and assigns the Binding
+   automatically; the actor's Binding reference is not an editable setup field.
    The actor's plugin-owned display component bypasses the Driver Skeletal
    Mesh's Post Process Anim Blueprint while displaying evaluated Maya data;
    the Driver asset and other production components keep their own behavior.
@@ -74,7 +75,10 @@ Install the Maya and Unreal components from the same release.
    would be crossed.
 5. In **Model**, also assign the garment **Preview Static Mesh** in Unreal and
    click **Refresh Preview** before connecting. Use **Transfer BS** to include
-   matching BlendShapes. For a full-character Driver, Model preview keeps its
+   matching BlendShapes. Without transmitted BlendShapes (Transfer BS off, or
+   an outfit that has none), the session connects as a labelled bone-only
+   diagnostic: the garment preview follows the skeleton only and drives no
+   Morph Target. For a full-character Driver, Model preview keeps its
    body, face, hair, and other non-garment material slots visible while the
    Generated Preview replaces the resolved original garment slots. Driver-only
    face and hair Morph Targets continue to receive matching Maya curves. Keep
