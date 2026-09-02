@@ -31,6 +31,14 @@ that evidence covers the whole Preview, and applies two structural boundaries
 `MtoUDriverGarmentSurface` module, which owns all source-selection and
 geometry-validation rules):
 
+* Shared admission preflight — before any spatial indexing, coverage, or mass
+  accounting, both resolution paths reject geometry that is non-empty but
+  unusable: zero-triangle LOD0, non-finite coordinates, a scaleless Preview
+  bounding box, and zero-area degenerate meshes. Collinear triangles keep a
+  positive triangle count, finite coordinates, and a nonzero bounding box, so
+  the preflight also rejects a zero (or non-finite overflow) total triangle
+  area transactionally, with no partial Generated Preview and an actionable,
+  recoverable diagnostic (Issue #32).
 * Source-mass boundary — selected Driver triangles must stay within 1.70x of
   Preview triangles (`MaxDriverToPreviewTriangleRatio`), measured only when
   the Preview holds at least `MinTrianglesForMassAccounting` (8) triangles:
@@ -128,5 +136,6 @@ Measured evidence retains every Issue #13 threshold unchanged:
   remain covered, as the synthetic rows show.
 
 No constant changed except the new resolution boundaries above (mass 1.70x,
-twin proximity/agreement shares), which are first-calibrated here and
+twin proximity/agreement shares); Issue #32 added no constant at all, only the
+shared zero-area admission gate and the Preview-triangle-count mass floor,
 recorded next to their implementation comments.

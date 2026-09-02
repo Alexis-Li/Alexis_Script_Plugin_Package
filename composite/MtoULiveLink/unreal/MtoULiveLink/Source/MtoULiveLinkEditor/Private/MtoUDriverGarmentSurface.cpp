@@ -481,11 +481,35 @@ bool MeshHasFinitePositions(const FDynamicMesh3& Mesh)
 }
 
 /**
+ * True when the mesh's triangles span a finite nonzero total area. Collinear
+ * or coincident triangles pass the count, coordinate-finiteness, and bounds
+ * preflight while spanning no surface for coverage, agreement, or mass
+ * accounting, and a double-precision area overflow is equally unusable.
+ */
+bool MeshHasUsableTriangleArea(const FDynamicMesh3& Mesh)
+{
+    double TotalArea = 0.0;
+    for (const int32 TriangleID : Mesh.TriangleIndicesItr())
+    {
+        const FIndex3i Triangle = Mesh.GetTriangle(TriangleID);
+        TotalArea += 0.5 * FVector3d::CrossProduct(
+            Mesh.GetVertex(Triangle.B) - Mesh.GetVertex(Triangle.A),
+            Mesh.GetVertex(Triangle.C) - Mesh.GetVertex(Triangle.A)).Size();
+        if (!FMath::IsFinite(TotalArea))
+        {
+            return false;
+        }
+    }
+    return TotalArea > 0.0;
+}
+
+/**
  * Shared admission preflight for both resolution paths: non-empty finite
- * Driver and Preview geometry with a usable Preview scale. Returns the
- * Preview scale, or 0 with OutError set. Zero-triangle, degenerate, NaN, and
- * infinite-coordinate inputs fail here so no later coverage or mass
- * accounting can divide by zero or report a misleading outcome.
+ * Driver and Preview geometry with a usable Preview scale and usable triangle
+ * area. Returns the Preview scale, or 0 with OutError set. Zero-triangle,
+ * zero-area degenerate, NaN, and infinite-coordinate inputs fail here so no
+ * later spatial indexing, coverage, or mass accounting can divide by zero or
+ * report a misleading outcome.
  */
 double BeginGarmentSurfaceResolution(
     const FDynamicMesh3& Driver,
@@ -516,6 +540,16 @@ double BeginGarmentSurfaceResolution(
     if (Scale <= UE_SMALL_NUMBER)
     {
         OutError = TEXT("Preview Static Mesh bounding box has no usable size; scale is invalid.");
+        return 0.0;
+    }
+    if (!MeshHasUsableTriangleArea(Driver))
+    {
+        OutError = TEXT("Driver LOD0 source geometry has no usable triangle area (every triangle is degenerate, or the area overflows double precision); no garment surface can be resolved.");
+        return 0.0;
+    }
+    if (!MeshHasUsableTriangleArea(Preview))
+    {
+        OutError = TEXT("Preview Static Mesh LOD0 geometry has no usable triangle area (every triangle is degenerate, or the area overflows double precision); no garment surface can be resolved.");
         return 0.0;
     }
     return Scale;

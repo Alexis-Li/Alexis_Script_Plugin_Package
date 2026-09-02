@@ -1229,6 +1229,41 @@ bool FMtoUDriverGarmentSurfaceGeometryEdgeCasesTest::RunTest(const FString& Para
                 && Degenerate.Diagnostics.Contains(TEXT("no usable size")));
     }
 
+    // A collinear triangle keeps a nonzero bounding box, finite coordinates,
+    // and a positive triangle count, yet spans no surface; it must fail the
+    // shared admission gate instead of entering coverage or mass accounting
+    // with a false Ready (#32).
+    {
+        UE::Geometry::FDynamicMesh3 CollinearPreview;
+        const int32 CA = CollinearPreview.AppendVertex(FVector3d(0.0, 0.0, 0.0));
+        const int32 CB = CollinearPreview.AppendVertex(FVector3d(1.0, 0.0, 0.0));
+        const int32 CC = CollinearPreview.AppendVertex(FVector3d(2.0, 0.0, 0.0));
+        CollinearPreview.AppendTriangle(CA, CB, CC);
+        TestTrue(TEXT("the collinear Preview keeps a nonzero bounding box"),
+            CollinearPreview.GetBounds().DiagonalLength() > 1.0);
+        const FMtoUDriverGarmentSurfaceResult Collinear = ResolveSurface(
+            Driver, *Fixtures.FullDriver, CollinearPreview, *Fixtures.Preview, {});
+        AddInfo(Collinear.Diagnostics);
+        TestTrue(TEXT("a collinear nonzero-bounds Preview fails cleanly"),
+            !Collinear.bSucceeded
+                && HasNoUsableSurface(Collinear)
+                && Collinear.Diagnostics.Contains(TEXT("no usable triangle area")));
+    }
+    {
+        UE::Geometry::FDynamicMesh3 CollinearDriver;
+        const int32 DA = CollinearDriver.AppendVertex(FVector3d(0.0, 0.0, 0.0));
+        const int32 DB = CollinearDriver.AppendVertex(FVector3d(1.0, 0.0, 0.0));
+        const int32 DC = CollinearDriver.AppendVertex(FVector3d(2.0, 0.0, 0.0));
+        CollinearDriver.AppendTriangle(DA, DB, DC);
+        const FMtoUDriverGarmentSurfaceResult CollinearDriverResult = ResolveSurface(
+            CollinearDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        AddInfo(CollinearDriverResult.Diagnostics);
+        TestTrue(TEXT("a collinear nonzero-bounds Driver fails cleanly"),
+            !CollinearDriverResult.bSucceeded
+                && HasNoUsableSurface(CollinearDriverResult)
+                && CollinearDriverResult.Diagnostics.Contains(TEXT("no usable triangle area")));
+    }
+
     // NaN and infinite coordinates fail closed at the shared admission gate.
     // The public DynamicMesh API refuses non-finite SetVertex writes, so the
     // corrupted inputs are built by appending non-finite vertices directly —

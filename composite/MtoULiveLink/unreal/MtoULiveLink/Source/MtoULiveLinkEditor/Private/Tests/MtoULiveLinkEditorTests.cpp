@@ -2324,6 +2324,65 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Refresh recovers after the zero-triangle rejection"),
         FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
 
+    // A collinear LOD0 triangle keeps a nonzero bounding box, finite
+    // coordinates, and a positive triangle count, but spans no surface; the
+    // shared admission gate must reject it transactionally instead of letting
+    // a degenerate input reach coverage or mass accounting (#32).
+    UDynamicMesh* CollinearSource = NewObject<UDynamicMesh>(WorldPackage);
+    CollinearSource->EditMesh([](UE::Geometry::FDynamicMesh3& Mesh)
+    {
+        const int32 A = Mesh.AppendVertex(FVector3d(0.0, 0.0, 0.0));
+        const int32 B = Mesh.AppendVertex(FVector3d(1.0, 0.0, 0.0));
+        const int32 C = Mesh.AppendVertex(FVector3d(2.0, 0.0, 0.0));
+        Mesh.AppendTriangle(A, B, C);
+    });
+    UStaticMesh* CollinearPreview = NewObject<UStaticMesh>(
+        WorldPackage, NAME_None, RF_Transient);
+    TStrongObjectPtr<UStaticMesh> CollinearPreviewGuard(CollinearPreview);
+    FGeometryScriptCopyMeshToAssetOptions CollinearWriteOptions;
+    CollinearWriteOptions.bEmitTransaction = false;
+    CollinearWriteOptions.bReplaceMaterials = true;
+    CollinearWriteOptions.NewMaterials.Add(UMaterial::GetDefaultMaterial(MD_Surface));
+    CollinearWriteOptions.NewMaterialSlotNames.Add(FName(TEXT("Collinear_Preview")));
+    FGeometryScriptMeshWriteLOD CollinearWriteLOD;
+    EGeometryScriptOutcomePins CollinearOutcome = EGeometryScriptOutcomePins::Failure;
+    UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+        CollinearSource, CollinearPreview, CollinearWriteOptions,
+        CollinearWriteLOD, CollinearOutcome, false);
+    TestTrue(TEXT("collinear Preview fixture is written with LOD0 source data"),
+        CollinearOutcome == EGeometryScriptOutcomePins::Success
+            && CollinearPreview->IsSourceModelValid(0)
+            && CollinearPreview->IsMeshDescriptionValid(0));
+    Binding->PreviewStaticMesh = CollinearPreview;
+    const FMtoUPreviewPreparationResult CollinearPreparation =
+        MtoUPreparePreview(*Actor, *Binding);
+    AddInfo(CollinearPreparation.Diagnostics);
+    TestFalse(TEXT("a collinear Preview fails preparation"),
+        CollinearPreparation.bSucceeded);
+    TestNull(TEXT("a collinear Preview returns no Generated Preview"),
+        CollinearPreparation.GeneratedPreview);
+    TestEqual(TEXT("a collinear Preview is rejected at geometry conversion"),
+        CollinearPreparation.FailureStage, EMtoUPreviewBuildStage::GeometryConversion);
+    TestTrue(TEXT("the collinear diagnostic names the missing triangle area"),
+        CollinearPreparation.Diagnostics.Contains(TEXT("no usable triangle area")));
+
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    const FMtoUPreviewReadiness CollinearRefresh =
+        FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("a collinear Refresh commits no partial Generated Preview and preserves actor readiness"),
+        !CollinearRefresh.IsUsable()
+        && CollinearRefresh.GeneratedPreview == nullptr
+        && CollinearRefresh.State == EMtoUPreviewState::Error
+        && CollinearRefresh.Stage == EMtoUPreviewBuildStage::GeometryConversion
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    Binding->PreviewStaticMesh = ValidPreview;
+    Binding->PostEditChangeProperty(PreviewInputChanged);
+    TestTrue(TEXT("Refresh recovers after the collinear rejection"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+
     if (World)
     {
         World->DestroyWorld(false);

@@ -65,9 +65,11 @@
   slots can never shift the selected garment surface through a polygon-group
   or triangle-group ordinal. The minimum mass-accounting gate now uses the
   Preview TRIANGLE count consistently (a sub-floor Preview is exempt), and the
-  shared resolution admission rejects zero-triangle Preview geometry and NaN
-  or infinite Driver/Preview coordinates before any coverage or mass
-  accounting can divide by zero or report a false Ready outcome. A failed
+  shared resolution admission rejects zero-triangle Preview geometry, zero-area
+  degenerate Driver/Preview geometry whose nonzero bounding box would otherwise
+  slip past the count, coordinate-finiteness, and bounds preflight, and NaN or
+  infinite Driver/Preview coordinates before any spatial indexing, coverage, or
+  mass accounting can divide by zero or report a false Ready outcome. A failed
   refresh still commits no partial Generated Preview and preserves
   actor-owned readiness.
 - Make Model connection and retargeting reject only genuinely unusable input:
