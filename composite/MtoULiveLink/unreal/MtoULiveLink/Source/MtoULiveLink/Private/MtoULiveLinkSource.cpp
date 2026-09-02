@@ -6,6 +6,7 @@
 
 #include "Animation/MorphTarget.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
 #include "ILiveLinkClient.h"
@@ -131,6 +132,26 @@ TAtomic<uint64> GStreamingSessionEndRequests{0};
 void MtoURequestStreamingSessionEnd()
 {
     ++GStreamingSessionEndRequests;
+}
+
+void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+    (void)bSessionEnded;
+    (void)bCleanupResources;
+    // PIE worlds never host a discoverable target and EditorPreview worlds
+    // never negotiate a session, so only Editor worlds can end one here.
+    if (!World || World->WorldType != EWorldType::Editor)
+    {
+        return;
+    }
+    for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+    {
+        if (!It->HasAnyFlags(RF_ClassDefaultObject) && It->GetWorld() == World)
+        {
+            MtoURequestStreamingSessionEnd();
+            return;
+        }
+    }
 }
 
 FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)

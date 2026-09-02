@@ -8,6 +8,7 @@
 #include "MtoULiveLinkProtocol.h"
 
 class AMtoULiveLinkActor;
+class UWorld;
 class FRunnableThread;
 class ILiveLinkClient;
 class FSocket;
@@ -21,6 +22,17 @@ class FSocket;
  * a new connection is always required to stream the newer revision.
  */
 void MtoURequestStreamingSessionEnd();
+
+/**
+ * The world-unload seam of the same idempotent termination boundary: the
+ * Editor world that owns the active session's Binding Actor is being cleaned
+ * up. UWorld::DestroyWorld and world unloading never call Actor::Destroyed(),
+ * so the synchronous FWorldDelegates::OnWorldCleanup broadcast is the
+ * authoritative unload seam. A late BeginDestroy cannot use the identity-free
+ * boundary because it could terminate a newer session; this hook runs in
+ * order with the actual unload instead.
+ */
+void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
 
 struct FMtoUOutgoing
 {

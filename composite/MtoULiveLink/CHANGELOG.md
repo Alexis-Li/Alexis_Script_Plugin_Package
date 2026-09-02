@@ -40,12 +40,16 @@
   relying on manual cross-editing.
 - Keep the Streaming session and both hosts' connection state coherent:
   changing either complete Preview input (including a relevant reimport),
-  deleting or releasing the Generated Preview, replacing the Binding, or
-  destroying the Binding Actor now routes through one idempotent
-  session-termination boundary, so a new Preview revision can never receive
-  frames negotiated for an older Character snapshot and neither host keeps a
-  stale connected indication. Requiring the new revision remains explicit
-  Refresh Preview plus a fresh connection. Replacing the Maya Display
+  deleting or releasing the Generated Preview, replacing the Binding,
+  destroying the Binding Actor, or unloading (or cleaning up) the Editor
+  world that owns it now routes through one idempotent session-termination
+  boundary, so a new Preview revision can never receive frames negotiated
+  for an older Character snapshot and neither host keeps a stale connected
+  indication. The world-unload seam subscribes to the engine's synchronous
+  world-cleanup broadcast, because DestroyWorld never runs Actor::Destroyed();
+  unrelated editor worlds and PIE worlds can never end another session. The
+  new revision still requires an explicit Refresh Preview plus a fresh
+  connection. Replacing the Maya Display
   controller while connected now terminates the old session before the old
   Character scene closes, and late old-session events stay ignored. Selecting
   duplicate-bone diagnostics renders the real connection state instead of

@@ -68,6 +68,6 @@ Maya 与 Unreal 组件必须来自同一版本。
    继续接收 Maya 中的同名曲线。服装与非服装几何体应使用不同的导入材质槽；若二者
    共用一个槽，Refresh 会报告问题，而不会隐藏角色的其他部分。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
-   Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor 时，当前
-   Streaming 会话会立即结束且当前 Preview 版本失效：请重新点击
-   **Refresh Preview** 并重新连接。
+   Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
+   所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：
+   请重新点击 **Refresh Preview** 并重新连接。

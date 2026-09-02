@@ -82,6 +82,6 @@ Install the Maya and Unreal components from the same release.
    Refresh reports a shared slot instead of hiding part of the character.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
    Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
-   reimport), or deleting the Binding Actor, ends the active streaming session
-   and invalidates the current Preview revision: run **Refresh Preview** and
-   connect again.
+   reimport), deleting the Binding Actor, or unloading its Editor world ends
+   the active streaming session and invalidates the current Preview revision:
+   run **Refresh Preview** and connect again.

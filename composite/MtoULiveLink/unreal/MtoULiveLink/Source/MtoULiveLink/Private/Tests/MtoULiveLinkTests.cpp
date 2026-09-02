@@ -4074,4 +4074,216 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUWorldUnloadTerminationTest,
+    "MtoULiveLink.Source.WorldUnloadTermination",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    UMtoULiveLinkBinding* Binding = Actor ? Actor->GetBinding() : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    TestNotNull(TEXT("actor exposes its Binding"), Binding);
+    USkeletalMesh* Driver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    TestNotNull(TEXT("binding supplies the Driver Skeletal Mesh"), Driver);
+    if (Binding)
+    {
+        Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    }
+
+    auto MakeReadyRevision = [&](USkeletalMesh*& OutGenerated)
+    {
+        OutGenerated = Driver ? DuplicateObject<USkeletalMesh>(Driver, Actor) : nullptr;
+        if (OutGenerated)
+        {
+            OutGenerated->ClearFlags(RF_Public | RF_Standalone);
+            OutGenerated->SetFlags(RF_Transient);
+            OutGenerated->SetSkeleton(Driver->GetSkeleton());
+            OutGenerated->SetRefSkeleton(Driver->GetRefSkeleton());
+            AddUniformMorph(*OutGenerated, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f));
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+            FMtoUPreviewReadinessTestAccess::Commit(
+                *Actor, OutGenerated, false, TEXT("test preview"));
+        }
+    };
+    USkeletalMesh* FirstGenerated = nullptr;
+    MakeReadyRevision(FirstGenerated);
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> ModelInit = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    auto NegotiateModelReady = [&](FSocket* Client) -> FString
+    {
+        if (!Client)
+        {
+            return FString();
+        }
+        TestTrue(TEXT("model init is sent"),
+            SendBytes(*Client, ModelInit.GetData(), ModelInit.Num()));
+        TArray<uint8> Payload;
+        if (!ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), Primary);
+    TestTrue(TEXT("ready Model revision negotiates a streaming session"),
+        NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("connected actor reports the live session"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+
+    // One streamed reference-pose frame proves the session owns a live
+    // Live Link subject, not merely a negotiated socket.
+    const int32 BoneCount = TestSkeleton ? TestSkeleton->GetNum() : 0;
+    FString Transforms;
+    for (int32 Index = 0; Index < BoneCount; ++Index)
+    {
+        Transforms += (Index > 0 ? TEXT(",") : TEXT(""));
+        Transforms += TransformJson(TestSkeleton->GetRefBonePose()[Index]);
+    }
+    const TArray<uint8> RefPoseFrame = Packet(FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[0]}"), *Transforms));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    TestTrue(TEXT("live frame is sent"),
+        Primary && SendBytes(*Primary, RefPoseFrame.GetData(), RefPoseFrame.Num()));
+    const bool bSubjectLive = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData LiveFrame;
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), LiveFrame))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            LiveFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        return Animation && Animation->Transforms.Num() == BoneCount;
+    });
+    TestTrue(TEXT("the active session publishes its Live Link subject"), bSubjectLive);
+
+    // Distinguishes a real peer close from a would-block read: a graceful
+    // close signals readable and then reports zero bytes.
+    auto IsSocketClosed = [](FSocket* Client) -> bool
+    {
+        if (!Client)
+        {
+            return false;
+        }
+        if (!Client->Wait(
+                ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(150)))
+        {
+            return false;
+        }
+        uint8 Probe[16];
+        int32 Read = 0;
+        return !Client->Recv(Probe, UE_ARRAY_COUNT(Probe), Read) && Read == 0;
+    };
+
+    FLiveLinkSubjectFrameData KeptFrame;
+    // An unrelated editor world cleanup must never end the active session.
+    UWorld* UnrelatedWorld = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("unrelated editor world is created"), UnrelatedWorld);
+    UnrelatedWorld->DestroyWorld(false);
+    TestTrue(TEXT("an unrelated editor world cleanup keeps the live session"),
+        !IsSocketClosed(Primary));
+    TestTrue(TEXT("the unrelated cleanup leaves the subject in place"),
+        LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            SubjectKey, ULiveLinkAnimationRole::StaticClass(), KeptFrame));
+
+    // The real unload boundary: destroying the Editor world that owns the
+    // Binding Actor routes through FWorldDelegates::OnWorldCleanup into the
+    // shared idempotent termination boundary. Actor::Destroyed() never runs
+    // on the DestroyWorld/CleanupWorld path.
+    World->DestroyWorld(false);
+    TestTrue(TEXT("the world unload ends the live session on the wire"),
+        IsSocketClosed(Primary));
+    const bool bUnloadCleanup = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData StaleFrame;
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"))
+            && !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+    });
+    TestTrue(TEXT("the world unload leaves no active subject"), bUnloadCleanup);
+    TestTrue(TEXT("the unloaded actor shows the true disconnected state"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+
+    // Late duplicate termination requests stay idempotent, and once the
+    // editor reaps the unloaded world the stale actor leaves no target.
+    MtoURequestStreamingSessionEnd();
+    MtoURequestStreamingSessionEnd();
+    if (GEngine)
+    {
+        GEngine->DestroyWorldContext(World);
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    FSocket* AfterUnloadClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("post-unload client connects"), AfterUnloadClient);
+    TestTrue(TEXT("an unloaded world leaves no stale streaming target"),
+        NegotiateModelReady(AfterUnloadClient).Contains(TEXT("NO_BINDING_ACTOR")));
+    DestroySocket(*SocketSubsystem, AfterUnloadClient);
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    return true;
+}
+
 #endif
