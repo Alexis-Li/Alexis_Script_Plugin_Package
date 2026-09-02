@@ -73,18 +73,20 @@ public:
     static constexpr int32 Version = 6;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
-    // aligned with Maya's 1 GiB large-cache confirmation gate. Frozen in the
-    // protocol contract. Encoded bytes are metered from the framing boundary;
-    // parsed transient memory is preflighted from the negotiated transform and
-    // curve counts before any allocation.
+    // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
+    // frozen wire values; the single source of truth is the `limits` block of
+    // protocol/conformance-v6.json, and both host adapters assert their
+    // constants against the corpus. Encoded bytes are metered from the framing
+    // boundary; parsed transient memory is preflighted from the negotiated
+    // transform and curve counts before any allocation.
     static constexpr int64 MaxCachePayloadBytes = 1024ll * 1024ll * 1024ll;
     static constexpr int64 MaxCacheParsedMemoryBytes = 1536ll * 1024ll * 1024ll;
     static constexpr int32 MaxCacheFrameCount = 20000;
     static constexpr double MinCacheFps = 1.0;
     static constexpr double MaxCacheFps = 60.0;
-    // Fixed per-message framing ceiling enforced at the decoder before any
-    // JSON parse or allocation; oversized messages close the connection just
-    // like a container-range violation. Matches Maya's MAX_MESSAGE_BYTES.
+    // Frozen per-message framing ceiling enforced at the length header by the
+    // decoder before any JSON parse or allocation; oversized messages close
+    // the connection. Pinned by limits.max_message_bytes in the corpus.
     static constexpr int64 MaxMessageBytes = 32ll * 1024ll * 1024ll;
     // Bounded admission budget for parsed cache frames queued between the
     // network worker and the Game Thread. A stalled Game Thread can never

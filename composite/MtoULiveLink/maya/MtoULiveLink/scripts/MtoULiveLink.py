@@ -21,7 +21,8 @@ WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
 # Frozen per-message framing ceiling enforced by both adapters before any
-# JSON parse or allocation; oversized messages close the connection.
+# JSON parse or allocation; oversized messages close the connection. Pinned by
+# limits.max_message_bytes in the conformance corpus (asserted in tests).
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 HOST = "127.0.0.1"
 PORT = 54321

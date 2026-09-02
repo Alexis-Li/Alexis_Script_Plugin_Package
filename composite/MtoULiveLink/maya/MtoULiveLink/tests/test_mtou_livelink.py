@@ -3362,6 +3362,23 @@ class ProtocolTests(unittest.TestCase):
             exercised,
         )
 
+    def test_maya_framing_ceiling_matches_the_shared_corpus_limit(self):
+        # The single source of truth for the frozen wire limits is the
+        # conformance corpus `limits` block. The framing ceiling is the one
+        # value both hosts hardcode independently, so pin it against the
+        # corpus in each adapter: editing the constant without the corpus (or
+        # vice versa) fails Maya here and Unreal in the shared corpus test.
+        self.assertEqual(
+            CORPUS["limits"]["max_message_bytes"], MODULE.MAX_MESSAGE_BYTES)
+
+    def test_maya_cache_limits_match_the_shared_corpus_limits(self):
+        self.assertEqual(
+            CORPUS["limits"]["max_cache_payload_bytes"],
+            MODULE.MAX_CACHE_PAYLOAD_BYTES)
+        self.assertEqual(
+            CORPUS["limits"]["max_cache_frame_count"],
+            MODULE.MAX_CACHE_FRAME_COUNT)
+
     def _assert_maya_conformance_case(self, case):
         operation = case["operation"]
         expected = case["expected"]

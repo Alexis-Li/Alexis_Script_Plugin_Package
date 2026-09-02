@@ -358,7 +358,11 @@ The product has no fixed bone- or curve-count ceiling. Individual framed JSON
 payloads are limited by a frozen 32 MiB per-message framing ceiling enforced
 by both adapters at the length header before any parse or allocation (a
 violation closes the connection like the previous signed 32-bit container
-boundary). Cached Playback is
+boundary). The frozen ceilings — per-message framing, encoded cache payload,
+and cache frame count — are pinned as the `limits` block of
+`protocol/conformance-v6.json`; that block is the single source of truth, and
+each host adapter asserts its own constants against it in its conformance
+test. Cached Playback is
 additionally limited to 20,000 frames, 1 GiB of encoded frame payload, 1,536
 MiB of predicted parsed transient memory, and a captured rate from 1 through
 60 fps. The parser enforces these resource bounds plus three frame invariants:

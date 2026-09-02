@@ -28,7 +28,10 @@
   conversion: a fixed 32 MiB per-message framing ceiling, overflow-safe
   `cache_begin` capture-range arithmetic, and overflow-safe `int64` integer
   conversion. Protocol v6 message identities and connection-closing semantics
-  are preserved; the conformance corpus gains the framing and overflow cases.
+  are preserved; the conformance corpus gains the framing and overflow cases,
+  and a shared `limits` block now pins the frozen framing/cache ceilings so
+  each host adapter asserts its own constants against the corpus instead of
+  relying on manual cross-editing.
 - Keep the Streaming session and both hosts' connection state coherent:
   changing either complete Preview input (including a relevant reimport),
   deleting or releasing the Generated Preview, replacing the Binding, or

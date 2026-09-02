@@ -27,6 +27,11 @@ OPERATIONS = {
     "cache_stopped", "cache_cleared",
 }
 HOSTS = {"maya", "unreal"}
+LIMIT_KEYS = (
+    "max_message_bytes",
+    "max_cache_payload_bytes",
+    "max_cache_frame_count",
+)
 PARSER_ERROR_CODES = {
     "INVALID_MESSAGE", "PROTOCOL_VERSION_MISMATCH",
     "CACHE_METADATA_INVALID", "CACHE_PAYLOAD_TOO_LARGE",
@@ -57,6 +62,14 @@ def validate_corpus(corpus: object) -> list[str]:
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["cases must be a non-empty array"]
+    limits = corpus.get("limits")
+    if not isinstance(limits, dict):
+        errors.append("limits must be an object")
+    else:
+        for key in LIMIT_KEYS:
+            value = limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append("limits." + key + " must be a positive integer")
     identifiers = set()
     for index, case in enumerate(cases):
         prefix = "case {0}".format(index)

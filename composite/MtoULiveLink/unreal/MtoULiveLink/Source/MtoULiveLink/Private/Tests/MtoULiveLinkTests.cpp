@@ -432,6 +432,27 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
         return false;
     }
 
+    // The corpus `limits` block is the single source of truth for the frozen
+    // wire ceilings both hosts hardcode independently. Pin the Unreal
+    // constants against it so any one-sided edit fails here and in Maya.
+    const TSharedPtr<FJsonObject> Limits = Corpus->GetObjectField(TEXT("limits"));
+    if (Limits.IsValid())
+    {
+        TestEqual(TEXT("framing ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxMessageBytes,
+            static_cast<int64>(Limits->GetNumberField(TEXT("max_message_bytes"))));
+        TestEqual(TEXT("cache payload ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxCachePayloadBytes,
+            static_cast<int64>(Limits->GetNumberField(TEXT("max_cache_payload_bytes"))));
+        TestEqual(TEXT("cache frame ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxCacheFrameCount,
+            static_cast<int32>(Limits->GetNumberField(TEXT("max_cache_frame_count"))));
+    }
+    else
+    {
+        AddError(TEXT("Conformance corpus must define a limits block."));
+    }
+
     int32 ApplicableCount = 0;
     const TArray<TSharedPtr<FJsonValue>>& Cases = Corpus->GetArrayField(TEXT("cases"));
     for (const TSharedPtr<FJsonValue>& CaseValue : Cases)

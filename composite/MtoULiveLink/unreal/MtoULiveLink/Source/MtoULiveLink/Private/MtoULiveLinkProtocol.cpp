@@ -244,16 +244,11 @@ EMtoUDecodeResult FMtoUFrameDecoder::Pop(TArray<uint8>& OutPayload, FString& Out
     {
         PayloadLength = (PayloadLength << 8) | Buffer[Index];
     }
-    // Apply the fixed message ceiling before accumulating or copying any
-    // payload: an oversized length header can never grow the buffer.
+    // Enforce the frozen message ceiling (protocol corpus limits.max_message_bytes)
+    // at the length header, before any payload accumulation or int32 cast.
     if (PayloadLength > static_cast<uint64>(FMtoUProtocol::MaxMessageBytes))
     {
         OutError = TEXT("Packet length exceeds the maximum message length.");
-        return EMtoUDecodeResult::Error;
-    }
-    if (PayloadLength > static_cast<uint64>(MAX_int32) - 8)
-    {
-        OutError = TEXT("Packet length exceeds Unreal's int32 container range.");
         return EMtoUDecodeResult::Error;
     }
     if (static_cast<uint64>(Buffer.Num()) < PayloadLength + 8)

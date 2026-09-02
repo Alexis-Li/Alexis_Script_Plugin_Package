@@ -56,6 +56,11 @@ class RepositoryToolTests(unittest.TestCase):
                     "expected": {"accepted": False, "close": True},
                 },
             ],
+            "limits": {
+                "max_message_bytes": 33554432,
+                "max_cache_payload_bytes": 1073741824,
+                "max_cache_frame_count": 20000,
+            },
         }
         self.assertEqual(
             [
