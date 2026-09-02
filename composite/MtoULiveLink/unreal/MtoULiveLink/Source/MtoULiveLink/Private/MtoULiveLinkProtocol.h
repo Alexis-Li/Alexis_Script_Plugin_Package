@@ -116,6 +116,8 @@ public:
         FString& OutErrorCode);
     static bool ParseCacheFrame(
         const TArray<uint8>& Payload,
+        int32 ExpectedTransformCount,
+        int32 ExpectedCurveCount,
         int32& OutIndex,
         FMtoUFrameMessage& OutMessage,
         FString& OutError,

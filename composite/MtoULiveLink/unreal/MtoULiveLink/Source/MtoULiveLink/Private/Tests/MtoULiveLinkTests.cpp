@@ -763,7 +763,13 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 Command.Kind = FMtoUCacheCommand::EKind::Frame;
                 bAccepted = FMtoUProtocol::ParseCacheFrame(
-                    Bytes, Command.Index, Command.Frame, Error, &ErrorCode);
+                    Bytes,
+                    INDEX_NONE,
+                    INDEX_NONE,
+                    Command.Index,
+                    Command.Frame,
+                    Error,
+                    &ErrorCode);
             }
             else if (Operation == TEXT("cache_end"))
             {
@@ -1441,6 +1447,14 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     FString Error;
     bool bStructural = false;
 
+    FString RoutedType;
+    TestTrue(TEXT("streaming type route skips nested values"), FMtoUProtocol::PeekType(Utf8(
+        TEXT("{\"metadata\":{\"type\":\"wrong\"},\"values\":[1,2,3],\"type\":\"cache_frame\"}")),
+        RoutedType,
+        Error));
+    TestEqual(TEXT("streaming type route reads the root field"),
+        RoutedType, FString(TEXT("cache_frame")));
+
     TestTrue(TEXT("valid frame parses"), FMtoUProtocol::ParseFrame(Utf8(Valid), Frame, Error));
     TestTrue(TEXT("matching counts and finite values validate"),
         FMtoUProtocol::ValidateFrame(Frame, 1, 2, Error, bStructural));
@@ -1452,6 +1466,37 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("curve count mismatch is rejected"),
         FMtoUProtocol::ValidateFrame(Frame, 1, 1, Error, bStructural));
     TestTrue(TEXT("curve count mismatch is structural"), bStructural);
+
+    int32 CacheIndex = INDEX_NONE;
+    FString CacheErrorCode;
+    FMtoUFrameMessage CacheFrame;
+    TestFalse(TEXT("cached transform count is rejected during parse"),
+        FMtoUProtocol::ParseCacheFrame(
+            Utf8(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")),
+            1,
+            1,
+            CacheIndex,
+            CacheFrame,
+            Error,
+            &CacheErrorCode));
+    TestEqual(TEXT("cached transform mismatch keeps its stable code"),
+        CacheErrorCode, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    TestTrue(TEXT("cached transform mismatch allocates no parsed arrays"),
+        CacheFrame.Transforms.IsEmpty() && CacheFrame.Curves.IsEmpty());
+
+    TestFalse(TEXT("cached curve count is rejected during parse"),
+        FMtoUProtocol::ParseCacheFrame(
+            Utf8(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0,1]}")),
+            1,
+            1,
+            CacheIndex,
+            CacheFrame,
+            Error,
+            &CacheErrorCode));
+    TestEqual(TEXT("cached curve mismatch keeps its stable code"),
+        CacheErrorCode, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    TestTrue(TEXT("cached curve mismatch allocates no parsed arrays"),
+        CacheFrame.Transforms.IsEmpty() && CacheFrame.Curves.IsEmpty());
 
     FMtoUFrameMessage NonFinite;
     TestTrue(TEXT("overflowing JSON number parses for frame validation"), FMtoUProtocol::ParseFrame(Utf8(
@@ -2347,6 +2392,37 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             && ReadyText.Contains(TEXT("\"frame_count\":2")));
     }
 
+    // A recoverably rejected begin switches intake to its own poisoned
+    // identity. Frames/end already pipelined behind it are discarded without
+    // touching the ready upload or producing an error flood.
+    TArray<uint8> RejectedBeginPipeline = Packet(TEXT(
+        "{\"type\":\"cache_begin\",\"upload_id\":4,\"revision\":9,\"fps\":0,"
+        "\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":256}"));
+    RejectedBeginPipeline.Append(Packet(TEXT(
+        "{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[71,72,73,0,0,0,1,1,1,1],"
+        "[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    RejectedBeginPipeline.Append(Packet(TEXT("{\"type\":\"cache_end\"}")));
+    TestTrue(TEXT("rejected begin and its pipelined upload are sent together"),
+        Primary && SendBytes(
+            *Primary, RejectedBeginPipeline.GetData(), RejectedBeginPipeline.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("rejected begin reports one recoverable metadata error"),
+        Primary && ReceivePacket(*Primary, Payload));
+    const FString RejectedBeginError = FromUtf8(Payload);
+    TestTrue(TEXT("rejected begin error echoes only its new upload identity"),
+        RejectedBeginError.Contains(TEXT("CACHE_METADATA_INVALID"))
+        && RejectedBeginError.Contains(TEXT("\"upload_id\":4")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestEqual(TEXT("poisoned pipelined frames gain no parsed queue ownership"),
+        Source->GetQueuedCacheFrameCount(), 0);
+    {
+        uint8 Buffer[4096];
+        int32 Read = 0;
+        const bool bSilent = !Primary->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0;
+        TestTrue(TEXT("poisoned frame/end data produces no error flood"), bSilent);
+    }
+
     // While the cache owns the session, live frames must not reach Live Link.
     const TArray<uint8> IntrudingLiveFrame = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[[99,98,97,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
@@ -2411,6 +2487,55 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         && CompletionPayload.Contains(TEXT("\"play_id\":1"))
         && CompletionPayload.Contains(TEXT("\"applied_frame_count\":2"))
         && CompletionPayload.Contains(TEXT("elapsed_seconds")));
+
+    // The valid upload after the rejected identity is admitted normally.
+    TestTrue(TEXT("new upload after poisoned identity is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":5,\"revision\":9,\"fps\":30,\"start_frame\":3001,\"end_frame\":3001,\"frame_count\":1,\"payload_size\":256}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[51,52,53,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("new upload after poison reaches ready"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready response belongs to the newer upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":5")));
+
+    // Far-surplus cardinalities stay under the framing ceiling but are
+    // rejected before parsed transform/curve arrays gain queue ownership.
+    FString ExcessTransforms;
+    FString ExcessCurves;
+    constexpr int32 ExcessCount = 4096;
+    ExcessTransforms.Reserve(ExcessCount * 24);
+    ExcessCurves.Reserve(ExcessCount * 2);
+    for (int32 Index = 0; Index < ExcessCount; ++Index)
+    {
+        if (Index > 0)
+        {
+            ExcessTransforms += TEXT(",");
+            ExcessCurves += TEXT(",");
+        }
+        ExcessTransforms += TEXT("[0,0,0,0,0,0,1,1,1,1]");
+        ExcessCurves += TEXT("0");
+    }
+    const TArray<uint8> ExcessFrame = Packet(FString::Printf(TEXT(
+        "{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[%s],\"curves\":[%s]}"),
+        *ExcessTransforms,
+        *ExcessCurves));
+    TestTrue(TEXT("surplus-count fixture stays below the framing ceiling"),
+        ExcessFrame.Num() - 8 < FMtoUProtocol::MaxMessageBytes);
+    TestTrue(TEXT("surplus-count upload begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":6,\"revision\":9,\"fps\":30,\"start_frame\":4001,\"end_frame\":4001,\"frame_count\":1,\"payload_size\":1000000}")));
+    TestTrue(TEXT("surplus-count cache frame is sent"), Primary && SendBytes(
+        *Primary, ExcessFrame.GetData(), ExcessFrame.Num()));
+    FPlatformProcess::Sleep(0.05f);
+    TestEqual(TEXT("surplus-count frame gains no parsed queue ownership"),
+        Source->GetQueuedCacheFrameCount(), 0);
+    Payload.Reset();
+    TestTrue(TEXT("surplus-count frame reports a recoverable error"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("surplus-count error is stable and identity-scoped"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_FRAME_CONTENTS_INVALID"))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":6")));
 
     // Switching back to live preview clears the Unreal buffer first; the
     // cleared outcome arrives before the resumed live pose can be evaluated.

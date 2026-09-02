@@ -2387,6 +2387,28 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
         self.assertLess(stream.actions.index("cache_clear"), stream.actions.index("resume"))
 
+    def test_capture_observes_transport_loss_before_the_next_sample(self):
+        changes = []
+        scene = self._scene()
+        cached, stream = self._attached(changes.append, scene=scene)
+        cached.enter()
+        cached.capture(24.0, lambda unused_size, unused_frames: True)
+        self.timer.fire()
+        self.assertEqual(1, scene.sample.call_count)
+        self.assertTrue(list(pathlib.Path(self.temp.name).iterdir()))
+
+        stream.is_ready = False
+        self.timer.fire()
+
+        self.assertEqual(MODULE._CachedPlayback.DETACHED, cached.view.state)
+        diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
+        self.assertEqual("STREAM_INTERRUPTED", diagnostic["code"])
+        self.assertEqual(1, scene.sample.call_count)
+        self.assertEqual(42, self.timeline.current)
+        self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+        self.assertEqual(1, stream.stopped)
+        self.assertEqual(0, stream.resumed)
+
     def test_cached_idle_observes_transport_termination_without_user_action(self):
         changes = []
         cached, stream = self._attached(changes.append)

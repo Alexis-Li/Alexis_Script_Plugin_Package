@@ -407,6 +407,7 @@ uint32 FMtoULiveLinkSource::Run()
     // it so a rejected, superseded, or cleared upload can be cancelled as a
     // unit and can never affect a newer attempt.
     int32 WorkerCacheUploadId = 0;
+    bool bWorkerCacheUploadRejected = false;
     // One raw (never parsed) cache_frame held while the Game Thread drains
     // the bounded intake queue; the sender experiences TCP backpressure
     // until then, so queued parsed ownership stays inside the budget.
@@ -416,6 +417,7 @@ uint32 FMtoULiveLinkSource::Run()
     {
         HeldCacheFrame.Reset();
         WorkerCacheUploadId = 0;
+        bWorkerCacheUploadRejected = false;
         if (ActiveSession != 0)
         {
             // Cancel every queued command of the dead session immediately so
@@ -503,6 +505,10 @@ uint32 FMtoULiveLinkSource::Run()
     // payload (never its parsed form) until the Game Thread drains.
     auto HandleCacheFrame = [&](TArray<uint8>&& Payload) -> bool
     {
+        if (bWorkerCacheUploadRejected)
+        {
+            return true;
+        }
         if (!CacheCommands.CanAdmitFrame(Payload.Num()))
         {
             HeldCacheFrame = MoveTemp(Payload);
@@ -514,13 +520,35 @@ uint32 FMtoULiveLinkSource::Run()
         FString CacheError;
         FString ErrorCode = TEXT("INVALID_MESSAGE");
         const bool bShapeValid = FMtoUProtocol::ParseCacheFrame(
-            Payload, Command.Index, Command.Frame, CacheError, &ErrorCode);
+            Payload,
+            WorkerExpectedBoneCount,
+            WorkerExpectedCurveCount,
+            Command.Index,
+            Command.Frame,
+            CacheError,
+            &ErrorCode);
         // A negative index follows the production cache-session rejection
         // path: the stable code is echoed by the session itself while it
         // atomically discards the partial upload, and the negotiated
         // connection stays open.
         if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_INDEX_INVALID"))
         {
+            bWorkerCacheUploadRejected = true;
+            CacheCommands.CancelUpload(ActiveSession, WorkerCacheUploadId);
+            return EnqueueCacheCommand(MoveTemp(Command));
+        }
+        if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_CONTENTS_INVALID"))
+        {
+            // The cardinality check ran before parsed-frame allocation. Carry
+            // one tiny control rejection to the Game Thread, then poison this
+            // intake identity so pipelined frame/end data is dropped raw.
+            bWorkerCacheUploadRejected = true;
+            CacheCommands.CancelUpload(ActiveSession, WorkerCacheUploadId);
+            Command.Kind = FMtoUCacheCommand::EKind::Reject;
+            Command.UploadId = WorkerCacheUploadId;
+            Command.ErrorCode = ErrorCode;
+            Command.ErrorDetails = FString::Printf(
+                TEXT("Cached frame %d: %s"), Command.Index, *CacheError);
             return EnqueueCacheCommand(MoveTemp(Command));
         }
         if (!bShapeValid)
@@ -731,6 +759,15 @@ uint32 FMtoULiveLinkSource::Run()
                             // reject without closing so Maya can recapture.
                             if (!bShapeValid && ErrorCode != TEXT("INVALID_MESSAGE"))
                             {
+                                // A structurally valid begin always switches
+                                // intake identity. If later metadata fails,
+                                // poison that identity so already-pipelined
+                                // frame/end messages cannot inherit the prior
+                                // upload or gain parsed queue ownership.
+                                WorkerCacheUploadId = Command.Begin.UploadId;
+                                bWorkerCacheUploadRejected = true;
+                                CacheCommands.CancelUpload(
+                                    ActiveSession, WorkerCacheUploadId);
                                 bDidWork = true;
                                 SendPacket(
                                     *ClientSocket,
@@ -747,6 +784,7 @@ uint32 FMtoULiveLinkSource::Run()
                                 // Later frame/end commands carry this upload
                                 // identity for wholesale cancellation.
                                 WorkerCacheUploadId = Command.Begin.UploadId;
+                                bWorkerCacheUploadRejected = false;
                             }
                         }
                         else
@@ -764,6 +802,10 @@ uint32 FMtoULiveLinkSource::Run()
                     }
                     if (MessageType == TEXT("cache_end"))
                     {
+                        if (bWorkerCacheUploadRejected)
+                        {
+                            continue;
+                        }
                         FString CacheError;
                         if (!FMtoUProtocol::ParseCacheEnd(Payload, CacheError))
                         {
@@ -807,6 +849,11 @@ uint32 FMtoULiveLinkSource::Run()
                         {
                             SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
                             break;
+                        }
+                        if (Command.Kind == FMtoUCacheCommand::EKind::Clear)
+                        {
+                            WorkerCacheUploadId = 0;
+                            bWorkerCacheUploadRejected = false;
                         }
                         EnqueueCacheCommand(MoveTemp(Command));
                         continue;
@@ -1289,6 +1336,9 @@ bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheComma
     {
         case FMtoUCacheCommand::EKind::Begin:
             EchoUploadId = Command.Begin.UploadId;
+            break;
+        case FMtoUCacheCommand::EKind::Reject:
+            EchoUploadId = Command.UploadId;
             break;
         case FMtoUCacheCommand::EKind::Frame:
         case FMtoUCacheCommand::EKind::End:

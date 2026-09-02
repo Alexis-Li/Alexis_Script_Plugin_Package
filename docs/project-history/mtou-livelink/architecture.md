@@ -935,7 +935,9 @@ Cached Playback state that owns the negotiated session keeps a lightweight
 transport observer running, so idle, ready, completed, stopped, and cached
 failure states surface transport termination without waiting for a user
 action; detection completes a DETACHED transition and retains a compatible
-completed cache.
+completed cache. Capture performs the same readiness check before every sample;
+transport loss deletes the partial cache, restores the original timeline frame,
+and reaches DETACHED without sampling again.
 
 Maya now enforces the frozen cache limits incrementally: a Playback Range
 whose inclusive frame count would exceed 20,000 is refused before any capture
@@ -953,12 +955,18 @@ and is released by shutdown or a session swap, and control commands
 so no disconnect, clear, Editor shutdown, or teardown can wedge. Cache frame
 and end commands carry the worker-observed upload identity, and a rejected,
 superseded, or cleared upload discards all pending commands of that session
-and upload identity at once, never affecting a newer attempt. Intake
-validation is message-appropriate and happens before allocation or unsafe
-conversion: a 32 MiB per-message framing ceiling is enforced at the length
-header on both hosts, `cache_begin` capture-range arithmetic is overflow-safe
-in 64-bit, and `int64` JSON integer conversion rejects out-of-range values
-before casting. The conformance corpus adds the framing ceiling, the
+and upload identity at once, never affecting a newer attempt. A recoverably
+rejected `cache_begin` switches the worker to that new upload identity and
+poisons it, dropping its pipelined frame/end messages until a valid begin or
+clear resets the identity. Intake validation is message-appropriate and
+happens before allocation or unsafe conversion: a 32 MiB per-message framing
+ceiling is enforced at the length header on both hosts; routing scans only the
+top-level JSON `type` token before the selected parser builds one JSON tree;
+and cache frames compare raw transform and curve cardinalities with the
+negotiated counts before reserving or converting either array. `cache_begin`
+capture-range arithmetic is overflow-safe in 64-bit, and `int64` JSON integer
+conversion rejects out-of-range values before casting. The conformance corpus
+adds the framing ceiling, the
 overflow-wrapping range, and the extreme-integer cases; a documented 701-bone
 production Character remains supported within the fixed parsed-memory budget
 at the maximum frame count.

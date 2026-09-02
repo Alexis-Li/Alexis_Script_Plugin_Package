@@ -2239,17 +2239,26 @@ class _CachedPlayback(object):
         if resume_streaming:
             self._resume_streaming()
 
-    def _capture_failure(self, error):
+    def _capture_failure(self, error, transport_lost=False):
         # Timers and iterators die first so no further capture work fires.
         self._teardown_cached_runtime()
         if self._capture_cache is not None:
             self._capture_cache.delete()
         self._capture_cache = None
         self._restore_capture_frame()
-        self._phase = "cancelled" if error.code == "CACHED_PLAYBACK_CANCELLED" else "failed"
         diagnostic = make_diagnostic(
             error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
             error.message, details=error.details)
+        if transport_lost:
+            self._phase = "transport_failed"
+            self._publish(current=0, total=0, diagnostic=diagnostic)
+            if self._streaming_session is not None:
+                try:
+                    self._streaming_session.stop()
+                except (RuntimeError, TypeError):
+                    pass
+            return error
+        self._phase = "cancelled" if error.code == "CACHED_PLAYBACK_CANCELLED" else "failed"
         # A failed capture leaves Unreal owning cached entry state; drop it in
         # order before live poses flow again. Resuming Real-time Preview here
         # and clearing Unreal ownership is the complete, truthful transition:
@@ -2265,6 +2274,12 @@ class _CachedPlayback(object):
         if self._phase != "capturing":
             return False
         try:
+            session = self._streaming_session
+            if session is None or not session.is_ready:
+                self._handle_transport_failure(_CachedPlaybackError(
+                    "STREAM_INTERRUPTED",
+                    "The streaming connection ended during capture."))
+                return True
             if self._capture_cancel_requested:
                 error = _CachedPlaybackError(
                     "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
@@ -2854,7 +2869,8 @@ class _CachedPlayback(object):
             # ordering.
             self._capture_failure(_CachedPlaybackError(
                 "STREAM_INTERRUPTED",
-                "The streaming connection ended during capture."))
+                "The streaming connection ended during capture."),
+                transport_lost=True)
             return
         self._remove_playback_poller()
         self._close_upload_iter()

@@ -28,6 +28,7 @@ struct FMtoUCacheCommand
     {
         Enter,
         Begin,
+        Reject,
         Frame,
         End,
         Play,
@@ -47,6 +48,11 @@ struct FMtoUCacheCommand
     // Actual encoded payload bytes of this message, metered at the framing
     // boundary and accumulated into the upload's resource accounting.
     int64 EncodedBytes = 0;
+    // Worker-side pre-allocation rejection carried as a control command so the
+    // Game Thread drops partial cache ownership without admitting a parsed
+    // frame to the bounded queue.
+    FString ErrorCode;
+    FString ErrorDetails;
     FMtoUCacheBeginMessage Begin;
     FMtoUFrameMessage Frame;
 };

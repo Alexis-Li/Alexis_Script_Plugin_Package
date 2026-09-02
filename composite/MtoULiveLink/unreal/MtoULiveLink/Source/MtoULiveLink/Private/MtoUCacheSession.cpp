@@ -95,6 +95,11 @@ bool FMtoUCacheSession::HandleCommand(
         case FMtoUCacheCommand::EKind::Begin:
             bAccepted = HandleBegin(Command, OutErrorCode, OutDetails);
             break;
+        case FMtoUCacheCommand::EKind::Reject:
+            OutErrorCode = Command.ErrorCode;
+            OutDetails = Command.ErrorDetails;
+            ResetToIdle();
+            break;
         case FMtoUCacheCommand::EKind::Frame:
             bAccepted = HandleFrame(Command, OutErrorCode, OutDetails);
             break;

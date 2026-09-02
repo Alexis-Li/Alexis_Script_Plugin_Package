@@ -11,7 +11,9 @@
   disconnected-looking controller with disabled actions. Every Cached
   Playback state that owns the negotiated session (idle, uploading, replaying,
   completed, stopped, or cached failure) now continuously observes transport
-  termination instead of waiting for the next user action. Maya enforces the
+  termination instead of waiting for the next user action, and capture checks
+  transport readiness before every sample so a disconnect deletes the partial
+  cache and restores the timeline immediately. Maya enforces the
   frozen cache limits incrementally: a Playback Range over 20,000 frames is
   refused before capture, and encoded frame bytes crossing 1 GiB stop the
   capture immediately and delete the partial owned cache. On the Unreal side a
@@ -25,9 +27,13 @@
   superseded, or cleared uploads discard all pending commands for their
   session/upload identity so they can never affect a newer attempt. Intake
   validation is message-appropriate and happens before allocation or
-  conversion: a fixed 32 MiB per-message framing ceiling, overflow-safe
-  `cache_begin` capture-range arithmetic, and overflow-safe `int64` integer
-  conversion. Protocol v6 message identities and connection-closing semantics
+  conversion: a fixed 32 MiB per-message framing ceiling, streaming type
+  routing without a preliminary JSON tree, negotiated cache-frame cardinality
+  checks before array reservation or conversion, overflow-safe `cache_begin`
+  capture-range arithmetic, and overflow-safe `int64` integer conversion. A
+  recoverably rejected `cache_begin` also poisons its new upload identity, so
+  pipelined frame/end messages cannot fall through to the previous upload.
+  Protocol v6 message identities and connection-closing semantics
   are preserved; the conformance corpus gains the framing and overflow cases,
   and a shared `limits` block now pins the frozen framing/cache ceilings so
   each host adapter asserts its own constants against the corpus instead of

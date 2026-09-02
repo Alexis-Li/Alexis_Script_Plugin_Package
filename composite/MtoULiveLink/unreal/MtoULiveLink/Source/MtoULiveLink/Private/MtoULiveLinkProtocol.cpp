@@ -161,9 +161,16 @@ TArray<uint8> EncodeObject(const TSharedRef<FJsonObject>& Object)
 bool ParseFrameBody(
     const TSharedPtr<FJsonObject>& Object,
     const TCHAR* ExpectedType,
+    int32 ExpectedTransformCount,
+    int32 ExpectedCurveCount,
     FMtoUFrameMessage& OutMessage,
-    FString& OutError)
+    FString& OutError,
+    bool* bOutCountMismatch = nullptr)
 {
+    if (bOutCountMismatch)
+    {
+        *bOutCountMismatch = false;
+    }
     FString Type;
     if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != ExpectedType)
     {
@@ -176,6 +183,36 @@ bool ParseFrameBody(
     if (!GetArrayField(Object, TEXT("transforms"), TransformValues, OutError)
         || !GetArrayField(Object, TEXT("curves"), CurveValues, OutError))
     {
+        return false;
+    }
+
+    // Cached frames use the negotiated cardinalities before Reserve or any
+    // numeric conversion, so surplus localhost input never gains a parsed
+    // transform/curve allocation. Real-time frames retain their existing
+    // post-parse validation by passing INDEX_NONE.
+    if (ExpectedTransformCount != INDEX_NONE
+        && TransformValues->Num() != ExpectedTransformCount)
+    {
+        OutError = FString::Printf(
+            TEXT("Transform count mismatch: expected %d, got %d."),
+            ExpectedTransformCount,
+            TransformValues->Num());
+        if (bOutCountMismatch)
+        {
+            *bOutCountMismatch = true;
+        }
+        return false;
+    }
+    if (ExpectedCurveCount != INDEX_NONE && CurveValues->Num() != ExpectedCurveCount)
+    {
+        OutError = FString::Printf(
+            TEXT("Curve count mismatch: expected %d, got %d."),
+            ExpectedCurveCount,
+            CurveValues->Num());
+        if (bOutCountMismatch)
+        {
+            *bOutCountMismatch = true;
+        }
         return false;
     }
 
@@ -477,7 +514,8 @@ bool FMtoUProtocol::ParseFrame(
     {
         return false;
     }
-    return ParseFrameBody(Object, TEXT("frame"), OutMessage, OutError);
+    return ParseFrameBody(
+        Object, TEXT("frame"), INDEX_NONE, INDEX_NONE, OutMessage, OutError);
 }
 
 bool FMtoUProtocol::PeekType(
@@ -485,12 +523,61 @@ bool FMtoUProtocol::PeekType(
     FString& OutType,
     FString& OutError)
 {
-    TSharedPtr<FJsonObject> Object;
-    if (!ParseObject(Payload, Object, OutError))
+    OutType.Reset();
+    OutError.Reset();
+    if (Payload.IsEmpty())
     {
+        OutError = TEXT("Empty JSON payload.");
         return false;
     }
-    return GetStringField(Object, TEXT("type"), OutType, OutError);
+
+    // Route before cache-frame admission with a streaming token scan. This
+    // does not build a JSON DOM; the selected message parser performs the one
+    // full deserialization only after its resource gate accepts the payload.
+    const FAnsiStringView Text(
+        reinterpret_cast<const ANSICHAR*>(Payload.GetData()), Payload.Num());
+    const TSharedRef<TJsonReader<ANSICHAR>> Reader =
+        TJsonReaderFactory<ANSICHAR>::CreateFromView(Text);
+    EJsonNotation Notation = EJsonNotation::Null;
+    if (!Reader->ReadNext(Notation) || Notation != EJsonNotation::ObjectStart)
+    {
+        OutError = TEXT("Payload must be a JSON object.");
+        return false;
+    }
+    while (Reader->ReadNext(Notation))
+    {
+        if (Notation == EJsonNotation::Error)
+        {
+            OutError = Reader->GetErrorMessage();
+            return false;
+        }
+        if (Reader->GetIdentifier() == TEXT("type"))
+        {
+            if (Notation != EJsonNotation::String)
+            {
+                OutError = TEXT("Field 'type' has the wrong JSON type.");
+                return false;
+            }
+            OutType = Reader->GetValueAsString();
+            return true;
+        }
+        if (Notation == EJsonNotation::ObjectStart && !Reader->SkipObject())
+        {
+            OutError = Reader->GetErrorMessage();
+            return false;
+        }
+        if (Notation == EJsonNotation::ArrayStart && !Reader->SkipArray())
+        {
+            OutError = Reader->GetErrorMessage();
+            return false;
+        }
+        if (Notation == EJsonNotation::ObjectEnd)
+        {
+            break;
+        }
+    }
+    OutError = TEXT("Field 'type' has the wrong JSON type.");
+    return false;
 }
 
 bool FMtoUProtocol::ParseCacheBegin(
@@ -637,6 +724,8 @@ bool FMtoUProtocol::ParseCacheBegin(
 
 bool FMtoUProtocol::ParseCacheFrame(
     const TArray<uint8>& Payload,
+    int32 ExpectedTransformCount,
+    int32 ExpectedCurveCount,
     int32& OutIndex,
     FMtoUFrameMessage& OutMessage,
     FString& OutError,
@@ -678,8 +767,20 @@ bool FMtoUProtocol::ParseCacheFrame(
         }
         return false;
     }
-    if (!ParseFrameBody(Object, TEXT("cache_frame"), OutMessage, OutError))
+    bool bCountMismatch = false;
+    if (!ParseFrameBody(
+            Object,
+            TEXT("cache_frame"),
+            ExpectedTransformCount,
+            ExpectedCurveCount,
+            OutMessage,
+            OutError,
+            &bCountMismatch))
     {
+        if (bCountMismatch && OutErrorCode)
+        {
+            *OutErrorCode = TEXT("CACHE_FRAME_CONTENTS_INVALID");
+        }
         return false;
     }
     return true;
