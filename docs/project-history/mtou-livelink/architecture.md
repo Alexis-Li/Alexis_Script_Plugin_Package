@@ -4,8 +4,8 @@ Date: 2026-07-31
 Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
-pending a complete rerun
-Last aligned with implementation: 2026-09-01
+complete stock-engine gate passed 2026-09-02
+Last aligned with implementation: 2026-09-03
 
 ## Summary
 
@@ -58,9 +58,9 @@ Acceptance resolves the animation scene's reference to the supplied binding
 scene without saving either Maya file, imports the unchanged FBX into Unreal,
 and exercises the negotiated character scene over all 321 display frames. The
 fixture is external test data and must not be copied into the repository or a
-release package. The stock-engine C04 acceptance remains the historical
-baseline until this C01 fixture completes the same gate; its bone counts, frame
-sizes, timings, and latency measurements are not C01 claims.
+release package. The stock-engine C04 acceptance remains historical evidence;
+the C01 fixture completed the current production gate on 2026-09-02, as
+recorded in `stock-engine-acceptance.md`.
 
 ## Goals
 

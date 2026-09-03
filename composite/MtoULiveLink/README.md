@@ -75,10 +75,12 @@ Install the Maya and Unreal components from the same release.
    would be crossed.
 5. In **Model**, also assign the garment **Preview Static Mesh** in Unreal and
    click **Refresh Preview** before connecting. Use **Transfer BS** to include
-   matching BlendShapes. Without transmitted BlendShapes (Transfer BS off, or
-   an outfit that has none), the session connects as a labelled bone-only
-   diagnostic: the garment preview follows the skeleton only and drives no
-   Morph Target. For a full-character Driver, Model preview keeps its
+   matching BlendShapes. With Transfer BS off, the session connects as a
+   labelled bone-only diagnostic that is not valid for model acceptance. With
+   Transfer BS on, an outfit that declares no BlendShapes is intentionally
+   bone-driven and connects as Ready with an empty accepted set. In either
+   case, the garment preview follows the skeleton and drives no Morph Target.
+   For a full-character Driver, Model preview keeps its
    body, face, hair, and other non-garment material slots visible while the
    Generated Preview replaces the resolved original garment slots. Driver-only
    face and hair Morph Targets continue to receive matching Maya curves. Keep

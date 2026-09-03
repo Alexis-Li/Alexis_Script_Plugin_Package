@@ -113,6 +113,11 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   cases; a preparation test proves invalid geometry commits no partial
   Generated Preview. Stock UE 5.7 compilation, all 43 `MtoULiveLink` tests,
   and the Unreal packaging dry-run pass.
+- **2026-09-02:** Passed the complete C01 production acceptance gate on Maya
+  2022.4 and stock Unreal Editor 5.7.4, including live-preview resource and
+  reconnect checks plus three exact 321-frame Cached Playback cycles. Updated
+  the bilingual user workflow and recorded the durable evidence in
+  `stock-engine-acceptance.md`.
 
 ## Stable Records
 

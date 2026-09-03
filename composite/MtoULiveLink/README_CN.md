@@ -64,10 +64,11 @@ Maya 与 Unreal 组件必须来自同一版本。
    自动恢复实时预览并显示原因；回放运行失败会保留缓存，可重试或退出缓存模式。
    捕获一超过固定的 20,000 帧或 1 GiB 上限就会立即停止。
 5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
-   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。未传输
-   BlendShape 时（关闭“传递 BS”，或服装未声明 BlendShape），连接会作为标注为
-   bone-only 诊断的会话建立：此时服装预览仅由骨骼驱动，不驱动任何 Morph
-   Target。使用整角色 Driver 时，模型预览会保留显示身体、脸、头发及其他非服装
+   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。关闭
+   “传递 BS”时，连接会标注为不可用于模型验收的 bone-only 诊断；开启
+   “传递 BS”但服装未声明 BlendShape 时，属于有意的仅骨骼驱动，会以空接受集
+   正常进入 Ready。两种情况下服装预览都仅由骨骼驱动，不驱动任何 Morph Target。
+   使用整角色 Driver 时，模型预览会保留显示身体、脸、头发及其他非服装
    材质槽，并用生成的 Preview 替换解析出的原服装材质槽；Driver 独有的脸部、
    头发 Morph Target 也会继续接收 Maya 中的同名曲线。服装与非服装几何体应使用
    不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
