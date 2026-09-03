@@ -121,9 +121,10 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both components share product version `0.4.0`. The composite project root owns
-the matching English and Chinese READMEs, changelog, and license; host-specific
-tests stay beside the implementation they exercise.
+The completed components shared product version `0.4.0`; subsequent development
+uses `0.5.0`. The composite project root owns the matching English and Chinese
+READMEs, changelog, and license; host-specific tests stay beside the
+implementation they exercise.
 
 ## Architecture
 

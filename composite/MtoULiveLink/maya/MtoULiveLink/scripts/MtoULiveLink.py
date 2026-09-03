@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 PROTOCOL_VERSION = 6
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
