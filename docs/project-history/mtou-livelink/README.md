@@ -1,7 +1,8 @@
 # MtoU_LiveLink Development History
 
 The current implementation is MtoU_LiveLink 0.4.0, a composite Maya 2022.4 and
-stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
+stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 is merged to `main`
+and remains unreleased.
 
 ## Timeline
 
@@ -118,6 +119,12 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
   reconnect checks plus three exact 321-frame Cached Playback cycles. Updated
   the bilingual user workflow and recorded the durable evidence in
   `stock-engine-acceptance.md`.
+- **2026-09-03:** Optimized Preview Morph projection scratch reuse, repaired
+  renamed Driver material-slot resolution and failed-Refresh display recovery,
+  then merged the complete 0.4.0 implementation to `main` through PR #36.
+  The merged tree passed both GitHub validation checks, the stock UE 5.7.4
+  build, all 51 `MtoULiveLink` Automation tests, Maya pure and host tests,
+  protocol and repository validation, scoped Ruff, and both package checks.
 
 ## Stable Records
 
@@ -128,6 +135,7 @@ stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 remains unreleased.
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)
 - [Model Preview quality calibration](model-preview-quality-calibration.md)
 - [Model Preview full-character recalibration](model-preview-full-character-recalibration.md)
+- [Preview Refresh optimization](preview-refresh-optimization.md)
 
 ## Current Project
 

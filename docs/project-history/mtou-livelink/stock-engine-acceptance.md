@@ -151,16 +151,31 @@ scopes the negotiated curve set to the resolved garment surface.
 
 ### Same-day automated gates
 
-The same release-branch HEAD passed the owning-project checks: Maya pure
-tests 121/121, Maya 2022.4 host tests 19/19, scoped Ruff, Python 3.7 grammar
-compatibility, and the Maya package dry-run; the stock Unreal 5.7.4
-Development Editor rebuild from that HEAD (17/17 compile and link steps, no
-new warnings), all 48 `MtoULiveLink` Unreal Automation tests, conformance
-corpus generation consistency, structural validation, and the Unreal package
-dry-run. Topia Engine 5.7.4 compile/load verification was not rerun: the
-fixes change runtime/editor logic and tests, not the Topia build/install
-integration surface (module rules, plugin descriptors, or the Topia helper),
-so the 2026-08-28 Topia acceptance record remains the documented status.
+The 2026-09-02 production-acceptance branch state passed the owning-project
+checks: Maya pure tests 121/121, Maya 2022.4 host tests 19/19, scoped Ruff,
+Python 3.7 grammar compatibility, and the Maya package dry-run; the stock
+Unreal 5.7.4 Development Editor rebuild from that HEAD (17/17 compile and link
+steps, no new warnings), all 48 `MtoULiveLink` Unreal Automation tests,
+conformance corpus generation consistency, structural validation, and the
+Unreal package dry-run. Topia Engine 5.7.4 compile/load verification was not
+rerun: the fixes change runtime/editor logic and tests, not the Topia
+build/install integration surface (module rules, plugin descriptors, or the
+Topia helper), so the 2026-08-28 Topia acceptance record remains the documented
+status.
+
+### Post-acceptance verification
+
+On 2026-09-03, the complete 0.4.0 implementation was merged to `main` through
+PR #36. The post-acceptance changes are confined to Unreal Preview Morph
+projection allocation, renamed material-slot resolution, failed-Refresh Driver
+display recovery, and their tests; they do not change Maya runtime code,
+protocol v6, module rules, the plugin descriptor, or the Topia helper. The
+merged tree passed both GitHub validation checks, the stock UE 5.7.4 build, all
+51 `MtoULiveLink` Automation tests, Maya pure tests 121/121, Maya 2022.4 host
+tests 19/19, protocol and repository validation, scoped Ruff, and both package
+checks. The complete C01 and Topia gates were not rerun after these Unreal-only
+changes; the dated results above remain the production and third-party-engine
+evidence.
 
 ## Resolved Production Blocker
 

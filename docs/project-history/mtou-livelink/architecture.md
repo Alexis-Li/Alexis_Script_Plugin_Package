@@ -1,7 +1,7 @@
 # MtoU_LiveLink Architecture
 
 Date: 2026-07-31
-Status: Version 0.4.0 implemented and locally verified; unreleased
+Status: Version 0.4.0 implemented, merged, and verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 complete stock-engine gate passed 2026-09-02
