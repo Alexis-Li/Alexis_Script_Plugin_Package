@@ -1525,9 +1525,37 @@ bool FMtoUDriverGarmentSurfaceRenamedSlotTest::RunTest(const FString& Parameters
             && Renamed.MaterialSlotIndices == TArray<int32>({3, 4, 5}));
     TestTrue(TEXT("the renamed surface preserves Driver vertex correspondence"),
         PreservesDriverVertexCorrespondence(RenamedDriver, Renamed.Surface));
-    TestTrue(TEXT("imported identity remains preferred: fallback diagnostic is empty on success"),
-        Renamed.Diagnostics.IsEmpty() || !Renamed.Diagnostics.Contains(TEXT("missing"))
-            || Renamed.RegionSummary.Contains(TEXT("material evidence")) || true);
+    // Imported identity stays preferred: the garment group keeps a unique
+    // imported match at the expected slot while its displayed name points to
+    // another slot with disagreeing LOD evidence. Correct code never enters
+    // the fallback and still lands on the imported slot; entering the
+    // fallback would conflict and fail.
+    {
+        const FName GarmentIdentity(TEXT("Garment_Upper_A"));
+        const FName MisleadingDisplayed = GarmentIdentity;
+        const FName AwayDisplayed(TEXT("Renamed_Display_Away"));
+        const FName OriginalSlot1Displayed = Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName;
+        const FName OriginalSlot3Displayed = Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName;
+        Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = MisleadingDisplayed;
+        Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName = AwayDisplayed;
+        UE::Geometry::FDynamicMesh3 ImportedPreferredDriver(RenamedDriver);
+        for (const int32 TriangleID : ImportedPreferredDriver.TriangleIndicesItr())
+        {
+            if (ImportedPreferredDriver.Attributes()->GetMaterialID()->GetValue(TriangleID) == GarmentGroupOrdinal)
+            {
+                ImportedPreferredDriver.SetTriangleGroup(TriangleID, BodyGroupOrdinal);
+            }
+        }
+        const FMtoUDriverGarmentSurfaceResult ImportedPreferred = ResolveSurface(
+            ImportedPreferredDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = OriginalSlot1Displayed;
+        Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName = OriginalSlot3Displayed;
+        AddInfo(ImportedPreferred.Diagnostics);
+        TestTrue(TEXT("imported identity remains preferred over a misleading displayed match"),
+            ImportedPreferred.bSucceeded
+                && ImportedPreferred.MaterialSlotIndices == TArray<int32>({3, 4, 5})
+                && ImportedPreferred.MatchedPreviewCoverage > 0.999);
+    }
     // Negative: duplicate displayed names still fail safely.
     {
         Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = EyeShadowDisplayed;
