@@ -4,95 +4,93 @@
 
 ## Introduction
 
-MtoU_LiveLink is a composite Maya and Unreal plugin for locally previewing one
-evaluated Maya deformation skeleton and its matching BlendShapes in Unreal
-Live Link. Its two components communicate over a local loopback connection
-while remaining independently installable and packageable.
+MtoU_LiveLink is a Maya and Unreal plugin for previewing evaluated Maya
+skeleton animation and BlendShapes in Unreal Editor over a local Live Link
+connection. It supports live animation preview, cached playback, and garment
+model preview without creating animation or preview assets.
 
 ## Supported Versions
 
 - Windows 64-bit
 - Autodesk Maya 2022.4
 - Stock Unreal Editor 5.7.4
+- Topia Engine 5.7.4 (Win64 plugin build and editor loading verified)
+- Unreal Editor only. Play In Editor (PIE) is not supported: PIE worlds are
+  excluded from streaming target discovery.
 
-Compatibility with third-party Unreal Engine 5.7 builds is not claimed.
+Compatibility with other third-party Unreal Engine 5.7 builds is not guaranteed.
 
 ## Installation
 
-Install the matching component in each host:
+1. Copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts directory,
+   or run it directly in Maya's Python Script Editor.
+2. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
+3. For stock Unreal, compile the Unreal project. For Topia Engine 5.7.4, close
+   Unreal Editor, set `TOPIA_ENGINE_ROOT` to the directory containing `Engine`
+   and `ATHENA_UPROJECT` to the target `.uproject`, then run the repository
+   helper from the repository root:
 
-1. Maya: copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts
-   directory, or run it directly in Maya's Python Script Editor.
-2. Unreal: copy the complete `unreal/MtoULiveLink/` directory to
-   `<Project>/Plugins/MtoULiveLink/`. The installed descriptor must be
-   `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`.
-3. Compile the Unreal project, enable **Live Link** and **MtoU_LiveLink**, and
-   restart Unreal Editor.
+   ```powershell
+   pwsh ./tools/build_mtou_topia.ps1 `
+     -EngineRoot $env:TOPIA_ENGINE_ROOT `
+     -ProjectFile $env:ATHENA_UPROJECT `
+     -Apply
+   ```
+
+   Without `-Apply`, the command only validates paths and previews the five
+   generated files. Add `-Json` for machine-readable output. The Topia path
+   stages all writable build state in a temporary directory and installs only
+   `Binaries/Win64` under the copied MtoULiveLink plugin; it does not modify
+   engine files or project source/configuration files.
+4. Enable **Live Link** and **MtoU_LiveLink**, then restart Unreal Editor.
+
+Install the Maya and Unreal components from the same release.
 
 ## Usage
 
-1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Skeletal Mesh**,
-   and keep exactly one binding actor in the level.
-2. In Maya, run `MtoULiveLink.py`, select exactly one deformation root, and
-   select **Set Character**. The tool finds the character's `Display_ctrl` and
-   Clothes enum; use the manual Display button if discovery is ambiguous.
-   If duplicate transmitted bone names are found, use **Select Duplicate
-   Bones** in the error dialog or main window to select every conflicting joint
-   by its full DAG path and locate it in the Outliner.
-   Duplicates do not fail immediately: Unreal maps a uniquely numeric-suffixed
-   imported bone below the already matched parent, warns on success, and rejects
-   an ambiguous mapping.
-3. Confirm the displayed outfit and scene rate, choose a playback transmission
-   cap (**Follow Scene**, **30 fps**, **20 fps**, or **15 fps**), then select
-   **Connect**. The default is **20 fps** and the choice is remembered in Maya
-   native option storage.
-4. Pose, play, or scrub in Maya. The cap applies only during Maya playback;
-   paused posing and manual timeline changes continue at the scene rate, and
-   stopping playback submits the final pose immediately. Changing the Clothes
-   enum disconnects the session; replace the Unreal binding actor with the new
-   outfit and reconnect.
-5. Use the mutually exclusive **实时预览** and **缓存播放** mode controls for
-   review. Cached Playback requires a ready connection, pauses live sampling,
-   and disables the real-time cap. **捕获并回放** samples the current Maya
-   Playback Range inclusively, writes protocol-v3 frames incrementally to the
-   user's system temporary directory, restores the original current frame,
-   and replays every captured frame once at the recorded scene rate. Capture
-   shows current/total progress, stops Maya playback before sampling, and can
-   be canceled. The tool estimates temporary-disk usage before writing frames,
-   asks for confirmation above 1 GiB, and rejects a range when free space is
-   insufficient; failed or canceled capture removes its partial cache.
-6. While replaying, the status explicitly says that Unreal is showing the
-   captured cache rather than the current Maya pose. Use **停止回放** to hold
-   the last frame sent and retain the cache, or **再次回放** to replay it
-   without recapturing. Switch back to **实时预览** to stop replay and
-   immediately submit Maya's current pose. Cached Playback creates no Unreal
-   asset; the completed cache is kept only for the compatible Maya session and
-   is removed when replaced, canceled, disconnected, the scene or character
-   changes, the tool closes, or Maya exits. Startup removes only valid
-   MtoU-owned cache remnants older than 24 hours.
-
-**View Diagnostic Details** shows only the current error summary, solution,
-code, and relevant technical details. Long details wrap to the window width;
-character and scene values already visible in the main window are not repeated.
-
-The receiver preserves each placed actor transform and does not create an
-Animation Sequence. The binding actor updates its animation continuously in
-Unreal Editor. While connected, the plugin temporarily forces level viewports
-into realtime mode and restores each viewport's prior setting on disconnect.
-Disconnecting clears the last streamed frame so the mesh returns to its
-reference pose instead of retaining a stale pose. Maya's saved SkinCluster bind
-pose is kept separate from the current animation frame and mapped to the target
-Skeletal Mesh reference pose, so connecting does not require frame 1 or the
-current frame to be an A Pose. Joints without saved bind data, such as corrective slider joints added
-after binding, use their pose at character setup time. Bind matrices that
-disagree across skin clusters, which happens when outfits were bound at
-different poses, are resolved from the bind-pose `dagPose` (the pose Go to Bind
-Pose restores) or the skin cluster with the most influences, and the resolved
-conflict count is shown after every character capture. If equally ranked
-candidates disagree, role setup stops instead of choosing a pose from the skin
-cluster node name. Non-finite or non-invertible bind matrices are rejected
-before inversion. Same-named BlendShapes
-on separate skinned mesh parts are sent as one Unreal curve when their evaluated
-values agree. If those values differ, sampling stops and identifies every
-conflicting Maya plug. Maya- and Unreal-only BlendShape names are non-blocking
-warnings. Protocol version 3 requires matching Maya and Unreal 0.3.0 components.
+1. In Unreal, create an **MtoU_LiveLink Binding**, assign its **Driver Skeletal
+   Mesh**, then drag the Binding asset from the Content Browser into the level.
+   This creates the MtoU_LiveLink Binding Actor and assigns the Binding
+   automatically; the actor's Binding reference is not an editable setup field.
+   The actor's plugin-owned display component bypasses the Driver Skeletal
+   Mesh's Post Process Anim Blueprint while displaying evaluated Maya data;
+   the Driver asset and other production components keep their own behavior.
+   Use the **MtoU** Details section to see only the plugin controls. After
+   Refresh, **Modified parts** lists one Preview material slot per line for the
+   parts that replace Driver geometry; internal triangle, timing, and quality
+   metrics stay out of the artist-facing panel. **Delete Preview** releases the
+   generated mesh and immediately restores the Driver Skeletal Mesh display.
+   Configure rendering once on **SkeletalMeshComponent**. The internal Driver
+   display stays hidden from Details and inherits its Lighting Channels and
+   Dynamic Inset Shadow setting when Model preview needs both meshes.
+2. In Maya, run `MtoULiveLink.py`, select one deformation root joint, and click
+   **Set Character**. Confirm the detected Display controller, outfit, scene
+   rate, and transmission cap.
+3. Choose **Animation** or **Model**, then click **Connect**.
+4. In **Animation**, pose, scrub, or play in Maya for live preview. To review a
+   captured range, choose **Cached Playback** and click **Capture and Play**.
+   A capture or upload failure resumes Real-time Preview and shows the reason;
+   a runtime playback failure keeps the cache so you can retry or leave cached
+   mode. Captures stop as soon as the fixed 20,000-frame or 1 GiB cache limits
+   would be crossed.
+5. In **Model**, also assign the garment **Preview Static Mesh** in Unreal and
+   click **Refresh Preview** before connecting. Use **Transfer BS** to include
+   matching BlendShapes. With Transfer BS off, the session connects as a
+   labelled bone-only diagnostic that is not valid for model acceptance. With
+   Transfer BS on, an outfit that declares no BlendShapes is intentionally
+   bone-driven and connects as Ready with an empty accepted set. In either
+   case, the garment preview follows the skeleton and drives no Morph Target.
+   For a full-character Driver, Model preview keeps its
+   body, face, hair, and other non-garment material slots visible while the
+   Generated Preview replaces the resolved original garment slots. Driver-only
+   face and hair Morph Targets continue to receive matching Maya curves. Keep
+   garment and non-garment geometry in separate imported material slots;
+   Refresh reports a shared slot instead of hiding part of the character. A
+   failed Refresh keeps Error readiness with no usable preview but restores the
+   bound Driver display for inspection; Model connection stays blocked until a
+   later Refresh succeeds.
+6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
+   Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
+   reimport), deleting the Binding Actor, or unloading its Editor world ends
+   the active streaming session and invalidates the current Preview revision:
+   run **Refresh Preview** and connect again.

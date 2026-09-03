@@ -13,10 +13,11 @@ requirements live in the repository and nearest platform `AGENTS.md`; use the
 3. Make the smallest coherent change and preserve public entry points unless a
    breaking change is explicitly required.
 4. Update the owning user documentation and changelog when behavior changes.
-5. Run the narrowest project checks, then repository validation and tests.
+5. Run the owning project's acceptance checks only.
 6. Inspect `git status` for generated or unrelated files before handoff.
 
-The repository-wide gates are:
+For changes to repository tooling, templates, shared rules or workflows, root
+metadata, or project layout, also run the repository gates:
 
 ```powershell
 python tools/validate_repository.py
@@ -24,7 +25,8 @@ python -m unittest discover -s tests -v
 ```
 
 Host-dependent Maya and Unreal checks remain project-specific and run in the
-supported host runtime.
+supported host runtime. Scope generic linters and test discovery to the owning
+project; sibling projects are not part of its acceptance result.
 
 ## Repository tools
 

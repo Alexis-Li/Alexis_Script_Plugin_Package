@@ -2,77 +2,79 @@
 
 [English](README.md)
 
-## 简介
+## 项目简介
 
-MtoU_LiveLink 是一个由 Maya 与 Unreal 组件组成的复合插件，用于在 Unreal
-Live Link 中本地预览一套已求值的 Maya 变形骨架及其匹配的 BlendShape。两个组件
-通过本机回环连接协作，同时保持各自可独立安装和打包。
+MtoU_LiveLink 是一个 Maya 与 Unreal 复合插件，可通过本机 Live Link 连接，
+在 Unreal Editor 中预览 Maya 已求值的骨骼动画和 BlendShape。插件支持实时动画
+预览、缓存播放和服装模型预览，不会创建动画或预览资产。
 
 ## 支持版本
 
 - 64 位 Windows
 - Autodesk Maya 2022.4
 - 官方原版 Unreal Editor 5.7.4
+- Topia Engine 5.7.4（已验证 Win64 插件编译和编辑器加载）
+- 仅限 Unreal 编辑器。不支持 PIE（Play In Editor）：PIE 世界不会参与流送目标发现。
 
-不声明兼容第三方修改版 Unreal Engine 5.7。
+不保证兼容其他第三方修改版 Unreal Engine 5.7。
 
-## 安装
+## 安装方式
 
-将对应组件安装到各宿主软件：
-
-1. Maya：将 `maya/MtoULiveLink/scripts/MtoULiveLink.py` 复制到 Maya 脚本目录，
+1. 将 `maya/MtoULiveLink/scripts/MtoULiveLink.py` 复制到 Maya 脚本目录，
    或直接在 Maya Python 脚本编辑器中执行。
-2. Unreal：将完整的 `unreal/MtoULiveLink/` 目录复制到
-   `<Project>/Plugins/MtoULiveLink/`。安装后的描述文件必须位于
-   `<Project>/Plugins/MtoULiveLink/MtoULiveLink.uplugin`。
-3. 编译 Unreal 项目，启用 **Live Link** 和 **MtoU_LiveLink**，然后重启编辑器。
+2. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
+3. 官方原版 Unreal 按正常方式编译项目。使用 Topia Engine 5.7.4 时，先关闭
+   Unreal Editor，将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，将
+   `ATHENA_UPROJECT` 设为目标 `.uproject`，再从仓库根目录运行：
 
-## 使用
+   ```powershell
+   pwsh ./tools/build_mtou_topia.ps1 `
+     -EngineRoot $env:TOPIA_ENGINE_ROOT `
+     -ProjectFile $env:ATHENA_UPROJECT `
+     -Apply
+   ```
 
-1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Skeletal Mesh**，
-   并确保关卡中只有一个 Binding Actor。
-2. 在 Maya 中运行 `MtoULiveLink.py`，选择唯一的变形根骨骼，再点击
-   “设置角色”。工具会自动寻找 `Display_ctrl` 和 Clothes 枚举；
-   若候选不唯一，请使用手动 Display 按钮。
-   若骨架中存在发送后会冲突的重名骨骼，可在错误弹窗或主窗口点击
-   “选中重名骨骼”，一次选中所有冲突 joint，再在大纲视图中定位处理。
-   重名不会立即阻止连接；UE 会按已匹配父级寻找导入时自动追加数字的
-   唯一骨骼名。映射成功时连接并警告，无法唯一映射时才拒绝连接。
-3. 确认当前衣服和场景帧率，选择播放传输上限（**Follow Scene**、
-   **30 fps**、**20 fps** 或 **15 fps**），再点击“连接”。默认值为
-   **20 fps**，选择会保存到 Maya 原生 optionVar 中。
-4. 在 Maya 中调整姿势、播放或拖动时间轴。上限只在 Maya 播放期间生效；
-   暂停时的摆姿和手动拖动仍按场景帧率采样，停止播放会立即提交最终姿势。
-   切换 Clothes 枚举后会自动断开；请在 UE 中替换新衣服的 Binding Actor，
-   再手动重连。
-5. 使用互斥的 **实时预览** 和 **缓存播放** 模式进行复查。缓存播放要求连接
-   已完成 Unreal 协商，会暂停实时采样并禁用实时传输上限。点击 **捕获并回放**
-   后，工具会按当前 Maya Playback Range（包含首尾帧）逐帧采样，把 protocol-v3
-   帧增量写入当前用户的系统临时目录，恢复原来的当前帧，并按捕获时的场景帧率
-   一次性按序回放全部帧。捕获会显示当前/总进度，开始前自动停止 Maya 播放，
-   并可点击取消。工具会在写入帧前估算临时磁盘用量，超过 1 GiB 时请求确认，
-   空间不足时拒绝捕获；失败或取消都会删除未完成的缓存。
-6. 回放期间状态会明确显示 Unreal 正在显示已捕获缓存，而不是当前 Maya 姿势。
-   点击 **停止回放** 会停在最后已发送的帧并保留缓存；点击 **再次回放** 可重复
-   使用已完成缓存而不重新捕获。切回 **实时预览** 会停止回放并立即提交 Maya
-   当前姿势。缓存播放不会创建 Unreal 资产；已完成缓存只保留在兼容的 Maya
-   会话中，并会在替换、取消、断开连接、场景或角色变化、工具关闭或 Maya 退出
-   时删除。下次启动只会清理有效且超过 24 小时的 MtoU 缓存残留。
+   不带 `-Apply` 时只校验路径并预览将生成的五个文件；需要机器可读结果时添加
+   `-Json`。Topia 构建会把所有可写中间状态放入临时目录，只向已复制的
+   MtoULiveLink 插件写入 `Binaries/Win64`，不会修改引擎文件或项目源码、配置。
+4. 启用 **Live Link** 和 **MtoU_LiveLink**，然后重启 Unreal Editor。
 
-“查看诊断详情”只显示当前错误的摘要、解决办法、错误代码和相关技术详情。
-长内容会按窗口宽度自动换行，主窗口已有的角色与场景信息不会重复显示。
+Maya 与 Unreal 组件必须来自同一版本。
 
-接收端会保留每个已放置 Actor 的变换，且不会创建 Animation Sequence。Binding
-Actor 会在 Unreal 编辑器中持续更新动画；连接期间，插件会临时强制关卡视口进入
-“实时”模式，并在断开连接后恢复各视口原先的设置。断开连接会清除最后一个传输帧，
-使模型回到参考姿势，而不是继续保留旧姿势。Maya 保存的 SkinCluster Bind Pose 与当前动画帧
-会分别处理，并映射到目标 Skeletal Mesh 的 Reference Pose；连接时无需让第 1 帧或当前帧为
-A Pose。未保存绑定数据的关节（例如绑定后添加的矫正滑杆关节）会使用设置角色时的姿势。
-各 SkinCluster 绑定矩阵不一致时（换装在不同姿势下绑定即会出现），会按关节所连的
-Bind Pose `dagPose`（即 Go to Bind Pose 恢复的姿势）解析，无 dagPose 时取 influence
-数最多的 SkinCluster，并在每次角色捕获后显示已解析的冲突数量。若最高优先级候选
-并列且矩阵不一致，会停止角色设置，不再由 SkinCluster 节点名称决定姿势；非有限或
-不可逆的绑定矩阵会在求逆前被拒绝。多个蒙皮网格部件上的同名 BlendShape 在求值
-一致时会合并为一条 Unreal 曲线发送；若数值不同，采样会停止并列出所有冲突的 Maya
-插口。Maya 和 Unreal 单方存在的 BlendShape 会作为不阻断连接的警告显示。协议版本
-3 要求 Maya 和 Unreal 两端都安装匹配的 0.3.0 组件。
+## 使用方法
+
+1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Driver Skeletal Mesh**，
+   然后将该 Binding 资产从内容浏览器拖入关卡。此操作会自动创建
+   MtoU_LiveLink Binding Actor 并指定该 Binding；Actor 的 Binding 引用不是
+   可编辑的设置字段。
+   该 Actor 所属的插件显示组件在显示 Maya 已求值数据时会绕过 Driver Skeletal
+   Mesh 的 Post Process Anim Blueprint；Driver 资产和其他生产组件仍保持各自行为。
+   可通过细节面板顶部的 **MtoU** 分类仅查看插件控件。刷新后，**Modified parts**
+   会逐行列出替换 Driver 几何体的 Preview 材质槽；三角形数量、耗时和质量阈值等
+   内部指标不会显示在面向美术人员的面板中。点击 **Delete Preview** 会释放生成的
+   预览网格体并立即恢复显示 Driver Skeletal Mesh。
+   渲染设置只需在 **SkeletalMeshComponent** 上配置一次。内部 Driver 显示组件不会
+   再出现在细节面板中；模型预览需要同时显示两个网格体时，它会继承光照通道和
+   动态内嵌阴影设置。
+2. 在 Maya 中运行 `MtoULiveLink.py`，选择一个变形根骨骼，点击“设置角色”，
+   并确认检测到的 Display 控制器、服装、场景帧率和传输上限。
+3. 选择“动画”或“模型”，然后点击“连接”。
+4. 在“动画”模式中，可通过 Maya 摆姿、拖动时间轴或播放动画进行实时预览；
+   如需复查一段动画，选择“缓存播放”并点击“捕获并回放”。捕获或上传失败时会
+   自动恢复实时预览并显示原因；回放运行失败会保留缓存，可重试或退出缓存模式。
+   捕获一超过固定的 20,000 帧或 1 GiB 上限就会立即停止。
+5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
+   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。关闭
+   “传递 BS”时，连接会标注为不可用于模型验收的 bone-only 诊断；开启
+   “传递 BS”但服装未声明 BlendShape 时，属于有意的仅骨骼驱动，会以空接受集
+   正常进入 Ready。两种情况下服装预览都仅由骨骼驱动，不驱动任何 Morph Target。
+   使用整角色 Driver 时，模型预览会保留显示身体、脸、头发及其他非服装
+   材质槽，并用生成的 Preview 替换解析出的原服装材质槽；Driver 独有的脸部、
+   头发 Morph Target 也会继续接收 Maya 中的同名曲线。服装与非服装几何体应使用
+   不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
+   其他部分。Refresh 失败时会保持 Error 状态且无可用预览，但会恢复显示已绑定的
+   Driver 以便检查；在下一次 Refresh 成功之前，模型连接仍会被阻止。
+6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
+   Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
+   所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：
+   请重新点击 **Refresh Preview** 并重新连接。

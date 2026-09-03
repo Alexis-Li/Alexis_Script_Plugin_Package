@@ -1,11 +1,11 @@
 # MtoU_LiveLink Architecture
 
 Date: 2026-07-31
-Status: Version 0.3.0 implemented and locally verified; unreleased
+Status: Version 0.4.0 implemented and locally verified; unreleased
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
-pending a complete rerun
-Last aligned with implementation: 2026-08-21
+complete stock-engine gate passed 2026-09-02
+Last aligned with implementation: 2026-09-03
 
 ## Summary
 
@@ -58,9 +58,9 @@ Acceptance resolves the animation scene's reference to the supplied binding
 scene without saving either Maya file, imports the unchanged FBX into Unreal,
 and exercises the negotiated character scene over all 321 display frames. The
 fixture is external test data and must not be copied into the repository or a
-release package. The stock-engine C04 acceptance remains the historical
-baseline until this C01 fixture completes the same gate; its bone counts, frame
-sizes, timings, and latency measurements are not C01 claims.
+release package. The stock-engine C04 acceptance remains historical evidence;
+the C01 fixture completed the current production gate on 2026-09-02, as
+recorded in `stock-engine-acceptance.md`.
 
 ## Goals
 
@@ -100,12 +100,14 @@ useful. No abstractions or configuration are added for them now.
 - Windows 64-bit only.
 - Autodesk Maya 2022.4, verified on the current workstation.
 - Stock Unreal Engine 5.7.4, verified on the current workstation.
+- Topia Engine 5.7.4, with Win64 plugin compilation and Athena editor loading
+  verified on the current workstation.
 - Unreal Editor only.
 
-The stock UE 5.7.4 installation is the baseline compilation target. The user's
-production project uses a third-party-modified UE 5.7 build. Compatibility with
-that build must not be claimed until the plugin is also compiled and exercised
-with that engine installation.
+Stock UE 5.7.4 remains the full functional-acceptance baseline. The separate
+Topia record covers compilation and editor loading without engine or host-project
+source/configuration edits; it does not extend the stock end-to-end behavior
+claim to every third-party UE 5.7 build.
 
 ## Names and Repository Locations
 
@@ -118,7 +120,7 @@ module conventions:
 - Runtime module: `MtoULiveLink`
 - Editor module: `MtoULiveLinkEditor`
 
-Both components share product version `0.3.0`. The composite project root owns
+Both components share product version `0.4.0`. The composite project root owns
 the matching English and Chinese READMEs, changelog, and license; host-specific
 tests stay beside the implementation they exercise.
 
@@ -180,15 +182,50 @@ The Runtime module owns:
 - the automatically registered native Live Link source;
 - the fixed `MtoU_Character` Live Link subject;
 - `UMtoULiveLinkBinding`, which references one existing Skeletal Mesh;
-- `AMtoULiveLinkActor`, which owns a Skeletal Mesh Component and applies the
-  subject through Unreal's native `ULiveLinkInstance`.
+- `AMtoULiveLinkActor`, which owns the Live Link-driven Skeletal Mesh Component,
+  a second Driver display, the coherent Preview readiness state, and the
+  transient Generated Preview Skeletal Mesh. Model preview layers the generated
+  garment over the Driver display with its resolved garment material slots
+  hidden; the Driver display follows the generated mesh's complete pose and
+  curves. Animation preview keeps the original single-Driver display.
+  The primary display applies the subject through Unreal's native
+  `ULiveLinkInstance`.
+  Runtime callers read Preview readiness only through one
+  `FMtoUPreviewReadiness` snapshot (state, stage, ready Generated Preview,
+  summary, and diagnostics).
 
 The Editor module owns:
 
 - the Content Browser factory for `MtoU_LiveLink Binding` assets;
 - the actor factory that turns a binding asset dragged into a viewport into an
   `AMtoULiveLinkActor`;
-- editor-only status presentation and asset validation.
+- editor-only status presentation and asset validation;
+- the single explicit Preview refresh interface
+  `FMtoUPreviewPreparation::RefreshActor`, which drives the Binding actor's
+  private readiness transitions, selects the Generated Preview for display
+  after a successful commit, and returns the coherent readiness snapshot;
+- the Editor-private focused preparation seam (free function
+  `MtoUPreparePreview`, its detailed `FMtoUPreviewPreparationResult`, quality
+  thresholds, and `MtoUEvaluatePreviewQuality`) in
+  `MtoULiveLinkPreviewDetail.h`, used by the implementation and the
+  Editor-private preparation tests but not part of any public interface;
+- the private `MtoUDriverGarmentSurface` module (`MtoUDriverGarmentSurface.h`
+  and `.cpp` in the Editor module's `Private/`), which resolves the Driver
+  garment surface for one Preview refresh through one plain function
+  `MtoUResolveDriverGarmentSurface` and one result struct. It owns the
+  Auto/Manual choice from `Binding.DriverGarmentSlotOverride` (a non-empty
+  override never falls back to Auto), all source-selection and
+  geometry-validation rules (spatial agreement radius, source-mass boundary,
+  twin-region ambiguity, imported-slot identity matching, connected-region
+  ownership, whole-Preview coverage), and filtered-surface construction that
+  preserves original Driver vertex IDs. It returns either a validated surface
+  or an atomic failure with no usable surface plus failure evidence
+  (identity, counts, coverage, diagnostics), and is side-effect free.
+  Preview preparation consumes exactly one resolution outcome; it keeps
+  owning asset-to-mesh conversion, surface-distance measurement, weight
+  transfer, Preview Morph transfer, Generated Preview Skeletal Mesh
+  construction, and quality evaluation. The Preview refresh transaction and
+  every readiness transition belong to the Binding actor.
 
 The plugin contains code only. Binding assets created by users live under their
 chosen project `/Game/...` folders and reference, rather than copy, the selected
@@ -293,26 +330,42 @@ remains the overall offset.
 - Endpoint: `127.0.0.1:54321`.
 - Concurrent clients: one.
 - Encoding: UTF-8 JSON preceded by an unsigned 64-bit, big-endian byte length.
-- Protocol version: `3`.
+- Protocol version: `6`.
 - Subject name: `MtoU_Character`.
 
 Message sequence:
 
-1. `init`: protocol version, an ordered list of bone records containing each
+1. `init`: protocol version, Character snapshot revision, selected workflow,
+   BS-transmission choice, an ordered list of bone records containing each
    normalized name, parent index, and source bind-local transform, plus the
    ordered curve names.
 2. `ready` or `error`: Unreal accepts or rejects the protocol, placed binding,
-   and skeleton hierarchy. An error closes the connection.
-3. `frame`: transforms in accepted bone order and an ordered numeric curve
-   array aligned with the curve names from `init`.
+   workflow, Preview readiness, and skeleton/Morph pairing. `ready` echoes the
+   accepted revision and workflow; a negotiation error closes the connection.
+3. Real-time Preview uses `frame`: transforms in accepted bone order and an
+   ordered numeric curve array aligned with the negotiated curve names.
+4. Cached Playback uses `cache_enter`, an identity-scoped
+   `cache_begin`/`cache_frame`/`cache_end` upload, then `cache_play`,
+   `cache_stop`, and `cache_clear`. Unreal replies with identity-scoped Ready,
+   progress, completion, stopped, cleared, or error outcomes and drives replay
+   locally only after accepting the complete cache.
 
-After `ready`, Maya sends only `frame` messages. Socket closure communicates
-transport or structural failure; Unreal logs the actionable reason locally.
+Socket closure communicates transport or structural failure. Cache validation
+and playback-performance failures remain recoverable inside the negotiated
+connection and identify the upload or play attempt they belong to.
 
-The protocol has no application-defined maximum message, bone, or curve count.
-Collections and buffers are sized from the received data and remain subject
-only to host memory and Unreal container representation limits. The parser
-still enforces three correctness invariants:
+The product has no fixed bone- or curve-count ceiling. Individual framed JSON
+payloads are limited by a frozen 32 MiB per-message framing ceiling enforced
+by both adapters at the length header before any parse or allocation (a
+violation closes the connection like the previous signed 32-bit container
+boundary). The frozen ceilings — per-message framing, encoded cache payload,
+and cache frame count — are pinned as the `limits` block of
+`protocol/conformance-v6.json`; that block is the single source of truth, and
+each host adapter asserts its own constants against it in its conformance
+test. Cached Playback is
+additionally limited to 20,000 frames, 1 GiB of encoded frame payload, 1,536
+MiB of predicted parsed transient memory, and a captured rate from 1 through
+60 fps. The parser enforces these resource bounds plus three frame invariants:
 
 - the transform count must equal the accepted skeleton's bone count;
 - the curve-value count must equal the accepted skeleton's curve count;
@@ -445,11 +498,25 @@ Development-only automation tests cover:
   parent-child motion, translation, and unit scale;
 - preservation of actor world transform while root-bone motion changes;
 - end-to-end loopback socket flow, second-client rejection, bind failure, and
-  clean idempotent source shutdown.
+  clean idempotent source shutdown;
+- Driver garment-surface resolution across the private
+  `MtoUResolveDriverGarmentSurface` seam
+  (`MtoULiveLink.Editor.GarmentSurface.Auto/Manual/Failures`): garment-only
+  whole-surface compatibility, full-character selection, material mimicry,
+  complete coverage, source-mass rejection, exact-duplicate and near-twin
+  ambiguity determinism, valid multi-slot overrides, stable imported-identity
+  matching, partial/missing/duplicate/repeated/empty-slot failures with no
+  usable surface escaping, and clearing the override back to Auto. The outer
+  Preview tests (`FullCharacter`, `GarmentOverride`) retain only cross-seam
+  integration, replacing the former `GarmentResolution` and
+  `GarmentFaultLines` rule assertions.
 
 ### Build and repository verification
 
 - Compile both Unreal modules against stock UE 5.7.4.
+- Compile and load both modules against Topia Engine 5.7.4 with
+  `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
+  the engine and production project.
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
 - Run the plugin's Unreal Automation tests.
 - Run the Maya project tests with Maya 2022 `mayapy`.
@@ -477,12 +544,13 @@ Development-only automation tests cover:
 10. Attempt a link with an intentionally wrong Skeletal Mesh and confirm that
     the pose is refused with explicit hierarchy differences.
 
-Compatibility is claimed only for stock Unreal Editor 5.7.4. The user's
-third-party-modified UE 5.7 installation was explicitly excluded from the
-2026-08-11 acceptance scope; it must pass the same checks before compatibility
-with that engine is reported.
+Full functional compatibility is claimed only for stock Unreal Editor 5.7.4.
+The third-party-modified Topia Engine 5.7.4 installation was excluded from the
+2026-08-11 scope; the 2026-08-28 Topia record now adds successful compilation
+and Athena editor loading, while end-to-end production behavior remains outside
+that narrower gate.
 
-## Version 0.2.0 Addendum
+## Historical Version 0.2.0 Addendum
 
 Date: 2026-08-12
 
@@ -523,19 +591,34 @@ suffix candidate below the already matched parent. Live Link publishes the
 actual Unreal bone name while preserving Maya transform order. The connection
 reports every remap as a warning; zero or multiple candidates remain blocking.
 
-## Protocol v3 Contract and Conformance Corpus
+## Historical Protocol v4 Contract and Conformance Corpus
 
-Protocol v3 freezes the following wire fields. Every listed field is required;
+Protocol v4 freezes the following wire fields. Every listed field is required;
 adapters ignore unknown fields so additive transport metadata remains
 forward-compatible. A structural or semantic field change requires a new
 protocol version.
 
 | Message | Required fields | Contract role |
 | --- | --- | --- |
-| `init` | `type`, `version`, parent-first `bones` with bind-local transforms, `curves` | Maya character description |
-| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose |
-| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps` | Successful negotiation reply |
+| `init` | `type`, `version`, `workflow`, `blendshapes_enabled`, parent-first `bones` with bind-local transforms, `curves` | Maya character description and selected streaming mode |
+| `frame` | `type`, `transforms`, `curves` | One ordered evaluated pose carrying the full curve manifest |
+| `ready` | `type`, `missing_in_unreal`, `missing_in_maya`, `bone_name_remaps`, `workflow`, `target_morph_count`, `accepted_morph_count` | Successful negotiation reply |
 | `error` | `type`, `code`, `message`, `details` | Stable failure reply |
+
+When `blendshapes_enabled` is false, Maya still sends the complete `curves`
+manifest, while the ready reply's `accepted_morph_count` and the published
+Live Link property list both stay empty so the session remains consistent.
+
+Model preview negotiation distinguishes an intentionally empty manifest from a
+failed non-empty one. A current outfit that declares zero BlendShape names is
+bone-driven by design: with BS transmission enabled it still negotiates Ready
+with an empty Accepted Preview Morph set and no placeholder curve or synthetic
+manifest entry, while a non-empty manifest whose intersection with the
+generated library is empty keeps blocking with `PREVIEW_MORPH_MISMATCH`.
+Partial and complete intersections keep their warning and Ready behavior, and
+other garments' BlendShapes never satisfy the current outfit's coverage. This
+clarification requires no new wire field and leaves protocol v6 framing,
+message shapes, Cached Playback identity, and version negotiation unchanged.
 
 Framing, invalid UTF-8, invalid `init`, and structurally invalid `frame`
 messages use `INVALID_MESSAGE` and close the connection. An unsupported numeric
@@ -544,14 +627,17 @@ non-finite or Unreal-float-range value in an otherwise structural frame drops
 only that frame and keeps the connection. An unusable connection-negotiation
 outcome sends its negotiation error and then closes.
 
-The machine-authoritative conformance corpus is
-`composite/MtoULiveLink/protocol/conformance-v3.json`. Maya repository tests
-read it directly. A Python-standard-library generator projects the same cases
+The v4 wire contract above is retained as history; its standalone corpus was
+superseded and is no longer retained. The frozen v5 corpus remains beside the
+current machine-authoritative `conformance-v6.json`. Maya repository tests read
+v6 directly, and a Python-standard-library generator projects the same cases
 into a checked-in, test-only Unreal `.inl`; repository validation fails if that
 projection is stale. Neither shipped host component has a runtime dependency
-on the corpus or on its sibling host directory.
+on the corpus or on its sibling host directory. Protocol v5 later extends the
+v4 contract with the Cached Playback transfer and control messages documented
+below.
 
-## Reference-Pose Mapping Revision
+## Historical Reference-Pose Mapping Revision
 
 Date: 2026-08-19
 
@@ -584,14 +670,14 @@ Live Link. Therefore `SourceCurrent == SourceBind` produces exactly the target
 reference pose, while arbitrary current animation remains independent of frame
 1 and of the pose visible when the user connects.
 
-## Cached Playback Revision
+## Historical Transport-Paced Cached Playback Revision
 
 Date: 2026-08-21
 
 Cached Playback is implemented entirely in the Maya component behind two
 focused internal seams: `_PlaybackCache` owns incrementally written temporary
 files, metadata, atomic completion, ordered iteration, replacement, stale
-removal, and idempotent deletion; `_CachedPlaybackSession` owns connection
+removal, and idempotent deletion; `_CachedPlayback` owns connection
 readiness, character-snapshot revision checks, Playback Range capture,
 timeline restoration, progress/cancellation, and ordered replay. The existing
 `_StreamingSession` pauses its timer and callbacks without renegotiating the
@@ -630,6 +716,261 @@ events. The external C01 production fixture remains required for the
 stock-engine 321-frame production gate; automated pure/host checks do not
 claim that fixture has passed.
 
+## Historical Protocol v5 Upload-then-Play Cached Playback Revision
+
+Date: 2026-08-25
+
+Specification #16 supersedes the transport-paced cached replay above. Maya's
+`_PlaybackCache` keeps owning complete capture, metadata, atomic completion,
+iteration, replacement, and deletion; `_CachedPlayback` no longer paces
+replay with Maya timers. After capture completes it uploads the whole cache
+without a real-time deadline — `cache_begin` declares revision, captured range,
+scene rate, frame count, and encoded size (bounded per-frame size times frame
+count), indexed `cache_frame` messages stream in chunks through the sender's
+ordered queue so Maya memory stays bounded, and `cache_end` finishes the
+upload. Maya then blocks on `cache_ready`; during local replay it only drains
+Unreal's control replies on a lightweight poller timer and sends no animation
+data.
+
+The Unreal runtime module gains `FMtoUCacheSession`, a game-thread transient
+cache owner scoped to one negotiated session id. The worker thread parses cache
+message shapes and forwards commands with their session identity; the game
+thread validates semantics against negotiated bone/curve counts and frozen
+bounds (64 MiB declared payload, 20 000 frames, 1–60 fps), buffers validated
+frames, and transitions Idle → Receiving → Ready atomically at `cache_end`.
+Partial uploads are dropped entirely and can never become Ready or replayable;
+cache validation errors reply with stable codes while keeping the connection
+open. While the cache owns the session, ordinary live frames are dropped and
+their pending slots cleared, viewport realtime override is released during
+capture/upload, re-enabled for local playback, and restored on stop, clear, or
+disconnect.
+
+Local replay applies each buffered frame exactly once, in order, through the
+existing retargeted Live Link publication path, scheduled by the captured scene
+rate on an injectable monotonic clock. Two guards report
+`CACHED_PLAYBACK_PERFORMANCE` instead of silently degrading: publishing may not
+cost more wall time than the schedule it consumed (plus one interval of slack),
+and total completion time may not exceed the schedule by more than max(0.5 s,
+5%). Manual stop holds the last applied frame and retains the buffer;
+replay-again replays it without re-upload when the revision still matches;
+recapture, revision change, clear, disconnect, tool close, and exit invalidate
+coherently. No package, `.uasset`, or Content Browser asset is created.
+
+Protocol v5 freezes the cache wire contract in
+`composite/MtoULiveLink/protocol/conformance-v5.json`: `cache_begin`
+(`revision`, `fps`, `start_frame`, `end_frame`, `frame_count`, `payload_size`),
+indexed `cache_frame`, `cache_end`, `cache_ready` (`frame_count`),
+`cache_play` (`revision`), `cache_stop`, `cache_clear`, `cache_complete`
+(`frame_count`), plus stable errors `CACHE_METADATA_INVALID`,
+`CACHE_PAYLOAD_TOO_LARGE`, `CACHE_FRAME_INDEX_INVALID`,
+`CACHE_FRAME_CONTENTS_INVALID`, `CACHE_INVALID_STATE`, `CACHE_NOT_READY`,
+`CACHE_REVISION_MISMATCH`, and `CACHED_PLAYBACK_PERFORMANCE`. The corpus also
+pins state violations against a seeded cache session. Protocol v4 clients are
+rejected with the normal version-mismatch error, so paired installation of
+matching component versions remains required.
+
+## Protocol v6 Truthful-Completion Revision
+
+Date: 2026-08-25
+
+Specification #17 hardens the v5 upload-then-play architecture without
+reopening it. The negotiated character snapshot revision is now established by
+`init` and echoed by `ready`; cache uploads validate their declared revision
+against it, so client messages cannot invent compatibility. Every upload and
+play attempt carries a monotonically increasing identity (`upload_id`,
+`play_id`), and every Unreal outcome (Ready, bounded progress, completion with
+applied count and elapsed duration, stopped, cleared, runtime errors) echoes
+the identity that owns it. Maya drops well-formed outcomes whose identity does
+not match the current operation and keeps waiting for the current one.
+
+Unreal applies at most one cached pose per source-frame position per
+game-thread update: before publishing the next pose it checks the monotonic
+clock against that position's valid window, and a missed window raises the
+stable `CACHED_PLAYBACK_PERFORMANCE` failure before any overdue catch-up burst
+can collapse poses into a single visible tick. Publication callbacks report
+acceptance; applied evidence advances only on acceptance, and successful
+completion additionally requires total elapsed time within the captured-rate
+bound.
+
+Resource accounting moved into production paths: encoded bytes are metered at
+the framing boundary with overflow-safe accumulation against both the declared
+size and the frozen 1 GiB limit, and parsed transient memory is preflighted
+from negotiated transform/curve counts against a fixed 1536 MiB budget before
+allocation. Violations reject the whole upload atomically while preserving the
+negotiated session. Negative frame indexes return
+`CACHE_FRAME_INDEX_INVALID` on the production socket path without closing.
+The ordered-to-Latest sender transition is lossless: queued controls migrate
+to a carry-over queue so `cache_clear` stays ahead of the first resumed live
+pose, and an explicit `cache_enter` control establishes cached ownership
+(held pose, live-frame isolation, released viewport realtime) before capture.
+
+## Deep Cached Playback Module
+
+Date: 2026-08-29
+
+Issue #26 deepens the Maya Cached Playback boundary without changing protocol
+v6 or user-visible behavior. One `_CachedPlayback` is attached permanently to
+one negotiated Animation `_StreamingSession` when that session becomes Ready;
+attachment validates the negotiated Character snapshot revision but does not
+pause sampling or send `cache_enter` until `enter()`.
+
+Controller forwards only `enter()`, `leave()`, `capture()`, `replay()`,
+`stop_replay()`, `cancel_capture()`, `detach()`, and `discard()`. It observes a
+copied, immutable `_CachedPlaybackView` containing semantic state, progress,
+cache summary, a one-delivery diagnostic, and action capabilities. Controller
+does not inspect a Playback cache, internal phase, reply queue, timer, protocol
+identity, or Streaming session attachment identity.
+
+`_CachedPlayback` owns capture sequencing, temporary-cache handoff, bounded
+declaration and upload, identity-matched outcomes, replay control, ordered
+clear-before-resume, recovery, and cleanup. Unexpected recoverable transport
+loss may return an opaque `_CachedPlaybackRetention` containing only a complete
+compatible local cache; intentional lifecycle exits, partial capture,
+incompatible Character revisions, and corrupt cache data discard it. A future
+Ready attachment may consume that retention without exposing a cache path or
+deletion interface to Controller. `_PlaybackCache` remains the disk module and
+`_StreamingSession` remains the transport module.
+
+## Deepened Preview Readiness
+
+Date: 2026-08-29
+
+Issue #25 deepened Preview readiness on the Binding Actor without changing
+ADR-0003 actor-owned, explicit, stale-safe readiness, ADR-0009 workflow
+negotiation, ADR-0010 transactional Preview Morph transfer, or ADR-0011
+Accepted Preview Morph semantics.
+
+The actor exposes one coherent `FMtoUPreviewReadiness` snapshot (state, stage,
+ready Generated Preview, artist summary, and diagnostics). Build start,
+monotonic stage observation, successful commit, failed rejection,
+validation-stage rejection of invalid ownership or persistence flags,
+invalidation, stale-result protection, and transient Generated Preview
+ownership are private transitions; an illegal transition emits an
+`ensureAlways` and is ignored so a stale callback cannot overwrite None,
+Dirty, a newer build, or a successful result. Because a refresh runs
+synchronously on the Game Thread, a source build-completion event that
+arrives while Building is reentrant to the build's own source read and never
+self-invalidates.
+
+State meanings are exhaustive: None (no Binding or a required Preview input
+absent), Dirty (complete inputs, current revision unrefreshed or
+invalidated), Building (explicit refresh running, stage observable), Ready
+(complete Generated Preview, no quality warning), Warning (complete usable
+Generated Preview with a quality warning), and Error (the explicit refresh
+failed for the current revision). Removing either required input enters None;
+changing complete inputs enters Dirty.
+
+The Editor module keeps one explicit refresh interface,
+`FMtoUPreviewPreparation::RefreshActor`, which drives the private transitions
+and separately selects the committed Generated Preview for immediate display;
+readiness commit itself never owns display selection. Detailed preparation
+evidence moved to the Editor-private `MtoULiveLinkPreviewDetail.h` seam.
+Connection status, Driver-versus-Generated display choice, the Accepted
+Preview Morph set, partial Morph coverage, bone-only comparison, and Model
+diagnostics consume readiness and cannot modify Ready or Warning. Runtime
+tests establish readiness through one development-only friend seam that drives
+the same private transition path, and the old exported mutation getters are
+removed without a forwarding shim because 0.4.0 is unreleased. User assets,
+serialized Binding fields, and the artist workflow are unchanged.
+
+## Full-character Model Display Composition
+
+Date: 2026-08-31
+
+Model preview keeps the Generated Preview as the Live Link-driven garment and
+adds no Binding input. Preview refresh carries the resolved Driver garment
+material-slot indices into the actor-owned transient display state. The actor
+shows the original Driver on a follower Skeletal Mesh Component, hides those
+original garment slots for LOD0, and follows the Generated Preview's complete
+skeleton through Leader Pose. Imported polygon-group identities map resolved
+geometry to final material slots; Refresh rejects a slot shared across garment
+and visible non-garment groups. Model negotiation uses the union of Generated
+Preview and Driver Morph Targets, and accepted frame curves are also applied to
+matching Driver Morph Targets because Unreal 5.7 follower curve propagation is
+not reliable without material curves. Body, face, hair, and other non-garment
+Driver slots and Morphs therefore remain visible without duplicating asset
+selection, while Animation preview continues to display the complete Driver
+through the primary component.
+Invalidation and deletion clear both Model display layers transactionally;
+garment-only Drivers simply hide all of their replaced Driver slots.
+
+Issue #27 hardened that composition boundary without adding a Binding field.
+Imported polygon-group names remain the primary identity, while collapsed
+source descriptions use UE 5.7's public current-LOD section metadata. One
+shared per-triangle resolver requires every collapsed triangle to map, rejects
+conflicting stable metadata, and allows the richer current-LOD signal to
+explain an intentional polygon-group collapse. Final slots are never inferred
+from polygon or triangle ordinals; Manual Override uses the same resolver and
+current-LOD mapping, and a triangle that maps to no final slot blocks the
+override with the same fail-closed error as Auto. Refresh fails
+transactionally with Preview Error when a
+selected source group cannot be mapped, or when any selected and visible
+non-garment triangle resolves to the same final slot, even if their source
+ordinals differ. Focused coverage holds reordered and unused slots, collapsed
+descriptions, partial and conflicting metadata, LOD-remapped Manual Override,
+triangle-group fallback, same-slot sharing, and existing Morph projection
+behavior. The
+Runtime workflow fixture now duplicates its Driver into actor-owned transient
+state before registering Morph Targets, so automation never mutates the shared
+`/Engine` asset.
+
+## Cached Playback Recovery, Limits, and Protocol Intake Hardening
+
+Date: 2026-09-01
+
+Issue #30 makes Cached Playback recoverable, resource-bounded, and safe
+against malformed localhost input from capture through Unreal admission, while
+preserving Protocol v6 message identities and connection-closing semantics.
+
+One truthful post-failure transition governs Maya's `_CachedPlayback`: any
+failure path that resumes Real-time Preview and clears Unreal cache ownership
+(capture cancellation, disk-space and sampling failures, upload rejection, and
+corrupt or incompatible cache invalidation) now renders as the REALTIME state
+carrying the failure diagnostic, so the semantic state, enabled actions,
+sender mode, Unreal cache ownership, status text, and actual Real-time Preview
+behavior always agree. Only a runtime playback failure that intentionally
+keeps the negotiated cached session renders as FAILED, where leaving and
+retrying remain available. A dedicated CANCELLED view state was removed. Every
+Cached Playback state that owns the negotiated session keeps a lightweight
+transport observer running, so idle, ready, completed, stopped, and cached
+failure states surface transport termination without waiting for a user
+action; detection completes a DETACHED transition and retains a compatible
+completed cache. Capture performs the same readiness check before every sample;
+transport loss deletes the partial cache, restores the original timeline frame,
+and reaches DETACHED without sampling again.
+
+Maya now enforces the frozen cache limits incrementally: a Playback Range
+whose inclusive frame count would exceed 20,000 is refused before any capture
+work begins, and accumulated per-frame encoded bytes crossing 1 GiB stop the
+capture at that frame with the partial owned cache deleted. Unreal gains a
+bounded producer/consumer intake queue between the network worker and the
+Game Thread: a parsed cache frame gains queued ownership only after a frozen
+frame/byte admission budget accepts it, so a stalled Game Thread can never
+grow queued parsed memory without limit. The primary throttle holds one raw
+(never-parsed) frame and pauses the socket reader so the sender experiences TCP
+backpressure, while shutdown and session-termination checks keep running every
+worker pass; the in-queue wait is only reachable under a control-message flood
+and is released by shutdown or a session swap, and control commands
+(cache_clear, cache_end, and similar) are never held behind the frame budget,
+so no disconnect, clear, Editor shutdown, or teardown can wedge. Cache frame
+and end commands carry the worker-observed upload identity, and a rejected,
+superseded, or cleared upload discards all pending commands of that session
+and upload identity at once, never affecting a newer attempt. A recoverably
+rejected `cache_begin` switches the worker to that new upload identity and
+poisons it, dropping its pipelined frame/end messages until a valid begin or
+clear resets the identity. Intake validation is message-appropriate and
+happens before allocation or unsafe conversion: a 32 MiB per-message framing
+ceiling is enforced at the length header on both hosts; routing scans only the
+top-level JSON `type` token before the selected parser builds one JSON tree;
+and cache frames compare raw transform and curve cardinalities with the
+negotiated counts before reserving or converting either array. `cache_begin`
+capture-range arithmetic is overflow-safe in 64-bit, and `int64` JSON integer
+conversion rejects out-of-range values before casting. The conformance corpus
+adds the framing ceiling, the
+overflow-wrapping range, and the extreme-integer cases; a documented 701-bone
+production Character remains supported within the fixed parsed-memory budget
+at the maximum frame count.
+
 ## Documentation and Packaging
 
 The composite project includes matching English and Chinese README content
@@ -638,5 +979,7 @@ Internal protocol, development, and test details remain in this project history
 and beside the implementation where appropriate.
 
 The Maya and Unreal components are independently packageable with the existing
-repository tools. Generated archives and Unreal build output remain untracked.
-Version updates keep both components on the same public semantic version.
+repository tools. The Topia build helper installs only local Win64 editor output
+under the target plugin. Generated archives and Unreal build output remain
+untracked. Version updates keep both components on the same public semantic
+version.

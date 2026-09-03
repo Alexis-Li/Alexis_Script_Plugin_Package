@@ -2,16 +2,22 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUCacheCommandQueue.h"
 #include "MtoUConnectionNegotiator.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
+#include "MtoULiveLinkTestAnimInstance.h"
 
+#include "Animation/MorphTarget.h"
+#include "Async/Async.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/ThreadSafeCounter.h"
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
 #include "LiveLinkInstance.h"
@@ -21,6 +27,8 @@
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "Tests/EnsureScope.h"
+#include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -30,7 +38,52 @@
 #include "LevelEditorViewport.h"
 #endif
 
+namespace
+{
+FThreadSafeCounter GMtoUConflictingPostProcessEvaluations;
+}
+
+void UMtoULiveLinkConflictingPostProcess::NativeUpdateAnimation(float DeltaSeconds)
+{
+    (void)DeltaSeconds;
+    GMtoUConflictingPostProcessEvaluations.Increment();
+}
+
 #include "MtoUConformanceCorpus.inl"
+
+/**
+ * Development-only test seam. It drives the Binding actor's real private
+ * refresh transition path so Runtime tests can establish readiness without
+ * exposing production mutation methods (Issue #25).
+ */
+class FMtoUPreviewReadinessTestAccess
+{
+public:
+    static bool Begin(AMtoULiveLinkActor& Actor)
+    {
+        return Actor.BeginPreviewBuild();
+    }
+    static void SetStage(AMtoULiveLinkActor& Actor, EMtoUPreviewBuildStage Stage)
+    {
+        Actor.SetPreviewBuildStage(Stage);
+    }
+    static bool Commit(AMtoULiveLinkActor& Actor, USkeletalMesh* Mesh, bool bWarning,
+        const FString& Diagnostics, const FString& Summary = FString(),
+        const TArray<int32>& DriverGarmentMaterialSlots = {})
+    {
+        return Actor.CompletePreviewBuild(
+            Mesh, bWarning, Diagnostics, Summary, DriverGarmentMaterialSlots);
+    }
+    static bool Fail(AMtoULiveLinkActor& Actor, EMtoUPreviewBuildStage Stage,
+        const FString& Diagnostics)
+    {
+        return Actor.FailPreviewBuild(Stage, Diagnostics);
+    }
+    static void Release(AMtoULiveLinkActor& Actor)
+    {
+        Actor.ReleaseGeneratedPreview();
+    }
+};
 
 namespace
 {
@@ -122,6 +175,39 @@ FString TransformJson(const FTransform& Transform)
         Scale.X,
         Scale.Y,
         Scale.Z);
+}
+
+FString ReferenceSkeletonBonesJson(const FReferenceSkeleton& Skeleton)
+{
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index > 0)
+        {
+            Bones += TEXT(",");
+        }
+        Bones += FString::Printf(
+            TEXT("[\"%s\",%d,%s]"),
+            *Skeleton.GetBoneName(Index).ToString(),
+            Skeleton.GetParentIndex(Index),
+            *TransformJson(Skeleton.GetRefBonePose()[Index]));
+    }
+    return Bones;
+}
+
+bool AddUniformMorph(USkeletalMesh& Mesh, FName Name, const FVector3f& PositionDelta)
+{
+    UMorphTarget* Morph = NewObject<UMorphTarget>(&Mesh, Name, RF_Transient);
+    FMorphTargetLODModel& LODModel = Morph->GetMorphLODModels().AddDefaulted_GetRef();
+    FMorphTargetDelta& Delta = LODModel.Vertices.AddDefaulted_GetRef();
+    Delta.SourceIdx = 0;
+    Delta.PositionDelta = PositionDelta;
+    LODModel.NumVertices = 1;
+    LODModel.NumBaseMeshVerts = 1;
+    LODModel.SectionIndices.Add(0);
+    const bool bRegistered = Mesh.RegisterMorphTarget(Morph, false);
+    Mesh.InitMorphTargets();
+    return bRegistered;
 }
 
 TSharedRef<FInternetAddr> LoopbackAddress(ISocketSubsystem& SocketSubsystem, uint16 Port)
@@ -276,12 +362,59 @@ TArray<FTransform> RetargetPose(
     const TArray<FTransform>& TargetRefPose,
     const TArray<int32>& BoneParents)
 {
-    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
-        FrameFromPose(CurrentPose), {}, SourceBindPose, TargetRefPose, BoneParents);
+    FLiveLinkFrameDataStruct FrameData;
+    FString Error;
+    const bool bBuilt = FMtoUProtocol::MakeRetargetedFrameData(
+        FrameFromPose(CurrentPose), {}, SourceBindPose, TargetRefPose, BoneParents,
+        FrameData, Error);
+    ensureMsgf(bBuilt, TEXT("shared retarget test input rejected: %s"), *Error);
     const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
     return Animation ? Animation->Transforms : TArray<FTransform>();
 }
 }
+
+namespace
+{
+FMtoUCacheCommand MakeCacheBeginCommand(int32 Revision, int32 FrameCount,
+    double Fps = 30.0, int32 UploadId = 1)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Begin;
+    Command.Begin.UploadId = UploadId;
+    Command.Begin.Revision = Revision;
+    Command.Begin.Fps = Fps;
+    Command.Begin.StartFrame = 1001;
+    Command.Begin.EndFrame = 1001 + FrameCount - 1;
+    Command.Begin.FrameCount = FrameCount;
+    Command.Begin.PayloadSize = 64ll * FrameCount;
+    return Command;
+}
+
+FMtoUCacheCommand MakeCachedFrameCommand(int32 Index, float Value,
+    int64 EncodedBytes = 64, int32 CurveCount = 0)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Frame;
+    Command.Index = Index;
+    Command.EncodedBytes = EncodedBytes;
+    FMtoUTransform Transform;
+    Transform.Translation = FVector(Value, 0.0, 0.0);
+    Command.Frame.Transforms.Add(Transform);
+    for (int32 Curve = 0; Curve < CurveCount; ++Curve)
+    {
+        Command.Frame.Curves.Add(0.5);
+    }
+    return Command;
+}
+
+FMtoUCacheCommand MakeSimpleCacheCommand(FMtoUCacheCommand::EKind Kind)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = Kind;
+    return Command;
+}
+}
+
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUConformanceCorpusTest,
     "MtoULiveLink.Protocol.ConformanceCorpus",
@@ -297,6 +430,27 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
     {
         AddError(TEXT("Generated conformance corpus must be valid JSON."));
         return false;
+    }
+
+    // The corpus `limits` block is the single source of truth for the frozen
+    // wire ceilings both hosts hardcode independently. Pin the Unreal
+    // constants against it so any one-sided edit fails here and in Maya.
+    const TSharedPtr<FJsonObject> Limits = Corpus->GetObjectField(TEXT("limits"));
+    if (Limits.IsValid())
+    {
+        TestEqual(TEXT("framing ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxMessageBytes,
+            static_cast<int64>(Limits->GetNumberField(TEXT("max_message_bytes"))));
+        TestEqual(TEXT("cache payload ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxCachePayloadBytes,
+            static_cast<int64>(Limits->GetNumberField(TEXT("max_cache_payload_bytes"))));
+        TestEqual(TEXT("cache frame ceiling matches the shared corpus limit"),
+            FMtoUProtocol::MaxCacheFrameCount,
+            static_cast<int32>(Limits->GetNumberField(TEXT("max_cache_frame_count"))));
+    }
+    else
+    {
+        AddError(TEXT("Conformance corpus must define a limits block."));
     }
 
     int32 ApplicableCount = 0;
@@ -428,7 +582,10 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             continue;
         }
 
-        if (Operation == TEXT("ready") || Operation == TEXT("error"))
+        if (Operation == TEXT("ready") || Operation == TEXT("error")
+            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_progress")
+            || Operation == TEXT("cache_complete") || Operation == TEXT("cache_stopped")
+            || Operation == TEXT("cache_cleared"))
         {
             const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
             TArray<uint8> PacketBytes;
@@ -449,14 +606,61 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     Remaps.Add(Value->AsString());
                 }
                 PacketBytes = FMtoUProtocol::EncodeReady(
-                    Names(TEXT("missing_in_unreal")), Names(TEXT("missing_in_maya")), Remaps);
+                    Names(TEXT("missing_in_unreal")),
+                    Names(TEXT("missing_in_maya")),
+                    Remaps,
+                    Source->GetStringField(TEXT("workflow")),
+                    static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
+            }
+            else if (Operation == TEXT("cache_ready"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheReady(
+                    static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
+            }
+            else if (Operation == TEXT("cache_progress"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheProgress(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied"))));
+            }
+            else if (Operation == TEXT("cache_complete"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheComplete(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frame_count"))),
+                    Source->GetNumberField(TEXT("elapsed_seconds")));
+            }
+            else if (Operation == TEXT("cache_stopped"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheStopped(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
+            }
+            else if (Operation == TEXT("cache_cleared"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheCleared(
+                    static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
             }
             else
             {
+                // Cache-operation errors may echo the owning identity; the
+                // encoder forwards it so the corpus pins the scoped shape.
+                const int32 EchoUploadId = Source->HasField(TEXT("upload_id"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("upload_id")))
+                    : INDEX_NONE;
+                const int32 EchoPlayId = Source->HasField(TEXT("play_id"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("play_id")))
+                    : INDEX_NONE;
                 PacketBytes = FMtoUProtocol::EncodeError(
                     Source->GetStringField(TEXT("code")),
                     Source->GetStringField(TEXT("message")),
-                    Source->GetStringField(TEXT("details")));
+                    Source->GetStringField(TEXT("details")),
+                    EchoUploadId,
+                    EchoPlayId);
             }
             FMtoUFrameDecoder Decoder;
             TArray<uint8> Reply;
@@ -471,17 +675,535 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 TestEqual(*FString::Printf(TEXT("%s reply type"), *Id),
                     Encoded->GetStringField(TEXT("type")), Operation);
-                for (const TCHAR* Field : Operation == TEXT("ready")
-                    ? TArray<const TCHAR*>{TEXT("missing_in_unreal"), TEXT("missing_in_maya"), TEXT("bone_name_remaps")}
-                    : TArray<const TCHAR*>{TEXT("code"), TEXT("message"), TEXT("details")})
+                TArray<const TCHAR*> RequiredFields;
+                if (Operation == TEXT("ready"))
+                {
+                    RequiredFields = {
+                        TEXT("revision"),
+                        TEXT("missing_in_unreal"), TEXT("missing_in_maya"),
+                        TEXT("bone_name_remaps"), TEXT("workflow"),
+                        TEXT("target_morph_count"), TEXT("accepted_morph_count")};
+                }
+                else if (Operation == TEXT("error"))
+                {
+                    RequiredFields = {TEXT("code"), TEXT("message"), TEXT("details")};
+                }
+                else if (Operation == TEXT("cache_cleared"))
+                {
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id")};
+                }
+                else if (Operation == TEXT("cache_progress"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied")};
+                }
+                else if (Operation == TEXT("cache_complete"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied_frame_count"),
+                        TEXT("elapsed_seconds")};
+                }
+                else if (Operation == TEXT("cache_stopped"))
+                {
+                    RequiredFields = {TEXT("play_id")};
+                }
+                else
+                {
+                    RequiredFields = {TEXT("upload_id"), TEXT("revision"), TEXT("frame_count")};
+                }
+                for (const TCHAR* Field : RequiredFields)
                 {
                     TestTrue(*FString::Printf(TEXT("%s required field %s"), *Id, Field),
                         Encoded->HasField(Field));
                 }
+                if (Operation == TEXT("ready")
+                    || Operation == TEXT("cache_ready"))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s echoes the negotiated revision"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("revision"))),
+                        static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
+                }
+                if (Operation == TEXT("error"))
+                {
+                    for (const TCHAR* IdentityField : {TEXT("upload_id"), TEXT("play_id")})
+                    {
+                        if (Source->HasField(IdentityField))
+                        {
+                            TestEqual(
+                                *FString::Printf(TEXT("%s echoes %s"), *Id, IdentityField),
+                                static_cast<int32>(Encoded->GetNumberField(IdentityField)),
+                                static_cast<int32>(Source->GetNumberField(IdentityField)));
+                        }
+                    }
+                }
             }
+            continue;
+        }
+
+        if (Operation.StartsWith(TEXT("cache_")))
+        {
+            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
+                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
+                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            FString Error;
+            FString ErrorCode = TEXT("INVALID_MESSAGE");
+            bool bAccepted = false;
+
+            FMtoUCacheCommand Command;
+            bool bCommandKnown = true;
+            if (Operation == TEXT("cache_enter"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Enter;
+                bAccepted = FMtoUProtocol::ParseCacheEnter(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_begin"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Begin;
+                bAccepted = FMtoUProtocol::ParseCacheBegin(Bytes, Command.Begin, Error, ErrorCode);
+            }
+            else if (Operation == TEXT("cache_frame"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Frame;
+                bAccepted = FMtoUProtocol::ParseCacheFrame(
+                    Bytes,
+                    INDEX_NONE,
+                    INDEX_NONE,
+                    Command.Index,
+                    Command.Frame,
+                    Error,
+                    &ErrorCode);
+            }
+            else if (Operation == TEXT("cache_end"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::End;
+                bAccepted = FMtoUProtocol::ParseCacheEnd(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_play"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Play;
+                bAccepted = FMtoUProtocol::ParseCachePlay(Bytes, Command.PlayId, Error);
+            }
+            else if (Operation == TEXT("cache_stop"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Stop;
+                bAccepted = FMtoUProtocol::ParseCacheStop(Bytes, Error);
+            }
+            else if (Operation == TEXT("cache_clear"))
+            {
+                Command.Kind = FMtoUCacheCommand::EKind::Clear;
+                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Error);
+            }
+            else
+            {
+                bCommandKnown = false;
+            }
+
+            // State-sensitive cases run against a seeded transient cache
+            // session so the corpus pins Unreal's session semantics too.
+            const FString SessionMode = Case->HasField(TEXT("session"))
+                ? Case->GetStringField(TEXT("session"))
+                : FString();
+            if (bCommandKnown && !SessionMode.IsEmpty())
+            {
+                double FakeNow = 100.0;
+                FMtoUCacheSession Session;
+                Session.SetClock([&FakeNow]() { return FakeNow; });
+                Session.SetValidationCounts(1, 0);
+                Session.SetNegotiatedRevision(Case->HasField(TEXT("negotiated_revision"))
+                    ? static_cast<int32>(Case->GetNumberField(TEXT("negotiated_revision")))
+                    : 7);
+                if (SessionMode == TEXT("uploaded"))
+                {
+                    FMtoUCacheCommand SeedBegin;
+                    SeedBegin.Kind = FMtoUCacheCommand::EKind::Begin;
+                    SeedBegin.Begin.UploadId = 1;
+                    SeedBegin.Begin.Revision = SessionMode == TEXT("uploaded")
+                        ? (Case->HasField(TEXT("negotiated_revision"))
+                            ? static_cast<int32>(Case->GetNumberField(TEXT("negotiated_revision")))
+                            : 7)
+                        : 7;
+                    SeedBegin.Begin.Fps = 30.0;
+                    SeedBegin.Begin.StartFrame = 0;
+                    SeedBegin.Begin.EndFrame = 0;
+                    SeedBegin.Begin.FrameCount = 1;
+                    SeedBegin.Begin.PayloadSize = 96;
+                    FMtoUCacheCommand SeedFrame =
+                        MakeCachedFrameCommand(0, 1.0f, 64);
+                    FMtoUCacheCommand SeedEnd;
+                    SeedEnd.Kind = FMtoUCacheCommand::EKind::End;
+                    FString SeedCode;
+                    FString SeedDetails;
+                    TestTrue(*FString::Printf(TEXT("%s seeds an uploaded session"), *Id),
+                        Session.HandleCommand(SeedBegin, SeedCode, SeedDetails)
+                        && Session.HandleCommand(SeedFrame, SeedCode, SeedDetails)
+                        && Session.HandleCommand(SeedEnd, SeedCode, SeedDetails));
+                }
+                ErrorCode = TEXT("");
+                bAccepted = Session.HandleCommand(Command, ErrorCode, Error);
+                if (!bAccepted && ErrorCode.IsEmpty())
+                {
+                    ErrorCode = TEXT("INVALID_MESSAGE");
+                }
+            }
+            else if (Operation == TEXT("cache_frame") && bAccepted
+                && Case->HasField(TEXT("expected_counts")))
+            {
+                // Cached frames never close the connection over value
+                // problems; they reject the whole upload with a stable code.
+                const TSharedPtr<FJsonObject> Counts = Case->GetObjectField(TEXT("expected_counts"));
+                bool bStructural = false;
+                FString ValidationError;
+                if (!FMtoUProtocol::ValidateFrame(
+                        Command.Frame,
+                        static_cast<int32>(Counts->GetNumberField(TEXT("transforms"))),
+                        static_cast<int32>(Counts->GetNumberField(TEXT("curves"))),
+                        ValidationError,
+                        bStructural))
+                {
+                    bAccepted = false;
+                    ErrorCode = TEXT("CACHE_FRAME_CONTENTS_INVALID");
+                    Error = ValidationError;
+                }
+            }
+
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id),
+                !bAccepted && ErrorCode == TEXT("INVALID_MESSAGE"), bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+            }
+            continue;
         }
     }
     TestTrue(TEXT("Unreal exercised canonical conformance cases"), ApplicableCount > 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionTest,
+    "MtoULiveLink.CachedPlayback.CacheSession",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    auto MakeSession = [](double& Clock, TArray<float>& Applied, TArray<int32>& ProgressPlays)
+    {
+        TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
+        Session->SetClock([&Clock]() { return Clock; });
+        Session->SetValidationCounts(1, 0);
+        Session->SetNegotiatedRevision(7);
+        Session->SetPublish([&Applied](const FMtoUFrameMessage& Frame) -> bool
+        {
+            Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+            return true;
+        });
+        Session->SetProgressSink([&ProgressPlays](int32 PlayId, int32 AppliedFrames)
+        {
+            ProgressPlays.Add(PlayId * 100000 + AppliedFrames);
+        });
+        return Session;
+    };
+    const auto UploadFrames = [](FMtoUCacheSession& Session, int32 Revision,
+                                 int32 UploadId, const TArray<float>& Values,
+                                 FString& Code, FString& Details)
+    {
+        bool bOk = Session.HandleCommand(
+            MakeCacheBeginCommand(Revision, Values.Num(), 30.0, UploadId), Code, Details);
+        for (int32 Index = 0; Index < Values.Num() && bOk; ++Index)
+        {
+            bOk = Session.HandleCommand(
+                MakeCachedFrameCommand(Index, Values[Index], 64), Code, Details);
+        }
+        if (bOk)
+        {
+            bOk = Session.HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details);
+        }
+        return bOk;
+    };
+
+    double Clock = 100.0;
+    TArray<float> Applied;
+    TArray<int32> ProgressPlays;
+    TSharedRef<FMtoUCacheSession> Session = MakeSession(Clock, Applied, ProgressPlays);
+    FString Code;
+    FString Details;
+
+    // Authoritative revision: the negotiated snapshot wins over client claims.
+    TestFalse(TEXT("cache_begin for a foreign revision is rejected"),
+        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+    TestEqual(TEXT("authoritative revision code"),
+        Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
+    TestEqual(TEXT("foreign-revision upload retains no frames"),
+        Session->GetBufferedFrameCount(), 0);
+    TestFalse(TEXT("a rejected upload identity is still consumed"),
+        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+    TestEqual(TEXT("rejected upload identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+
+    // Upload identity must increase within the streaming session.
+    TestTrue(TEXT("first upload identity is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+    TestFalse(TEXT("reused upload identity is rejected"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+    TestEqual(TEXT("reused upload identity code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("increasing upload identity is accepted"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 5), Code, Details));
+
+    // Actual encoded bytes are metered against the frozen limit with
+    // overflow-safe accumulation.
+    FMtoUCacheCommand HugeFrame = MakeCachedFrameCommand(0, 10.0f, 64);
+    HugeFrame.EncodedBytes = (1ll << 40);
+    TestFalse(TEXT("overflow-safe byte metering rejects the upload"),
+        Session->HandleCommand(HugeFrame, Code, Details));
+    TestEqual(TEXT("metering code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+    TestEqual(TEXT("metered upload retains no frames"),
+        Session->GetBufferedFrameCount(), 0);
+
+    FMtoUCacheCommand UnderdeclaredBegin =
+        MakeCacheBeginCommand(7, 2, 30.0, 6);
+    UnderdeclaredBegin.Begin.PayloadSize = 8;
+    TestTrue(TEXT("underdeclared upload begins"),
+        Session->HandleCommand(UnderdeclaredBegin, Code, Details));
+    TestTrue(TEXT("frame within declaration is accepted"),
+        Session->HandleCommand(MakeCachedFrameCommand(0, 11.0f, 8), Code, Details));
+    TestFalse(TEXT("actual bytes above the declared size reject the upload"),
+        Session->HandleCommand(MakeCachedFrameCommand(1, 12.0f, 8), Code, Details));
+    TestEqual(TEXT("low-declared-size code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+
+    // Parsed-memory preflight from negotiated counts, before any allocation.
+    // With the production counts of this session the prediction stays inside
+    // the budget, so begin must succeed.
+    TestTrue(TEXT("production-count begin stays within the parsed budget"),
+        Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7), Code, Details));
+    double BudgetClock = 50.0;
+    TArray<float> BudgetApplied;
+    TArray<int32> BudgetProgress;
+    TSharedRef<FMtoUCacheSession> BudgetSession =
+        MakeSession(BudgetClock, BudgetApplied, BudgetProgress);
+    BudgetSession->SetValidationCounts(10000, 5000);
+    FMtoUCacheCommand HugeBegin = MakeCacheBeginCommand(7, 20000, 30.0, 1);
+    TestFalse(TEXT("predicted parsed memory above the budget rejects the upload"),
+        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+    TestEqual(TEXT("memory preflight code"),
+        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+    TestFalse(TEXT("memory-rejected upload identity is still consumed"),
+        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+    TestEqual(TEXT("memory-rejected upload identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+
+    // A documented large production Character (701 bones, 500 BlendShapes)
+    // stays supported at the maximum frozen frame count within the fixed
+    // parsed-memory budget.
+    double ProductionClock = 10.0;
+    TArray<float> ProductionApplied;
+    TArray<int32> ProductionProgress;
+    TSharedRef<FMtoUCacheSession> ProductionSession =
+        MakeSession(ProductionClock, ProductionApplied, ProductionProgress);
+    ProductionSession->SetValidationCounts(701, 500);
+    TestTrue(TEXT("a 701-bone production character at the maximum frame count"
+                  " stays inside the fixed cache budget"),
+        ProductionSession->HandleCommand(
+            MakeCacheBeginCommand(7, 20000, 30.0, 1), Code, Details));
+
+    // Atomic Ready then identity-matched playback.
+    TestTrue(TEXT("complete upload becomes Ready"),
+        UploadFrames(*Session, 7, 8, {50.0f, 51.0f, 52.0f}, Code, Details));
+    TestEqual(TEXT("complete upload is Ready"),
+        Session->GetState(), EMtoUCacheState::Ready);
+
+    // A reused play identity cannot start a second attempt even after stop.
+    FMtoUCacheCommand FirstPlay;
+    FirstPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    FirstPlay.PlayId = 1;
+    TestTrue(TEXT("initial play request is accepted"),
+        Session->HandleCommand(FirstPlay, Code, Details));
+    TestTrue(TEXT("stop holds the attempt"),
+        Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Stop), Code, Details));
+    TestEqual(TEXT("stopped state"),
+        Session->GetState(), EMtoUCacheState::Stopped);
+    TestFalse(TEXT("a reused play identity cannot start a second attempt"),
+        Session->HandleCommand(FirstPlay, Code, Details));
+    TestEqual(TEXT("play-identity reuse code"),
+        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+
+    // Replay with deterministic windows: one pose per update at most, and
+    // every pose - including the first - published by a later Tick.
+    FMtoUCacheCommand Play;
+    Play.Kind = FMtoUCacheCommand::EKind::Play;
+    Play.PlayId = 2;
+    const double Interval = 1.0 / 30.0;
+    TestTrue(TEXT("matching play attempt starts local playback"),
+        Session->HandleCommand(Play, Code, Details));
+    TestEqual(TEXT("playback state"),
+        Session->GetState(), EMtoUCacheState::Playing);
+    TestEqual(TEXT("cache_play only initializes the attempt"),
+        Session->GetAppliedFrameCount(), 0);
+
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("first cached pose is published by a later tick"),
+        Session->Tick(), 1);
+    Clock += Interval / 2.0;
+    TestEqual(TEXT("second pose applies in its own window"), Session->Tick(), 1);
+    Clock += Interval * 3.0;
+    const int32 PosesBeforeLateTick = Applied.Num();
+    Session->Tick();
+    TestEqual(TEXT("delayed tick fails before any catch-up burst"),
+        Applied.Num(), PosesBeforeLateTick);
+    TestEqual(TEXT("late tick state"),
+        Session->GetState(), EMtoUCacheState::Failed);
+    TestTrue(TEXT("failure names the stable performance code"),
+        Session->GetErrorDetails().Contains(TEXT("CACHED_PLAYBACK_PERFORMANCE")));
+
+    // Retry on the retained cache: new identity, replay from zero.
+    FMtoUCacheCommand RetryPlay;
+    RetryPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    RetryPlay.PlayId = 9;
+    TestTrue(TEXT("retry after failure reuses the uploaded cache"),
+        Session->HandleCommand(RetryPlay, Code, Details));
+    Clock += Interval;
+    Session->Tick();
+    Clock += Interval;
+    Session->Tick();
+    Clock += Interval;
+    Session->Tick();
+    TestEqual(TEXT("retry applies every frame exactly once in order"),
+        Session->GetAppliedFrameCount(), 3);
+    TestEqual(TEXT("completion state"),
+        Session->GetState(), EMtoUCacheState::Completed);
+    TestEqual(TEXT("final pose held"),
+        Session->GetLastAppliedIndex(), 2);
+    TestTrue(TEXT("progress reported for the current attempt only"),
+        !ProgressPlays.Contains(100001) && ProgressPlays.Contains(900001)
+        && ProgressPlays.Contains(900002) && ProgressPlays.Contains(900003));
+
+    // Publication refusal must not advance applied evidence or complete.
+    TSharedRef<FMtoUCacheSession> RefusingSession =
+        MakeSession(Clock, Applied, ProgressPlays);
+    RefusingSession->SetPublish([](const FMtoUFrameMessage&) -> bool
+    {
+        return false;
+    });
+    TestTrue(TEXT("refusing session accepts its upload"),
+        UploadFrames(*RefusingSession, 7, 3, {70.0f, 71.0f}, Code, Details));
+    FMtoUCacheCommand RefusingPlay;
+    RefusingPlay.Kind = FMtoUCacheCommand::EKind::Play;
+    RefusingPlay.PlayId = 4;
+    TestTrue(TEXT("refusing session accepts play"),
+        RefusingSession->HandleCommand(RefusingPlay, Code, Details));
+    Clock += Interval / 2.0;
+    RefusingSession->Tick();
+    TestEqual(TEXT("refused publication advances no applied evidence"),
+        RefusingSession->GetAppliedFrameCount(), 0);
+    Clock += Interval * 5.0;
+    RefusingSession->Tick();
+    TestEqual(TEXT("sustained refusal ends as a performance failure"),
+        RefusingSession->GetState(), EMtoUCacheState::Failed);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheQueueAdmissionTest,
+    "MtoULiveLink.CachedPlayback.QueueAdmission",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheQueueAdmissionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    auto FrameCommand = [](int32 Index, int32 UploadId, int64 EncodedBytes)
+    {
+        FMtoUCacheCommand Command;
+        Command.SessionId = 1;
+        Command.Kind = FMtoUCacheCommand::EKind::Frame;
+        Command.Index = Index;
+        Command.UploadId = UploadId;
+        Command.EncodedBytes = EncodedBytes;
+        return Command;
+    };
+    const auto Never = []() { return false; };
+    // A produce attempt that cannot admit must be released by its abort
+    // predicate, so test producers use a short time-box instead of blocking.
+    const auto BriefWait = []()
+    {
+        static thread_local double Deadline = 0.0;
+        if (Deadline == 0.0)
+        {
+            Deadline = FPlatformTime::Seconds() + 0.05;
+        }
+        const bool bExpired = FPlatformTime::Seconds() > Deadline;
+        if (bExpired)
+        {
+            Deadline = 0.0;
+        }
+        return bExpired;
+    };
+    const int64 PerFrame = FMtoUProtocol::MaxQueuedCacheBytes
+        / FMtoUProtocol::MaxQueuedCacheFrames;
+
+    // A stalled consumer can never grow queued parsed-frame ownership past
+    // the frozen frame/byte budget: once full, the producer's wait is
+    // released by its abort predicate instead of allocating another frame.
+    FMtoUCacheCommandQueue Queue;
+    int32 Admitted = 0;
+    for (int32 Index = 0; Index < FMtoUProtocol::MaxQueuedCacheFrames + 32; ++Index)
+    {
+        if (Queue.Produce(FrameCommand(Index, 7, PerFrame), BriefWait))
+        {
+            ++Admitted;
+        }
+    }
+    TestEqual(TEXT("frame admission stops at the frozen budget"),
+        Admitted, static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestEqual(TEXT("queued frame count matches the budget"),
+        Queue.GetPendingFrameCount(), static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestTrue(TEXT("queued byte ownership stays within budget"),
+        Queue.GetPendingBytes() <= FMtoUProtocol::MaxQueuedCacheBytes);
+
+    // A shutdown request aborts a would-be blocking producer immediately, so
+    // teardown cannot be wedged by backpressure.
+    TestFalse(TEXT("abort predicate releases the waiting producer"),
+        Queue.Produce(FrameCommand(999, 7, PerFrame), []() { return true; }));
+
+    // Control commands (a cache_clear carries weight 0) always make progress
+    // even while the frame budget is saturated.
+    {
+        FMtoUCacheCommand Clear;
+        Clear.SessionId = 1;
+        Clear.Kind = FMtoUCacheCommand::EKind::Clear;
+        TestTrue(TEXT("clear control is admitted despite a full frame budget"),
+            Queue.Produce(Clear, Never));
+    }
+    TestTrue(TEXT("the full queue is cancellable wholesale by session"),
+        Queue.CancelSession(1) > 0);
+    TestEqual(TEXT("cancelling the session frees every queued frame"),
+        Queue.GetPendingFrameCount(), 0);
+
+    // A rejected or superseded upload discards exactly its own queued frames;
+    // a newer upload identity is untouched and can still be admitted.
+    Queue.Produce(FrameCommand(0, 5, PerFrame), Never);
+    Queue.Produce(FrameCommand(1, 5, PerFrame), Never);
+    Queue.Produce(FrameCommand(0, 6, PerFrame), Never);
+    FMtoUCacheCommand End5;
+    End5.SessionId = 1;
+    End5.Kind = FMtoUCacheCommand::EKind::End;
+    End5.UploadId = 5;
+    Queue.Produce(End5, Never);
+    TestEqual(TEXT("cancelling one upload drops only its frame/end commands"),
+        Queue.CancelUpload(1, 5), 3);
+    FMtoUCacheCommand Consumed;
+    TestTrue(TEXT("the newer upload's frame survives"),
+        Queue.TryConsume(Consumed));
+    TestEqual(TEXT("surviving frame belongs to the newer upload"),
+        Consumed.UploadId, 6);
     return true;
 }
 
@@ -517,18 +1239,23 @@ bool FMtoUFramingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("second combined payload"), FromUtf8(Payload), SecondText);
     TestTrue(TEXT("later bytes are exhausted exactly"), Decoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
 
+    // The frozen per-message framing ceiling is enforced at the length header
+    // before any payload accumulation: a maximal legal message still waits,
+    // and one byte beyond the ceiling is rejected without allocation.
     FMtoUFrameDecoder MaximumDecoder;
-    const TArray<uint8> MaximumPrefix = Prefix(static_cast<uint64>(MAX_int32) - 8);
+    const TArray<uint8> MaximumPrefix =
+        Prefix(static_cast<uint64>(FMtoUProtocol::MaxMessageBytes));
     MaximumDecoder.Append(MaximumPrefix.GetData(), MaximumPrefix.Num());
     TestTrue(TEXT("maximum representable packet waits for its payload"),
         MaximumDecoder.Pop(Payload, Error) == EMtoUDecodeResult::NeedMore);
 
     FMtoUFrameDecoder OverflowDecoder;
-    const TArray<uint8> OverflowPrefix = Prefix(static_cast<uint64>(MAX_int32) - 7);
+    const TArray<uint8> OverflowPrefix =
+        Prefix(static_cast<uint64>(FMtoUProtocol::MaxMessageBytes) + 1);
     OverflowDecoder.Append(OverflowPrefix.GetData(), OverflowPrefix.Num());
-    TestTrue(TEXT("packet one byte beyond the int32 container is rejected"),
+    TestTrue(TEXT("packet one byte beyond the frozen message ceiling is rejected"),
         OverflowDecoder.Pop(Payload, Error) == EMtoUDecodeResult::Error);
-    TestTrue(TEXT("packet length error is actionable"), Error.Contains(TEXT("int32")));
+    TestTrue(TEXT("packet length error is actionable"), Error.Contains(TEXT("length")));
     return true;
 }
 
@@ -550,33 +1277,59 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
+    FString ErrorCode;
 
     TestTrue(TEXT("701 parent-first bones are accepted"), FMtoUProtocol::ParseInit(Utf8(Valid), Message, Error));
     TestEqual(TEXT("all bones are retained"), Message.Bones.Num(), 701);
     TestEqual(TEXT("all bind transforms are retained"), Message.SourceBindLocalPose.Num(), 701);
+    TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
+    TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":2"))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+    TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
+    ErrorCode.Reset();
+    TestFalse(TEXT("protocol-v3 clients are rejected"),
+        FMtoUProtocol::ParseInit(Utf8(
+            TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
+    TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":3"), TEXT("\"version\":\"3\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":\"4\""))), Message, Error));
+    TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
+    TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
+    TestFalse(TEXT("an unknown workflow value is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\""), TEXT("\"workflow\":\"preview\""))), Message, Error));
+    TestFalse(TEXT("a non-string workflow type is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\""), TEXT("\"workflow\":7"))), Message, Error));
+    TestTrue(TEXT("model workflow is accepted"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"workflow\":\"animation\",\"blendshapes_enabled\":true"),
+        TEXT("\"workflow\":\"model\",\"blendshapes_enabled\":false"))), Message, Error));
+    TestTrue(TEXT("model workflow is retained"), Message.Workflow == FMtoUWorkflows::Model);
+    TestFalse(TEXT("blendshape transmission choice is retained as disabled"), Message.bBlendshapesEnabled);
+    TestFalse(TEXT("a missing blendshapes_enabled field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT(",\"blendshapes_enabled\":true"), TEXT(""))), Message, Error));
+    TestTrue(TEXT("missing blendshapes diagnostic identifies the field"), Error.Contains(TEXT("blendshapes_enabled")));
+    TestFalse(TEXT("a non-boolean blendshapes_enabled type is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
+        TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -593,28 +1346,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -639,7 +1392,11 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TArray<uint8> Ready = FMtoUProtocol::EncodeReady(
         {FName(TEXT("Blink_R"))},
         {FName(TEXT("Corrective"))},
-        {TEXT("hair_7/tip -> tip1")});
+        {TEXT("hair_7/tip -> tip1")},
+        FMtoUWorkflows::Animation,
+        5,
+        2,
+        9);
     Decoder.Append(Ready.GetData(), Ready.Num());
     TestTrue(TEXT("ready reply is framed"), Decoder.Pop(ReplyPayload, Error) == EMtoUDecodeResult::Message);
     TestTrue(TEXT("ready reply names missing curve"), FromUtf8(ReplyPayload).Contains(TEXT("Blink_R")));
@@ -647,6 +1404,26 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         FromUtf8(ReplyPayload).Contains(TEXT("Corrective")));
     TestTrue(TEXT("ready reply reports bone name remapping"),
         FromUtf8(ReplyPayload).Contains(TEXT("tip1")));
+    TSharedPtr<FJsonObject> ReadyJson;
+    TestTrue(TEXT("ready reply is valid JSON"), JsonObjectFromBytes(ReplyPayload, ReadyJson));
+    if (ReadyJson.IsValid())
+    {
+        TestEqual(TEXT("ready reply echoes the negotiated workflow"),
+            ReadyJson->GetStringField(TEXT("workflow")), FString(TEXT("animation")));
+        TestEqual(TEXT("ready reply reports the target morph count"),
+            static_cast<int32>(ReadyJson->GetNumberField(TEXT("target_morph_count"))), 5);
+        TestEqual(TEXT("ready reply reports the accepted morph count"),
+            static_cast<int32>(ReadyJson->GetNumberField(TEXT("accepted_morph_count"))), 2);
+    }
+    TArray<uint8> ModelReady = FMtoUProtocol::EncodeReady({}, {}, {}, FMtoUWorkflows::Model, 12, 7, 9);
+    Decoder.Append(ModelReady.GetData(), ModelReady.Num());
+    TArray<uint8> ModelReplyPayload;
+    TestTrue(TEXT("model ready reply is framed"),
+        Decoder.Pop(ModelReplyPayload, Error) == EMtoUDecodeResult::Message);
+    TestTrue(TEXT("model ready reply echoes the model workflow"),
+        FromUtf8(ModelReplyPayload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(ModelReplyPayload).Contains(TEXT("\"target_morph_count\":12"))
+        && FromUtf8(ModelReplyPayload).Contains(TEXT("\"accepted_morph_count\":7")));
     TArray<uint8> Failure = FMtoUProtocol::EncodeError(
         TEXT("SKELETON_MISMATCH"), TEXT("bad skeleton"), TEXT("Missing in Unreal: jaw"));
     Decoder.Append(Failure.GetData(), Failure.Num());
@@ -670,6 +1447,14 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     FString Error;
     bool bStructural = false;
 
+    FString RoutedType;
+    TestTrue(TEXT("streaming type route skips nested values"), FMtoUProtocol::PeekType(Utf8(
+        TEXT("{\"metadata\":{\"type\":\"wrong\"},\"values\":[1,2,3],\"type\":\"cache_frame\"}")),
+        RoutedType,
+        Error));
+    TestEqual(TEXT("streaming type route reads the root field"),
+        RoutedType, FString(TEXT("cache_frame")));
+
     TestTrue(TEXT("valid frame parses"), FMtoUProtocol::ParseFrame(Utf8(Valid), Frame, Error));
     TestTrue(TEXT("matching counts and finite values validate"),
         FMtoUProtocol::ValidateFrame(Frame, 1, 2, Error, bStructural));
@@ -681,6 +1466,37 @@ bool FMtoUFrameValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("curve count mismatch is rejected"),
         FMtoUProtocol::ValidateFrame(Frame, 1, 1, Error, bStructural));
     TestTrue(TEXT("curve count mismatch is structural"), bStructural);
+
+    int32 CacheIndex = INDEX_NONE;
+    FString CacheErrorCode;
+    FMtoUFrameMessage CacheFrame;
+    TestFalse(TEXT("cached transform count is rejected during parse"),
+        FMtoUProtocol::ParseCacheFrame(
+            Utf8(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")),
+            1,
+            1,
+            CacheIndex,
+            CacheFrame,
+            Error,
+            &CacheErrorCode));
+    TestEqual(TEXT("cached transform mismatch keeps its stable code"),
+        CacheErrorCode, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    TestTrue(TEXT("cached transform mismatch allocates no parsed arrays"),
+        CacheFrame.Transforms.IsEmpty() && CacheFrame.Curves.IsEmpty());
+
+    TestFalse(TEXT("cached curve count is rejected during parse"),
+        FMtoUProtocol::ParseCacheFrame(
+            Utf8(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0,1]}")),
+            1,
+            1,
+            CacheIndex,
+            CacheFrame,
+            Error,
+            &CacheErrorCode));
+    TestEqual(TEXT("cached curve mismatch keeps its stable code"),
+        CacheErrorCode, FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    TestTrue(TEXT("cached curve mismatch allocates no parsed arrays"),
+        CacheFrame.Transforms.IsEmpty() && CacheFrame.Curves.IsEmpty());
 
     FMtoUFrameMessage NonFinite;
     TestTrue(TEXT("overflowing JSON number parses for frame validation"), FMtoUProtocol::ParseFrame(Utf8(
@@ -757,8 +1573,11 @@ bool FMtoUBindPoseInvariantTest::RunTest(const FString& Parameters)
             Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
     }
 
-    const FLiveLinkFrameDataStruct FrameData = FMtoUProtocol::MakeRetargetedFrameData(
-        SourceBindFrame, {}, SourceBindLocalPose, TargetRefLocalPose, {INDEX_NONE, 0});
+    FLiveLinkFrameDataStruct FrameData;
+    FString Error;
+    TestTrue(TEXT("a valid bind pose retargets"), FMtoUProtocol::MakeRetargetedFrameData(
+        SourceBindFrame, {}, SourceBindLocalPose, TargetRefLocalPose, {INDEX_NONE, 0},
+        FrameData, Error));
     const FLiveLinkAnimationFrameData* Animation = FrameData.Cast<FLiveLinkAnimationFrameData>();
     TestNotNull(TEXT("retargeted animation data is built"), Animation);
     if (!Animation)
@@ -924,6 +1743,73 @@ bool FMtoUUnitScaleRetargetingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("uniform animated scale is transferred"),
         UniformScaleOutput.IsValidIndex(0)
         && UniformScaleOutput[0].GetScale3D().Equals(FVector(1.25), 1.0e-3f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSingularRetargetTransformTest,
+    "MtoULiveLink.PoseRetargeting.SingularTransformRejected",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSingularRetargetTransformTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TArray<FTransform> SourceBind = {
+        FTransform(FRotator(0.0, 20.0, 0.0), FVector(1.0, 2.0, 3.0)),
+        FTransform(FRotator(10.0, 0.0, 25.0), FVector(0.0, 8.0, 0.0)),
+    };
+    const TArray<FTransform> TargetRef = {
+        FTransform(FRotator(0.0, -15.0, 5.0), FVector(4.0, 0.0, 2.0)),
+        FTransform(FRotator(-20.0, 10.0, 0.0), FVector(0.0, 12.0, 0.0)),
+    };
+    const TArray<FTransform> Current = {
+        FTransform(FRotator(5.0, 15.0, 10.0), FVector(7.0, 0.0, 0.0)),
+        FTransform(FRotator(-8.0, 12.0, 20.0), FVector(0.0, 2.0, 1.0)),
+    };
+    const TArray<int32> Parents = {INDEX_NONE, 0};
+    const auto WithScale = [](const TArray<FTransform>& Pose, int32 Bone, FVector Scale)
+    {
+        TArray<FTransform> Modified = Pose;
+        Modified[Bone].SetScale3D(Scale);
+        return Modified;
+    };
+    const auto RetargetAttempt = [&](
+        const TArray<FTransform>& CurrentPose,
+        const TArray<FTransform>& BindPose,
+        const TArray<FTransform>& RefPose,
+        FString& OutError)
+    {
+        FLiveLinkFrameDataStruct FrameData;
+        const bool bBuilt = FMtoUProtocol::MakeRetargetedFrameData(
+            FrameFromPose(CurrentPose), {}, BindPose, RefPose, Parents, FrameData, OutError);
+        TestNull(TEXT("a rejected pose publishes no frame data"),
+            bBuilt ? nullptr : FrameData.Cast<FLiveLinkAnimationFrameData>());
+        return bBuilt;
+    };
+
+    FString Error;
+    TestTrue(TEXT("the valid parent-child pose still retargets"),
+        RetargetAttempt(Current, SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the valid pose reports no error"), Error.IsEmpty());
+
+    TestFalse(TEXT("a zero-scale source current parent is rejected"),
+        RetargetAttempt(WithScale(Current, 0, FVector(0.0, 1.0, 1.0)), SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the source current rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("source current")));
+
+    TestFalse(TEXT("a zero-scale source current leaf is rejected"),
+        RetargetAttempt(WithScale(Current, 1, FVector(1.0, 1.0, 0.0)), SourceBind, TargetRef, Error));
+    TestTrue(TEXT("the source current leaf rejection names the bone"),
+        Error.Contains(TEXT("Bone 1")) && Error.Contains(TEXT("source current")));
+
+    TestFalse(TEXT("a zero-scale source bind transform is rejected"),
+        RetargetAttempt(Current, WithScale(SourceBind, 0, FVector(0.0, 0.0, 0.0)), TargetRef, Error));
+    TestTrue(TEXT("the bind rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("source bind")));
+
+    TestFalse(TEXT("a zero-scale target reference transform is rejected"),
+        RetargetAttempt(Current, SourceBind, WithScale(TargetRef, 0, FVector(1.0, 0.0, 1.0)), Error));
+    TestTrue(TEXT("the target reference rejection names the bone and matrix set"),
+        Error.Contains(TEXT("Bone 0")) && Error.Contains(TEXT("target reference")));
     return true;
 }
 
@@ -1241,7 +2127,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -1279,7 +2165,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -1298,6 +2184,10 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready response reports the omitted morph curve"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
         && FromUtf8(Payload).Contains(TEXT("Missing")));
+    TestTrue(TEXT("ready response echoes the animation workflow and morph counts"),
+        FromUtf8(Payload).Contains(TEXT("\"workflow\":\"animation\""))
+        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":0"))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
 #if WITH_EDITOR
     if (GEditor)
     {
@@ -1445,6 +2335,243 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("second frame reaches the Live Link subject cache"), bSecondFrameEvaluated);
 
+    // Cached Playback round trip on the same negotiated connection: enter,
+    // upload a complete cache with identity and authoritative revision,
+    // receive identity-matched Ready, then let Unreal apply every frame
+    // locally exactly once in order while Maya sends no animation data.
+    FLiveLinkSubjectFrameData CachedEvaluated;
+    auto SendLine = [&](const FString& Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return Primary && SendBytes(*Primary, Bytes.GetData(), Bytes.Num());
+    };
+    TestTrue(TEXT("cache entry is sent"),
+        SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("cache_begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
+    TestTrue(TEXT("cached frame 0 is sent"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    TestTrue(TEXT("negative cached frame index keeps the session open"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":-1,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    Payload.Reset();
+    TestTrue(TEXT("negative index reports the stable index error"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("negative index uses CACHE_FRAME_INDEX_INVALID without closing"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("CACHE_FRAME_INDEX_INVALID")));
+
+    // A declared payload_size below the actual uploaded bytes is rejected
+    // atomically while keeping the same streaming session usable.
+    TestTrue(TEXT("underdeclared cache_begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":2,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":64}")));
+    TestTrue(TEXT("frame exceeding the declared size is sent"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[61,62,63,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    Payload.Reset();
+    TestTrue(TEXT("low-declared-size upload reports CACHE_PAYLOAD_TOO_LARGE"),
+        Primary && ReceivePacket(*Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("size violation uses the stable resource code"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+
+    TestTrue(TEXT("valid upload begins after the rejected attempt"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":3,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[31,32,33,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
+
+    Payload.Reset();
+    TestTrue(TEXT("complete upload produces identity-matched cache_ready"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    {
+        const FString ReadyText = FromUtf8(Payload);
+        TestTrue(TEXT("cache_ready echoes upload identity, revision and count"),
+            ReadyText.Contains(TEXT("\"type\":\"cache_ready\""))
+            && ReadyText.Contains(TEXT("\"upload_id\":3"))
+            && ReadyText.Contains(TEXT("\"revision\":9"))
+            && ReadyText.Contains(TEXT("\"frame_count\":2")));
+    }
+
+    // A recoverably rejected begin switches intake to its own poisoned
+    // identity. Frames/end already pipelined behind it are discarded without
+    // touching the ready upload or producing an error flood.
+    TArray<uint8> RejectedBeginPipeline = Packet(TEXT(
+        "{\"type\":\"cache_begin\",\"upload_id\":4,\"revision\":9,\"fps\":0,"
+        "\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":256}"));
+    RejectedBeginPipeline.Append(Packet(TEXT(
+        "{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[71,72,73,0,0,0,1,1,1,1],"
+        "[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    RejectedBeginPipeline.Append(Packet(TEXT("{\"type\":\"cache_end\"}")));
+    TestTrue(TEXT("rejected begin and its pipelined upload are sent together"),
+        Primary && SendBytes(
+            *Primary, RejectedBeginPipeline.GetData(), RejectedBeginPipeline.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("rejected begin reports one recoverable metadata error"),
+        Primary && ReceivePacket(*Primary, Payload));
+    const FString RejectedBeginError = FromUtf8(Payload);
+    TestTrue(TEXT("rejected begin error echoes only its new upload identity"),
+        RejectedBeginError.Contains(TEXT("CACHE_METADATA_INVALID"))
+        && RejectedBeginError.Contains(TEXT("\"upload_id\":4")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestEqual(TEXT("poisoned pipelined frames gain no parsed queue ownership"),
+        Source->GetQueuedCacheFrameCount(), 0);
+    {
+        uint8 Buffer[4096];
+        int32 Read = 0;
+        const bool bSilent = !Primary->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0;
+        TestTrue(TEXT("poisoned frame/end data produces no error flood"), bSilent);
+    }
+
+    // While the cache owns the session, live frames must not reach Live Link.
+    const TArray<uint8> IntrudingLiveFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[99,98,97,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+    TestTrue(TEXT("intruding live frame is sent during ownership"),
+        Primary && SendBytes(*Primary, IntrudingLiveFrame.GetData(), IntrudingLiveFrame.Num()));
+    {
+        FPlatformProcess::Sleep(0.05f);
+        Source->Update();
+        // Wire silence is the wire-level guarantee; Live Link keeps older
+        // frames evaluable, so the actor-visible proof is that the intruding
+        // translation never appears while the cache owns playback.
+        uint8 Buffer[4096];
+        int32 Read = 0;
+        const bool bSilent = !Primary->Recv(Buffer, sizeof(Buffer), Read) || Read <= 0;
+        TestTrue(TEXT("intruding live frame produces no reply"), bSilent);
+    }
+
+    TestTrue(TEXT("identity-matched cache_play is sent"),
+        SendLine(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    bool bFirstCachedPoseApplied = false;
+    bool bSecondCachedPoseApplied = false;
+    bool bIntruderVisible = false;
+    FVector CacheRoot = FVector::ZeroVector;
+    FString CompletionPayload;
+    PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), CachedEvaluated))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    CachedEvaluated.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                CacheRoot = Animation->Transforms[0].GetTranslation();
+                bIntruderVisible |= CacheRoot.Equals(FVector(99.0, 98.0, 97.0));
+            }
+        }
+        bFirstCachedPoseApplied =
+            bFirstCachedPoseApplied || CacheRoot.Equals(FVector(21.0, 22.0, 23.0));
+        bSecondCachedPoseApplied = CacheRoot.Equals(FVector(31.0, 32.0, 33.0));
+        if (bSecondCachedPoseApplied)
+        {
+            // Drain progress/completion replies arriving for this attempt.
+            uint8 Buffer[65536];
+            int32 Read = 0;
+            while (Primary->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+            {
+                CompletionPayload.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+            }
+            return CompletionPayload.Contains(TEXT("\"type\":\"cache_complete\""));
+        }
+        return false;
+    });
+    TestTrue(TEXT("first cached pose is applied before any later pose"), bFirstCachedPoseApplied);
+    TestTrue(TEXT("second cached pose is applied in order at the captured rate"),
+        bSecondCachedPoseApplied);
+    TestFalse(TEXT("intruding live pose never becomes actor-visible during playback"),
+        bIntruderVisible);
+    TestTrue(TEXT("completion carries play identity, applied count and duration"),
+        CompletionPayload.Contains(TEXT("\"type\":\"cache_complete\""))
+        && CompletionPayload.Contains(TEXT("\"play_id\":1"))
+        && CompletionPayload.Contains(TEXT("\"applied_frame_count\":2"))
+        && CompletionPayload.Contains(TEXT("elapsed_seconds")));
+
+    // The valid upload after the rejected identity is admitted normally.
+    TestTrue(TEXT("new upload after poisoned identity is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":5,\"revision\":9,\"fps\":30,\"start_frame\":3001,\"end_frame\":3001,\"frame_count\":1,\"payload_size\":256}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[51,52,53,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("new upload after poison reaches ready"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready response belongs to the newer upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":5")));
+
+    // Far-surplus cardinalities stay under the framing ceiling but are
+    // rejected before parsed transform/curve arrays gain queue ownership.
+    FString ExcessTransforms;
+    FString ExcessCurves;
+    constexpr int32 ExcessCount = 4096;
+    ExcessTransforms.Reserve(ExcessCount * 24);
+    ExcessCurves.Reserve(ExcessCount * 2);
+    for (int32 Index = 0; Index < ExcessCount; ++Index)
+    {
+        if (Index > 0)
+        {
+            ExcessTransforms += TEXT(",");
+            ExcessCurves += TEXT(",");
+        }
+        ExcessTransforms += TEXT("[0,0,0,0,0,0,1,1,1,1]");
+        ExcessCurves += TEXT("0");
+    }
+    const TArray<uint8> ExcessFrame = Packet(FString::Printf(TEXT(
+        "{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[%s],\"curves\":[%s]}"),
+        *ExcessTransforms,
+        *ExcessCurves));
+    TestTrue(TEXT("surplus-count fixture stays below the framing ceiling"),
+        ExcessFrame.Num() - 8 < FMtoUProtocol::MaxMessageBytes);
+    TestTrue(TEXT("surplus-count upload begin is sent"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":6,\"revision\":9,\"fps\":30,\"start_frame\":4001,\"end_frame\":4001,\"frame_count\":1,\"payload_size\":1000000}")));
+    TestTrue(TEXT("surplus-count cache frame is sent"), Primary && SendBytes(
+        *Primary, ExcessFrame.GetData(), ExcessFrame.Num()));
+    FPlatformProcess::Sleep(0.05f);
+    TestEqual(TEXT("surplus-count frame gains no parsed queue ownership"),
+        Source->GetQueuedCacheFrameCount(), 0);
+    Payload.Reset();
+    TestTrue(TEXT("surplus-count frame reports a recoverable error"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("surplus-count error is stable and identity-scoped"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_FRAME_CONTENTS_INVALID"))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":6")));
+
+    // Switching back to live preview clears the Unreal buffer first; the
+    // cleared outcome arrives before the resumed live pose can be evaluated.
+    TestTrue(TEXT("cache_clear is sent"),
+        SendLine(TEXT("{\"type\":\"cache_clear\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    const TArray<uint8> AfterClearLive = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[41,42,43,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+    TestTrue(TEXT("live frame after clear is sent"),
+        Primary && SendBytes(*Primary, AfterClearLive.GetData(), AfterClearLive.Num()));
+    bool bLiveResumed = false;
+    PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData ResumedFrame;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), ResumedFrame))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    ResumedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                bLiveResumed = Animation->Transforms.IsValidIndex(0)
+                    && Animation->Transforms[0].GetTranslation().Equals(FVector(41.0, 42.0, 43.0));
+            }
+        }
+        return bLiveResumed;
+    });
+    TestTrue(TEXT("live sampling resumes after the cached session clears"), bLiveResumed);
+
+
+
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
     TestTrue(TEXT("structurally invalid frame is sent"),
@@ -1492,6 +2619,1114 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheBackpressureSocketTest,
+    "MtoULiveLink.Source.CacheBackpressure",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheBackpressureSocketTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("Maya client connects"), Primary);
+    if (!Primary)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        return false;
+    }
+    const FString InitText = TEXT(
+        "{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\","
+        "\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,"
+        "[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+    const TArray<uint8> InitBytes = Packet(InitText);
+    TestTrue(TEXT("init is sent"),
+        SendBytes(*Primary, InitBytes.GetData(), InitBytes.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("ready response is received"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("connection reached ready"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+
+    // The Game Thread is now stalled: no Update() runs. A flood sender thread
+    // uploads far more cache frames than the frozen intake budget allows.
+    auto SendLine = [&](const FString& Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return SendBytes(*Primary, Bytes.GetData(), Bytes.Num());
+    };
+    TestTrue(TEXT("cache entry is sent"), SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("cache begin is sent"), SendLine(TEXT(
+        "{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,"
+        "\"start_frame\":1,\"end_frame\":1000,\"frame_count\":1000,\"payload_size\":2000000}")));
+    const int32 FloodCount = static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames) * 2;
+    TAtomic<bool> bStopSender{false};
+    TAtomic<bool> bSenderDone{false};
+    Async(EAsyncExecution::Thread, [&, FloodCount]()
+    {
+        for (int32 Index = 0; Index < FloodCount; ++Index)
+        {
+            if (bStopSender.Load())
+            {
+                break;
+            }
+            const FString FrameText = FString::Printf(TEXT(
+                "{\"type\":\"cache_frame\",\"index\":%d,"
+                "\"transforms\":[[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+                Index);
+            const TArray<uint8> Bytes = Packet(FrameText);
+            if (!SendBytes(*Primary, Bytes.GetData(), Bytes.Num()) || bStopSender.Load())
+            {
+                break;
+            }
+        }
+        bSenderDone.Store(true);
+    });
+
+    int32 ObservedQueuedPeak = 0;
+    const double SampleEnd = FPlatformTime::Seconds() + 0.5;
+    while (FPlatformTime::Seconds() < SampleEnd)
+    {
+        ObservedQueuedPeak = FMath::Max(
+            ObservedQueuedPeak, Source->GetQueuedCacheFrameCount());
+        FPlatformProcess::Sleep(0.005f);
+    }
+    TestTrue(TEXT("the stalled Game Thread never lets queued parsed frames"
+                  " exceed the frozen intake budget"),
+        ObservedQueuedPeak <= static_cast<int32>(FMtoUProtocol::MaxQueuedCacheFrames));
+    TestTrue(TEXT("the worker held back real demand (queue actually filled)"),
+        ObservedQueuedPeak > 0);
+    TestTrue(TEXT("the streaming session is still open during backpressure"),
+        Source->GetSourceStatus().ToString().Contains(TEXT("Connected to Maya")));
+
+    // Worker teardown completes while the producer is mid-backpressure.
+    const double TeardownStart = FPlatformTime::Seconds();
+    Source->StopListener();
+    TestTrue(TEXT("worker teardown does not deadlock during backpressure"),
+        FPlatformTime::Seconds() - TeardownStart < 2.0);
+    bStopSender.Store(true);
+    PollUntil([&]() { return bSenderDone.Load(); });
+
+    DestroySocket(*SocketSubsystem, Primary);
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPostProcessIsolationTest,
+    "MtoULiveLink.Actor.PostProcessIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPostProcessIsolationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* SourceDriver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UPackage* Package = CreatePackage(TEXT("/Temp/MtoUPostProcessIsolation"));
+    USkeletalMesh* Driver = SourceDriver
+        ? DuplicateObject<USkeletalMesh>(SourceDriver, Package, TEXT("Driver"))
+        : nullptr;
+    const TSubclassOf<UAnimInstance> ConflictingClass =
+        UMtoULiveLinkConflictingPostProcess::StaticClass();
+    if (Driver)
+    {
+        Driver->SetPostProcessAnimBlueprint(ConflictingClass);
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Editor, false, TEXT("MtoUPostProcessIsolationWorld"), Package, true);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = World
+        ? NewObject<UMtoULiveLinkBinding>(World)
+        : nullptr;
+    if (Binding)
+    {
+        Binding->SkeletalMesh = Driver;
+    }
+    if (Actor && Binding)
+    {
+        Actor->SetBinding(Binding);
+    }
+
+    AActor* ProductionActor = World ? World->SpawnActor<AActor>() : nullptr;
+    USkeletalMeshComponent* ProductionComponent = ProductionActor
+        ? NewObject<USkeletalMeshComponent>(ProductionActor, TEXT("ProductionSkeletalMesh"))
+        : nullptr;
+    if (ProductionActor && ProductionComponent)
+    {
+        ProductionActor->AddInstanceComponent(ProductionComponent);
+        ProductionActor->SetRootComponent(ProductionComponent);
+        ProductionComponent->RegisterComponent();
+        ProductionComponent->SetSkeletalMeshAsset(Driver);
+        ProductionComponent->SetUpdateAnimationInEditor(true);
+        ProductionComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint, true);
+        ProductionComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
+        ProductionComponent->InitializeAnimScriptInstance();
+        ProductionComponent->SetDisablePostProcessBlueprint(false);
+    }
+    if (Actor)
+    {
+        Actor->OnConstruction(Actor->GetActorTransform());
+    }
+
+    TestNotNull(TEXT("post-process isolation Driver fixture exists"), Driver);
+    TestNotNull(TEXT("MtoU actor fixture exists"), Actor);
+    TestNotNull(TEXT("ordinary production component fixture exists"), ProductionComponent);
+    if (!Driver || !Actor || !ProductionComponent)
+    {
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+
+    TestTrue(TEXT("Driver keeps its deliberately conflicting post-process class"),
+        Driver->GetPostProcessAnimBlueprint() == ConflictingClass);
+    TestTrue(TEXT("MtoU component disables Driver post-process evaluation"),
+        Actor->GetSkeletalMeshComponent()->GetDisablePostProcessBlueprint());
+    TestFalse(TEXT("ordinary component keeps post-process evaluation enabled"),
+        ProductionComponent->GetDisablePostProcessBlueprint());
+    TestTrue(TEXT("ordinary component resolves the Driver post-process class"),
+        ProductionComponent->GetPostProcessAnimBPClassToBeUsed() == ConflictingClass);
+
+    GMtoUConflictingPostProcessEvaluations.Reset();
+    World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+    TestTrue(TEXT("ordinary component evaluates the conflicting post-process"),
+        GMtoUConflictingPostProcessEvaluations.GetValue() > 0);
+
+    ProductionComponent->UnregisterComponent();
+    GMtoUConflictingPostProcessEvaluations.Reset();
+    World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+    TestEqual(TEXT("MtoU component skips the conflicting post-process"),
+        GMtoUConflictingPostProcessEvaluations.GetValue(), 0);
+    TestTrue(TEXT("Driver post-process assignment remains unchanged after MtoU use"),
+        Driver->GetPostProcessAnimBlueprint() == ConflictingClass);
+
+    World->DestroyWorld(false);
+    if (GEngine)
+    {
+        GEngine->DestroyWorldContext(World);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUWorkflowNegotiationTest,
+    "MtoULiveLink.Workflow.Negotiation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    USkeletalMesh* SharedDriver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    USkeletalMesh* TransientDriver = Actor && SharedDriver
+        ? DuplicateObject<USkeletalMesh>(SharedDriver, Actor)
+        : nullptr;
+    if (TransientDriver)
+    {
+        TransientDriver->ClearFlags(RF_Public | RF_Standalone);
+        TransientDriver->SetFlags(RF_Transient);
+        Actor->GetBinding()->SkeletalMesh = TransientDriver;
+        Actor->SetBinding(Actor->GetBinding());
+    }
+    USkeletalMeshComponent* SkeletalMeshComponent =
+        Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
+    USkeletalMesh* VisibleTargetBefore =
+        SkeletalMeshComponent ? SkeletalMeshComponent->GetSkeletalMeshAsset() : nullptr;
+    TestNotNull(TEXT("animation binding shows its Driver Skeletal Mesh"), VisibleTargetBefore);
+    TestTrue(TEXT("workflow negotiation owns transient Driver test data"),
+        VisibleTargetBefore
+            && VisibleTargetBefore->HasAnyFlags(RF_Transient)
+            && VisibleTargetBefore->GetOuter() == Actor);
+    TestTrue(TEXT("MtoU display component bypasses Driver post-process animation"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    auto DriverInitPacket = [&](
+        const FString& Workflow,
+        bool bBlendshapes,
+        const FString& CurvesJson)
+    {
+        const USkeletalMesh* TestMesh = Actor
+            ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+            : nullptr;
+        const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+        if (!TestSkeleton || TestSkeleton->GetNum() < 2)
+        {
+            return TArray<uint8>();
+        }
+        const FString RootBoneName = TestSkeleton->GetBoneName(0).ToString();
+        const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
+        const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
+        const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
+            *Workflow,
+            bBlendshapes ? TEXT("true") : TEXT("false"),
+            *RootBoneName,
+            *RootBind,
+            *ChildBoneName,
+            *ChildBind,
+            *CurvesJson));
+    };
+
+    FSocket* ModelClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), ModelClient);
+    const TArray<uint8> ModelInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[]"));
+    TestTrue(TEXT("model init is sent"), ModelClient
+        && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("model workflow receives a framed rejection"), ModelClient && ReceivePacket(
+        *ModelClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("model workflow refuses a missing Generated Preview"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("PREVIEW_NOT_READY")));
+    TestTrue(TEXT("model refusal closes the session"), ModelClient && WaitForClose(*ModelClient));
+    DestroySocket(*SocketSubsystem, ModelClient);
+
+    TestTrue(TEXT("model rejection leaves no visible target change"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
+    TestTrue(TEXT("model rejection keeps the actor disconnected from streaming"),
+        Actor && !Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && !Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("a refused Model connection leaves readiness unmodified"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::None
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+    TestTrue(TEXT("source returns to listening after model rejection"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    USkeletalMesh* GeneratedPreview = Actor && VisibleTargetBefore
+        ? DuplicateObject<USkeletalMesh>(VisibleTargetBefore, Actor)
+        : nullptr;
+    if (GeneratedPreview && VisibleTargetBefore)
+    {
+        GeneratedPreview->ClearFlags(RF_Public | RF_Standalone);
+        GeneratedPreview->SetFlags(RF_Transient);
+        GeneratedPreview->SetSkeleton(VisibleTargetBefore->GetSkeleton());
+        GeneratedPreview->SetRefSkeleton(VisibleTargetBefore->GetRefSkeleton());
+        TestTrue(TEXT("test Generated Preview has accepted and non-accepted Morphs"),
+            AddUniformMorph(*GeneratedPreview, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f))
+            && AddUniformMorph(*GeneratedPreview, FName(TEXT("Unaccepted")), FVector3f(0.0f, 1.0f, 0.0f))
+            && AddUniformMorph(*GeneratedPreview, FName(TEXT("NeverAccepted")), FVector3f(0.0f, 0.0f, 1.0f)));
+        TestTrue(TEXT("the original Driver owns a character-only Morph"),
+            AddUniformMorph(
+                *VisibleTargetBefore, FName(TEXT("DriverOnly")), FVector3f(2.0f, 0.0f, 0.0f)));
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+        FMtoUPreviewReadinessTestAccess::Commit(
+            *Actor, GeneratedPreview, false, TEXT("test preview"), FString(), {0});
+    }
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+    Actor->ShowGeneratedPreview(false);
+    TestTrue(TEXT("Model preview selection records the Generated Preview target"),
+        Actor && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && Actor->GetPreviewReadiness().IsUsable());
+    TArray<USkeletalMeshComponent*> DisplayMeshes;
+    Actor->GetComponents(DisplayMeshes);
+    USkeletalMeshComponent** DriverDisplayEntry = DisplayMeshes.FindByPredicate(
+        [Actor](const USkeletalMeshComponent* Component)
+        {
+            return Component != Actor->GetSkeletalMeshComponent();
+        });
+    USkeletalMeshComponent* DriverDisplay =
+        DriverDisplayEntry ? *DriverDisplayEntry : nullptr;
+    TestTrue(TEXT("Model preview creates the original Driver follower"),
+        DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == VisibleTargetBefore);
+
+    const FLiveLinkSubjectKey ModelSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+
+    FSocket* BoneOnlyClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("bone-only model client connects"), BoneOnlyClient);
+    SkeletalMeshComponent->SetMorphTarget(FName(TEXT("Unaccepted")), 0.75f);
+    // Real Maya always sends the complete curve manifest even with BS
+    // transmission disabled, so mimic that instead of an empty manifest.
+    const TArray<uint8> BoneOnlyInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        false,
+        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\"]"));
+    TestTrue(TEXT("bone-only model init is sent"), BoneOnlyClient
+        && SendBytes(*BoneOnlyClient, BoneOnlyInit.GetData(), BoneOnlyInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("bone-only model workflow produces ready response"),
+        BoneOnlyClient && ReceivePacket(*BoneOnlyClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("bone-only model workflow selects the Generated Preview"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && Actor
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->OnConstruction(Actor->GetActorTransform());
+    TestTrue(TEXT("construction preserves the negotiated Model display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->PostRegisterAllComponents();
+    TestTrue(TEXT("registration preserves the negotiated Model display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    TestTrue(TEXT("bone-only ready reports zero accepted Morphs despite the full manifest"),
+        FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
+    TestTrue(TEXT("bone-only result is visibly excluded from model acceptance"),
+        Actor && Actor->GetConnectionStatus().Contains(TEXT("not valid for model acceptance")));
+    TestEqual(TEXT("bone-only connection clears every Generated Morph"),
+        SkeletalMeshComponent->GetMorphTarget(FName(TEXT("Unaccepted"))), 0.0f);
+
+    const TArray<uint8> BoneOnlyFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75]}"));
+    TestTrue(TEXT("bone-only manifest frame is sent"), BoneOnlyClient
+        && SendBytes(*BoneOnlyClient, BoneOnlyFrame.GetData(), BoneOnlyFrame.Num()));
+    FLiveLinkSubjectFrameData BoneOnlyEvaluatedFrame;
+    const bool bBoneOnlyFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            BoneOnlyEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* BoneOnlyStatic = bBoneOnlyFrameEvaluated
+        ? BoneOnlyEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* BoneOnlyAnimation = bBoneOnlyFrameEvaluated
+        ? BoneOnlyEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("bone-only session keeps StaticData, Ready, and FrameData consistent"),
+        BoneOnlyStatic
+        && BoneOnlyStatic->PropertyNames.IsEmpty()
+        && BoneOnlyAnimation
+        && BoneOnlyAnimation->Transforms.Num() == 2
+        && !BoneOnlyAnimation->Transforms[0].ContainsNaN()
+        && BoneOnlyAnimation->PropertyValues.IsEmpty());
+    DestroySocket(*SocketSubsystem, BoneOnlyClient);
+    TestTrue(TEXT("source returns to listening after bone-only disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    TestTrue(TEXT("bone-only disconnect keeps and displays the Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().GeneratedPreview == GeneratedPreview
+        && Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-only comparison is a connection diagnostic outside readiness"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::BoneOnly);
+
+    FSocket* EmptyIntersectionClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("empty-intersection bone-only model client connects"), EmptyIntersectionClient);
+    const TArray<uint8> EmptyIntersectionInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        false,
+        TEXT("[\"GhostOne\",\"GhostTwo\"]"));
+    TestTrue(TEXT("empty-intersection bone-only model init is sent"), EmptyIntersectionClient
+        && SendBytes(*EmptyIntersectionClient, EmptyIntersectionInit.GetData(), EmptyIntersectionInit.Num()));
+    Payload.Reset();
+    const bool bEmptyIntersectionReady = EmptyIntersectionClient && ReceivePacket(
+        *EmptyIntersectionClient, Payload, [&]() { Source->Update(); });
+    TestTrue(TEXT("disabled BS transmission lets an empty Morph intersection negotiate Ready"),
+        bEmptyIntersectionReady
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
+    TestTrue(TEXT("empty-intersection connection is labelled a Bone-only comparison"),
+        Actor && Actor->GetConnectionStatus().Contains(TEXT("bone-only diagnostic"))
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::BoneOnly
+        && Actor->GetModelDiagnostics().Contains(TEXT("ORANGE: Bone-only diagnostic")));
+    DestroySocket(*SocketSubsystem, EmptyIntersectionClient);
+    TestTrue(TEXT("source returns to listening after empty-intersection bone-only disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* BoneDrivenClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("bone-driven model client connects"), BoneDrivenClient);
+    const TArray<uint8> BoneDrivenInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[]"));
+    TestTrue(TEXT("bone-driven model init is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, BoneDrivenInit.GetData(), BoneDrivenInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("bone-driven outfit produces ready response"),
+        BoneDrivenClient && ReceivePacket(*BoneDrivenClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("zero-name manifest negotiates Ready with an empty accepted set"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"model\""))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":0")));
+    TestTrue(TEXT("bone-driven outfit is not labelled an invalid diagnostic"),
+        Actor
+        && Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == GeneratedPreview);
+    TestTrue(TEXT("bone-driven diagnostics report the declared-zero manifest"),
+        Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 0"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Bone-driven outfit"))
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Full);
+    const TArray<uint8> BoneDrivenFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
+    TestTrue(TEXT("bone-driven frame is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, BoneDrivenFrame.GetData(), BoneDrivenFrame.Num()));
+    FLiveLinkSubjectFrameData BoneDrivenEvaluatedFrame;
+    const bool bBoneDrivenFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            BoneDrivenEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* BoneDrivenStatic = bBoneDrivenFrameEvaluated
+        ? BoneDrivenEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* BoneDrivenAnimation = bBoneDrivenFrameEvaluated
+        ? BoneDrivenEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("bone-driven session streams bones with no Morph properties"),
+        BoneDrivenStatic
+        && BoneDrivenStatic->PropertyNames.IsEmpty()
+        && BoneDrivenAnimation
+        && BoneDrivenAnimation->Transforms.Num() == 2
+        && !BoneDrivenAnimation->Transforms[0].ContainsNaN()
+        && BoneDrivenAnimation->PropertyValues.IsEmpty());
+    const TArray<uint8> SingularFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,0,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
+    TestTrue(TEXT("singular-parent frame is sent"), BoneDrivenClient
+        && SendBytes(*BoneDrivenClient, SingularFrame.GetData(), SingularFrame.Num()));
+    Payload.Reset();
+    const bool bSingularRejected = BoneDrivenClient && ReceivePacket(
+        *BoneDrivenClient, Payload, [&]() { Source->Update(); });
+    TestTrue(TEXT("a singular source current transform is rejected before publication"),
+        bSingularRejected
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"error\""))
+        && FromUtf8(Payload).Contains(TEXT("BIND_POSE_INVALID")));
+    TestTrue(TEXT("singular transform rejection closes the session"),
+        BoneDrivenClient && WaitForClose(*BoneDrivenClient));
+    DestroySocket(*SocketSubsystem, BoneDrivenClient);
+    TestTrue(TEXT("source returns to listening after bone-driven disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* BlendshapeClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("BlendShape-enabled model client connects"), BlendshapeClient);
+    const TArray<uint8> BlendshapeInit = DriverInitPacket(
+        FMtoUWorkflows::Model, true, TEXT("[\"OtherOutfit\"]"));
+    TestTrue(TEXT("BlendShape-enabled model init is sent"), BlendshapeClient
+        && SendBytes(*BlendshapeClient, BlendshapeInit.GetData(), BlendshapeInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("BlendShape-enabled model workflow receives rejection"),
+        BlendshapeClient
+        && ReceivePacket(*BlendshapeClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("a non-empty manifest without intersection remains unavailable with BS enabled"),
+        FromUtf8(Payload).Contains(TEXT("PREVIEW_MORPH_MISMATCH")));
+    TestTrue(TEXT("BlendShape rejection closes the session"),
+        BlendshapeClient && WaitForClose(*BlendshapeClient));
+    DestroySocket(*SocketSubsystem, BlendshapeClient);
+    TestTrue(TEXT("a rejected Model pairing leaves Preview readiness unchanged"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("source returns to listening after BlendShape rejection"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* PartialClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("partial Morph model client connects"), PartialClient);
+    const TArray<uint8> PartialInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        true,
+        TEXT("[\"OtherOutfit\",\"Accepted\",\"Unaccepted\",\"DriverOnly\"]"));
+    TestTrue(TEXT("partial Morph model init is sent"), PartialClient
+        && SendBytes(*PartialClient, PartialInit.GetData(), PartialInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("partial Morph intersection produces ready response"),
+        PartialClient && ReceivePacket(*PartialClient, Payload, [&]() { Source->Update(); }));
+    const FString PartialReply = FromUtf8(Payload);
+    TestTrue(TEXT("partial ready reports v4 Morph counts and both differences"),
+        PartialReply.Contains(TEXT("\"target_morph_count\":4"))
+        && PartialReply.Contains(TEXT("\"accepted_morph_count\":3"))
+        && PartialReply.Contains(TEXT("OtherOutfit"))
+        && PartialReply.Contains(TEXT("NeverAccepted")));
+    TestTrue(TEXT("partial Model coverage is a connection diagnostic that keeps readiness Ready"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Partial
+        && Actor->GetConnectionStatus().Contains(TEXT("partial Morph coverage")));
+    TestTrue(TEXT("Model diagnostics report all five requested counts"),
+        Actor && Actor->GetModelDiagnostics().Contains(TEXT("Maya current BlendShape count: 4"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Model display Morph total: 4"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Accepted count: 3"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("Maya-only count: 1"))
+        && Actor->GetModelDiagnostics().Contains(TEXT("UE-only count: 1")));
+    const TArray<uint8> PartialFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.25,0.75,0.6]}"));
+    TestTrue(TEXT("partial Model frame is sent"), PartialClient
+        && SendBytes(*PartialClient, PartialFrame.GetData(), PartialFrame.Num()));
+    FLiveLinkSubjectFrameData PartialEvaluatedFrame;
+    const bool bPartialFrameEvaluated = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        return LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            ModelSubjectKey,
+            ULiveLinkAnimationRole::StaticClass(),
+            PartialEvaluatedFrame);
+    });
+    const FLiveLinkSkeletonStaticData* PartialStatic = bPartialFrameEvaluated
+        ? PartialEvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>()
+        : nullptr;
+    const FLiveLinkAnimationFrameData* PartialAnimation = bPartialFrameEvaluated
+        ? PartialEvaluatedFrame.FrameData.Cast<FLiveLinkAnimationFrameData>()
+        : nullptr;
+    TestTrue(TEXT("another-outfit value is excluded and only accepted values are published"),
+        PartialStatic
+        && PartialStatic->PropertyNames == TArray<FName>({
+            FName(TEXT("Accepted")), FName(TEXT("Unaccepted")), FName(TEXT("DriverOnly"))})
+        && PartialAnimation
+        && PartialAnimation->Transforms.Num() == 2
+        && !PartialAnimation->Transforms[0].ContainsNaN()
+        && PartialAnimation->PropertyValues == TArray<float>({0.25f, 0.75f, 0.6f}));
+    float PartialAcceptedValue = 0.0f;
+    float PartialUnacceptedValue = 0.0f;
+    const bool bPreviewValuesApplied = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        return SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("Accepted")), 0.0f, PartialAcceptedValue)
+            && FMath::IsNearlyEqual(PartialAcceptedValue, 0.25f)
+            && SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("Unaccepted")), 0.0f, PartialUnacceptedValue)
+            && FMath::IsNearlyEqual(PartialUnacceptedValue, 0.75f);
+    });
+    TestTrue(TEXT("bone and multiple accepted Morph values apply to the displayed Preview"),
+        bPreviewValuesApplied);
+    const bool bDriverValueApplied = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        return DriverDisplay
+            && FMath::IsNearlyEqual(
+                DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.6f);
+    });
+    TestTrue(TEXT("Driver-only Morph value applies to the complete character display"),
+        bDriverValueApplied);
+    float NeverAcceptedValue = 0.0f;
+    TestTrue(TEXT("non-accepted Generated Morph remains zero"),
+        !SkeletalMeshComponent->GetCurveValue(
+            FName(TEXT("NeverAccepted")), 0.0f, NeverAcceptedValue)
+        || FMath::IsNearlyZero(NeverAcceptedValue));
+    DestroySocket(*SocketSubsystem, PartialClient);
+    TestTrue(TEXT("source returns to listening after partial Model disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* FullClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("full Morph model client connects"), FullClient);
+    const TArray<uint8> FullInit = DriverInitPacket(
+        FMtoUWorkflows::Model,
+        true,
+        TEXT("[\"Accepted\",\"Unaccepted\",\"NeverAccepted\",\"DriverOnly\"]"));
+    TestTrue(TEXT("full Morph model init is sent"), FullClient
+        && SendBytes(*FullClient, FullInit.GetData(), FullInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("full Morph intersection produces ready response"),
+        FullClient && ReceivePacket(*FullClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("full ready reports complete accepted intersection"),
+        FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":4"))
+        && FromUtf8(Payload).Contains(TEXT("\"accepted_morph_count\":4")));
+    DestroySocket(*SocketSubsystem, FullClient);
+    TestTrue(TEXT("source returns to listening after full Model disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* AnimationClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("animation client connects"), AnimationClient);
+    const TArray<uint8> AnimationInit = DriverInitPacket(
+        FMtoUWorkflows::Animation, true, TEXT("[]"));
+    TestTrue(TEXT("animation init is sent"), AnimationClient
+        && SendBytes(*AnimationClient, AnimationInit.GetData(), AnimationInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("animation workflow produces ready response"), AnimationClient && ReceivePacket(
+        *AnimationClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("animation workflow selects the Driver Skeletal Mesh"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"workflow\":\"animation\""))
+        && FromUtf8(Payload).Contains(TEXT("\"target_morph_count\":1")));
+    TestTrue(TEXT("animation connection marks the actor connected"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+    TestTrue(TEXT("Animation workflow restores the Driver Skeletal Mesh"),
+        SkeletalMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore);
+    TestTrue(TEXT("Animation display selection leaves the ready Generated Preview intact"),
+        Actor && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().IsUsable());
+
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->OnConstruction(Actor->GetActorTransform());
+    TestTrue(TEXT("construction preserves the negotiated Animation Driver target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    SkeletalMeshComponent->SetDisablePostProcessBlueprint(false);
+    Actor->PostRegisterAllComponents();
+    TestTrue(TEXT("registration preserves the negotiated Animation Driver target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+
+    DestroySocket(*SocketSubsystem, AnimationClient);
+    TestTrue(TEXT("source returns to listening after Animation disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    TestTrue(TEXT("Animation disconnect preserves the Driver display target"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
+        && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+namespace
+{
+USkeletalMesh* MakeTransientGeneratedPreview(USkeletalMesh* Template, AActor& Owner)
+{
+    USkeletalMesh* Mesh = Template
+        ? DuplicateObject<USkeletalMesh>(Template, &Owner)
+        : nullptr;
+    if (Mesh)
+    {
+        Mesh->ClearFlags(RF_Public | RF_Standalone);
+        Mesh->SetFlags(RF_Transient);
+    }
+    return Mesh;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessTest,
+    "MtoULiveLink.Preview.Readiness",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewReadinessTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    if (!Actor || !Driver)
+    {
+        AddError(TEXT("readiness fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Driver;
+
+    TestTrue(TEXT("an actor without a Binding reads None"),
+        !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::None);
+
+    Actor->SetBinding(Binding);
+    TestTrue(TEXT("a Binding missing the Preview input is None"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::None);
+    Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    Actor->NotifyBindingInputsChanged();
+    TestTrue(TEXT("fully configured unrefreshed inputs are Dirty"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().Diagnostics.Contains(TEXT("Run Refresh Preview")));
+
+    TestTrue(TEXT("the seam accepts a refresh start"),
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor));
+    TestTrue(TEXT("build start enters Building at Preflight and hides the display"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Preflight
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Hidden
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    for (const EMtoUPreviewBuildStage Stage : { EMtoUPreviewBuildStage::GeometryConversion,
+            EMtoUPreviewBuildStage::WeightTransfer, EMtoUPreviewBuildStage::SkeletalMeshBuild,
+            EMtoUPreviewBuildStage::Validation })
+    {
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, Stage);
+        TestTrue(TEXT("the build stage stays observable while Building"),
+            Actor->GetPreviewReadiness().Stage == Stage
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+    }
+
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Driver, *Actor);
+    TestTrue(TEXT("a valid commit is accepted while Building"),
+        FMtoUPreviewReadinessTestAccess::Commit(
+            *Actor, Generated, false, TEXT("ready diagnostics"), TEXT("ready summary")));
+    const FMtoUPreviewReadiness Ready = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("Ready exposes the complete coherent snapshot"),
+        Ready.State == EMtoUPreviewState::Ready
+        && Ready.IsUsable()
+        && Ready.GeneratedPreview == Generated
+        && Ready.Summary == TEXT("ready summary")
+        && Ready.Diagnostics == TEXT("ready diagnostics")
+        && Ready.Stage == EMtoUPreviewBuildStage::Validation);
+    TestTrue(TEXT("the readiness commit does not own display selection"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Hidden
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), true, TEXT("warning diagnostics"));
+    TestTrue(TEXT("a Preview quality warning remains usable readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Warning
+        && Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    TestFalse(TEXT("a commit of a non-actor-owned mesh is not accepted as ready"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+            NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient),
+            false, TEXT("invalid")));
+    TestTrue(TEXT("invalid ownership becomes a Validation-stage failure"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    TestFalse(TEXT("a commit of persistent asset data is not accepted as ready"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+            NewObject<USkeletalMesh>(Actor), false, TEXT("persisted")));
+    TestTrue(TEXT("invalid persistence flags become a Validation-stage failure"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::WeightTransfer);
+    TestTrue(TEXT("a failure is accepted while Building"),
+        FMtoUPreviewReadinessTestAccess::Fail(
+            *Actor, EMtoUPreviewBuildStage::WeightTransfer, TEXT("transfer failed")));
+    TestTrue(TEXT("a failed refresh establishes Error with the actionable stage and restores the Driver"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::WeightTransfer
+        && Actor->GetPreviewReadiness().Diagnostics == TEXT("transfer failed")
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    TWeakObjectPtr<USkeletalMesh> Deleted = Actor->GetPreviewReadiness().GeneratedPreview;
+    Actor->NotifyGeneratedPreviewDeleted();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("explicit deletion leaves a configured Binding Dirty and shows the Driver"),
+        !Deleted.IsValid()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Actor->NotifySourceAssetChanged(Binding->PreviewStaticMesh, TEXT("test change"));
+    TestTrue(TEXT("changing either Preview input invalidates the current revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    // A source build completion reentrant to the actor's own synchronous
+    // preparation never self-invalidates, while a real rebuild still does.
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    Binding->PreviewStaticMesh->OnPostMeshBuild().Broadcast(Binding->PreviewStaticMesh);
+    TestTrue(TEXT("a reentrant source build during Building is not a new revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Binding->PreviewStaticMesh->OnPostMeshBuild().Broadcast(Binding->PreviewStaticMesh);
+    TestTrue(TEXT("a source rebuild notification after commit invalidates the revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Actor->GetPreviewReadiness().IsUsable());
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    Actor->PostLoad();
+    TestTrue(TEXT("level load discards transient Preview data and reports Dirty"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().Diagnostics.Contains(TEXT("Level loaded")));
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+        MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("ready"));
+    AMtoULiveLinkActor* Duplicate = DuplicateObject<AMtoULiveLinkActor>(
+        Actor, World->GetCurrentLevel());
+    TestTrue(TEXT("actor duplication discards transient Preview data and reports Dirty"),
+        Duplicate
+        && Duplicate->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && !Duplicate->GetPreviewReadiness().IsUsable());
+    if (Duplicate)
+    {
+        Duplicate->Destroy();
+    }
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    USkeletalMesh* Retained = MakeTransientGeneratedPreview(Driver, *Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor, Retained, false, TEXT("ready"));
+    Actor->ShowGeneratedPreview(false);
+    Actor->SetConnectionStatus(TEXT("Disconnected"));
+    TestTrue(TEXT("disconnect preserves an unchanged ready Generated Preview for reuse"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Retained);
+
+    TWeakObjectPtr<USkeletalMesh> Shutdown = Retained;
+    Actor->NotifyTransientPreviewReleased();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("shutdown release discards transient Preview ownership"),
+        !Shutdown.IsValid()
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty);
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    USkeletalMesh* Teardown = MakeTransientGeneratedPreview(Driver, *Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(*Actor, Teardown, false, TEXT("ready"));
+    TWeakObjectPtr<USkeletalMesh> TeardownWeak = Teardown;
+    Actor->Destroy();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestFalse(TEXT("actor teardown releases transient Preview data"), TeardownWeak.IsValid());
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessGuardsTest,
+    "MtoULiveLink.Preview.ReadinessGuards",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewReadinessGuardsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    if (!Actor || !Driver)
+    {
+        AddError(TEXT("readiness guard fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    Actor->SetBinding(Binding);
+
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a commit outside Building is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("stale commit")));
+        TestEqual(TEXT("the rejected commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the rejected commit does not overwrite Dirty readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a failure outside Building is rejected"),
+            FMtoUPreviewReadinessTestAccess::Fail(*Actor,
+                EMtoUPreviewBuildStage::Preflight, TEXT("stale failure")));
+        TestEqual(TEXT("the rejected failure emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the rejected failure does not overwrite Dirty readiness"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty);
+
+    {
+        FEnsureScope Scope;
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::Validation);
+        TestEqual(TEXT("stage observation outside Building is ignored"),
+            static_cast<int32>(Actor->GetPreviewReadiness().Stage),
+            static_cast<int32>(EMtoUPreviewBuildStage::None));
+        TestEqual(TEXT("the ignored stage change emits one ensure"), Scope.GetCount(), 1);
+    }
+
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::Validation);
+    {
+        FEnsureScope Scope;
+        FMtoUPreviewReadinessTestAccess::SetStage(*Actor, EMtoUPreviewBuildStage::GeometryConversion);
+        TestTrue(TEXT("an out-of-order stage is ignored"),
+            Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building);
+        TestEqual(TEXT("the out-of-order stage emits one ensure"), Scope.GetCount(), 1);
+    }
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a reentrant refresh start is rejected"),
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor));
+        TestEqual(TEXT("the reentrant start emits one ensure and preserves Building"),
+            Scope.GetCount(), 1);
+        TestTrue(TEXT("the rejected start did not release the running build"),
+            Actor->GetPreviewReadiness().State == EMtoUPreviewState::Building
+            && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::Validation);
+    }
+
+    USkeletalMesh* Current = MakeTransientGeneratedPreview(Driver, *Actor);
+    TestTrue(TEXT("the running build still accepts its commit"),
+        FMtoUPreviewReadinessTestAccess::Commit(*Actor, Current, false, TEXT("ready")));
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a stale second commit is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), true, TEXT("stale completion")));
+        TestEqual(TEXT("the stale commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the stale completion does not overwrite the successful result"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Current);
+    {
+        FEnsureScope Scope;
+        TestFalse(TEXT("a stale failure after success is rejected"),
+            FMtoUPreviewReadinessTestAccess::Fail(*Actor,
+                EMtoUPreviewBuildStage::WeightTransfer, TEXT("stale failure")));
+        TestEqual(TEXT("the stale failure emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("the stale failure does not overwrite the successful result"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Ready
+        && Actor->GetPreviewReadiness().GeneratedPreview == Current);
+
+    {
+        // A real input change during a build wins: the newer revision makes
+        // the pending build's completion a stale result.
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+        Actor->NotifyBindingInputsChanged();
+        FEnsureScope Scope;
+        TestFalse(TEXT("a delayed commit after invalidation is rejected"),
+            FMtoUPreviewReadinessTestAccess::Commit(*Actor,
+                MakeTransientGeneratedPreview(Driver, *Actor), false, TEXT("stale")));
+        TestEqual(TEXT("the delayed commit emits one ensure"), Scope.GetCount(), 1);
+    }
+    TestTrue(TEXT("invalidation keeps the newer Dirty revision"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceBindRecoveryTest,
     "MtoULiveLink.Source.BindRecovery",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1520,6 +3755,535 @@ bool FMtoUSourceBindRecoveryTest::RunTest(const FString& Parameters)
     First->StopListener();
     TestTrue(TEXT("second source listens after the port is released"), WaitForStatus(Second, TEXT("Listening on")));
     Second->StopListener();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSessionTerminationBoundaryTest,
+    "MtoULiveLink.Source.SessionTerminationBoundary",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    UMtoULiveLinkBinding* Binding = Actor ? Actor->GetBinding() : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    TestNotNull(TEXT("actor exposes its Binding"), Binding);
+    USkeletalMesh* Driver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    TestNotNull(TEXT("binding supplies the Driver Skeletal Mesh"), Driver);
+    if (Binding)
+    {
+        Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    }
+
+    auto MakeReadyRevision = [&](USkeletalMesh*& OutGenerated)
+    {
+        OutGenerated = Driver ? DuplicateObject<USkeletalMesh>(Driver, Actor) : nullptr;
+        if (OutGenerated)
+        {
+            OutGenerated->ClearFlags(RF_Public | RF_Standalone);
+            OutGenerated->SetFlags(RF_Transient);
+            OutGenerated->SetSkeleton(Driver->GetSkeleton());
+            OutGenerated->SetRefSkeleton(Driver->GetRefSkeleton());
+            AddUniformMorph(*OutGenerated, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f));
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+            FMtoUPreviewReadinessTestAccess::Commit(
+                *Actor, OutGenerated, false, TEXT("test preview"));
+        }
+    };
+    USkeletalMesh* FirstGenerated = nullptr;
+    MakeReadyRevision(FirstGenerated);
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> ModelInit = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    auto NegotiateModelReady = [&](FSocket* Client) -> FString
+    {
+        if (!Client)
+        {
+            return FString();
+        }
+        TestTrue(TEXT("model init is sent"),
+            SendBytes(*Client, ModelInit.GetData(), ModelInit.Num()));
+        TArray<uint8> Payload;
+        if (!ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), Primary);
+    TestTrue(TEXT("ready Model revision negotiates a streaming session"),
+        NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("connected actor reports the live session"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+
+    // ADR-0002 boundary: a relevant reimport of a Preview input ends the
+    // active session without implicitly generating a new Preview.
+    TestNotNull(TEXT("test Generated Preview exists for the reimport"), FirstGenerated);
+    Actor->NotifySourceAssetChanged(Binding->PreviewStaticMesh, TEXT("test reimport"));
+    TestTrue(TEXT("reimport ends the negotiated session on the wire"),
+        Primary && WaitForClose(*Primary));
+    const bool bReturnedToListening = PollUntil([&]()
+    {
+        Source->Update();
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+    });
+    TestTrue(TEXT("source returns to listening after the boundary termination"), bReturnedToListening);
+    TestTrue(TEXT("terminated actor shows the true disconnected state"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+    const FMtoUPreviewReadiness AfterReimport = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("reimport invalidates the previous revision without a new Preview"),
+        AfterReimport.State == EMtoUPreviewState::Dirty
+        && AfterReimport.GeneratedPreview == nullptr
+        && !AfterReimport.IsUsable());
+
+    // A new connection must negotiate against the new revision; the older
+    // Character snapshot can never resume streaming into it.
+    FSocket* StaleRevisionClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("stale-revision client connects"), StaleRevisionClient);
+    TestTrue(TEXT("a new connection on the dirty revision refuses the old snapshot"),
+        NegotiateModelReady(StaleRevisionClient).Contains(TEXT("PREVIEW_NOT_READY")));
+    TestTrue(TEXT("refused stale revision closes immediately"),
+        StaleRevisionClient && WaitForClose(*StaleRevisionClient));
+    DestroySocket(*SocketSubsystem, StaleRevisionClient);
+
+    // Binding actor deletion is the same terminal boundary.
+    USkeletalMesh* SecondGenerated = nullptr;
+    MakeReadyRevision(SecondGenerated);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("an explicit refresh prepares the new revision"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+    FSocket* Second = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("second model client connects"), Second);
+    TestTrue(TEXT("refreshed revision negotiates ready again"),
+        NegotiateModelReady(Second).Contains(TEXT("\"type\":\"ready\"")));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    Actor->Destroy();
+    TestTrue(TEXT("actor destruction ends the live session on the wire"),
+        Second && WaitForClose(*Second));
+    const bool bDestroyedCleanup = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData StaleFrame;
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"))
+            && !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+    });
+    TestTrue(TEXT("actor destruction leaves no active subject"), bDestroyedCleanup);
+    DestroySocket(*SocketSubsystem, Second);
+
+    // Late duplicate requests stay idempotent and never affect a later host.
+    MtoURequestStreamingSessionEnd();
+    MtoURequestStreamingSessionEnd();
+    FSocket* AfterDestroyClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("post-destruction client connects"), AfterDestroyClient);
+    TestTrue(TEXT("a deleted Binding actor leaves no streaming target"),
+        NegotiateModelReady(AfterDestroyClient).Contains(TEXT("NO_BINDING_ACTOR")));
+    DestroySocket(*SocketSubsystem, AfterDestroyClient);
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPieTargetPolicyTest,
+    "MtoULiveLink.Source.PieTargetPolicy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* EditorWorld = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), EditorWorld);
+    if (EditorWorld && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(EditorWorld);
+        EditorWorld->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* EditorActor = EditorWorld ? AddBoundActor(*EditorWorld) : nullptr;
+    TestNotNull(TEXT("editor binding actor is created"), EditorActor);
+    // The PIE duplicated world is the same actor a real Play would create.
+    UWorld* PieWorld = UWorld::CreateWorld(EWorldType::PIE, false);
+    TestNotNull(TEXT("PIE world is created"), PieWorld);
+    AMtoULiveLinkActor* PieActor = PieWorld ? AddBoundActor(*PieWorld) : nullptr;
+    TestNotNull(TEXT("PIE duplicate binding actor is created"), PieActor);
+
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    USkeletalMesh* Driver = EditorActor
+        ? EditorActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    // PIE is not supported: its duplicated Binding actor must not be treated
+    // as an additional editor target.
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("PIE-era client connects"), Client);
+    TestTrue(TEXT("init is sent"), Client && SendBytes(*Client, Init.GetData(), Init.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("PIE-era validation client receives a reply"),
+        Client && ReceivePacket(*Client, Payload, [&]() { Source->Update(); }));
+    const FString PieReply = FromUtf8(Payload);
+    TestFalse(TEXT("a duplicated PIE world never produces a multiple-Binding failure"),
+        PieReply.Contains(TEXT("MULTIPLE_BINDING_ACTORS")));
+    TestTrue(TEXT("the editor Binding actor alone negotiates ready during PIE"),
+        PieReply.Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("the editor actor is the connected target"),
+        EditorActor && EditorActor->GetConnectionStatus().Equals(TEXT("Connected"))
+        && PieActor && PieActor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("source returns to listening after the PIE-era session"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+        }));
+
+    // Discovery still fails closed for a genuine second editor target.
+    AMtoULiveLinkActor* ExtraEditorActor = EditorWorld ? AddBoundActor(*EditorWorld) : nullptr;
+    TestNotNull(TEXT("second editor binding actor is created"), ExtraEditorActor);
+    FSocket* DuplicateClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("duplicate-target client connects"), DuplicateClient);
+    TestTrue(TEXT("duplicate init is sent"), DuplicateClient
+        && SendBytes(*DuplicateClient, Init.GetData(), Init.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("duplicate-target client receives a reply"),
+        DuplicateClient && ReceivePacket(
+            *DuplicateClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("two editor-world actors still fail as multiple Binding actors"),
+        FromUtf8(Payload).Contains(TEXT("MULTIPLE_BINDING_ACTORS")));
+    DestroySocket(*SocketSubsystem, DuplicateClient);
+
+    if (ExtraEditorActor)
+    {
+        ExtraEditorActor->Destroy();
+    }
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (PieWorld)
+    {
+        PieWorld->DestroyWorld(false);
+    }
+    if (EditorWorld)
+    {
+        EditorWorld->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(EditorWorld);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUWorldUnloadTerminationTest,
+    "MtoULiveLink.Source.WorldUnloadTermination",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    UMtoULiveLinkBinding* Binding = Actor ? Actor->GetBinding() : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    TestNotNull(TEXT("actor exposes its Binding"), Binding);
+    USkeletalMesh* Driver = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    TestNotNull(TEXT("binding supplies the Driver Skeletal Mesh"), Driver);
+    if (Binding)
+    {
+        Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    }
+
+    auto MakeReadyRevision = [&](USkeletalMesh*& OutGenerated)
+    {
+        OutGenerated = Driver ? DuplicateObject<USkeletalMesh>(Driver, Actor) : nullptr;
+        if (OutGenerated)
+        {
+            OutGenerated->ClearFlags(RF_Public | RF_Standalone);
+            OutGenerated->SetFlags(RF_Transient);
+            OutGenerated->SetSkeleton(Driver->GetSkeleton());
+            OutGenerated->SetRefSkeleton(Driver->GetRefSkeleton());
+            AddUniformMorph(*OutGenerated, FName(TEXT("Accepted")), FVector3f(1.0f, 0.0f, 0.0f));
+            FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+            FMtoUPreviewReadinessTestAccess::Commit(
+                *Actor, OutGenerated, false, TEXT("test preview"));
+        }
+    };
+    USkeletalMesh* FirstGenerated = nullptr;
+    MakeReadyRevision(FirstGenerated);
+    TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
+        Actor && Actor->GetPreviewReadiness().IsUsable());
+
+    // Earlier automation worlds are only pending destruction at this point;
+    // collect them so global actor discovery sees exactly this test's actor.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
+    const TArray<uint8> ModelInit = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        *ReferenceSkeletonBonesJson(*TestSkeleton)));
+
+    auto NegotiateModelReady = [&](FSocket* Client) -> FString
+    {
+        if (!Client)
+        {
+            return FString();
+        }
+        TestTrue(TEXT("model init is sent"),
+            SendBytes(*Client, ModelInit.GetData(), ModelInit.Num()));
+        TArray<uint8> Payload;
+        if (!ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("model client connects"), Primary);
+    TestTrue(TEXT("ready Model revision negotiates a streaming session"),
+        NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("connected actor reports the live session"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+
+    // One streamed reference-pose frame proves the session owns a live
+    // Live Link subject, not merely a negotiated socket.
+    const int32 BoneCount = TestSkeleton ? TestSkeleton->GetNum() : 0;
+    FString Transforms;
+    for (int32 Index = 0; Index < BoneCount; ++Index)
+    {
+        Transforms += (Index > 0 ? TEXT(",") : TEXT(""));
+        Transforms += TransformJson(TestSkeleton->GetRefBonePose()[Index]);
+    }
+    const TArray<uint8> RefPoseFrame = Packet(FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[0]}"), *Transforms));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    TestTrue(TEXT("live frame is sent"),
+        Primary && SendBytes(*Primary, RefPoseFrame.GetData(), RefPoseFrame.Num()));
+    const bool bSubjectLive = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData LiveFrame;
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), LiveFrame))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            LiveFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        return Animation && Animation->Transforms.Num() == BoneCount;
+    });
+    TestTrue(TEXT("the active session publishes its Live Link subject"), bSubjectLive);
+
+    // Distinguishes a real peer close from a would-block read: a graceful
+    // close signals readable and then reports zero bytes.
+    auto IsSocketClosed = [](FSocket* Client) -> bool
+    {
+        if (!Client)
+        {
+            return false;
+        }
+        if (!Client->Wait(
+                ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(150)))
+        {
+            return false;
+        }
+        uint8 Probe[16];
+        int32 Read = 0;
+        return !Client->Recv(Probe, UE_ARRAY_COUNT(Probe), Read) && Read == 0;
+    };
+
+    FLiveLinkSubjectFrameData KeptFrame;
+    // An unrelated editor world cleanup must never end the active session.
+    UWorld* UnrelatedWorld = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("unrelated editor world is created"), UnrelatedWorld);
+    UnrelatedWorld->DestroyWorld(false);
+    TestTrue(TEXT("an unrelated editor world cleanup keeps the live session"),
+        !IsSocketClosed(Primary));
+    TestTrue(TEXT("the unrelated cleanup leaves the subject in place"),
+        LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            SubjectKey, ULiveLinkAnimationRole::StaticClass(), KeptFrame));
+
+    // The real unload boundary: destroying the Editor world that owns the
+    // Binding Actor routes through FWorldDelegates::OnWorldCleanup into the
+    // shared idempotent termination boundary. Actor::Destroyed() never runs
+    // on the DestroyWorld/CleanupWorld path.
+    World->DestroyWorld(false);
+    TestTrue(TEXT("the world unload ends the live session on the wire"),
+        IsSocketClosed(Primary));
+    const bool bUnloadCleanup = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData StaleFrame;
+        return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"))
+            && !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+    });
+    TestTrue(TEXT("the world unload leaves no active subject"), bUnloadCleanup);
+    TestTrue(TEXT("the unloaded actor shows the true disconnected state"),
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+
+    // Late duplicate termination requests stay idempotent, and once the
+    // editor reaps the unloaded world the stale actor leaves no target.
+    MtoURequestStreamingSessionEnd();
+    MtoURequestStreamingSessionEnd();
+    if (GEngine)
+    {
+        GEngine->DestroyWorldContext(World);
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    FSocket* AfterUnloadClient = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("post-unload client connects"), AfterUnloadClient);
+    TestTrue(TEXT("an unloaded world leaves no stale streaming target"),
+        NegotiateModelReady(AfterUnloadClient).Contains(TEXT("NO_BINDING_ACTOR")));
+    DestroySocket(*SocketSubsystem, AfterUnloadClient);
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
     return true;
 }
 

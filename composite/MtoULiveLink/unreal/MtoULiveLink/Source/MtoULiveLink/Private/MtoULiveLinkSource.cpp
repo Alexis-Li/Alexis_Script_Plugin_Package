@@ -6,6 +6,7 @@
 
 #include "Animation/MorphTarget.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
 #include "ILiveLinkClient.h"
@@ -120,15 +121,60 @@ bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
         return false;
     }
     const UWorld* World = Actor.GetWorld();
-    return World
-        && (World->WorldType == EWorldType::Editor || World->WorldType == EWorldType::PIE);
+    // PIE is not supported for this release: duplicated PIE-world actors are
+    // excluded so entering PIE can never present a second streaming target.
+    return World && World->WorldType == EWorldType::Editor;
 }
+
+TAtomic<uint64> GStreamingSessionEndRequests{0};
+}
+
+void MtoURequestStreamingSessionEnd()
+{
+    ++GStreamingSessionEndRequests;
+}
+
+void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+    (void)bSessionEnded;
+    (void)bCleanupResources;
+    // PIE worlds never host a discoverable target and EditorPreview worlds
+    // never negotiate a session, so only Editor worlds can end one here.
+    if (!World || World->WorldType != EWorldType::Editor)
+    {
+        return;
+    }
+    for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+    {
+        if (!It->HasAnyFlags(RF_ClassDefaultObject) && It->GetWorld() == World)
+        {
+            MtoURequestStreamingSessionEnd();
+            return;
+        }
+    }
 }
 
 FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
     : ConfiguredPort(InPort)
     , Status(TEXT("Starting listener..."))
 {
+    CacheSession.SetPublish([this](const FMtoUFrameMessage& Frame) -> bool
+    {
+        return PublishFrameOnGameThread(Frame);
+    });
+    CacheSession.SetProgressSink(
+        [this](int32 PlayId, int32 AppliedFrames)
+    {
+        const uint64 SessionId = GameThreadSession;
+        if (SessionId == 0 || !IsCurrentSession(SessionId))
+        {
+            return;
+        }
+        FMtoUOutgoing Reply;
+        Reply.SessionId = SessionId;
+        Reply.Packet = FMtoUProtocol::EncodeCacheProgress(PlayId, AppliedFrames);
+        OutgoingReplies.Enqueue(MoveTemp(Reply));
+    });
     StartListener();
 }
 
@@ -165,12 +211,13 @@ void FMtoULiveLinkSource::Update()
             SetEditorViewportRealtimeOverride(false);
             if (Client && SourceGuid.IsValid())
             {
-                Client->ClearSubjectsFrames_AnyThread(SubjectKey);
+                Client->RemoveSubject_AnyThread(SubjectKey);
             }
             for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
             {
                 if (Actor.IsValid())
                 {
+                    Actor->ReapplyDisplayTarget();
                     Actor->SetConnectionStatus(TEXT("Disconnected"));
                 }
             }
@@ -178,6 +225,11 @@ void FMtoULiveLinkSource::Update()
             SourceBindLocalPose.Reset();
             TargetRefLocalPose.Reset();
             BoneParents.Reset();
+            AcceptedCurveIndices.Reset();
+            AcceptedCurveNames.Reset();
+            // The transient cache is scoped to one negotiated streaming
+            // session; a newer connection never inherits it.
+            CacheSession.ResetToIdle();
         }
     }
 
@@ -195,7 +247,23 @@ void FMtoULiveLinkSource::Update()
         GameThreadSession = Init->SessionId;
         HandleInitOnGameThread(MoveTemp(Init->Message));
     }
-    PublishLatestFrameOnGameThread();
+    HandleCacheCommandsOnGameThread();
+
+    // While a cache owns this session, ordinary live frames must neither
+    // mutate the cache nor overwrite local playback; drop them and their
+    // stale pending slots silently.
+    if (CacheSession.GetState() == EMtoUCacheState::Idle)
+    {
+        PublishLatestFrameOnGameThread();
+    }
+    else
+    {
+        FScopeLock Lock(&PendingMutex);
+        if (PendingFrame.IsSet() && PendingFrame->SessionId == GameThreadSession)
+        {
+            PendingFrame.Reset();
+        }
+    }
 }
 
 bool FMtoULiveLinkSource::IsSourceStillValid() const
@@ -264,15 +332,23 @@ void FMtoULiveLinkSource::StopListener()
     SetStatus(TEXT("Stopped"));
     if (IsInGameThread())
     {
+        CacheSession.ResetToIdle();
+        bPlaybackOutcomePending = false;
         SetEditorViewportRealtimeOverride(false);
         for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
         {
             if (Actor.IsValid())
             {
+                Actor->ReapplyDisplayTarget();
                 Actor->SetConnectionStatus(TEXT("Disconnected"));
             }
         }
     }
+}
+
+int32 FMtoULiveLinkSource::GetQueuedCacheFrameCount() const
+{
+    return CacheCommands.GetPendingFrameCount();
 }
 
 uint32 FMtoULiveLinkSource::Run()
@@ -312,7 +388,7 @@ uint32 FMtoULiveLinkSource::Run()
             SocketSubsystem->GetSocketError(ErrorCode));
         if (!bLoggedBindError || ErrorCode != SE_EADDRINUSE)
         {
-            UE_LOG(LogMtoULiveLinkSource, Error, TEXT("%s"), *Error);
+            UE_LOG(LogMtoULiveLinkSource, Warning, TEXT("%s"), *Error);
         }
         SetStatus(Error);
         CloseSocket(*SocketSubsystem, ListenSocket);
@@ -338,16 +414,36 @@ uint32 FMtoULiveLinkSource::Run()
 
     uint64 SessionCounter = 0;
     uint64 ActiveSession = 0;
+    // Each worker tracks the shared counter independently, so one listener
+    // can never swallow a termination request meant for another. Requests
+    // made before this accept belong to older sessions and are never applied
+    // retroactively.
+    uint64 LastSeenSessionEndRequests = GStreamingSessionEndRequests.Load();
     bool bInitReceived = false;
     bool bReady = false;
     int32 WorkerExpectedBoneCount = 0;
     int32 WorkerExpectedCurveCount = 0;
     FMtoUFrameDecoder Decoder;
+    // Upload identity observed at intake; frame/end commands are stamped with
+    // it so a rejected, superseded, or cleared upload can be cancelled as a
+    // unit and can never affect a newer attempt.
+    int32 WorkerCacheUploadId = 0;
+    bool bWorkerCacheUploadRejected = false;
+    // One raw (never parsed) cache_frame held while the Game Thread drains
+    // the bounded intake queue; the sender experiences TCP backpressure
+    // until then, so queued parsed ownership stays inside the budget.
+    TOptional<TArray<uint8>> HeldCacheFrame;
 
     auto MarkDisconnected = [&]()
     {
+        HeldCacheFrame.Reset();
+        WorkerCacheUploadId = 0;
+        bWorkerCacheUploadRejected = false;
         if (ActiveSession != 0)
         {
+            // Cancel every queued command of the dead session immediately so
+            // disconnect or teardown can never leave parsed frames in flight.
+            CacheCommands.CancelSession(ActiveSession);
             {
                 FScopeLock Lock(&PendingMutex);
                 if (CurrentWorkerSession == ActiveSession)
@@ -384,9 +480,136 @@ uint32 FMtoULiveLinkSource::Run()
         MarkDisconnected();
     };
 
+    // Bounded admission enqueue: the producer never blocks the loop for
+    // control messages, and a pre-admitted frame is always accepted. Only a
+    // shutdown request can abort intake, which keeps disconnect, clear,
+    // Editor shutdown, and worker teardown deadlock-free.
+    auto EnqueueCacheCommand = [&](FMtoUCacheCommand Command) -> bool
+    {
+        Command.SessionId = ActiveSession;
+        if (Command.Kind == FMtoUCacheCommand::EKind::Frame
+            || Command.Kind == FMtoUCacheCommand::EKind::End)
+        {
+            Command.UploadId = WorkerCacheUploadId;
+        }
+        {
+            FScopeLock Lock(&PendingMutex);
+            if (CurrentWorkerSession != ActiveSession)
+            {
+                return true;
+            }
+        }
+        const bool bEnqueued = CacheCommands.Produce(
+            MoveTemp(Command),
+            [this, ActiveSession]()
+            {
+                // Frames never reach this wait (CanAdmitFrame pre-gates them
+                // through the non-blocking HeldCacheFrame path), so only a
+                // control-message flood can block here; shutdown or a session
+                // swap releases it so teardown and disconnect stay responsive.
+                if (bStopRequested.Load())
+                {
+                    return true;
+                }
+                FScopeLock Lock(&PendingMutex);
+                return CurrentWorkerSession != ActiveSession;
+            });
+        if (!bEnqueued)
+        {
+            MarkDisconnected();
+        }
+        return bEnqueued;
+    };
+
+    // Parse-and-intake one cache_frame payload. Returns false when decoding
+    // must stop: a disconnect, or a backpressure hold that keeps the raw
+    // payload (never its parsed form) until the Game Thread drains.
+    auto HandleCacheFrame = [&](TArray<uint8>&& Payload) -> bool
+    {
+        if (bWorkerCacheUploadRejected)
+        {
+            return true;
+        }
+        if (!CacheCommands.CanAdmitFrame(Payload.Num()))
+        {
+            HeldCacheFrame = MoveTemp(Payload);
+            return false;
+        }
+        FMtoUCacheCommand Command;
+        Command.Kind = FMtoUCacheCommand::EKind::Frame;
+        Command.EncodedBytes = Payload.Num();
+        FString CacheError;
+        FString ErrorCode = TEXT("INVALID_MESSAGE");
+        const bool bShapeValid = FMtoUProtocol::ParseCacheFrame(
+            Payload,
+            WorkerExpectedBoneCount,
+            WorkerExpectedCurveCount,
+            Command.Index,
+            Command.Frame,
+            CacheError,
+            &ErrorCode);
+        // A negative index follows the production cache-session rejection
+        // path: the stable code is echoed by the session itself while it
+        // atomically discards the partial upload, and the negotiated
+        // connection stays open.
+        if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_INDEX_INVALID"))
+        {
+            bWorkerCacheUploadRejected = true;
+            CacheCommands.CancelUpload(ActiveSession, WorkerCacheUploadId);
+            return EnqueueCacheCommand(MoveTemp(Command));
+        }
+        if (!bShapeValid && ErrorCode == TEXT("CACHE_FRAME_CONTENTS_INVALID"))
+        {
+            // The cardinality check ran before parsed-frame allocation. Carry
+            // one tiny control rejection to the Game Thread, then poison this
+            // intake identity so pipelined frame/end data is dropped raw.
+            bWorkerCacheUploadRejected = true;
+            CacheCommands.CancelUpload(ActiveSession, WorkerCacheUploadId);
+            Command.Kind = FMtoUCacheCommand::EKind::Reject;
+            Command.UploadId = WorkerCacheUploadId;
+            Command.ErrorCode = ErrorCode;
+            Command.ErrorDetails = FString::Printf(
+                TEXT("Cached frame %d: %s"), Command.Index, *CacheError);
+            return EnqueueCacheCommand(MoveTemp(Command));
+        }
+        if (!bShapeValid)
+        {
+            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+            return false;
+        }
+        return EnqueueCacheCommand(MoveTemp(Command));
+    };
+
     while (!bStopRequested.Load())
     {
         bool bDidWork = false;
+
+        // One shared idempotent termination boundary: a Preview revision
+        // invalidation or Binding actor lifetime end closes the socket here,
+        // and the existing disconnect path performs the Game Thread cleanup.
+        const uint64 SessionEndRequests = GStreamingSessionEndRequests.Load();
+        if (SessionEndRequests != LastSeenSessionEndRequests)
+        {
+            LastSeenSessionEndRequests = SessionEndRequests;
+            if (ActiveSession != 0)
+            {
+                MarkDisconnected();
+                continue;
+            }
+        }
+
+        // Resolve backpressure first: once the Game Thread has drained the
+        // bounded intake queue, admit the held raw frame before touching the
+        // socket again. Replies, termination, and shutdown keep being served
+        // on every pass while a frame is held.
+        if (HeldCacheFrame.IsSet()
+            && CacheCommands.CanAdmitFrame(HeldCacheFrame.GetValue().Num()))
+        {
+            TArray<uint8> Retry = MoveTemp(HeldCacheFrame.GetValue());
+            HeldCacheFrame.Reset();
+            bDidWork = true;
+            HandleCacheFrame(MoveTemp(Retry));
+        }
 
         bool bPendingConnection = false;
         if (ListenSocket->HasPendingConnection(bPendingConnection) && bPendingConnection)
@@ -410,6 +633,7 @@ uint32 FMtoULiveLinkSource::Run()
                 {
                     ClientSocket = Accepted;
                     ActiveSession = ++SessionCounter;
+                    LastSeenSessionEndRequests = GStreamingSessionEndRequests.Load();
                     bInitReceived = false;
                     bReady = false;
                     Decoder = FMtoUFrameDecoder();
@@ -454,7 +678,12 @@ uint32 FMtoULiveLinkSource::Run()
             }
         }
 
-        if (ClientSocket)
+        // While a cache frame is held for backpressure the socket reader
+        // pauses: the sender experiences TCP flow control instead of growing
+        // parsed ownership on Unreal's side. Reply delivery, termination
+        // requests, and shutdown checks above still run every pass, so no
+        // disconnect, clear, Editor shutdown, or teardown can wedge here.
+        if (ClientSocket && !HeldCacheFrame.IsSet())
         {
             uint8 ReceiveBuffer[ReceiveBufferSize];
             int32 Read = 0;
@@ -463,10 +692,16 @@ uint32 FMtoULiveLinkSource::Run()
                 bDidWork = true;
                 MarkDisconnected();
             }
-            else if (Read > 0)
+            else
             {
-                bDidWork = true;
-                Decoder.Append(ReceiveBuffer, Read);
+                if (Read > 0)
+                {
+                    bDidWork = true;
+                    Decoder.Append(ReceiveBuffer, Read);
+                }
+                // Drain complete messages whenever any exist, not only when
+                // fresh bytes arrive: messages already buffered behind a
+                // released backpressure hold must keep flowing immediately.
                 while (ClientSocket)
                 {
                     TArray<uint8> Payload;
@@ -502,6 +737,147 @@ uint32 FMtoULiveLinkSource::Run()
                             TEXT("INVALID_MESSAGE"),
                             TEXT("A frame was received before the init message was accepted."));
                         break;
+                    }
+
+                    FString MessageType;
+                    {
+                        FString TypeError;
+                        if (!FMtoUProtocol::PeekType(Payload, MessageType, TypeError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), TypeError);
+                            break;
+                        }
+                    }
+
+                    if (MessageType == TEXT("cache_frame"))
+                    {
+                        // Admission happens before parsing: a held frame
+                        // never gains parsed-queue ownership beyond the
+                        // frozen budget.
+                        if (!HandleCacheFrame(MoveTemp(Payload)))
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_enter")
+                        || MessageType == TEXT("cache_begin"))
+                    {
+                        FMtoUCacheCommand Command;
+                        Command.EncodedBytes = Payload.Num();
+                        FString CacheError;
+                        FString ErrorCode = TEXT("INVALID_MESSAGE");
+                        bool bShapeValid = true;
+                        if (MessageType == TEXT("cache_begin"))
+                        {
+                            Command.Kind = FMtoUCacheCommand::EKind::Begin;
+                            bShapeValid = FMtoUProtocol::ParseCacheBegin(
+                                Payload,
+                                Command.Begin,
+                                CacheError,
+                                ErrorCode);
+                            // Frozen metadata/identity limits are recoverable:
+                            // reject without closing so Maya can recapture.
+                            if (!bShapeValid && ErrorCode != TEXT("INVALID_MESSAGE"))
+                            {
+                                // A structurally valid begin always switches
+                                // intake identity. If later metadata fails,
+                                // poison that identity so already-pipelined
+                                // frame/end messages cannot inherit the prior
+                                // upload or gain parsed queue ownership.
+                                WorkerCacheUploadId = Command.Begin.UploadId;
+                                bWorkerCacheUploadRejected = true;
+                                CacheCommands.CancelUpload(
+                                    ActiveSession, WorkerCacheUploadId);
+                                bDidWork = true;
+                                SendPacket(
+                                    *ClientSocket,
+                                    FMtoUProtocol::EncodeError(
+                                        ErrorCode,
+                                        CacheError,
+                                        CacheError,
+                                        Command.Begin.UploadId),
+                                    bStopRequested);
+                                continue;
+                            }
+                            if (bShapeValid)
+                            {
+                                // Later frame/end commands carry this upload
+                                // identity for wholesale cancellation.
+                                WorkerCacheUploadId = Command.Begin.UploadId;
+                                bWorkerCacheUploadRejected = false;
+                            }
+                        }
+                        else
+                        {
+                            Command.Kind = FMtoUCacheCommand::EKind::Enter;
+                            bShapeValid = FMtoUProtocol::ParseCacheEnter(Payload, CacheError);
+                        }
+                        if (!bShapeValid)
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_end"))
+                    {
+                        if (bWorkerCacheUploadRejected)
+                        {
+                            continue;
+                        }
+                        FString CacheError;
+                        if (!FMtoUProtocol::ParseCacheEnd(Payload, CacheError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        FMtoUCacheCommand Command;
+                        Command.Kind = FMtoUCacheCommand::EKind::End;
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_play"))
+                    {
+                        FString CacheError;
+                        FMtoUCacheCommand Command;
+                        Command.Kind = FMtoUCacheCommand::EKind::Play;
+                        if (!FMtoUProtocol::ParseCachePlay(Payload, Command.PlayId, CacheError))
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
+                    }
+                    if (MessageType == TEXT("cache_stop") || MessageType == TEXT("cache_clear"))
+                    {
+                        FString CacheError;
+                        bool bValid = false;
+                        FMtoUCacheCommand Command;
+                        if (MessageType == TEXT("cache_stop"))
+                        {
+                            bValid = FMtoUProtocol::ParseCacheStop(Payload, CacheError);
+                            Command.Kind = FMtoUCacheCommand::EKind::Stop;
+                        }
+                        else
+                        {
+                            bValid = FMtoUProtocol::ParseCacheClear(Payload, CacheError);
+                            Command.Kind = FMtoUCacheCommand::EKind::Clear;
+                        }
+                        if (!bValid)
+                        {
+                            SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
+                            break;
+                        }
+                        if (Command.Kind == FMtoUCacheCommand::EKind::Clear)
+                        {
+                            WorkerCacheUploadId = 0;
+                            bWorkerCacheUploadRejected = false;
+                        }
+                        EnqueueCacheCommand(MoveTemp(Command));
+                        continue;
                     }
 
                     FMtoUFrameMessage Frame;
@@ -570,7 +946,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     {
         EnqueueErrorOnGameThread(
             TEXT("NO_BINDING_ACTOR"),
-            TEXT("Place an MtoU_LiveLink binding actor in an Editor or PIE world before connecting."));
+            TEXT("Place an MtoU_LiveLink binding actor in the Editor world before connecting. PIE is not supported."));
         return;
     }
     if (Actors.Num() > 1)
@@ -608,8 +984,8 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             Details);
         return;
     }
-    USkeletalMesh* Mesh = Binding->SkeletalMesh;
-    if (!Mesh)
+    USkeletalMesh* DriverMesh = Binding->SkeletalMesh;
+    if (!DriverMesh)
     {
         const FString Details = FString::Printf(
             TEXT("%s binding has no Skeletal Mesh."), *Actor->GetName());
@@ -621,11 +997,46 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
+    const bool bModelWorkflow = Message.Workflow == FMtoUWorkflows::Model;
+    const FMtoUPreviewReadiness Readiness = Actor->GetPreviewReadiness();
+    if (bModelWorkflow && !Readiness.IsUsable())
+    {
+        // Model preview must refuse without changing the visible target until
+        // an explicit Refresh produces a ready Generated Preview. Negotiation
+        // consumes readiness and never modifies it.
+        const FString Details = FString::Printf(
+            TEXT("%s has no ready Generated Preview Skeletal Mesh. Run Refresh Preview in Unreal before connecting in the Model workflow."),
+            *Actor->GetName());
+        Actor->SetConnectionStatus(TEXT("Preview not ready"));
+        EnqueueErrorOnGameThread(
+            TEXT("PREVIEW_NOT_READY"),
+            TEXT("The Model workflow requires a ready Generated Preview Skeletal Mesh."),
+            Details);
+        return;
+    }
+
+    // Animation drives the bound Driver Skeletal Mesh. Model drives the
+    // Generated garment and the original Driver follower, so its accepted
+    // curve set is the union of both displayed Morph libraries.
+    USkeletalMesh* Mesh = bModelWorkflow ? Readiness.GeneratedPreview : DriverMesh;
+    FMtoUTargetDescription Target = DescribeTarget(*Mesh);
+    if (bModelWorkflow)
+    {
+        for (const TObjectPtr<UMorphTarget>& MorphTarget : DriverMesh->GetMorphTargets())
+        {
+            if (MorphTarget)
+            {
+                Target.MorphTargetNames.AddUnique(MorphTarget->GetFName());
+            }
+        }
+    }
+    const int32 TargetMorphCount = Target.MorphTargetNames.Num();
+
     FMtoUCharacterDescription Character;
     Character.Bones = Message.Bones;
     Character.CurveNames = Message.Curves;
     FMtoUNegotiationOutcome Outcome =
-        FMtoUConnectionNegotiator::Negotiate(Character, DescribeTarget(*Mesh));
+        FMtoUConnectionNegotiator::Negotiate(Character, Target);
     if (!Outcome.bUsable)
     {
         const FString Details = FString::Printf(
@@ -636,6 +1047,85 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         EnqueueErrorOnGameThread(
             Outcome.FailureCategory,
             TEXT("The Maya and Unreal skeletons do not match."),
+            Details);
+        return;
+    }
+
+    const auto JoinNames = [](const TArray<FName>& Names)
+    {
+        TArray<FString> Text;
+        Text.Reserve(Names.Num());
+        for (const FName Name : Names)
+        {
+            Text.Add(Name.ToString());
+        }
+        return Text.IsEmpty() ? FString(TEXT("none")) : FString::Join(Text, TEXT(", "));
+    };
+    // A zero-name manifest declares an intentionally bone-driven outfit: its
+    // empty Accepted Preview Morph set is valid even with BS transmission
+    // enabled. Only a non-empty manifest with zero accepted names is a failed
+    // pairing, so it keeps blocking with PREVIEW_MORPH_MISMATCH.
+    const bool bZeroMorphManifest = bModelWorkflow
+        && Message.bBlendshapesEnabled
+        && Message.Curves.IsEmpty();
+    const bool bPartialMorphCoverage = bModelWorkflow
+        && Message.bBlendshapesEnabled
+        && !bZeroMorphManifest
+        && (!Outcome.MayaOnlyMorphNames.IsEmpty() || !Outcome.UnrealOnlyMorphNames.IsEmpty());
+    if (bModelWorkflow)
+    {
+        const int32 AcceptedCount = Message.bBlendshapesEnabled
+            ? Outcome.AcceptedCurveNames.Num()
+            : 0;
+        const bool bEmptyRequiredIntersection = Message.bBlendshapesEnabled
+            && !bZeroMorphManifest
+            && Outcome.AcceptedCurveIndices.IsEmpty();
+        const EMtoUModelDiagnosticLevel DiagnosticLevel = bEmptyRequiredIntersection
+            ? EMtoUModelDiagnosticLevel::Error
+            : Message.bBlendshapesEnabled
+                ? (bPartialMorphCoverage
+                    ? EMtoUModelDiagnosticLevel::Partial
+                    : EMtoUModelDiagnosticLevel::Full)
+                : EMtoUModelDiagnosticLevel::BoneOnly;
+        const FString Indicator = bEmptyRequiredIntersection
+            ? TEXT("ERROR: No accepted Preview Morphs.")
+            : bZeroMorphManifest
+                ? TEXT("Bone-driven outfit: the current Maya outfit declares no BlendShapes.")
+                : Message.bBlendshapesEnabled
+                    ? (bPartialMorphCoverage
+                        ? TEXT("YELLOW: Partial Preview Morph coverage.")
+                        : TEXT("Full Preview Morph coverage."))
+                    : TEXT("ORANGE: Bone-only diagnostic; not valid for model acceptance.");
+        Actor->SetModelDiagnostics(
+            FString::Printf(
+                TEXT("%s\nMaya current BlendShape count: %d\nModel display Morph total: %d\nAccepted count: %d\nMaya-only count: %d (%s)\nUE-only count: %d (%s)"),
+                *Indicator,
+                Message.Curves.Num(),
+                TargetMorphCount,
+                AcceptedCount,
+                Outcome.MayaOnlyMorphNames.Num(),
+                *JoinNames(Outcome.MayaOnlyMorphNames),
+                Outcome.UnrealOnlyMorphNames.Num(),
+                *JoinNames(Outcome.UnrealOnlyMorphNames)),
+            DiagnosticLevel);
+    }
+
+    if (bModelWorkflow && Message.bBlendshapesEnabled
+        && !bZeroMorphManifest
+        && Outcome.AcceptedCurveIndices.IsEmpty())
+    {
+        // BS transmission with a non-empty manifest and zero accepted Preview
+        // Morphs is blocking; the user must fix the pairing or explicitly
+        // disable BS transmission.
+        const FString Details = FString::Printf(
+            TEXT("%s has no Morph Target intersection between Maya and the Model display meshes.\nMaya-only: %d, Unreal-only: %d."),
+            *Actor->GetName(),
+            Outcome.MayaOnlyMorphNames.Num(),
+            Outcome.UnrealOnlyMorphNames.Num());
+        Actor->SetConnectionStatus(TEXT("Preview morph mismatch"));
+        EnqueueErrorOnGameThread(
+            TEXT("PREVIEW_MORPH_MISMATCH"),
+            TEXT("Model preview with BS transmission requires at least one accepted Morph Target."),
             Details);
         return;
     }
@@ -653,6 +1143,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
+    NegotiatedRevision = Message.Revision;
+    CacheSession.SetValidationCounts(ExpectedBoneCount, ExpectedCurveCount);
+    CacheSession.SetNegotiatedRevision(NegotiatedRevision);
     SourceBindLocalPose = Message.SourceBindLocalPose;
     TargetRefLocalPose.Reset(ExpectedBoneCount);
     BoneParents.Reset(ExpectedBoneCount);
@@ -662,28 +1155,250 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         TargetRefLocalPose.Add(RefBonePose[Outcome.TargetBoneIndices[Index]]);
         BoneParents.Add(Message.Bones[Index].ParentIndex);
     }
-    AcceptedCurveIndices = Outcome.AcceptedCurveIndices;
+    // A bone-only session streams no Morph values at all. StaticData, the
+    // ready reply, and the per-frame accepted indices must all agree on the
+    // empty accepted set even though Maya still sends the full curve manifest.
+    const bool bBoneOnlySession = bModelWorkflow && !Message.bBlendshapesEnabled;
+    AcceptedCurveIndices = bBoneOnlySession
+        ? TArray<int32>()
+        : Outcome.AcceptedCurveIndices;
+    AcceptedCurveNames = bBoneOnlySession
+        ? TArray<FName>()
+        : Outcome.AcceptedCurveNames;
     for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
     {
         Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
     }
-    Actor->SetConnectionStatus(TEXT("Connected"));
+    if (bModelWorkflow)
+    {
+        Actor->ShowGeneratedPreview(bBoneOnlySession);
+    }
+    else
+    {
+        Actor->ShowDriverMesh();
+    }
+    Actor->SetConnectionStatus(bBoneOnlySession
+        ? TEXT("Connected: bone-only diagnostic; not valid for model acceptance")
+        : bPartialMorphCoverage
+            ? TEXT("Connected: partial Morph coverage")
+            : TEXT("Connected"));
     SetEditorViewportRealtimeOverride(true);
 
     Client->PushSubjectStaticData_AnyThread(
         SubjectKey,
         ULiveLinkAnimationRole::StaticClass(),
-        FMtoUProtocol::MakeStaticData(Message, Outcome.AcceptedCurveNames));
+        FMtoUProtocol::MakeStaticData(
+            Message,
+            bBoneOnlySession ? TArray<FName>() : Outcome.AcceptedCurveNames));
 
     FMtoUOutgoing Reply;
     Reply.SessionId = SessionId;
     Reply.Packet = FMtoUProtocol::EncodeReady(
         Outcome.MayaOnlyMorphNames,
         Outcome.UnrealOnlyMorphNames,
-        Outcome.BoneNameMappings);
+        Outcome.BoneNameMappings,
+        Message.Workflow,
+        TargetMorphCount,
+        bBoneOnlySession ? 0 : Outcome.AcceptedCurveNames.Num(),
+        NegotiatedRevision);
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;
+    OutgoingReplies.Enqueue(MoveTemp(Reply));
+}
+
+void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
+{
+    check(IsInGameThread());
+    FMtoUCacheCommand Command;
+    while (CacheCommands.TryConsume(Command))
+    {
+        if (Command.SessionId != GameThreadSession || GameThreadSession == 0)
+        {
+            continue;
+        }
+        if ((Command.Kind == FMtoUCacheCommand::EKind::Frame
+             || Command.Kind == FMtoUCacheCommand::EKind::End)
+            && Command.UploadId != CacheSession.GetActiveUploadId())
+        {
+            // Rejected, superseded, or cleared upload: discard every pending
+            // command of that identity at once. They can never produce a
+            // flood of stale errors or touch a newer upload attempt.
+            CacheCommands.CancelUpload(Command.SessionId, Command.UploadId);
+            continue;
+        }
+        if (!DispatchCacheCommandOnGameThread(Command))
+        {
+            continue;
+        }
+        const EMtoUCacheState State = CacheSession.GetState();
+        switch (Command.Kind)
+        {
+            case FMtoUCacheCommand::EKind::Enter:
+                // Cached ownership begins here: hold the recent pose, isolate
+                // live frames, and release viewport realtime for the capture
+                // and upload work that matters.
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Cached Playback entry; holding recent pose"));
+                break;
+            case FMtoUCacheCommand::EKind::Begin:
+                SetStatus(FString::Printf(
+                    TEXT("Receiving animation cache (%d frames)..."), CacheSession.GetExpectedFrameCount()));
+                break;
+            case FMtoUCacheCommand::EKind::End:
+                {
+                    SetStatus(TEXT("Cached animation ready"));
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheReady(
+                        CacheSession.GetActiveUploadId(),
+                        NegotiatedRevision,
+                        CacheSession.GetBufferedFrameCount());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                break;
+            case FMtoUCacheCommand::EKind::Play:
+                SetEditorViewportRealtimeOverride(true);
+                SetStatus(TEXT("Playing cached animation locally"));
+                bPlaybackOutcomePending = true;
+                break;
+            case FMtoUCacheCommand::EKind::Stop:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Cached playback stopped; last applied frame held"));
+                if (CacheSession.GetActivePlayId() > 0)
+                {
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheStopped(
+                        CacheSession.GetActivePlayId());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                break;
+            case FMtoUCacheCommand::EKind::Clear:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Connected to Maya"));
+                {
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheCleared(
+                        CacheSession.GetLastClearedUploadId(),
+                        CacheSession.GetLastClearedPlayId());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Drive local replay and report exactly one outcome per attempt:
+    // completion with applied-frame evidence, or a stable performance error.
+    if (CacheSession.GetState() == EMtoUCacheState::Playing)
+    {
+        CacheSession.Tick();
+    }
+    if (bPlaybackOutcomePending)
+    {
+        switch (CacheSession.GetState())
+        {
+            case EMtoUCacheState::Completed:
+                SetStatus(TEXT("Cached playback complete; final frame held"));
+                {
+                    FMtoUOutgoing Reply;
+                    Reply.SessionId = GameThreadSession;
+                    Reply.Packet = FMtoUProtocol::EncodeCacheComplete(
+                        CacheSession.GetActivePlayId(),
+                        CacheSession.GetAppliedFrameCount(),
+                        CacheSession.GetElapsedPlaybackSeconds());
+                    OutgoingReplies.Enqueue(MoveTemp(Reply));
+                }
+                bPlaybackOutcomePending = false;
+                break;
+            case EMtoUCacheState::Failed:
+                SetEditorViewportRealtimeOverride(false);
+                SetStatus(TEXT("Cached playback missed the captured scene rate"));
+                // The performance failure is recoverable and identity-scoped:
+                // it ends this play attempt only, keeps the negotiated
+                // connection open, and echoes the attempt it belongs to so
+                // Maya never applies a stale failure to a newer replay.
+                EnqueueReplyPacketOnGameThread(
+                    GameThreadSession,
+                    FMtoUProtocol::EncodeError(
+                        TEXT("CACHED_PLAYBACK_PERFORMANCE"),
+                        TEXT("Local playback fell behind the captured scene rate."),
+                        CacheSession.GetErrorDetails(),
+                        CacheSession.GetActiveUploadId(),
+                        CacheSession.GetActivePlayId()),
+                    false);
+                bPlaybackOutcomePending = false;
+                break;
+            case EMtoUCacheState::Stopped:
+            case EMtoUCacheState::Idle:
+                // Manual stop, clear, or session loss supersedes the outcome.
+                bPlaybackOutcomePending = false;
+                break;
+            default:
+                break; // still playing
+        }
+    }
+}
+
+bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command)
+{
+    FString ErrorCode;
+    FString Details;
+    // Capture the owning identity before dispatch: a rejection resets the
+    // session, so afterwards only the last-seen identities survive. Begin
+    // echoes its own declared upload id because the previous ownership, if
+    // any, is older than the request being rejected.
+    int32 EchoUploadId = INDEX_NONE;
+    int32 EchoPlayId = INDEX_NONE;
+    switch (Command.Kind)
+    {
+        case FMtoUCacheCommand::EKind::Begin:
+            EchoUploadId = Command.Begin.UploadId;
+            break;
+        case FMtoUCacheCommand::EKind::Reject:
+            EchoUploadId = Command.UploadId;
+            break;
+        case FMtoUCacheCommand::EKind::Frame:
+        case FMtoUCacheCommand::EKind::End:
+            EchoUploadId = CacheSession.GetActiveUploadId();
+            break;
+        case FMtoUCacheCommand::EKind::Play:
+            EchoUploadId = CacheSession.GetActiveUploadId();
+            EchoPlayId = Command.PlayId;
+            break;
+        default:
+            break;
+    }
+    if (CacheSession.HandleCommand(Command, ErrorCode, Details))
+    {
+        return true;
+    }
+    UE_LOG(LogMtoULiveLinkSource, Warning, TEXT("Rejected cache command: %s"), *Details);
+    // Upload and control errors reject the offending request but keep the
+    // negotiated connection open; only structural garbage closes. The echoed
+    // operation identity lets Maya discard late errors from older attempts.
+    EnqueueReplyPacketOnGameThread(
+        GameThreadSession,
+        FMtoUProtocol::EncodeError(
+            ErrorCode, Details, Details, EchoUploadId, EchoPlayId),
+        false);
+    return false;
+}
+
+void FMtoULiveLinkSource::EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter)
+{
+    check(IsInGameThread());
+    if (!IsCurrentSession(SessionId))
+    {
+        return;
+    }
+    FMtoUOutgoing Reply;
+    Reply.SessionId = SessionId;
+    Reply.Packet = MoveTemp(Packet);
+    Reply.bCloseAfter = bCloseAfter;
     OutgoingReplies.Enqueue(MoveTemp(Reply));
 }
 
@@ -706,14 +1421,51 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     {
         return;
     }
-    Client->PushSubjectFrameData_AnyThread(
-        SubjectKey,
-        FMtoUProtocol::MakeRetargetedFrameData(
-            Frame->Message,
+    PublishFrameOnGameThread(Frame->Message);
+}
+
+bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Frame)
+{
+    check(IsInGameThread());
+    if (!Client || !SourceGuid.IsValid())
+    {
+        return false;
+    }
+    FLiveLinkFrameDataStruct FrameData;
+    FString RetargetError;
+    if (!FMtoUProtocol::MakeRetargetedFrameData(
+            Frame,
             AcceptedCurveIndices,
             SourceBindLocalPose,
             TargetRefLocalPose,
-            BoneParents));
+            BoneParents,
+            FrameData,
+            RetargetError))
+    {
+        // Fail closed: publishing a partially wrong pose is worse than
+        // refusing the frame, and silently dropping the pose instead would
+        // hide a deterministic content fault that the user must fix, so the
+        // session stops with an actionable diagnostic.
+        EnqueueErrorOnGameThread(
+            TEXT("BIND_POSE_INVALID"),
+            TEXT("A pose transform cannot be inverted; streaming stopped."),
+            RetargetError);
+        return false;
+    }
+    if (const FLiveLinkAnimationFrameData* Animation =
+            FrameData.Cast<FLiveLinkAnimationFrameData>())
+    {
+        for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
+        {
+            if (Actor.IsValid())
+            {
+                Actor->ApplyModelMorphCurves(
+                    AcceptedCurveNames, Animation->PropertyValues);
+            }
+        }
+    }
+    Client->PushSubjectFrameData_AnyThread(SubjectKey, MoveTemp(FrameData));
+    return true;
 }
 
 void FMtoULiveLinkSource::EnqueueErrorOnGameThread(

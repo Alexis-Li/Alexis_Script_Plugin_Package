@@ -15,9 +15,15 @@ import threading
 import time
 import uuid
 
-__version__ = "0.3.0"
-PROTOCOL_VERSION = 3
-MAX_PAYLOAD_SIZE = (2 ** 31) - 9
+__version__ = "0.4.0"
+PROTOCOL_VERSION = 6
+WORKFLOW_ANIMATION = "animation"
+WORKFLOW_MODEL = "model"
+WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
+# Frozen per-message framing ceiling enforced by both adapters before any
+# JSON parse or allocation; oversized messages close the connection. Pinned by
+# limits.max_message_bytes in the conformance corpus (asserted in tests).
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 HOST = "127.0.0.1"
 PORT = 54321
 SUBJECT_NAME = "MtoU_Character"
@@ -37,8 +43,19 @@ CACHE_PARTIAL_METADATA_SUFFIX = ".partial.json"
 CACHE_PARTIAL_FRAMES_SUFFIX = ".partial.frames"
 CACHE_CONFIRMATION_BYTES = 1 << 30
 CACHE_STALE_SECONDS = 24 * 60 * 60
+# Recalibrated with the first real-project capture (320 frames at 30 fps
+# exceeding the previous 64 MiB estimate); still a frozen bound, not a
+# user tuning knob.
+MAX_CACHE_PAYLOAD_BYTES = 1024 * 1024 * 1024
+MAX_CACHE_FRAME_COUNT = 20000
+UPLOAD_CHUNK_FRAMES = 64
+# Watchdog for a wedged-but-open connection during the Ready wait; the upload
+# itself has no real-time deadline and is never paced by this value.
+UPLOAD_READY_TIMEOUT_SECONDS = 60.0
 REALTIME_MODE = "realtime"
 CACHED_MODE = "cached"
+TOGGLE_ON_BACKGROUND = (0.16, 0.55, 0.24)
+TOGGLE_OFF_BACKGROUND = (0.26, 0.26, 0.26)
 TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -120,6 +137,27 @@ DIAGNOSTICS = {
     "CACHED_PLAYBACK_INCOMPATIBLE": (
         "缓存与当前角色快照不兼容",
         "请为当前角色和服装重新捕获缓存。"),
+    "CACHED_UPLOAD_FAILED": (
+        "缓存上传被 Unreal 拒绝",
+        "Unreal 已丢弃未完成的缓存；请重新捕获后再试。"),
+    "CACHED_PLAYBACK_FRAME_LIMIT": (
+        "缓存帧数超过 20,000 上限，捕获已提前停止",
+        "请缩短 Playback Range 后重新捕获。"),
+    "CACHED_PLAYBACK_PAYLOAD_LIMIT": (
+        "缓存编码体积超过 1 GiB 上限，捕获已提前停止",
+        "请缩短 Playback Range 或减少 BlendShape 数量后重新捕获。"),
+    "CACHED_PLAYBACK_PERFORMANCE": (
+        "缓存回放跟不上捕获帧率，已停止",
+        "已完整保留缓存；请关闭占用性能的程序后点击“再次回放”重试。"),
+    "PREVIEW_NOT_READY": (
+        "模型预览尚未生成，无法连接模型工作流",
+        "请先在 UE 中对该 Binding Actor 执行 Refresh Preview 生成预览，再重新连接。"),
+    "PREVIEW_BUILD_FAILED": (
+        "模型预览生成失败",
+        "请按诊断详情修复输入后，在 UE 中重新执行 Refresh Preview。"),
+    "PREVIEW_MORPH_MISMATCH": (
+        "Maya 与模型预览的 BlendShape 没有交集",
+        "请确认当前服装与 UE Binding 一致并重新生成预览；也可关闭“传递 BS”进行仅骨骼对比。"),
 }
 
 try:
@@ -283,6 +321,21 @@ def blendshape_warning_from_reply(reply):
     }
 
 
+def filter_bone_driven_differences(init_message, reply):
+    """Drop UE-only Morph differences for outfits that declare no BlendShapes.
+
+    A bone-driven outfit declares zero BlendShape names, so generated Morph
+    Targets missing in Maya are expected and are not an expression-coverage
+    warning.
+    """
+    if (init_message.get("workflow") == WORKFLOW_MODEL
+            and init_message.get("blendshapes_enabled")
+            and not init_message.get("curves")):
+        reply = dict(reply)
+        reply["missing_in_maya"] = []
+    return reply
+
+
 def _finite(values):
     return all(math.isfinite(float(value)) for value in values)
 
@@ -298,8 +351,19 @@ def convert_transform(translation, quaternion, scale, unit_scale):
     return [tx, tz, ty, -qx, -qz, -qy, qw, sx, sz, sy]
 
 
-def make_init_message(bones, curves):
-    return {"type": "init", "version": PROTOCOL_VERSION, "bones": bones, "curves": curves}
+def make_init_message(bones, curves, revision, workflow=WORKFLOW_ANIMATION,
+                      blendshapes_enabled=True):
+    if workflow not in WORKFLOWS:
+        raise ValueError("workflow must be 'animation' or 'model'")
+    return {
+        "type": "init",
+        "version": PROTOCOL_VERSION,
+        "revision": int(revision),
+        "workflow": workflow,
+        "blendshapes_enabled": bool(blendshapes_enabled),
+        "bones": bones,
+        "curves": curves,
+    }
 
 
 def make_frame_message(transforms, curves):
@@ -307,6 +371,85 @@ def make_frame_message(transforms, curves):
     if not _finite(flat):
         raise ValueError("frame values must be finite")
     return {"type": "frame", "transforms": transforms, "curves": curves}
+
+
+def make_cache_enter_message():
+    return {"type": "cache_enter"}
+
+
+def make_cache_begin_message(revision, start_frame, end_frame, fps, payload_size,
+                             upload_id):
+    revision = int(revision)
+    start_frame = int(start_frame)
+    end_frame = int(end_frame)
+    frame_count = int(end_frame) - int(start_frame) + 1
+    fps = float(fps)
+    payload_size = int(payload_size)
+    upload_id = int(upload_id)
+    if not math.isfinite(fps):
+        raise ValueError("cache fps must be finite")
+    if upload_id < 1:
+        raise ValueError("cache upload id must be a positive integer")
+    if frame_count < 1 or frame_count > MAX_CACHE_FRAME_COUNT:
+        raise ValueError("cache frame count is outside the supported range")
+    if payload_size < 1 or payload_size > MAX_CACHE_PAYLOAD_BYTES:
+        raise ValueError(
+            "cache encoded size {0} bytes exceeds the Unreal transient"
+            " limit of {1} bytes".format(
+                payload_size, MAX_CACHE_PAYLOAD_BYTES))
+    return {
+        "type": "cache_begin",
+        "upload_id": upload_id,
+        "revision": revision,
+        "fps": fps,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "frame_count": frame_count,
+        "payload_size": payload_size,
+    }
+
+
+def make_cache_frame_message(index, transforms, curves):
+    index = int(index)
+    if index < 0:
+        raise ValueError("cached frame index must not be negative")
+    flat = [value for transform in transforms for value in transform] + list(curves)
+    if not _finite(flat):
+        raise ValueError("frame values must be finite")
+    return {"type": "cache_frame", "index": index,
+            "transforms": transforms, "curves": curves}
+
+
+def make_cache_end_message():
+    return {"type": "cache_end"}
+
+
+def make_cache_play_message(play_id):
+    play_id = int(play_id)
+    if play_id < 1:
+        raise ValueError("cache play id must be a positive integer")
+    return {"type": "cache_play", "play_id": play_id}
+
+
+def make_cache_stop_message():
+    return {"type": "cache_stop"}
+
+
+def make_cache_clear_message():
+    return {"type": "cache_clear"}
+
+
+def cache_frame_wire_size(index, transforms, curves):
+    """Exact transmitted UTF-8 JSON byte length of one cache_frame message.
+
+    The declared upload size must match what Unreal meters at the framing
+    boundary: the JSON payload only, without the length prefix or the
+    cache-file newline.
+    """
+    payload = json.dumps(
+        make_cache_frame_message(index, transforms, curves),
+        ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return len(payload.encode("utf-8"))
 
 
 def encode_message(message):
@@ -329,9 +472,24 @@ def _recv_exact(sock, size):
 
 def recv_message(sock):
     size = struct.unpack(">Q", _recv_exact(sock, 8))[0]
-    if size > MAX_PAYLOAD_SIZE:
-        raise ValueError("protocol message length exceeds the supported container range")
+    if size > MAX_MESSAGE_BYTES:
+        raise ValueError("protocol message length exceeds the supported message size")
     return json.loads(_recv_exact(sock, size).decode("utf-8"))
+
+
+def _exact_int(value):
+    """Return value when it is a non-bool integer JSON number, else None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _finite_float(value):
+    """Return value as float when it is a non-bool finite JSON number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def validate_reply(reply):
@@ -340,15 +498,33 @@ def validate_reply(reply):
     reply_type = reply.get("type")
     required = {
         "ready": {
+            "revision": (int, float),
             "missing_in_unreal": list,
             "missing_in_maya": list,
             "bone_name_remaps": list,
+            "workflow": str,
+            "target_morph_count": (int, float),
+            "accepted_morph_count": (int, float),
         },
         "error": {"code": str, "message": str, "details": str},
+        "cache_ready": {
+            "upload_id": (int, float),
+            "revision": (int, float),
+            "frame_count": (int, float),
+        },
+        "cache_progress": {"play_id": (int, float), "applied": (int, float)},
+        "cache_complete": {
+            "play_id": (int, float),
+            "applied_frame_count": (int, float),
+            "elapsed_seconds": (int, float),
+        },
+        "cache_stopped": {"play_id": (int, float)},
+        "cache_cleared": {"upload_id": (int, float), "play_id": (int, float)},
     }
     fields = required.get(reply_type)
     if fields is None:
-        raise ValueError("protocol reply type must be 'ready' or 'error'")
+        raise ValueError(
+            "protocol reply type must be 'ready', 'error' or a cache outcome")
     for name, expected_type in fields.items():
         if name not in reply:
             raise ValueError("protocol reply requires field '{0}'".format(name))
@@ -356,6 +532,17 @@ def validate_reply(reply):
             raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
         if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
             raise ValueError("protocol reply field '{0}' must contain strings".format(name))
+    for name in ("revision", "target_morph_count", "accepted_morph_count",
+                 "upload_id", "play_id", "applied", "applied_frame_count"):
+        if name not in reply:
+            continue
+        value = reply[name]
+        if isinstance(value, bool) or not float(value).is_integer():
+            raise ValueError(
+                "protocol reply field '{0}' must be an integer count".format(name))
+    if "elapsed_seconds" in reply and _finite_float(reply["elapsed_seconds"]) is None:
+        raise ValueError(
+            "protocol reply field 'elapsed_seconds' must be a finite number")
     return reply
 
 
@@ -1135,7 +1322,7 @@ class _PlaybackCacheError(RuntimeError):
 
 
 class _PlaybackCache(object):
-    """Incremental, atomically finalized storage for protocol-v3 frames."""
+    """Incremental, atomically finalized storage for captured frame messages."""
 
     _TOKEN_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
@@ -1381,14 +1568,14 @@ class _PlaybackCache(object):
     def iter_frames(self):
         if not self.completed or self._deleted:
             raise _PlaybackCacheError("only a completed cache can be replayed")
-        try:
-            stream = open(self._frames_path, "r", encoding="utf-8")
-        except OSError as exc:
-            raise _PlaybackCacheError(str(exc))
         expected_frames = self.frame_count
 
         def frames():
             seen_frames = 0
+            try:
+                stream = open(self._frames_path, "r", encoding="utf-8")
+            except OSError as exc:
+                raise _PlaybackCacheError(str(exc))
             with stream:
                 for line in stream:
                     if not line.strip():
@@ -1402,7 +1589,7 @@ class _PlaybackCache(object):
                         raise _PlaybackCacheError(
                             "invalid cached frame: {0}".format(exc))
                     if not isinstance(frame, dict) or frame.get("type") != "frame":
-                        raise _PlaybackCacheError("cached frame is not a protocol-v3 frame")
+                        raise _PlaybackCacheError("cached frame is not a captured frame message")
                     seen_frames += 1
                     yield frame
                 if seen_frames != expected_frames:
@@ -1517,12 +1704,96 @@ class _MayaTimeline(object):
         cmds.currentTime(frame, edit=True)
 
 
-class _CachedPlaybackSessionError(RuntimeError):
+class _CachedPlaybackCacheSummary(object):
+    __slots__ = ("_capture_start", "_capture_end", "_frame_count", "_scene_fps",
+                 "_capture_time")
+
+    def __init__(self, cache):
+        self._capture_start, self._capture_end = cache.capture_range
+        self._frame_count = cache.frame_count
+        self._scene_fps = cache.scene_fps
+        self._capture_time = cache.capture_time
+
+    def __setattr__(self, name, value):
+        if hasattr(self, name):
+            raise AttributeError("Cached Playback cache summaries are immutable")
+        object.__setattr__(self, name, value)
+
+    capture_start = property(lambda self: self._capture_start)
+    capture_end = property(lambda self: self._capture_end)
+    capture_range = property(lambda self: (self._capture_start, self._capture_end))
+    frame_count = property(lambda self: self._frame_count)
+    scene_fps = property(lambda self: self._scene_fps)
+    capture_time = property(lambda self: self._capture_time)
+
+    def _values(self):
+        return (self._capture_start, self._capture_end, self._frame_count,
+                self._scene_fps, self._capture_time)
+
+    def __eq__(self, other):
+        return (isinstance(other, _CachedPlaybackCacheSummary)
+                and self._values() == other._values())
+
+    def __ne__(self, other):
+        return not self == other
+
+
+class _CachedPlaybackView(object):
+    __slots__ = (
+        "_state", "_current", "_total", "_cache_summary", "_diagnostic",
+        "_can_capture", "_can_replay", "_can_stop", "_can_cancel", "_can_leave",
+    )
+
+    def __init__(self, state, current=0, total=0, cache_summary=None, diagnostic=None,
+                 can_capture=False, can_replay=False, can_stop=False,
+                 can_cancel=False, can_leave=False):
+        self._state = state
+        self._current = int(current or 0)
+        self._total = int(total or 0)
+        self._cache_summary = cache_summary
+        self._diagnostic = _copy_session_payload(diagnostic) if diagnostic else None
+        self._can_capture = bool(can_capture)
+        self._can_replay = bool(can_replay)
+        self._can_stop = bool(can_stop)
+        self._can_cancel = bool(can_cancel)
+        self._can_leave = bool(can_leave)
+
+    def __setattr__(self, name, value):
+        if hasattr(self, name):
+            raise AttributeError("Cached Playback views are immutable")
+        object.__setattr__(self, name, value)
+
+    state = property(lambda self: self._state)
+    current = property(lambda self: self._current)
+    total = property(lambda self: self._total)
+    cache_summary = property(lambda self: self._cache_summary)
+    diagnostic = property(
+        lambda self: _copy_session_payload(self._diagnostic) if self._diagnostic else None)
+    can_capture = property(lambda self: self._can_capture)
+    can_replay = property(lambda self: self._can_replay)
+    can_stop = property(lambda self: self._can_stop)
+    can_cancel = property(lambda self: self._can_cancel)
+    can_leave = property(lambda self: self._can_leave)
+
+    def _values(self):
+        diagnostic = tuple(sorted((self._diagnostic or {}).items()))
+        return (self._state, self._current, self._total, self._cache_summary,
+                diagnostic, self._can_capture, self._can_replay, self._can_stop,
+                self._can_cancel, self._can_leave)
+
+    def __eq__(self, other):
+        return isinstance(other, _CachedPlaybackView) and self._values() == other._values()
+
+    def __ne__(self, other):
+        return not self == other
+
+
+class _CachedPlaybackError(RuntimeError):
     def __init__(self, code, message="", details=""):
         self._code = code
         self._message = message or code
         self._details = details or self._message
-        super(_CachedPlaybackSessionError, self).__init__(self._message)
+        super(_CachedPlaybackError, self).__init__(self._message)
 
     @property
     def code(self):
@@ -1537,58 +1808,68 @@ class _CachedPlaybackSessionError(RuntimeError):
         return self._details
 
 
-class _CachedPlaybackSessionEvent(object):
-    def __init__(self, kind, current_frame=None, total_frames=None,
-                 metadata=None, diagnostic=None):
-        self._kind = kind
-        self._current_frame = current_frame
-        self._total_frames = total_frames
-        self._metadata = _copy_session_payload(metadata) if metadata else None
-        self._diagnostic = _copy_session_payload(diagnostic) if diagnostic else None
+class _CachedPlaybackRetention(object):
+    __slots__ = ("__cache",)
 
-    @property
-    def kind(self):
-        return self._kind
+    def __init__(self, cache):
+        self.__cache = cache if cache is not None and cache.completed else None
 
-    @property
-    def current_frame(self):
-        return self._current_frame
-
-    @property
-    def total_frames(self):
-        return self._total_frames
-
-    @property
-    def progress(self):
-        if self._current_frame is None or self._total_frames is None:
+    def _consume(self, revision):
+        cache, self.__cache = self.__cache, None
+        if cache is None:
             return None
-        return self._current_frame, self._total_frames
+        try:
+            if not cache.compatible_with(revision):
+                cache.delete()
+                return None
+        except (_PlaybackCacheError, AttributeError, TypeError, ValueError):
+            cache.delete()
+            return None
+        return cache
 
-    @property
-    def metadata(self):
-        return _copy_session_payload(self._metadata) if self._metadata else None
+    def _discard(self):
+        cache, self.__cache = self.__cache, None
+        if cache is not None:
+            cache.delete()
 
-    @property
-    def diagnostic(self):
-        return _copy_session_payload(self._diagnostic) if self._diagnostic else None
+    def _summary(self):
+        return (_CachedPlaybackCacheSummary(self.__cache)
+                if self.__cache is not None else None)
 
 
-class _CachedPlaybackSession(object):
-    """Owns cached capture and ordered replay while one connection is ready."""
+class _CachedPlayback(object):
+    """Owns cached capture, upload to Unreal, and Unreal-driven replay control.
 
-    def __init__(self, scene, streaming_session, on_event=None, timeline=None,
-                 cache_factory=None, temp_dir=None, clock=None, disk_usage=None,
-                 timer_api=None, cache=None):
+    Capture stores every inclusive Playback Range display frame in the
+    temporary disk cache. Completion uploads the whole cache without a
+    real-time deadline, waits for Unreal's Ready reply, then only sends
+    playback controls: Unreal applies each buffered frame exactly once, in
+    order, on its own monotonic clock.
+    """
+
+    REALTIME = "REALTIME"
+    CACHED_IDLE = "CACHED_IDLE"
+    CAPTURING = "CAPTURING"
+    UPLOADING = "UPLOADING"
+    REPLAYING = "REPLAYING"
+    STOPPING = "STOPPING"
+    COMPLETED = "COMPLETED"
+    STOPPED = "STOPPED"
+    FAILED = "FAILED"
+    DETACHED = "DETACHED"
+
+    def __init__(self, scene, streaming_session, on_change=None, timeline=None,
+                 cache_factory=None, temp_dir=None, disk_usage=None,
+                 timer_api=None, retention=None):
         self._scene = scene
         self._streaming_session = streaming_session
-        self._on_event = on_event
+        self._on_change = on_change
         self._timeline = timeline or _MayaTimeline()
         self._cache_factory = cache_factory or _PlaybackCache
         self._temp_dir = os.fspath(temp_dir or tempfile.gettempdir())
-        self._clock = clock or time.monotonic
         self._disk_usage = disk_usage or shutil.disk_usage
         self._timer_api = timer_api if timer_api is not None else getattr(om, "MTimerMessage", None)
-        self._cache = cache
+        self._cache = None
         self._phase = "idle"
         self._paused_streaming = False
         self._capture_cache = None
@@ -1600,51 +1881,101 @@ class _CachedPlaybackSession(object):
         self._capture_end = None
         self._capture_next_frame = None
         self._capture_total_frames = None
-        self._capture_scene_fps = None
         self._capture_original_frame = None
-        self._capture_progress_callback = None
         self._capture_confirmation_callback = None
         self._capture_estimated_size = None
+        self._capture_encoded_bytes = 0
         self._capture_large_cache_confirmed = False
-        self._replay_iterator = None
-        self._replay_index = 0
-        self._replay_due = None
-        self._replay_interval = None
-        self._replay_timer_id = None
-        self._replay_timer_generation = 0
+        self._replies = queue.Queue()
+        self._poller_generation = 0
+        self._poller_timer_id = None
+        self._uploaded_revision = None
+        self._applied_frames = None
+        self._upload_id = 0
+        self._play_id = 0
+        self._active_upload_id = None
+        self._active_upload_revision = None
+        self._active_play_id = None
+        self._upload_deadline = None
+        self._upload_frame_iter = None
+        self._declaring_upload = False
+        self._declared_payload_bytes = 0
+        self._upload_end_sent = False
+        self._upload_submitted = 0
         self._closed = False
+        self._progress_current = 0
+        self._progress_total = 0
+        self._issued_retention = None
+        revision = self._ensure_ready()
+        if retention is not None:
+            self._cache = retention._consume(revision)
+        self._last_view = self._make_view()
 
-    @classmethod
-    def start(cls, scene, streaming_session, on_event=None, **kwargs):
-        session = cls(scene, streaming_session, on_event, **kwargs)
-        session.enter_cached_mode()
-        return session
+    def _semantic_state(self):
+        if self._closed or self._phase in ("closed", "detached", "transport_failed"):
+            return self.DETACHED
+        if self._phase == "capturing":
+            return self.CAPTURING
+        if self._phase in ("captured", "uploading", "ready_to_play"):
+            return self.UPLOADING
+        if self._phase == "replaying":
+            return self.REPLAYING
+        if self._phase == "stopping":
+            return self.STOPPING
+        if self._phase == "completed":
+            return self.COMPLETED
+        if self._phase == "stopped":
+            return self.STOPPED
+        if self._phase in ("failed", "upload_failed", "playback_failed", "cancelled"):
+            # One truthful post-failure transition: a failure that already
+            # resumed Real-time Preview and dropped Unreal cache ownership is
+            # Real-time state carrying a diagnostic; only a failure that
+            # remains cached renders as FAILED.
+            return self.FAILED if self._paused_streaming else self.REALTIME
+        return self.CACHED_IDLE if self._paused_streaming else self.REALTIME
+
+    def _cache_summary(self):
+        if self._cache is not None and self._cache.completed:
+            return _CachedPlaybackCacheSummary(self._cache)
+        if self._issued_retention is not None:
+            return self._issued_retention._summary()
+        return None
+
+    def _make_view(self, diagnostic=None):
+        state = self._semantic_state()
+        session = self._streaming_session
+        attached = (not self._closed and session is not None and session.is_ready)
+        entered = attached and self._paused_streaming
+        summary = self._cache_summary()
+        return _CachedPlaybackView(
+            state, self._progress_current, self._progress_total, summary, diagnostic,
+            can_capture=(entered
+                         and state not in (self.CAPTURING, self.STOPPING, self.DETACHED)),
+            can_replay=(entered and summary is not None
+                        and state not in (self.CAPTURING, self.UPLOADING,
+                                          self.REPLAYING, self.STOPPING)),
+            can_stop=state in (self.REPLAYING, self.STOPPING),
+            can_cancel=state == self.CAPTURING,
+            can_leave=entered and state not in (self.CAPTURING, self.DETACHED),
+        )
 
     @property
-    def cache(self):
-        return self._cache
+    def view(self):
+        return self._make_view()
 
-    @property
-    def phase(self):
-        return self._phase
-
-    @property
-    def is_capturing(self):
-        return self._phase == "capturing"
-
-    @property
-    def is_replaying(self):
-        return self._phase == "replaying"
-
-    @property
-    def is_complete(self):
-        return bool(self._cache and self._cache.completed)
-
-    def _emit(self, event):
-        if self._on_event is None:
+    def _publish(self, current=None, total=None, diagnostic=None):
+        if current is not None:
+            self._progress_current = current
+        if total is not None:
+            self._progress_total = total
+        view = self._make_view(diagnostic)
+        if view == self._last_view:
+            return
+        self._last_view = self._make_view()
+        if self._on_change is None:
             return
         try:
-            self._on_event(event)
+            self._on_change(view)
         except Exception as exc:
             if cmds is not None:
                 try:
@@ -1652,54 +1983,24 @@ class _CachedPlaybackSession(object):
                 except Exception:
                     pass
 
-    def _streaming_value(self, name, default=None):
-        value = getattr(self._streaming_session, name, default)
-        if callable(value):
-            try:
-                return value()
-            except TypeError:
-                return default
-        return value
-
-    def _streaming_is_ready(self):
-        ready = self._streaming_value("is_ready", None)
-        if ready is not None:
-            return bool(ready)
-        ready = self._streaming_value("ready", None)
-        if ready is not None:
-            return bool(ready)
-        phase = getattr(self._streaming_session, "_phase", None)
-        if phase is not None:
-            return phase == "ready"
-        worker = getattr(self._streaming_session, "_worker", None)
-        if worker is not None and hasattr(worker, "status"):
-            try:
-                return worker.status()[0] == "ready"
-            except (AttributeError, IndexError, TypeError):
-                return False
-        return True
-
-    def _streaming_revision(self):
-        revision = self._streaming_value("revision", None)
-        if revision is None:
-            revision = getattr(self._streaming_session, "_revision", None)
-        return None if revision is None else int(revision)
-
     def _current_revision(self):
         try:
             return int(self._scene.snapshot().revision)
         except (AttributeError, RuntimeError, TypeError, ValueError):
-            return self._streaming_revision()
+            session = self._streaming_session
+            revision = session.revision if session is not None else None
+            return None if revision is None else int(revision)
 
     def _ensure_ready(self):
-        if self._closed or self._streaming_session is None or not self._streaming_is_ready():
-            raise _CachedPlaybackSessionError(
+        session = self._streaming_session
+        if self._closed or session is None or not session.is_ready:
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "Cached Playback requires a ready negotiated connection.")
-        expected = self._streaming_revision()
+        expected = session.revision
         current = self._current_revision()
         if expected is not None and current is not None and expected != current:
-            raise _CachedPlaybackSessionError(
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_INCOMPATIBLE",
                 "The character snapshot changed during cached playback.",
                 "streaming revision {0}, current revision {1}".format(expected, current))
@@ -1708,43 +2009,64 @@ class _CachedPlaybackSession(object):
     def _pause_streaming(self):
         if self._paused_streaming:
             return
-        method = getattr(self._streaming_session, "pause_for_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "pause", None)
-        if method is not None:
-            method()
+        if self._streaming_session is not None:
+            self._streaming_session.pause_for_cached(self._replies.put)
         self._paused_streaming = True
 
     def _resume_streaming(self):
         if not self._paused_streaming:
             return
-        method = getattr(self._streaming_session, "resume_from_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "resume", None)
-        if method is not None:
-            method()
+        if self._streaming_session is not None:
+            self._streaming_session.resume_from_cached()
         self._paused_streaming = False
 
-    def enter_cached_mode(self):
+    def enter(self):
         self._ensure_ready()
+        if self._paused_streaming:
+            return self
         self._pause_streaming()
-        if self._phase == "idle":
-            self._emit(_CachedPlaybackSessionEvent("mode_entered"))
+        self._phase = "idle"
+        self._send_enter_best_effort()
+        # Every Cached Playback state that owns the negotiated session keeps
+        # the lightweight transport observer running, so a disconnected
+        # socket is detected while idle instead of surviving until the next
+        # user action.
+        self._add_playback_poller()
+        self._publish(current=0, total=0)
         return self
 
-    def leave_cached_mode(self):
-        if self._closed:
+    def _send_enter_best_effort(self):
+        """Establish cached ownership in Unreal before any capture begins."""
+        session = self._streaming_session
+        if session is None or not session.is_ready:
             return
-        if self.is_capturing:
-            self._capture_failure(_CachedPlaybackSessionError(
+        try:
+            session.submit_cached(make_cache_enter_message())
+        except (_CachedPlaybackError, _StreamingSessionError,
+                RuntimeError, TypeError, ValueError) as exc:
+            if cmds is not None:
+                try:
+                    cmds.warning(
+                        "MtoU_LiveLink could not send the cache entry"
+                        " control: {0}".format(exc))
+                except Exception:
+                    pass
+
+    def leave(self):
+        if self._closed or not self._paused_streaming:
+            return
+        if self._phase == "capturing":
+            self._capture_failure(_CachedPlaybackError(
                 "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled."))
         self.stop_replay()
-        self._resume_streaming()
+        # Queue the Unreal cache clear while ordered delivery is active, then
+        # resume streaming so live frames follow the clear in order.
+        self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
         self._phase = "idle"
-        self._emit(_CachedPlaybackSessionEvent("mode_exited"))
+        self._publish(current=0, total=0)
 
     def cancel_capture(self):
-        if self.is_capturing:
+        if self._phase == "capturing":
             self._capture_cancel_requested = True
 
     def _disk_free_bytes(self):
@@ -1756,19 +2078,10 @@ class _CachedPlaybackSession(object):
                 return int(usage[2])
             return int(usage)
         except (OSError, TypeError, ValueError) as exc:
-            raise _CachedPlaybackSessionError(
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_SPACE",
                 "Unable to determine available temporary-disk space.",
                 details=str(exc))
-
-    @staticmethod
-    def _invoke_progress(callback, event):
-        if callback is None:
-            return
-        try:
-            callback(event.current_frame, event.total_frames)
-        except TypeError:
-            callback(event)
 
     @staticmethod
     def _invoke_confirmation(callback, estimated_size, total_frames):
@@ -1806,7 +2119,7 @@ class _CachedPlaybackSession(object):
             del args
             if generation != self._capture_generation:
                 return
-            self.capture_step(raise_errors=False)
+            self._capture_step()
 
         self._capture_timer_id = self._timer_api.addTimerCallback(
             self._capture_timer_interval(), on_timer)
@@ -1814,15 +2127,19 @@ class _CachedPlaybackSession(object):
     def _remove_capture_timer(self):
         self._capture_generation += 1
         timer_id, self._capture_timer_id = self._capture_timer_id, None
+        self._remove_timer_callback(timer_id)
+
+    def _remove_timer_callback(self, timer_id):
         if timer_id is None:
             return
-        message = getattr(om, "MMessage", None)
-        if message is None or not hasattr(message, "removeCallback"):
-            return
-        try:
-            message.removeCallback(timer_id)
-        except RuntimeError:
-            pass
+        remove = getattr(self._timer_api, "removeCallback", None)
+        if remove is None:
+            remove = getattr(getattr(om, "MMessage", None), "removeCallback", None)
+        if remove is not None:
+            try:
+                remove(timer_id)
+            except RuntimeError:
+                pass
 
     def _restore_capture_frame(self):
         original_frame = self._capture_original_frame
@@ -1834,32 +2151,38 @@ class _CachedPlaybackSession(object):
             pass
         self._capture_original_frame = None
 
-    def begin_capture(self, start_frame=None, end_frame=None, scene_fps=None,
-                      progress=None, confirm_large_cache=None):
-        if self.is_capturing:
+    def capture(self, scene_fps, confirm_large_cache=None):
+        if self._phase == "capturing":
             return self
         revision = self._ensure_ready()
-        if start_frame is None or end_frame is None:
-            playback_start, playback_end = self._timeline.playback_range()
-            if start_frame is None:
-                start_frame = playback_start
-            if end_frame is None:
-                end_frame = playback_end
+        start_frame, end_frame = self._timeline.playback_range()
         start_frame = int(round(float(start_frame)))
         end_frame = int(round(float(end_frame)))
         if end_frame < start_frame:
-            raise _CachedPlaybackSessionError(
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_CAPTURE_RANGE",
                 "Maya Playback Range must end at or after its start.")
-        if scene_fps is None:
-            try:
-                scene_fps = frames_per_second(cmds.currentUnit(query=True, time=True))
-            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-                raise _CachedPlaybackSessionError("INVALID_FRAME_RATE", str(exc))
+        if end_frame - start_frame + 1 > MAX_CACHE_FRAME_COUNT:
+            # Enforce the frozen frame limit before any capture work: a range
+            # that Unreal must reject never costs time or disk.
+            raise _CachedPlaybackError(
+                "CACHED_PLAYBACK_FRAME_LIMIT",
+                "The Playback Range spans {0} frames; the fixed cache limit"
+                " is {1} frames.".format(
+                    end_frame - start_frame + 1, MAX_CACHE_FRAME_COUNT),
+                details="start {0}, end {1}, limit {2}".format(
+                    start_frame, end_frame, MAX_CACHE_FRAME_COUNT))
         scene_fps = validate_frame_rate(scene_fps)
-        self.enter_cached_mode()
-        if self.is_replaying:
+        self.enter()
+        if self._phase in ("replaying", "stopping"):
             self.stop_replay()
+        self._remove_playback_poller()
+        if self._phase == "uploading":
+            # Abort the in-flight transfer; the fresh cache_begin below resets
+            # Unreal's buffer coherently, so stale frames cannot mix.
+            self._close_upload_iter()
+            self._declaring_upload = False
+            self._upload_end_sent = True
         if self._cache is not None:
             self._cache.delete()
             self._cache = None
@@ -1874,7 +2197,7 @@ class _CachedPlaybackSession(object):
         except (_PlaybackCacheError, OSError, TypeError, ValueError) as exc:
             self._restore_capture_frame()
             self._resume_streaming()
-            raise _CachedPlaybackSessionError(
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_SPACE", str(exc), details=str(exc))
         self._capture_cache = cache
         self._capture_revision = revision
@@ -1882,63 +2205,91 @@ class _CachedPlaybackSession(object):
         self._capture_end = end_frame
         self._capture_next_frame = start_frame
         self._capture_total_frames = total_frames
-        self._capture_scene_fps = scene_fps
         self._capture_original_frame = original_frame
-        self._capture_progress_callback = progress
         self._capture_confirmation_callback = confirm_large_cache
         self._capture_estimated_size = None
+        self._capture_encoded_bytes = 0
         self._capture_large_cache_confirmed = False
         self._capture_cancel_requested = False
         self._phase = "capturing"
-        self._emit(_CachedPlaybackSessionEvent(
-            "capture_started", current_frame=0, total_frames=total_frames,
-            metadata={"capture_start": start_frame, "capture_end": end_frame,
-                      "scene_fps": scene_fps, "snapshot_revision": revision}))
+        self._publish(current=0, total=total_frames)
         try:
             self._add_capture_timer()
         except (RuntimeError, TypeError, ValueError) as exc:
-            error = _CachedPlaybackSessionError(
+            error = _CachedPlaybackError(
                 "INTERNAL_ERROR", str(exc), details=str(exc))
             failure = self._capture_failure(error)
             if failure is not None:
                 raise failure
         return self
 
-    def _capture_failure(self, error):
+    def _teardown_cached_runtime(self, send_clear=False, resume_streaming=False):
+        """Single terminal cleanup seam for every cached-mode exit.
+
+        Removes both timers, closes any upload iterator, optionally queues an
+        ordered ``cache_clear`` while ordered delivery is still active, and
+        only then resumes live streaming so the clear stays ahead of the
+        first resumed live pose.
+        """
         self._remove_capture_timer()
+        self._remove_playback_poller()
+        self._close_upload_iter()
+        if send_clear:
+            self._send_clear_best_effort()
+        if resume_streaming:
+            self._resume_streaming()
+
+    def _capture_failure(self, error, transport_lost=False):
+        # Timers and iterators die first so no further capture work fires.
+        self._teardown_cached_runtime()
         if self._capture_cache is not None:
             self._capture_cache.delete()
         self._capture_cache = None
         self._restore_capture_frame()
-        self._phase = "cancelled" if error.code == "CACHED_PLAYBACK_CANCELLED" else "failed"
         diagnostic = make_diagnostic(
             error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
             error.message, details=error.details)
-        self._emit(_CachedPlaybackSessionEvent(
-            "capture_cancelled" if error.code == "CACHED_PLAYBACK_CANCELLED" else "failed",
-            diagnostic=diagnostic))
+        if transport_lost:
+            self._phase = "transport_failed"
+            self._publish(current=0, total=0, diagnostic=diagnostic)
+            if self._streaming_session is not None:
+                try:
+                    self._streaming_session.stop()
+                except (RuntimeError, TypeError):
+                    pass
+            return error
+        self._phase = "cancelled" if error.code == "CACHED_PLAYBACK_CANCELLED" else "failed"
+        # A failed capture leaves Unreal owning cached entry state; drop it in
+        # order before live poses flow again. Resuming Real-time Preview here
+        # and clearing Unreal ownership is the complete, truthful transition:
+        # the published view renders as REALTIME with this diagnostic.
+        self._send_clear_best_effort()
         self._resume_streaming()
+        self._publish(current=0, total=0, diagnostic=diagnostic)
         if error.code == "CACHED_PLAYBACK_CANCELLED":
-            self._phase = "idle"
             return None
         return error
 
-    def capture_step(self, raise_errors=True):
-        if not self.is_capturing:
+    def _capture_step(self):
+        if self._phase != "capturing":
             return False
         try:
+            session = self._streaming_session
+            if session is None or not session.is_ready:
+                self._handle_transport_failure(_CachedPlaybackError(
+                    "STREAM_INTERRUPTED",
+                    "The streaming connection ended during capture."))
+                return True
             if self._capture_cancel_requested:
-                error = _CachedPlaybackSessionError(
+                error = _CachedPlaybackError(
                     "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
-                failure = self._capture_failure(error)
-                if failure is not None and raise_errors:
-                    raise failure
+                self._capture_failure(error)
                 return True
             frame_number = self._capture_next_frame
             self._timeline.set_frame(frame_number)
             frame = self._scene.sample()
             if int(frame.revision) != int(self._capture_revision):
-                raise _CachedPlaybackSessionError(
+                raise _CachedPlaybackError(
                     "CACHED_PLAYBACK_INCOMPATIBLE",
                     "The character snapshot changed during capture.",
                     "captured revision {0}, expected {1}".format(
@@ -1946,6 +2297,30 @@ class _CachedPlaybackSession(object):
             frame_message = make_frame_message(
                 list(frame.transforms), list(frame.curves))
             frame_size = _PlaybackCache.serialized_frame_size(frame_message)
+            # Exact wire size of this frame's cache_frame message (real index
+            # width included, no file newline) accumulated for the upload
+            # declaration so it matches what Unreal meters on the socket.
+            encoded_size = cache_frame_wire_size(
+                frame_number - self._capture_start,
+                frame_message["transforms"],
+                frame_message["curves"])
+            if (encoded_size < 0
+                    or encoded_size > MAX_MESSAGE_BYTES
+                    or self._capture_encoded_bytes + encoded_size
+                    > MAX_CACHE_PAYLOAD_BYTES):
+                # Stop as soon as a single frame would cross the per-message
+                # framing ceiling or the encoded total would cross the frozen
+                # 1 GiB budget; the partial owned cache is deleted below.
+                raise _CachedPlaybackError(
+                    "CACHED_PLAYBACK_PAYLOAD_LIMIT",
+                    "Captured frames would exceed the fixed cache limits.",
+                    details="frame {0} bytes, encoded total {1} + {2} bytes"
+                            " against limits {3} per message and {4} per"
+                            " cache".format(
+                                encoded_size, self._capture_encoded_bytes,
+                                encoded_size, MAX_MESSAGE_BYTES,
+                                MAX_CACHE_PAYLOAD_BYTES))
+            self._capture_encoded_bytes += encoded_size
             if self._capture_estimated_size is None:
                 self._capture_estimated_size = frame_size
             else:
@@ -1956,7 +2331,7 @@ class _CachedPlaybackSession(object):
                 self._capture_total_frames - frames_written)
             free_bytes = self._disk_free_bytes()
             if remaining_estimate > free_bytes:
-                raise _CachedPlaybackSessionError(
+                raise _CachedPlaybackError(
                     "CACHED_PLAYBACK_SPACE",
                     "The temporary directory does not have enough free space.",
                     "estimated remaining {0} bytes, free {1} bytes".format(
@@ -1966,26 +2341,17 @@ class _CachedPlaybackSession(object):
                 if not self._invoke_confirmation(
                         self._capture_confirmation_callback,
                         estimated_total, self._capture_total_frames):
-                    raise _CachedPlaybackSessionError(
+                    raise _CachedPlaybackError(
                         "CACHED_PLAYBACK_CANCELLED",
                         "Large cache confirmation was declined.")
                 self._capture_large_cache_confirmed = True
             self._capture_cache.append(frame_message)
             offset = frame_number - self._capture_start + 1
-            event = _CachedPlaybackSessionEvent(
-                "capture_progress", current_frame=offset,
-                total_frames=self._capture_total_frames, metadata={
-                    "maya_frame": frame_number,
-                    "estimated_bytes": self._capture_estimated_size * self._capture_total_frames,
-                })
-            self._emit(event)
-            self._invoke_progress(self._capture_progress_callback, event)
+            self._publish(current=offset, total=self._capture_total_frames)
             if self._capture_cancel_requested:
-                error = _CachedPlaybackSessionError(
+                error = _CachedPlaybackError(
                     "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
-                failure = self._capture_failure(error)
-                if failure is not None and raise_errors:
-                    raise failure
+                self._capture_failure(error)
                 return True
             self._capture_next_frame += 1
             if frame_number < self._capture_end:
@@ -1995,76 +2361,344 @@ class _CachedPlaybackSession(object):
             self._remove_capture_timer()
             self._capture_cache = None
             self._cache = cache
-            self._phase = "captured"
             self._restore_capture_frame()
-            self._emit(_CachedPlaybackSessionEvent(
-                "capture_completed", current_frame=self._capture_total_frames,
-                total_frames=self._capture_total_frames, metadata=cache.metadata))
-            self._start_replay()
+            self._publish(current=self._capture_total_frames,
+                          total=self._capture_total_frames)
+            self._phase = "captured"
+            self._begin_upload()
             return True
-        except _CachedPlaybackSessionError as error:
-            failure = self._capture_failure(error)
-            if failure is not None and raise_errors:
-                raise failure
+        except _CachedPlaybackError as error:
+            self._capture_failure(error)
             return True
         except (_CharacterSceneError, _PlaybackCacheError, RuntimeError, ValueError) as exc:
-            error = _CachedPlaybackSessionError(
+            error = _CachedPlaybackError(
                 "SAMPLING_FAILED", str(exc), details=str(exc))
-            failure = self._capture_failure(error)
-            if failure is not None and raise_errors:
-                raise failure
+            self._capture_failure(error)
             return True
 
-    def capture_and_replay(self, start_frame=None, end_frame=None, scene_fps=None,
-                           progress=None, confirm_large_cache=None):
-        self.begin_capture(
-            start_frame=start_frame, end_frame=end_frame, scene_fps=scene_fps,
-            progress=progress, confirm_large_cache=confirm_large_cache)
-        while self.is_capturing:
-            self.capture_step(raise_errors=True)
-        return self._cache
+    def _submit_cached(self, message):
+        if self._streaming_session is None:
+            raise _CachedPlaybackError(
+                "CACHED_PLAYBACK_NOT_READY",
+                "The streaming session cannot submit cached messages.")
+        self._streaming_session.submit_cached(message)
 
-    def _submit_cached(self, frame_message):
-        method = getattr(self._streaming_session, "submit_cached", None)
-        if method is None:
-            method = getattr(self._streaming_session, "submit_ordered", None)
-        if method is None:
-            method = getattr(self._streaming_session, "submit", None)
-        if method is None:
-            raise _CachedPlaybackSessionError(
-                "CACHED_PLAYBACK_NOT_READY", "The streaming session cannot submit cached frames.")
-        method(frame_message)
+    def _delivery_drained(self):
+        session = self._streaming_session
+        return True if session is None else session.cached_delivery_drained()
 
-    def _add_replay_timer(self):
+    def _accept_cache_ready(self, reply):
+        if self._phase != "uploading" or self._cache is None:
+            return
+        if _exact_int(reply.get("upload_id")) != self._active_upload_id:
+            return  # stale outcome from an older upload
+        if not self._upload_end_sent or not self._delivery_drained():
+            # Unreal cannot truthfully report Ready before cache_end was sent
+            # and drained. Put it back and stop draining this round so the
+            # same outcome is not re-consumed in a tight loop.
+            self._replies.put(reply)
+            self._stop_draining_this_round = True
+            return
+        total_frames = self._cache.frame_count
+        echoed_count = _exact_int(reply.get("frame_count"))
+        echoed_revision = _exact_int(reply.get("revision"))
+        if (echoed_count != total_frames
+                or echoed_revision != self._active_upload_revision):
+            self._fail_upload(make_diagnostic(
+                "CACHED_UPLOAD_FAILED",
+                "Unreal reported inconsistent cache evidence.",
+                details="ready frame_count={0} revision={1}, expected"
+                        " frame_count={2} revision={3}".format(
+                            echoed_count, echoed_revision,
+                            total_frames, self._active_upload_revision)))
+            return
+        self._remove_playback_poller()
+        self._uploaded_revision = self._cache.snapshot_revision
+        self._phase = "ready_to_play"
+        self._publish(current=total_frames, total=total_frames)
+        self._request_play()
+
+    def _route_outcome(self, reply):
+        """Identity-aware routing: late outcomes from older operations are
+        dropped without touching current state."""
+        reply_type = reply.get("type")
+        if reply_type == "error":
+            play_id = _exact_int(reply.get("play_id"))
+            upload_id = _exact_int(reply.get("upload_id"))
+            if self._phase == "uploading":
+                if upload_id == self._active_upload_id:
+                    self._handle_error_reply(reply)
+            elif self._phase in ("ready_to_play", "replaying", "stopping"):
+                if play_id == self._active_play_id:
+                    self._handle_error_reply(reply)
+            return
+        if reply_type == "cache_progress":
+            play_id = _exact_int(reply.get("play_id"))
+            applied = _exact_int(reply.get("applied"))
+            if self._phase == "replaying" and play_id == self._active_play_id:
+                # Informational only; never completion evidence. Throttled to
+                # roughly 2% steps so the UI is not flooded at scene rate.
+                total_frames = self._cache.frame_count if self._cache else None
+                if applied is None or (
+                        total_frames is not None and not 0 <= applied <= total_frames):
+                    return
+                step = max(1, round(total_frames / 50)) if total_frames else 1
+                if total_frames is None or applied % step == 0 \
+                        or applied >= total_frames:
+                    self._publish(current=applied, total=total_frames)
+            return
+        if reply_type == "cache_complete":
+            play_id = _exact_int(reply.get("play_id"))
+            if self._phase != "replaying" or play_id != self._active_play_id:
+                return
+            total_frames = self._cache.frame_count if self._cache else None
+            applied = _exact_int(reply.get("applied_frame_count"))
+            elapsed = _finite_float(reply.get("elapsed_seconds"))
+            if (total_frames is None or applied != total_frames
+                    or elapsed is None or elapsed <= 0.0):
+                self._phase = "failed"
+                self._publish(diagnostic=make_diagnostic(
+                    "INTERNAL_ERROR",
+                    "Unreal reported inconsistent playback evidence.",
+                    details="completion applied_frame_count={0}"
+                            " elapsed_seconds={1}, expected {2} applied"
+                            " frames".format(applied, elapsed, total_frames)))
+                return
+            self._applied_frames = applied
+            self._phase = "completed"
+            self._publish(current=applied, total=total_frames)
+            return
+        if reply_type == "cache_stopped":
+            play_id = _exact_int(reply.get("play_id"))
+            if self._phase == "stopping" and play_id == self._active_play_id:
+                # Success is reported only once Unreal acknowledges this
+                # exact attempt; a late ack for an older attempt is dropped.
+                # The poller keeps running so completed and stopped states
+                # still observe transport termination.
+                self._phase = "stopped"
+                self._applied_frames = None
+                self._publish(current=0,
+                              total=self._cache.frame_count if self._cache else 0)
+            return
+        if reply_type == "cache_ready":
+            # A late duplicate Ready can only belong to an older upload;
+            # the current upload consumes its Ready synchronously.
+            if self._phase == "uploading":
+                self._accept_cache_ready(reply)
+            return
+        # cache_cleared and any unknown well-formed outcome are informational.
+
+    def _handle_error_reply(self, reply):
+        code = str(reply.get("code") or "")
+        message = str(reply.get("message") or code)
+        details = str(reply.get("details") or message)
+        if self._phase == "uploading":
+            self._fail_upload(make_diagnostic(
+                "CACHED_UPLOAD_FAILED", message, details=details))
+            return
+        if self._phase in ("replaying", "stopping"):
+            # Runtime playback failures keep the negotiated cached session:
+            # the poller stays running so this state also observes transport
+            # termination, and leave/retry remain available capabilities.
+            if code == "CACHED_PLAYBACK_PERFORMANCE":
+                self._phase = "playback_failed"
+                self._publish(diagnostic=make_diagnostic(
+                    "CACHED_PLAYBACK_PERFORMANCE", message, details=details))
+                return
+            mapped = {
+                "CACHE_NOT_READY": "CACHED_PLAYBACK_NO_CACHE",
+                "CACHE_REVISION_MISMATCH": "CACHED_PLAYBACK_INCOMPATIBLE",
+            }.get(code, "INTERNAL_ERROR")
+            self._phase = "failed"
+            self._publish(diagnostic=make_diagnostic(mapped, message, details=details))
+
+    def _fail_upload(self, diagnostic):
+        """Terminal path for an asynchronously rejected upload.
+
+        Removes the poller and upload iterator, drops Unreal's cache
+        ownership in order, and only then resumes the current live pose.
+        """
+        self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
+        self._phase = "upload_failed"
+        self._publish(current=0, total=0, diagnostic=diagnostic)
+
+    def _begin_upload(self):
+        try:
+            revision = self._ensure_ready()
+        except _CachedPlaybackError as error:
+            if error.code == "CACHED_PLAYBACK_INCOMPATIBLE":
+                self._invalidate_incompatible_cache(error)
+                return
+            raise
+        cache = self._cache
+        if revision is not None and not cache.compatible_with(revision):
+            self._invalidate_incompatible_cache(_CachedPlaybackError(
+                "CACHED_PLAYBACK_INCOMPATIBLE",
+                "The completed cache does not match the current character snapshot.",
+                "streaming revision {0}, cache revision {1}".format(
+                    revision, cache.snapshot_revision)))
+            return
+        self._pause_streaming()
+        start_frame, end_frame = cache.capture_range
+        total_frames = cache.frame_count
+        self._upload_id += 1
+        self._active_upload_id = self._upload_id
+        declared_bytes = self._capture_encoded_bytes
+        if declared_bytes <= 0 and total_frames:
+            # Adopted cache from another session instance: derive the exact
+            # encoded total inside bounded poller chunks so the declaring
+            # pass never blocks Maya's thread on a whole-cache encode.
+            self._declaring_upload = True
+            declared_bytes = 0
+        else:
+            self._declaring_upload = False
+        self._declared_payload_bytes = declared_bytes
+        self._phase = "uploading"
+        self._publish(current=0, total=total_frames)
+        if not self._declaring_upload:
+            if not self._send_cache_begin(revision):
+                return
+        try:
+            self._upload_frame_iter = cache.iter_frames()
+        except (_PlaybackCacheError, OSError) as error:
+            self._invalidate_corrupt_cache(error)
+            return
+        self._upload_end_sent = False
+        self._upload_submitted = 0
+        # Ready arrives asynchronously: Unreal parses and buffers without any
+        # real-time deadline while the poller drains the identity-matched
+        # outcome, so Maya's thread never blocks on Unreal's cache parsing.
+        self._active_upload_revision = revision
+        self._upload_deadline = None
+        self._add_playback_poller()
+
+    def _send_cache_begin(self, revision):
+        cache = self._cache
+        start_frame, end_frame = cache.capture_range
+        try:
+            begin_message = make_cache_begin_message(
+                revision, start_frame, end_frame,
+                cache.scene_fps, self._declared_payload_bytes,
+                self._active_upload_id)
+        except ValueError as exc:
+            self._fail_upload(make_diagnostic(
+                "CACHED_UPLOAD_FAILED",
+                "The captured cache exceeds the Unreal transient cache limit.",
+                details=str(exc)))
+            return False
+        try:
+            self._submit_cached(begin_message)
+        except (_CachedPlaybackError, _StreamingSessionError) as error:
+            self._handle_transport_failure(error)
+            return False
+        return True
+
+    def _can_reuse_upload(self):
+        return (
+            self._phase in ("ready_to_play", "stopped", "stopping",
+                            "completed", "playback_failed")
+            and self._uploaded_revision is not None
+            and self._cache is not None
+            and int(self._uploaded_revision) == self._cache.snapshot_revision)
+
+    def _request_play(self):
+        self._play_id += 1
+        self._active_play_id = self._play_id
+        try:
+            self._submit_cached(make_cache_play_message(self._play_id))
+        except (_CachedPlaybackError, _StreamingSessionError,
+                RuntimeError, TypeError, ValueError) as exc:
+            self._handle_transport_failure(exc)
+            return
+        self._phase = "replaying"
+        self._applied_frames = None
+        self._publish(current=0, total=self._cache.frame_count)
+        self._add_playback_poller()
+
+    def _playback_poll_interval(self):
+        return 0.05
+
+    def _add_playback_poller(self):
         if self._timer_api is None or not hasattr(self._timer_api, "addTimerCallback"):
             return
-        self._replay_timer_generation += 1
-        generation = self._replay_timer_generation
+        if self._poller_timer_id is not None:
+            return
+        self._poller_generation += 1
+        generation = self._poller_generation
 
         def on_timer(*args):
             del args
-            if generation != self._replay_timer_generation:
+            if generation != self._poller_generation:
                 return
-            self.tick()
+            self._poll()
 
-        self._replay_timer_id = self._timer_api.addTimerCallback(
-            max(0.001, float(self._replay_interval)), on_timer)
+        self._poller_timer_id = self._timer_api.addTimerCallback(
+            self._playback_poll_interval(), on_timer)
 
-    def _remove_replay_timer(self):
-        self._replay_timer_generation += 1
-        timer_id, self._replay_timer_id = self._replay_timer_id, None
-        if timer_id is None:
-            return
-        message = getattr(om, "MMessage", None)
-        if message is None or not hasattr(message, "removeCallback"):
-            return
-        try:
-            message.removeCallback(timer_id)
-        except RuntimeError:
-            pass
+    def _remove_playback_poller(self):
+        self._poller_generation += 1
+        self._upload_deadline = None
+        timer_id, self._poller_timer_id = self._poller_timer_id, None
+        self._remove_timer_callback(timer_id)
 
-    def _clear_replay_iterator(self):
-        iterator, self._replay_iterator = self._replay_iterator, None
+    def _poll(self):
+        """Drain outcomes and advance the pipelined cache upload.
+
+        Each call pushes at most one bounded chunk of cached frames (or
+        declaration measurements) toward Unreal; Maya's thread never stalls
+        for the duration of an upload.
+        """
+        processed = False
+        self._stop_draining_this_round = False
+        if self._phase == "uploading":
+            session = self._streaming_session
+            if session is None or not session.is_ready:
+                self._handle_transport_failure(make_diagnostic(
+                    "STREAM_INTERRUPTED",
+                    "The streaming connection ended during the cache upload."))
+                return processed
+            if (not self._declaring_upload and self._upload_end_sent
+                    and self._delivery_drained()
+                    and self._upload_deadline is None):
+                self._upload_deadline = (
+                    time.time() + UPLOAD_READY_TIMEOUT_SECONDS)
+            if (self._upload_deadline is not None
+                    and time.time() > self._upload_deadline):
+                self._handle_transport_failure(make_diagnostic(
+                    "STREAM_INTERRUPTED",
+                    "Timed out waiting for Unreal to accept the uploaded cache."))
+                return processed
+            try:
+                if self._declaring_upload:
+                    processed = self._drive_declaration_chunk() or processed
+                else:
+                    processed = self._drive_upload_chunk() or processed
+            except (_CachedPlaybackError, _StreamingSessionError) as error:
+                self._handle_transport_failure(error)
+                return processed
+        while not self._stop_draining_this_round:
+            try:
+                reply = self._replies.get_nowait()
+            except queue.Empty:
+                break
+            self._route_outcome(reply)
+            processed = True
+        self._stop_draining_this_round = False
+        session = self._streaming_session
+        if (self._paused_streaming and not self._closed
+                and self._phase != "transport_failed"
+                and (session is None or not session.is_ready)):
+            # Continuous observation in every state that owns the negotiated
+            # session: idle, captured, uploading, replaying, completed, or
+            # stopped all surface transport termination immediately instead of
+            # rendering a stale connected indication until the next action.
+            self._handle_transport_failure(make_diagnostic(
+                "STREAM_INTERRUPTED", "The streaming connection ended."))
+            return processed
+        return processed
+
+    def _close_upload_iter(self):
+        iterator, self._upload_frame_iter = self._upload_frame_iter, None
         if iterator is None:
             return
         close = getattr(iterator, "close", None)
@@ -2074,213 +2708,280 @@ class _CachedPlaybackSession(object):
             except (RuntimeError, TypeError):
                 pass
 
+    def _drive_upload_chunk(self):
+        """Push at most one bounded chunk of cached frames per call."""
+        if self._upload_frame_iter is None or not self._delivery_drained():
+            return False  # previous chunk still draining on the sender thread
+        total_frames = self._cache.frame_count
+        submitted = 0
+        while submitted < UPLOAD_CHUNK_FRAMES:
+            try:
+                frame = next(self._upload_frame_iter)
+            except StopIteration:
+                # Release the frames-file handle before declaring wire done.
+                self._close_upload_iter()
+                if not self._upload_end_sent:
+                    self._submit_cached(make_cache_end_message())
+                    self._upload_end_sent = True
+                break
+            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
+                    TypeError, ValueError) as error:
+                # Any decode or iteration failure is deterministic cache
+                # corruption: invalidate the whole cache instead of
+                # masquerading as a transport failure.
+                self._close_upload_iter()
+                self._invalidate_corrupt_cache(error)
+                return submitted > 0
+            try:
+                message = make_cache_frame_message(
+                    self._upload_submitted,
+                    frame["transforms"], frame["curves"])
+            except (TypeError, ValueError) as error:
+                # A cached frame that cannot be re-encoded is deterministic
+                # cache corruption, never a transport failure.
+                self._close_upload_iter()
+                self._invalidate_corrupt_cache(error)
+                return submitted > 0
+            self._submit_cached(message)
+            self._upload_submitted += 1
+            submitted += 1
+            if (self._upload_submitted % UPLOAD_CHUNK_FRAMES == 0
+                    and self._upload_submitted < total_frames):
+                self._publish(current=self._upload_submitted, total=total_frames)
+        return submitted > 0
+
+    def _drive_declaration_chunk(self):
+        """Measure at most one bounded chunk of cached frames per call.
+
+        Adopted caches have no captured wire sizes, so the exact encoded
+        declaration is derived here — in bounded poller chunks instead of one
+        blocking whole-cache pass.
+        """
+        if self._upload_frame_iter is None:
+            return False
+        measured = 0
+        while measured < UPLOAD_CHUNK_FRAMES:
+            try:
+                frame = next(self._upload_frame_iter)
+            except StopIteration:
+                self._close_upload_iter()
+                self._declaring_upload = False
+                if not self._send_cache_begin(self._active_upload_revision):
+                    return measured > 0
+                # Reopen the frames file for the pipelined submission pass;
+                # indices and progress restart from zero for the transfer.
+                try:
+                    self._upload_frame_iter = self._cache.iter_frames()
+                except (_PlaybackCacheError, OSError) as error:
+                    self._invalidate_corrupt_cache(error)
+                    return measured > 0
+                self._upload_end_sent = False
+                self._upload_submitted = 0
+                break
+            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
+                    TypeError, ValueError) as error:
+                self._close_upload_iter()
+                self._invalidate_corrupt_cache(error)
+                return measured > 0
+            try:
+                frame_bytes = cache_frame_wire_size(
+                    self._upload_submitted,
+                    frame["transforms"], frame["curves"])
+            except (TypeError, ValueError) as error:
+                self._close_upload_iter()
+                self._invalidate_corrupt_cache(error)
+                return measured > 0
+            # Overflow-safe accumulation against the frozen wire limit; an
+            # adopted cache larger than the limit fails fast, exactly like a
+            # captured one would at declaration time.
+            if (frame_bytes < 0
+                    or self._declared_payload_bytes
+                    > MAX_CACHE_PAYLOAD_BYTES - frame_bytes):
+                self._close_upload_iter()
+                self._declaring_upload = False
+                self._fail_upload(make_diagnostic(
+                    "CACHED_UPLOAD_FAILED",
+                    "The captured cache exceeds the Unreal transient cache"
+                    " limit.",
+                    details="declared {0} bytes plus frame {1} exceeds the"
+                            " limit of {2} bytes".format(
+                                self._declared_payload_bytes,
+                                self._upload_submitted,
+                                MAX_CACHE_PAYLOAD_BYTES)))
+                return measured > 0
+            self._declared_payload_bytes += frame_bytes
+            self._upload_submitted += 1
+            measured += 1
+        return measured > 0
+
+    def _send_clear_best_effort(self):
+        session = self._streaming_session
+        if session is None or not session.is_ready:
+            return
+        try:
+            session.submit_cached(make_cache_clear_message())
+        except (_CachedPlaybackError, _StreamingSessionError,
+                RuntimeError, TypeError, ValueError):
+            pass
+
     def _invalidate_incompatible_cache(self, error):
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
+        self._remove_playback_poller()
+        self._close_upload_iter()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
-        self._phase = "idle"
+        self._uploaded_revision = None
+        self._phase = "failed"
         diagnostic = make_diagnostic(
             "CACHED_PLAYBACK_INCOMPATIBLE", error.message, details=error.details)
-        self._emit(_CachedPlaybackSessionEvent("failed", diagnostic=diagnostic))
+        # Unreal may still own entered or partially received state; drop it in
+        # order before live poses resume.
+        self._send_clear_best_effort()
         self._resume_streaming()
+        self._publish(current=0, total=0, diagnostic=diagnostic)
 
     def _invalidate_corrupt_cache(self, error):
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
+        self._remove_playback_poller()
+        self._close_upload_iter()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
-        self._phase = "idle"
+        self._uploaded_revision = None
+        self._phase = "failed"
         diagnostic = make_diagnostic(
             "CACHED_PLAYBACK_NO_CACHE",
             "The cached frame file is incomplete or invalid.",
             details=str(error))
-        self._emit(_CachedPlaybackSessionEvent("failed", diagnostic=diagnostic))
+        # A mid-upload corruption leaves Unreal holding a partial buffer;
+        # clear that ownership in order before streaming resumes.
+        self._send_clear_best_effort()
         self._resume_streaming()
+        self._publish(current=0, total=0, diagnostic=diagnostic)
 
-    def _start_replay(self):
-        if self._cache is None or not self._cache.completed:
-            raise _CachedPlaybackSessionError(
-                "CACHED_PLAYBACK_NO_CACHE", "There is no completed cache to replay.")
+    def _handle_transport_failure(self, error):
+        if self._closed:
+            return
+        if not self._paused_streaming:
+            return
+        if self._phase == "capturing":
+            # A capture interrupted by transport loss is a capture failure:
+            # it owns the partial-cache cleanup and the clear-before-resume
+            # ordering.
+            self._capture_failure(_CachedPlaybackError(
+                "STREAM_INTERRUPTED",
+                "The streaming connection ended during capture."),
+                transport_lost=True)
+            return
+        self._remove_playback_poller()
+        self._close_upload_iter()
+        self._phase = "transport_failed"
+        diagnostic = error if isinstance(error, dict) else make_diagnostic(
+            "STREAM_INTERRUPTED", str(getattr(error, "message", error)),
+            details=str(getattr(error, "details", error)))
+        self._publish(diagnostic=diagnostic)
+        if self._streaming_session is not None:
+            try:
+                self._streaming_session.stop()
+            except (RuntimeError, TypeError):
+                pass
+
+    def replay(self):
+        """Upload the completed cache if needed, then ask Unreal to play it."""
         try:
             revision = self._ensure_ready()
-        except _CachedPlaybackSessionError as error:
+        except _CachedPlaybackError as error:
             if error.code == "CACHED_PLAYBACK_INCOMPATIBLE":
                 self._invalidate_incompatible_cache(error)
             raise
+        if self._cache is None or not self._cache.completed:
+            raise _CachedPlaybackError(
+                "CACHED_PLAYBACK_NO_CACHE", "There is no completed cache to replay.")
         if revision is not None and not self._cache.compatible_with(revision):
-            error = _CachedPlaybackSessionError(
+            error = _CachedPlaybackError(
                 "CACHED_PLAYBACK_INCOMPATIBLE",
                 "The completed cache does not match the current character snapshot.")
             self._invalidate_incompatible_cache(error)
             raise error
-        self._pause_streaming()
-        begin_replay = getattr(self._streaming_session, "begin_cached_replay", None)
-        if begin_replay is not None:
-            try:
-                begin_replay()
-            except (_StreamingSessionError, RuntimeError, TypeError, ValueError) as exc:
-                raise _CachedPlaybackSessionError(
-                    "CACHED_PLAYBACK_NOT_READY", str(exc), details=str(exc))
-        self._remove_replay_timer()
-        self._replay_index = 0
-        self._replay_interval = 1.0 / self._cache.scene_fps
-        try:
-            self._replay_iterator = self._cache.iter_frames()
-            first = next(self._replay_iterator)
-        except StopIteration:
-            self._clear_replay_iterator()
-            self._phase = "completed"
-            self._emit(_CachedPlaybackSessionEvent(
-                "replay_completed", metadata=self._cache.metadata))
-            return
-        except _PlaybackCacheError as error:
-            self._invalidate_corrupt_cache(error)
-            raise _CachedPlaybackSessionError(
-                "CACHED_PLAYBACK_NO_CACHE",
-                "The cached frame file is incomplete or invalid.",
-                details=str(error))
-        self._phase = "replaying"
-        try:
-            self._submit_cached(first)
-        except Exception as exc:
-            self._handle_transport_failure(exc)
-            return
-        self._replay_index = 1
-        self._replay_due = self._clock() + self._replay_interval
-        self._emit(_CachedPlaybackSessionEvent(
-            "replay_started", current_frame=1,
-            total_frames=self._cache.frame_count, metadata=self._cache.metadata))
-        if self._replay_index >= self._cache.frame_count:
-            self._finish_replay()
+        self.enter()
+        if self._can_reuse_upload():
+            self._request_play()
         else:
-            self._add_replay_timer()
-
-    def replay(self):
-        self._ensure_ready()
-        if self._cache is None or not self._cache.completed:
-            raise _CachedPlaybackSessionError(
-                "CACHED_PLAYBACK_NO_CACHE", "There is no completed cache to replay.")
-        self.enter_cached_mode()
-        self._start_replay()
-        return self._cache
-
-    def _finish_replay(self):
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
-        self._phase = "completed"
-        self._emit(_CachedPlaybackSessionEvent(
-            "replay_completed", current_frame=self._replay_index,
-            total_frames=self._cache.frame_count if self._cache else None,
-            metadata=self._cache.metadata if self._cache else None))
-
-    def _handle_transport_failure(self, error):
-        if self._closed or self._phase != "replaying":
-            return
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
-        self._phase = "transport_failed"
-        diagnostic = error if isinstance(error, dict) else make_diagnostic(
-            "STREAM_INTERRUPTED", str(error), details=str(error))
-        self._emit(_CachedPlaybackSessionEvent(
-            "transport_failed", diagnostic=diagnostic,
-            metadata=self._cache.metadata if self._cache else None))
-        stop = getattr(self._streaming_session, "stop", None)
-        if stop is not None:
-            try:
-                stop()
-            except (RuntimeError, TypeError):
-                pass
-
-    def on_transport_failure(self, diagnostic=None):
-        if self._closed:
-            return
-        diagnostic = diagnostic or make_diagnostic(
-            "STREAM_INTERRUPTED", "The streaming connection ended.")
-        if self.is_capturing:
-            message = diagnostic.get("message") or diagnostic.get("summary")
-            details = diagnostic.get("details") or message
-            self._capture_failure(_CachedPlaybackSessionError(
-                "STREAM_INTERRUPTED", message, details))
-            return
-        self._handle_transport_failure(diagnostic)
-
-    def tick(self, now=None):
-        if self._phase != "replaying" or self._replay_iterator is None:
-            return False
-        try:
-            self._ensure_ready()
-        except _CachedPlaybackSessionError as error:
-            if error.code == "CACHED_PLAYBACK_INCOMPATIBLE":
-                self._invalidate_incompatible_cache(error)
-            else:
-                self._handle_transport_failure(make_diagnostic(
-                    "STREAM_INTERRUPTED", error.message, details=error.details))
-            return False
-        if not self._streaming_is_ready():
-            self._handle_transport_failure(make_diagnostic(
-                "STREAM_INTERRUPTED", "The streaming connection ended."))
-            return False
-        now = self._clock() if now is None else float(now)
-        if self._replay_due is not None and now < self._replay_due:
-            return False
-        try:
-            frame = next(self._replay_iterator)
-            self._submit_cached(frame)
-        except StopIteration:
-            self._finish_replay()
-            return False
-        except _PlaybackCacheError as error:
-            self._invalidate_corrupt_cache(error)
-            return False
-        except Exception as exc:
-            self._handle_transport_failure(exc)
-            return False
-        self._replay_index += 1
-        if self._replay_index >= self._cache.frame_count:
-            self._finish_replay()
-        else:
-            self._replay_due = now + self._replay_interval
-        self._emit(_CachedPlaybackSessionEvent(
-            "replay_progress", current_frame=self._replay_index,
-            total_frames=self._cache.frame_count, metadata=self._cache.metadata))
-        return True
+            self._begin_upload()
 
     def stop_replay(self):
         if self._phase != "replaying":
             return
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
-        self._phase = "stopped"
-        discard = getattr(self._streaming_session, "end_cached_replay", None)
-        if discard is not None:
-            discard()
-        self._emit(_CachedPlaybackSessionEvent(
-            "replay_stopped", current_frame=self._replay_index,
-            total_frames=self._cache.frame_count if self._cache else None,
-            metadata=self._cache.metadata if self._cache else None))
-
-    def close(self, delete_cache=True):
-        if self._closed:
+        # Stop reports success only after Unreal's identity-matched
+        # cache_stopped acknowledgement; the poller keeps draining outcomes.
+        self._phase = "stopping"
+        try:
+            self._submit_cached(make_cache_stop_message())
+        except (_CachedPlaybackError, _StreamingSessionError,
+                RuntimeError, TypeError, ValueError):
+            self._handle_transport_failure(make_diagnostic(
+                "STREAM_INTERRUPTED",
+                "The streaming connection ended while stopping playback."))
             return
-        self._closed = True
-        self._capture_generation += 1
-        self._capture_cancel_requested = True
+        self._applied_frames = None
+        self._publish()
+
+    def detach(self, outcome):
+        if self._closed:
+            return self._issued_retention
         self._remove_capture_timer()
-        self._remove_replay_timer()
-        self._clear_replay_iterator()
+        self._remove_playback_poller()
+        self._close_upload_iter()
         self._restore_capture_frame()
-        if delete_cache:
-            if self._capture_cache is not None:
-                self._capture_cache.delete()
-            if self._cache is not None:
-                self._cache.delete()
+        if self._capture_cache is not None:
+            self._capture_cache.delete()
             self._capture_cache = None
-            self._cache = None
-        self._resume_streaming()
-        self._phase = "closed"
+        kind = getattr(outcome, "kind", None)
+        recapture_scene = bool(getattr(outcome, "recapture_scene", False))
+        diagnostic = getattr(outcome, "diagnostic", None)
+        retain = ((kind == "failed" and not recapture_scene)
+                  or self._phase == "transport_failed")
+        if retain and self._cache is not None and self._cache.completed:
+            try:
+                retain = self._cache.compatible_with(self._current_revision())
+            except (_PlaybackCacheError, AttributeError, TypeError, ValueError):
+                retain = False
+        else:
+            retain = False
+        if retain:
+            self._issued_retention = _CachedPlaybackRetention(self._cache)
+        elif self._cache is not None:
+            self._cache.delete()
+        self._cache = None
+        self._uploaded_revision = None
+        self._streaming_session = None
+        self._paused_streaming = False
+        self._closed = True
+        self._phase = "detached"
+        self._publish(diagnostic=diagnostic)
+        return self._issued_retention
+
+    def discard(self):
+        if not self._closed:
+            self._remove_capture_timer()
+            self._remove_playback_poller()
+            self._close_upload_iter()
+            self._restore_capture_frame()
+            self._send_clear_best_effort()
+            self._resume_streaming()
+        for cache in (self._capture_cache, self._cache):
+            if cache is not None:
+                cache.delete()
+        self._capture_cache = None
+        self._cache = None
+        if self._issued_retention is not None:
+            self._issued_retention._discard()
+        self._issued_retention = None
+        self._uploaded_revision = None
+        self._streaming_session = None
+        self._paused_streaming = False
+        self._closed = True
+        self._phase = "detached"
+        self._publish(current=0, total=0)
 
 
 class _LatestFrame(object):
@@ -2302,9 +3003,13 @@ class _SenderWorker(threading.Thread):
     def __init__(self, init_message):
         threading.Thread.__init__(self, name="MtoULiveLinkSender")
         self.daemon = True
+        self._init_message = init_message
         self._init_packet = encode_message(init_message)
         self._latest = _LatestFrame()
         self._ordered = queue.Queue()
+        # Controls queued in ordered mode survive the switch back to Latest
+        # mode here, so a mode transition can never strand queued work.
+        self._carryover = queue.Queue()
         self._ordered_mode = False
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -2316,6 +3021,7 @@ class _SenderWorker(threading.Thread):
                          "bone_name_remaps": [],
                          "has_warning": False}
         self._diagnostic = None
+        self._reply_listener = None
 
     def submit(self, frame_message):
         with self._lock:
@@ -2345,6 +3051,10 @@ class _SenderWorker(threading.Thread):
     def submit_ordered(self, frame_message):
         self._ordered.put(encode_message(frame_message))
 
+    def ordered_pending(self):
+        """Approximate count of queued packets not yet sent to Unreal."""
+        return self._ordered.unfinished_tasks
+
     def end_ordered(self, discard_pending=True):
         with self._send_lock:
             with self._lock:
@@ -2356,11 +3066,26 @@ class _SenderWorker(threading.Thread):
                         self._ordered.task_done()
                     except queue.Empty:
                         break
+            else:
+                # Lossless transition: queued ordered packets keep their place
+                # ahead of any subsequent Latest-mode live frames.
+                while True:
+                    try:
+                        packet = self._ordered.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._carryover.put(packet)
+                    self._ordered.task_done()
 
     def status(self):
         with self._lock:
             return (self._state, self._detail, dict(self._warning),
                     dict(self._diagnostic) if self._diagnostic else None)
+
+    def set_reply_listener(self, listener):
+        """Route post-ready Unreal replies to listener(reply) on the sender thread."""
+        with self._lock:
+            self._reply_listener = listener
 
     def _set_status(self, state, detail, warning=None, diagnostic=None):
         with self._lock:
@@ -2464,41 +3189,83 @@ class _SenderWorker(threading.Thread):
                     "expected ready, received {0}".format(reply.get("type")))
                 self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
                 return
+            expected_revision = _exact_int(self._init_message.get("revision"))
+            if (expected_revision is None
+                    or _exact_int(reply.get("revision")) != expected_revision):
+                diagnostic = make_diagnostic(
+                    "INVALID_MESSAGE",
+                    "The ready reply does not echo the negotiated revision.",
+                    details="init revision {0!r}, ready revision {1!r}".format(
+                        self._init_message.get("revision"),
+                        reply.get("revision")))
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return
             connected = True
-            warning = blendshape_warning_from_reply(reply)
+            warning = blendshape_warning_from_reply(
+                filter_bone_driven_differences(self._init_message, reply))
             self._set_status("ready", "Connected", warning=warning)
             sock.settimeout(0.25)
             while not self._stop_event.is_set():
                 with self._lock:
                     ordered_mode = self._ordered_mode
-                    if ordered_mode:
-                        try:
-                            packet = self._ordered.get_nowait()
-                        except queue.Empty:
-                            packet = None
-                    else:
-                        packet = self._latest.take()
+                    packet = None
+                    try:
+                        packet = self._carryover.get_nowait()
+                        from_carryover = True
+                    except queue.Empty:
+                        from_carryover = False
+                    if packet is None:
+                        if ordered_mode:
+                            try:
+                                packet = self._ordered.get_nowait()
+                            except queue.Empty:
+                                packet = None
+                        else:
+                            packet = self._latest.take()
                 if packet is not None:
                     with self._send_lock:
                         sock.sendall(packet)
-                    if ordered_mode:
+                    if from_carryover:
+                        self._carryover.task_done()
+                    elif ordered_mode:
                         self._ordered.task_done()
                 readable, _, _ = select.select([sock], [], [], 0.01)
                 if readable:
-                    reply = validate_reply(recv_message(sock))
-                    if reply.get("type") == "error":
+                    try:
+                        reply = validate_reply(recv_message(sock))
+                    except (ValueError, UnicodeError) as exc:
                         diagnostic = make_diagnostic(
-                            reply.get("code") or "STREAM_INTERRUPTED",
-                            reply.get("message") or "Unreal closed the connection",
-                            details=reply.get("details") or reply.get("message") or "")
+                            "INVALID_MESSAGE", str(exc), details=str(exc))
                         self._set_status(
                             "error", diagnostic["summary"], diagnostic=diagnostic)
                         return
-                    diagnostic = make_diagnostic(
-                        "INVALID_MESSAGE",
-                        "unexpected runtime reply: {0}".format(reply.get("type")))
-                    self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
-                    return
+                    with self._lock:
+                        listener = self._reply_listener
+                    if listener is None:
+                        if reply.get("type") == "error":
+                            diagnostic = make_diagnostic(
+                                reply.get("code") or "STREAM_INTERRUPTED",
+                                reply.get("message") or "Unreal closed the connection",
+                                details=reply.get("details")
+                                or reply.get("message") or "")
+                            self._set_status(
+                                "error", diagnostic["summary"], diagnostic=diagnostic)
+                            return
+                        diagnostic = make_diagnostic(
+                            "INVALID_MESSAGE",
+                            "unexpected runtime reply: {0}".format(reply.get("type")))
+                        self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                        return
+                    try:
+                        listener(reply)
+                    except Exception as exc:
+                        if cmds is not None:
+                            try:
+                                cmds.warning(
+                                    "MtoU_LiveLink cached reply listener failed: {0}".format(
+                                        exc))
+                            except Exception:
+                                pass
         except Exception as exc:
             if not self._stop_event.is_set():
                 if isinstance(exc, (ValueError, UnicodeError, json.JSONDecodeError)):
@@ -2580,13 +3347,21 @@ class _StreamingSession(object):
     """Owns one Maya-to-Unreal streaming connection lifecycle."""
 
     def __init__(self, scene, fps, on_event, playback_cap=DEFAULT_PLAYBACK_CAP,
-                 playback_state=None):
+                 playback_state=None, workflow=WORKFLOW_ANIMATION,
+                 blendshapes_enabled=True):
+        if workflow not in WORKFLOWS:
+            raise _StreamingSessionError(
+                "INVALID_MESSAGE",
+                "workflow must be 'animation' or 'model'.",
+                "requested workflow: {0}".format(workflow))
         self._scene = scene
         self._scene_fps = fps
         self._playback_cap = normalize_playback_cap(playback_cap)
         self._playback_state = playback_state or _maya_is_playing
         self._is_playing = self._read_playback_state()
         self._on_event = on_event
+        self._workflow = workflow
+        self._blendshapes_enabled = bool(blendshapes_enabled)
         self._worker = None
         self._worker_started = False
         self._callback_ids = []
@@ -2607,6 +3382,14 @@ class _StreamingSession(object):
         return self._revision
 
     @property
+    def workflow(self):
+        return self._workflow
+
+    @property
+    def blendshapes_enabled(self):
+        return self._blendshapes_enabled
+
+    @property
     def is_ready(self):
         if self._outcome is not None or self._worker is None:
             return False
@@ -2617,7 +3400,8 @@ class _StreamingSession(object):
 
     @classmethod
     def start(cls, scene, fps, on_event=None, playback_cap=DEFAULT_PLAYBACK_CAP,
-              playback_state=None):
+              playback_state=None, workflow=WORKFLOW_ANIMATION,
+              blendshapes_enabled=True):
         try:
             fps = validate_frame_rate(fps)
             snapshot = scene.snapshot()
@@ -2627,7 +3411,8 @@ class _StreamingSession(object):
         except (RuntimeError, ValueError) as exc:
             raise _StreamingSessionError(
                 "INVALID_FRAME_RATE", str(exc), details=str(exc))
-        session = cls(scene, fps, on_event, playback_cap, playback_state)
+        session = cls(scene, fps, on_event, playback_cap, playback_state,
+                      workflow, blendshapes_enabled)
         try:
             session._start(snapshot)
         except Exception as exc:
@@ -2648,7 +3433,9 @@ class _StreamingSession(object):
             for index, (name, parent) in enumerate(snapshot.bones)
         ]
         init_message = make_init_message(
-            bones, list(snapshot.curve_names))
+            bones, list(snapshot.curve_names), snapshot.revision,
+            workflow=self._workflow,
+            blendshapes_enabled=self._blendshapes_enabled)
         self._worker = _SenderWorker(init_message)
         self._revision = snapshot.revision
         self._worker.start()
@@ -2703,11 +3490,16 @@ class _StreamingSession(object):
         self._last_sample_time = None
         return True
 
-    def pause_for_cached(self):
+    def pause_for_cached(self, reply_listener=None):
+        """Suspend live sampling, switch to ordered delivery, and route
+        Unreal's post-ready replies to ``reply_listener`` atomically, so no
+        submission can precede listener installation."""
         if self._outcome is not None or self._worker is None or not self.is_ready:
             raise _StreamingSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "Cached Playback requires a ready streaming session.")
+        if reply_listener is not None:
+            self._worker.set_reply_listener(reply_listener)
         if self._paused_for_cached:
             return
         self._paused_for_cached = True
@@ -2715,40 +3507,39 @@ class _StreamingSession(object):
         timer_id, self._timer_id = self._timer_id, None
         if timer_id is not None:
             self._remove_callback(timer_id)
-        begin_ordered = getattr(self._worker, "begin_ordered", None)
-        if begin_ordered is not None:
-            begin_ordered()
+        self._worker.begin_ordered()
         self._last_sample_time = None
 
-    def begin_cached_replay(self):
-        if self._outcome is not None or self._worker is None or not self.is_ready:
-            raise _StreamingSessionError(
-                "CACHED_PLAYBACK_NOT_READY",
-                "Cached Playback requires a ready streaming session.")
-        if not self._paused_for_cached:
-            self.pause_for_cached()
-            return
-        begin_ordered = getattr(self._worker, "begin_ordered", None)
-        if begin_ordered is not None:
-            begin_ordered()
+    def set_cached_reply_listener(self, listener):
+        """Route Unreal's post-ready replies to the cached playback session."""
+        if self._worker is not None:
+            self._worker.set_reply_listener(listener)
+
+    def cached_delivery_drained(self):
+        """True once every ordered cached message has reached the socket.
+
+        Meaningful between pause_for_cached() and resume_from_cached().
+        An empty backlog proves wire delivery, never Unreal-side parsing;
+        only an identity-matched cache_ready outcome confirms acceptance.
+        Terminal or unstarted sessions are vacuously drained so a drain
+        gate can never wedge.
+        """
+        worker = self._worker
+        if worker is None:
+            return True
+        return worker.ordered_pending() == 0
 
     def submit_cached(self, frame_message):
         if not self.is_ready:
             raise _StreamingSessionError(
                 "CACHED_PLAYBACK_NOT_READY",
-                "The streaming session is not ready for cached frames.")
-        submit_ordered = getattr(self._worker, "submit_ordered", None)
-        if submit_ordered is not None:
-            submit_ordered(frame_message)
-            return
-        self._worker.submit(frame_message)
+                "The streaming session is not ready for cached messages.")
+        self._worker.submit_ordered(frame_message)
 
-    def end_cached_replay(self):
+    def end_cached_replay(self, discard_pending=False):
         if self._worker is None:
             return
-        end_ordered = getattr(self._worker, "end_ordered", None)
-        if end_ordered is not None:
-            end_ordered(discard_pending=True)
+        self._worker.end_ordered(discard_pending=discard_pending)
 
     def resume_from_cached(self):
         if not self._paused_for_cached:
@@ -2922,7 +3713,7 @@ class _StreamingSession(object):
         if self._cleaned:
             return
         self._timer_generation += 1
-        self.end_cached_replay()
+        self.end_cached_replay(discard_pending=True)
         self._paused_for_cached = False
         callback_ids, self._callback_ids = self._callback_ids, []
         timer_id, self._timer_id = self._timer_id, None
@@ -2994,7 +3785,6 @@ class _Controller(object):
         self._playback_cap = DEFAULT_PLAYBACK_CAP
         self._playback_cap_menu = None
         self._mode = REALTIME_MODE
-        self._mode_collection = None
         self._realtime_mode_button = None
         self._cached_mode_button = None
         self._capture_button = None
@@ -3003,9 +3793,14 @@ class _Controller(object):
         self._cancel_capture_button = None
         self._cache_text = None
         self._cached_playback = None
-        self._cached_cache = None
+        self._cached_view = None
+        self._cached_retention = None
         self._maya_exit_callback = None
-        self._mode_change_guard = False
+        self._workflow = WORKFLOW_ANIMATION
+        self._blendshapes_enabled = True
+        self._animation_workflow_button = None
+        self._model_workflow_button = None
+        self._bs_checkbox = None
         self._bone_text = None
         self._curve_text = None
         self._status_text = None
@@ -3015,27 +3810,53 @@ class _Controller(object):
     def build_ui(self):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
                     sizeable=False, width=430, resizeToFitChildren=True)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=7, columnAttach=("both", 10))
-        cmds.text(label="MtoU Live Link", align="center", font="boldLabelFont", height=26)
-        self._light = cmds.text(label="●  未连接", align="left", backgroundColor=(0.55, 0.08, 0.08),
-                                height=28)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnAttach=("both", 10))
+        cmds.text(label="", height=6)
+        self._light = cmds.text(label="●  未连接", align="left",
+                                backgroundColor=(0.55, 0.08, 0.08), height=28)
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
+                       columnAttach2=("both", "both"))
+        self._animation_workflow_button = cmds.button(
+            label="动画", height=30,
+            backgroundColor=TOGGLE_ON_BACKGROUND,
+            command=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
+        self._model_workflow_button = cmds.button(
+            label="模型", height=30,
+            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            command=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
+        cmds.setParent("..")
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(250, 160),
+                       adjustableColumn=1, columnAttach2=("both", "both"))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
         self._root_text = cmds.text(label="角色根骨骼：—", align="left")
         self._outfit_text = cmds.text(label="当前衣服：—", align="left")
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
+        cmds.setParent("..")
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
+        self._bone_text = cmds.text(label="骨骼数：0", align="left")
+        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        cmds.setParent("..")
+        cmds.setParent("..")
         self._playback_cap = load_playback_cap()
         self._playback_cap_menu = cmds.optionMenu(
             label="播放传输上限", changeCommand=self._on_playback_cap_changed)
         for choice in PLAYBACK_CAP_CHOICES:
             cmds.menuItem(label=choice)
         cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
-        self._mode_collection = cmds.radioCollection()
-        self._realtime_mode_button = cmds.radioButton(
-            label="实时预览", select=True,
-            changeCommand=lambda *_: self._on_mode_changed(REALTIME_MODE))
-        self._cached_mode_button = cmds.radioButton(
-            label="缓存播放", select=False,
-            changeCommand=lambda *_: self._on_mode_changed(CACHED_MODE))
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
+                       columnAttach2=("both", "both"))
+        self._realtime_mode_button = cmds.button(
+            label="实时预览", height=28,
+            backgroundColor=TOGGLE_ON_BACKGROUND,
+            command=lambda *_: self._on_mode_changed(REALTIME_MODE))
+        self._cached_mode_button = cmds.button(
+            label="缓存播放", height=28,
+            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            command=lambda *_: self._on_mode_changed(CACHED_MODE))
+        cmds.setParent("..")
         self._cache_text = cmds.text(label="缓存：无", align="left", wordWrap=True)
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(103, 103, 102, 102),
+                       columnAttach4=("both", "both", "both", "both"))
         self._capture_button = cmds.button(
             label="捕获并回放", enable=False,
             command=lambda *_: self._capture_cached_playback())
@@ -3048,8 +3869,7 @@ class _Controller(object):
         self._cancel_capture_button = cmds.button(
             label="取消捕获", enable=False,
             command=lambda *_: self._cancel_cached_capture())
-        self._bone_text = cmds.text(label="骨骼数：0", align="left")
-        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        cmds.setParent("..")
         cmds.button(label="设置角色（请先选择根骨骼）", command=lambda *_: self.set_role())
         cmds.button(
             label="手动选择 Display 控制器",
@@ -3063,11 +3883,15 @@ class _Controller(object):
         cmds.setParent("..")
         self._warning_checkbox = cmds.checkBox(
             label="连接成功后弹出差异警告", value=True)
+        self._bs_checkbox = cmds.checkBox(
+            label="传递 BS", value=True,
+            changeCommand=lambda *_: self._on_blendshapes_toggled())
         cmds.button(label="查看诊断详情", command=lambda *_: self.show_diagnostics())
         self._status_text = cmds.text(label="状态：未设置角色", align="left", wordWrap=True,
                                       height=38)
         self._refresh_fps()
         self._update_mode_controls()
+        self._update_workflow_controls()
         self._script_jobs.append(cmds.scriptJob(
             event=["timeUnitChanged", self._on_time_unit_changed], parent=WINDOW_NAME))
         self._script_jobs.append(cmds.scriptJob(
@@ -3099,6 +3923,13 @@ class _Controller(object):
             except (AttributeError, RuntimeError, TypeError):
                 pass
 
+    def _set_visible(self, control, visible):
+        if self._control_exists(control):
+            try:
+                cmds.control(control, edit=True, visible=bool(visible))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
     def _session_ready(self):
         session = self._session
         if session is None:
@@ -3111,82 +3942,99 @@ class _Controller(object):
                 return False
         if ready is not None:
             return bool(ready)
-        return getattr(session, "_phase", None) == "ready"
+        return False
+
+    def _apply_toggle_background(self, control, selected):
+        if not self._control_exists(control):
+            return
+        try:
+            cmds.button(control, edit=True, backgroundColor=(
+                TOGGLE_ON_BACKGROUND if selected else TOGGLE_OFF_BACKGROUND))
+        except (AttributeError, RuntimeError, TypeError):
+            pass
 
     def _update_mode_selection(self):
-        if self._mode_change_guard:
-            return
-        self._mode_change_guard = True
-        try:
-            if self._control_exists(self._realtime_mode_button):
-                cmds.radioButton(
-                    self._realtime_mode_button, edit=True,
-                    select=self._mode == REALTIME_MODE)
-            if self._control_exists(self._cached_mode_button):
-                cmds.radioButton(
-                    self._cached_mode_button, edit=True,
-                    select=self._mode == CACHED_MODE)
-        finally:
-            self._mode_change_guard = False
+        self._apply_toggle_background(
+            self._realtime_mode_button, self._mode == REALTIME_MODE)
+        self._apply_toggle_background(
+            self._cached_mode_button, self._mode == CACHED_MODE)
 
     def _update_mode_controls(self):
-        ready = self._session_ready()
         realtime = self._mode == REALTIME_MODE
-        capturing = bool(
-            self._cached_playback
-            and getattr(self._cached_playback, "is_capturing", False))
-        replaying = bool(
-            self._cached_playback
-            and getattr(self._cached_playback, "is_replaying", False))
-        self._set_enabled(self._playback_cap_menu, realtime and not capturing)
-        self._set_enabled(self._capture_button, not realtime and ready and not capturing)
-        self._set_enabled(
-            self._replay_button,
-            not realtime and ready and not capturing and not replaying
-            and bool(self._cached_cache),
-        )
-        self._set_enabled(self._stop_replay_button, not realtime and replaying)
-        self._set_enabled(self._cancel_capture_button, capturing)
-        self._set_enabled(self._realtime_mode_button, not capturing)
-        self._set_enabled(self._cached_mode_button, not capturing)
+        view = self._cached_view
+        can_capture = bool(view and view.can_capture)
+        can_replay = bool(view and view.can_replay)
+        can_stop = bool(view and view.can_stop)
+        can_cancel = bool(view and view.can_cancel)
+        can_leave = bool(view and view.can_leave)
+        self._set_enabled(self._playback_cap_menu, realtime and not can_cancel)
+        self._set_enabled(self._capture_button, not realtime and can_capture)
+        self._set_enabled(self._replay_button, not realtime and can_replay)
+        self._set_enabled(self._stop_replay_button, not realtime and can_stop)
+        self._set_enabled(self._cancel_capture_button, not realtime and can_cancel)
+        self._set_enabled(self._realtime_mode_button, realtime or can_leave)
+        self._set_enabled(self._cached_mode_button, not can_cancel)
         self._update_mode_selection()
 
-    def _update_cache_text(self, cache=None):
-        cache = cache or self._cached_cache
-        if cache is None:
+    def _update_workflow_controls(self):
+        animation = self._workflow == WORKFLOW_ANIMATION
+        self._apply_toggle_background(self._animation_workflow_button, animation)
+        self._apply_toggle_background(self._model_workflow_button, not animation)
+        for control in (self._realtime_mode_button, self._cached_mode_button,
+                        self._cache_text, self._capture_button,
+                        self._replay_button, self._stop_replay_button,
+                        self._cancel_capture_button):
+            self._set_visible(control, animation)
+        self._set_visible(self._bs_checkbox, not animation)
+
+    def _on_workflow_changed(self, workflow):
+        if workflow == self._workflow or workflow not in WORKFLOWS:
+            return
+        self._workflow = workflow
+        # Switching workflows disconnects and clears Animation cached
+        # playback while retaining the captured root, Display control, and
+        # current outfit. The Maya scene is never edited here.
+        self.disconnect(status="已切换到{0}工作流，请重新连接".format(
+            "模型" if workflow == WORKFLOW_MODEL else "动画"))
+        self._mode = REALTIME_MODE
+        self._update_mode_controls()
+        self._update_workflow_controls()
+
+    def _on_blendshapes_toggled(self):
+        value = True
+        if self._bs_checkbox and cmds.control(self._bs_checkbox, exists=True):
+            try:
+                value = bool(cmds.checkBox(self._bs_checkbox, query=True, value=True))
+            except (AttributeError, RuntimeError, TypeError):
+                value = True
+        if value == self._blendshapes_enabled:
+            return
+        self._blendshapes_enabled = value
+        if self._session is not None:
+            self.disconnect(status="传递 BS 已切换，请重新连接")
+
+    def _update_cache_text(self, summary=None):
+        if summary is None:
             self._set_text(self._cache_text, "缓存：无")
             return
-        start, end = cache.capture_range
+        start, end = summary.capture_range
         capture_time = time.strftime(
-            "%Y-%m-%d %H:%M:%S", time.localtime(cache.capture_time))
+            "%Y-%m-%d %H:%M:%S", time.localtime(summary.capture_time))
         self._set_text(
             self._cache_text,
             "缓存：{0}-{1}，{2} 帧，{3:g} fps，捕获于 {4}".format(
-                start, end, cache.frame_count, cache.scene_fps, capture_time))
+                start, end, summary.frame_count, summary.scene_fps, capture_time))
 
     def _ensure_cached_playback(self):
-        if self._session is None or self._scene is None:
-            raise _CachedPlaybackSessionError(
+        if self._workflow != WORKFLOW_ANIMATION or self._session is None \
+                or self._scene is None or self._cached_playback is None:
+            raise _CachedPlaybackError(
                 "CACHED_PLAYBACK_NOT_READY",
                 "请先完成角色设置并连接 Unreal。")
-        if (self._cached_playback is None
-                or self._cached_playback._streaming_session is not self._session):
-            session_holder = {}
-
-            def on_event(event):
-                self._on_cached_playback_event(
-                    session_holder.get("session"), event)
-
-            session = _CachedPlaybackSession(
-                self._scene, self._session,
-                on_event=on_event,
-                cache=self._cached_cache)
-            session_holder["session"] = session
-            self._cached_playback = session
         return self._cached_playback
 
     def _on_mode_changed(self, mode):
-        if self._mode_change_guard:
+        if mode == CACHED_MODE and self._workflow != WORKFLOW_ANIMATION:
             return
         if mode == CACHED_MODE:
             if not self._session_ready():
@@ -3198,12 +4046,12 @@ class _Controller(object):
                     "请先完成角色设置并连接 Unreal。"))
                 return
             try:
-                self._ensure_cached_playback().enter_cached_mode()
+                self._ensure_cached_playback().enter()
                 self._mode = CACHED_MODE
                 self._set_connected(
                     True,
                     "缓存播放模式：实时采样已暂停，Unreal 保留最近姿势；回放时显示缓存")
-            except _CachedPlaybackSessionError as error:
+            except _CachedPlaybackError as error:
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
                 self._show_error(make_diagnostic(
@@ -3212,7 +4060,7 @@ class _Controller(object):
         else:
             self._mode = REALTIME_MODE
             if self._cached_playback is not None:
-                self._cached_playback.leave_cached_mode()
+                self._cached_playback.leave()
             self._set_connected(
                 self._session_ready(),
                 "已连接" if self._session_ready() else "未连接")
@@ -3228,11 +4076,6 @@ class _Controller(object):
             dismissString="取消")
         return result == "继续"
 
-    def _on_capture_progress(self, current_frame, total_frames):
-        self._set_text(
-            self._status_text,
-            "状态：正在捕获缓存 {0}/{1}".format(current_frame, total_frames))
-
     def _capture_cached_playback(self):
         if self._mode != CACHED_MODE:
             return
@@ -3240,13 +4083,8 @@ class _Controller(object):
             cached = self._ensure_cached_playback()
             fps = validate_frame_rate(self._refresh_fps())
             self._set_text(self._status_text, "状态：准备捕获缓存…")
-            cached.begin_capture(
-                scene_fps=fps,
-                progress=self._on_capture_progress,
-                confirm_large_cache=self._confirm_large_cache)
-            self._cached_cache = cached.cache
-            self._update_cache_text()
-        except _CachedPlaybackSessionError as error:
+            cached.capture(fps, self._confirm_large_cache)
+        except _CachedPlaybackError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
                 error.message, details=error.details)
@@ -3266,7 +4104,7 @@ class _Controller(object):
         try:
             cached = self._ensure_cached_playback()
             cached.replay()
-        except _CachedPlaybackSessionError as error:
+        except _CachedPlaybackError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
                 error.message, details=error.details)
@@ -3285,47 +4123,62 @@ class _Controller(object):
         if self._cached_playback is not None:
             self._cached_playback.cancel_capture()
 
-    def _on_cached_playback_event(self, session, event=None):
-        if event is None:
-            event = session
-            session = self._cached_playback
-        if session is not None and session is not self._cached_playback:
-            return
-        if self._cached_playback is not None:
-            self._cached_cache = self._cached_playback.cache
-            if self._cached_cache is None:
-                self._update_cache_text()
-            elif self._cached_cache.completed:
-                self._update_cache_text(self._cached_cache)
-        if event.kind == "capture_started":
+    def _on_cached_playback_view(self, view):
+        self._cached_view = view
+        self._update_cache_text(view.cache_summary)
+        if (view.state == _CachedPlayback.CAPTURING and view.total
+                and view.current == view.total):
+            self._set_text(self._status_text, "状态：缓存完成，正在上传…")
+        elif view.state == _CachedPlayback.CAPTURING and view.current == 0:
             self._set_text(self._status_text, "状态：正在捕获缓存…")
-        elif event.kind == "capture_progress":
-            self._on_capture_progress(event.current_frame, event.total_frames)
-        elif event.kind == "capture_completed":
-            self._set_text(self._status_text, "状态：缓存完成，正在回放…")
-        elif event.kind == "replay_started":
+        elif view.state == _CachedPlayback.CAPTURING:
+            self._set_text(
+                self._status_text,
+                "状态：正在捕获缓存 {0}/{1}".format(view.current, view.total))
+        elif (view.state == _CachedPlayback.UPLOADING and view.total
+              and view.current == view.total):
+            self._set_connected(True, "缓存已上传，Unreal 正在本地回放")
+        elif view.state == _CachedPlayback.UPLOADING and view.current == 0:
+            self._set_text(self._status_text, "状态：正在上传缓存…")
+        elif view.state == _CachedPlayback.UPLOADING:
+            self._set_text(
+                self._status_text,
+                "状态：正在上传缓存 {0}/{1}".format(
+                    view.current, view.total))
+        elif view.state == _CachedPlayback.REPLAYING and view.current == 0:
             self._set_connected(
-                True, "缓存播放（仅显示已捕获缓存）：{0}/{1}".format(
-                    event.current_frame, event.total_frames))
-        elif event.kind == "replay_progress":
+                True, "缓存回放中：Unreal 按捕获帧率本地播放 {0}/{1}".format(
+                    view.current, view.total))
+        elif view.state == _CachedPlayback.REPLAYING:
             self._set_text(
                 self._status_text,
                 "状态：缓存播放（仅显示已捕获缓存） {0}/{1}".format(
-                    event.current_frame, event.total_frames))
-        elif event.kind == "replay_completed":
+                    view.current, view.total))
+        elif view.state == _CachedPlayback.COMPLETED:
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
-        elif event.kind == "replay_stopped":
-            self._set_connected(True, "缓存播放已停止，已保留缓存")
-        elif event.kind == "capture_cancelled":
+        elif view.state == _CachedPlayback.STOPPED:
+            self._set_connected(True, "缓存播放已停止，已保留缓存，可再次回放")
+        elif view.state == _CachedPlayback.FAILED:
+            # A FAILED cached view always keeps the negotiated connection: the
+            # capture/upload paths that resume Real-time Preview now render as
+            # REALTIME. This state still permits leaving or retrying.
+            diagnostic = view.diagnostic or make_diagnostic("INTERNAL_ERROR")
+            self._last_diagnostic = diagnostic
+            self._set_connected(True, diagnostic["summary"])
+        elif view.state == _CachedPlayback.REALTIME and view.diagnostic:
+            # A recoverable capture/upload/invalidation failure already resumed
+            # Real-time Preview and cleared Unreal ownership; complete the same
+            # transition in the UI and expose the reason, leaving the cached
+            # workflow available.
+            diagnostic = view.diagnostic
+            self._last_diagnostic = diagnostic
             self._mode = REALTIME_MODE
             self._update_mode_selection()
-            self._set_connected(True, "缓存捕获已取消，已恢复实时预览")
-        elif event.kind == "transport_failed":
-            diagnostic = event.diagnostic or make_diagnostic("STREAM_INTERRUPTED")
-            self._last_diagnostic = diagnostic
-            self._set_connected(False, diagnostic["summary"])
-        elif event.kind == "failed":
-            diagnostic = event.diagnostic or make_diagnostic("INTERNAL_ERROR")
+            self._set_connected(
+                self._session_ready(),
+                "{0}（已恢复实时预览）".format(diagnostic["summary"]))
+        elif view.state == _CachedPlayback.DETACHED and view.diagnostic:
+            diagnostic = view.diagnostic
             self._last_diagnostic = diagnostic
             self._set_connected(False, diagnostic["summary"])
         self._update_mode_controls()
@@ -3397,13 +4250,16 @@ class _Controller(object):
                 enable=bool(paths))
 
     def select_duplicate_bones(self):
+        # A diagnostic action renders the real connection state; it never
+        # falsifies the indicator independently of the Streaming session.
+        connected = self._session_ready()
         existing = [path for path in self._duplicate_paths() if cmds.objExists(path)]
         if not existing:
             self._refresh_duplicate_button()
-            self._set_connected(False, "重名骨骼已不存在，请重新设置角色")
+            self._set_connected(connected, "重名骨骼已不存在，请重新设置角色")
             return
         cmds.select(existing, replace=True)
-        self._set_connected(False, "已选中 {0} 个重名骨骼".format(len(existing)))
+        self._set_connected(connected, "已选中 {0} 个重名骨骼".format(len(existing)))
 
     def _scene_diagnostic(self, error, default_code="ROLE_SETUP_FAILED"):
         code = error.code if error.code in DIAGNOSTICS else default_code
@@ -3475,10 +4331,21 @@ class _Controller(object):
                 "INTERNAL_ERROR", "请先选择根骨骼并设置角色。"))
             return
         try:
+            # Validate the requested selection first: an invalid selection
+            # must never tear down the live session or a usable scene.
+            display = self._selected_display()
+        except (RuntimeError, ValueError) as exc:
+            code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
+            self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
+            return
+        try:
+            # One clean termination before the replacement: the old Streaming
+            # session ends while the old Character scene is still usable, so
+            # a late old-session event can never close the new capture.
+            self.disconnect(status="正在更换 Display 控制器，请重新连接")
             self._clear_scene(keep_pending=True)
             self._pending_root = root
-            snapshot = self._capture_scene(
-                root, display=self._selected_display()).snapshot()
+            snapshot = self._capture_scene(root, display=display).snapshot()
             status = "Display 控制器已设置，可以连接"
             self._set_connected(False, status + _bind_conflict_status(snapshot))
         except _CharacterSceneError as error:
@@ -3568,7 +4435,9 @@ class _Controller(object):
 
         try:
             session = _StreamingSession.start(
-                self._scene, fps, on_event, playback_cap=self._playback_cap)
+                self._scene, fps, on_event, playback_cap=self._playback_cap,
+                workflow=self._workflow,
+                blendshapes_enabled=self._blendshapes_enabled)
         except _StreamingSessionError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
@@ -3581,13 +4450,29 @@ class _Controller(object):
         holder["session"] = session
         self._session = session
         self._mode = REALTIME_MODE
-        self._cached_playback = None
         self._update_mode_controls()
 
     def _on_streaming_session_event(self, session, event):
         if session is None or self._session is not session:
             return
         if event.kind == "ready":
+            if self._workflow == WORKFLOW_ANIMATION:
+                try:
+                    cached_playback = _CachedPlayback(
+                        self._scene, session, on_change=self._on_cached_playback_view,
+                        retention=self._cached_retention)
+                except _CachedPlaybackError as error:
+                    diagnostic = make_diagnostic(
+                        error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
+                        error.message, details=error.details)
+                    self._last_diagnostic = diagnostic
+                    self._set_connected(False, diagnostic["summary"])
+                    self._show_error(diagnostic)
+                    session.stop()
+                    return
+                self._cached_retention = None
+                self._cached_playback = cached_playback
+                self._on_cached_playback_view(cached_playback.view)
             warning = event.warning or {
                 "missing_in_unreal": [], "missing_in_maya": [],
                 "bone_name_remaps": [], "has_warning": False}
@@ -3600,18 +4485,8 @@ class _Controller(object):
             return
         cached_playback = self._cached_playback
         if cached_playback is not None:
-            if event.kind == "failed" and event.recapture_scene:
-                cached_playback.close(delete_cache=True)
-                self._cached_cache = None
-                self._update_cache_text()
-            elif event.kind == "failed":
-                cached_playback.on_transport_failure(event.diagnostic)
-                self._cached_cache = cached_playback.cache
-            else:
-                cached_playback.stop_replay()
-                if cached_playback.cache is not None:
-                    self._cached_cache = cached_playback.cache
-        self._cached_playback = None
+            self._cached_retention = cached_playback.detach(event)
+            self._cached_view = cached_playback.view
         self._session = None
         self._mode = REALTIME_MODE
         if event.kind == "failed":
@@ -3749,10 +4624,9 @@ class _Controller(object):
     def _discard_cached_playback(self):
         cached_playback, self._cached_playback = self._cached_playback, None
         if cached_playback is not None:
-            cached_playback.close(delete_cache=True)
-        if self._cached_cache is not None:
-            self._cached_cache.delete()
-            self._cached_cache = None
+            cached_playback.discard()
+        self._cached_retention = None
+        self._cached_view = None
         self._update_cache_text()
 
     def _clear_scene(self, keep_pending=False, keep_capture=False):

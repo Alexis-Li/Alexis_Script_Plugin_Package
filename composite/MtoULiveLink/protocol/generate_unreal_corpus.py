@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORPUS_PATH = HERE / "conformance-v3.json"
+CORPUS_PATH = HERE / "conformance-v6.json"
 OUTPUT_PATH = (
     HERE.parent
     / "unreal"
@@ -18,8 +18,26 @@ OUTPUT_PATH = (
     / "Tests"
     / "MtoUConformanceCorpus.inl"
 )
-OPERATIONS = {"framing", "init", "frame", "ready", "error"}
+OPERATIONS = {
+    "framing", "init", "frame", "ready", "error",
+    "cache_enter",
+    "cache_begin", "cache_frame", "cache_end", "cache_play",
+    "cache_stop", "cache_clear",
+    "cache_ready", "cache_progress", "cache_complete",
+    "cache_stopped", "cache_cleared",
+}
 HOSTS = {"maya", "unreal"}
+LIMIT_KEYS = (
+    "max_message_bytes",
+    "max_cache_payload_bytes",
+    "max_cache_frame_count",
+)
+PARSER_ERROR_CODES = {
+    "INVALID_MESSAGE", "PROTOCOL_VERSION_MISMATCH",
+    "CACHE_METADATA_INVALID", "CACHE_PAYLOAD_TOO_LARGE",
+    "CACHE_FRAME_INDEX_INVALID", "CACHE_FRAME_CONTENTS_INVALID",
+    "CACHE_NOT_READY", "CACHE_REVISION_MISMATCH", "CACHE_INVALID_STATE",
+}
 
 
 def load_corpus(path: Path = CORPUS_PATH) -> dict:
@@ -39,11 +57,19 @@ def validate_corpus(corpus: object) -> list[str]:
         return ["corpus must be a JSON object"]
     if corpus.get("schema_version") != 1:
         errors.append("schema_version must equal 1")
-    if corpus.get("protocol_version") != 3:
-        errors.append("protocol_version must equal 3")
+    if corpus.get("protocol_version") != 6:
+        errors.append("protocol_version must equal 6")
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["cases must be a non-empty array"]
+    limits = corpus.get("limits")
+    if not isinstance(limits, dict):
+        errors.append("limits must be an object")
+    else:
+        for key in LIMIT_KEYS:
+            value = limits.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append("limits." + key + " must be a positive integer")
     identifiers = set()
     for index, case in enumerate(cases):
         prefix = "case {0}".format(index)
@@ -79,13 +105,18 @@ def validate_corpus(corpus: object) -> list[str]:
             errors.append(prefix + " expected.accepted must be boolean")
         if not isinstance(expected.get("close"), bool):
             errors.append(prefix + " expected.close must be boolean")
-        if not expected.get("accepted") and expected.get("error_code") not in {
-            "INVALID_MESSAGE", "PROTOCOL_VERSION_MISMATCH"
-        }:
+        if not expected.get("accepted") and expected.get("error_code") not in PARSER_ERROR_CODES:
             errors.append(prefix + " rejected case needs a stable parser error_code")
         keywords = expected.get("keywords", [])
         if not isinstance(keywords, list) or any(not isinstance(value, str) for value in keywords):
             errors.append(prefix + " expected.keywords must be a string array")
+        negotiated = case.get("negotiated_revision")
+        if negotiated is not None and (
+                isinstance(negotiated, bool) or not isinstance(negotiated, int)):
+            errors.append(prefix + "negotiated_revision must be an integer")
+        session = case.get("session")
+        if session is not None and session not in {"fresh", "uploaded"}:
+            errors.append(prefix + " session must be 'fresh' or 'uploaded'")
     return errors
 
 

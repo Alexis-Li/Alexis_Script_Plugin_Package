@@ -22,6 +22,10 @@ One connection attempt that negotiates a character snapshot with an Unreal
 target and, if usable, streams evaluated poses until disconnect or failure.
 _Avoid_: Worker, socket connection, sender thread
 
+**Cached Playback**:
+The Animation preview workflow that captures the Playback Range into a temporary cache, transfers the complete cache to Unreal, and controls Unreal's local replay until the cache is cleared and Real-time Preview resumes.
+_Avoid_: Cache replay, offline playback, sender-paced replay
+
 **Connection negotiation**:
 The compatibility decision between one Maya character description and one Unreal target description before pose streaming begins. Its outcome includes blocking incompatibilities, usable differences, and any bone-name mapping required by the target.
 _Avoid_: Handshake validation, init handling
@@ -47,11 +51,31 @@ is not evidence of final deformation quality and excludes cloth and physics.
 _Avoid_: Final preview, binding preview, deformation approval
 
 **Driver Skeletal Mesh**:
-The formally bound version of exactly one garment that supplies its reference
-skeleton, source skin weights, and Morph Target library. Every garment Driver
-retains the same complete deformation hierarchy and represents the same garment
-as its Preview Static Mesh without aggregating other outfits.
+The formally bound Skeletal Mesh that supplies its reference skeleton, source
+skin weights, and Morph Target library. It is either the production
+full-character mesh containing body, face, hair, and exactly one current
+outfit, or a garment-only mesh; it never aggregates several outfit variants.
+Every Driver retains the same complete deformation hierarchy.
 _Avoid_: Source mesh, final mesh, binding mesh
+
+**Driver garment surface**:
+The transient set of Driver LOD0 triangles selected as corresponding to the
+selected Preview Static Mesh for one Preview refresh. Automatic resolution
+picks it from geometry connectivity and spatial agreement with imported
+material-slot identity as supporting evidence only; the advanced manual Driver
+Garment Slot Override pins it to named imported slots instead, and every
+manual selection still passes the same geometry coverage and alignment
+validation. It may span several sections and disconnected pieces, retains
+original source-vertex correspondence, and is never a persistent asset.
+_Avoid_: Garment section, source region index, resolved LOD
+
+**Driver Garment Slot Override**:
+The Binding's optional advanced list of stable imported Driver material-slot
+names that manually identifies the garment source when automatic resolution is
+ambiguous. An empty list keeps automatic resolution; a missing, duplicated, or
+no-longer-unique name, or a Driver triangle that maps to no final material
+slot, is a hard preflight error that never silently returns to Auto.
+_Avoid_: Slot index override, section selection, source mesh picker
 
 **Preview Static Mesh**:
 The current modeling iteration of the same garment, aligned to its Driver
@@ -73,7 +97,10 @@ _Avoid_: Animation mode, Driver mode, legacy mode
 **Model preview workflow**:
 The modeler-facing workflow that uses the selected Maya outfit as deformation
 context and displays its modified surface through a Generated Preview Skeletal
-Mesh under the current pose.
+Mesh under the current pose. With a full-character Driver, the original Driver
+also remains visible behind it with the resolved garment material slots hidden,
+preserving body, face, hair, and other non-garment parts without extra inputs.
+Matching live curves drive Morph Targets on either displayed mesh.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:
@@ -100,10 +127,12 @@ Preview readiness.
 _Avoid_: Auto rebuild, reconnect refresh, preview update
 
 **Preview Morph transfer**:
-A preview-only projection of the complete Driver Skeletal Mesh Morph Target
-library onto the different topology of the Preview Static Mesh during Preview
-refresh. Maya streams only the selected outfit's BlendShape values to drive the
-generated Morph Targets; it does not transmit garment geometry or Morph deltas.
+A preview-only projection of the Driver Skeletal Mesh Morph Targets whose local
+surfaces exist on the different topology of the Preview Static Mesh during
+Preview refresh. A Driver Morph with no corresponding Preview surface is
+omitted with a quality warning. Maya streams only the selected outfit's
+BlendShape values to drive the generated Morph Targets; it does not transmit
+garment geometry or Morph deltas.
 _Avoid_: BS streaming, runtime wrap, Maya mesh transfer
 
 **BS transmission**:
@@ -115,13 +144,17 @@ _Avoid_: BS build, Morph transfer button, live Morph generation
 **Accepted Preview Morph set**:
 The name intersection between the selected Maya outfit's BlendShapes and the
 Generated Preview Skeletal Mesh Morph Targets negotiated for one Model preview
-streaming session. Only this set receives streamed values.
+streaming session. Only this set receives streamed values. An outfit that
+declares no BlendShape names has a valid empty accepted set; only a non-empty
+manifest with an empty intersection is a failed pairing.
 _Avoid_: Full Morph stream, active Morph library, transferred BS list
 
 **Bone-only comparison**:
 An explicitly requested Model preview connection with BS transmission disabled.
 It may help isolate skinning behavior but is not valid evidence for model
-acceptance.
+acceptance. It differs from an intentionally bone-driven outfit whose manifest
+declares zero BlendShape names while BS transmission stays enabled; that
+session negotiates Ready.
 _Avoid_: Model preview acceptance, Morph fallback, degraded preview
 
 **Protocol contract**:

@@ -45,12 +45,14 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
 
 4. Maya 用户直接运行的项目目录和入口文件使用 PascalCase，例如
    `FlattenMeshToUV` 和 `FlattenMeshToUV.py`。
-5. 交付修改前运行：
+5. 修改仓库工具或目录结构时，运行仓库检查：
 
    ```powershell
    python -m unittest discover -s tests
    python tools/validate_repository.py
    ```
+
+   修改单个项目时，只运行该项目自身的测试、静态检查、构建和打包检查。
 
 通用流程见[开发约定](docs/development-conventions.md)，Unreal 项目导航见
 [Unreal 插件指南](docs/unreal-development.md)。

@@ -3,12 +3,36 @@
 #include "Containers/Queue.h"
 #include "HAL/Runnable.h"
 #include "ILiveLinkSource.h"
+#include "MtoUCacheCommandQueue.h"
+#include "MtoUCacheSession.h"
 #include "MtoULiveLinkProtocol.h"
 
 class AMtoULiveLinkActor;
+class UWorld;
 class FRunnableThread;
 class ILiveLinkClient;
 class FSocket;
+
+/**
+ * The one idempotent session-termination boundary shared by the Live Link
+ * source and the Binding actor. Any active streaming session ends when its
+ * Preview revision is invalidated or the Binding actor's lifetime ends, so a
+ * new Preview revision can never receive frames negotiated for an older
+ * Character snapshot. Requests made while no session is active are no-ops;
+ * a new connection is always required to stream the newer revision.
+ */
+void MtoURequestStreamingSessionEnd();
+
+/**
+ * The world-unload seam of the same idempotent termination boundary: the
+ * Editor world that owns the active session's Binding Actor is being cleaned
+ * up. UWorld::DestroyWorld and world unloading never call Actor::Destroyed(),
+ * so the synchronous FWorldDelegates::OnWorldCleanup broadcast is the
+ * authoritative unload seam. A late BeginDestroy cannot use the identity-free
+ * boundary because it could terminate a newer session; this hook runs in
+ * order with the actual unload instead.
+ */
+void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
 
 struct FMtoUOutgoing
 {
@@ -55,9 +79,17 @@ public:
     bool StartListener();
     void StopListener();
 
+    // Admission intake gauge used by automation to prove a stalled Game Thread
+    // cannot grow queued parsed-cache ownership beyond the frozen budget.
+    int32 GetQueuedCacheFrameCount() const;
+
 private:
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
+    void HandleCacheCommandsOnGameThread();
+    bool DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command);
+    bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
     void PublishLatestFrameOnGameThread();
+    void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
     void EnqueueErrorOnGameThread(
         const FString& Code,
         const FString& Message,
@@ -79,6 +111,7 @@ private:
     TOptional<FMtoUPendingFrame> PendingFrame;
     TQueue<uint64, EQueueMode::Spsc> DisconnectedSessions;
     TQueue<FMtoUOutgoing, EQueueMode::Spsc> OutgoingReplies;
+    FMtoUCacheCommandQueue CacheCommands;
 
     ILiveLinkClient* Client = nullptr;
     FGuid SourceGuid;
@@ -86,9 +119,18 @@ private:
     uint64 GameThreadSession = 0;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
+    // Authoritative character snapshot revision from the accepted init.
+    int32 NegotiatedRevision = 0;
     TArray<FTransform> SourceBindLocalPose;
     TArray<FTransform> TargetRefLocalPose;
     TArray<int32> BoneParents;
     TArray<int32> AcceptedCurveIndices;
+    TArray<FName> AcceptedCurveNames;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
+
+    // Game-thread-only transient cache owner scoped to GameThreadSession.
+    FMtoUCacheSession CacheSession;
+    // Set when playback starts; one completion or performance-failure reply
+    // is reported exactly once per replay attempt.
+    bool bPlaybackOutcomePending = false;
 };

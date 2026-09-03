@@ -1,5 +1,6 @@
 #include "MtoULiveLinkSource.h"
 
+#include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "ILiveLinkClient.h"
 #include "Modules/ModuleManager.h"
@@ -27,15 +28,25 @@ public:
         {
             return;
         }
-
         ILiveLinkClient& Client = Features.GetModularFeature<ILiveLinkClient>(
             ILiveLinkClient::ModularFeatureName);
+        // World unloads and editor shutdown reach the shared idempotent
+        // termination boundary through the synchronous world-cleanup
+        // broadcast, because Actor::Destroyed() never runs on the
+        // DestroyWorld path.
+        WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddStatic(
+            &MtoUNotifyEditorWorldCleanup);
         Source = MakeShared<FMtoULiveLinkSource>();
         Client.AddSource(Source);
     }
 
     virtual void ShutdownModule() override
     {
+        if (WorldCleanupHandle.IsValid())
+        {
+            FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
+            WorldCleanupHandle.Reset();
+        }
         if (!Source)
         {
             return;
@@ -52,6 +63,7 @@ public:
 
 private:
     TSharedPtr<FMtoULiveLinkSource> Source;
+    FDelegateHandle WorldCleanupHandle;
 };
 
 IMPLEMENT_MODULE(FMtoULiveLinkModule, MtoULiveLink)

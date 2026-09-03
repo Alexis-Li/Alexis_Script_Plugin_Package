@@ -41,8 +41,7 @@ class RepositoryToolTests(unittest.TestCase):
         spec.loader.exec_module(module)
         invalid = {
             "schema_version": 1,
-            "protocol_version": 3,
-            "cases": [
+            "protocol_version": 4,            "cases": [
                 {
                     "id": "duplicate",
                     "operation": "init",
@@ -57,9 +56,15 @@ class RepositoryToolTests(unittest.TestCase):
                     "expected": {"accepted": False, "close": True},
                 },
             ],
+            "limits": {
+                "max_message_bytes": 33554432,
+                "max_cache_payload_bytes": 1073741824,
+                "max_cache_frame_count": 20000,
+            },
         }
         self.assertEqual(
             [
+                "protocol_version must equal 6",
                 "case 1 id is duplicated: duplicate",
                 "case 1 operation is unsupported",
                 "case 1 applies_to must contain maya and/or unreal",
@@ -144,9 +149,9 @@ class RepositoryToolTests(unittest.TestCase):
         unreal_result = package_unreal_plugin.package(
             "MtoULiveLink", "5.7", ROOT / "releases", apply=False
         )
-        self.assertEqual("releases/MtoULiveLink-0.3.0.zip", maya_result["archive"])
+        self.assertEqual("releases/MtoULiveLink-0.4.0.zip", maya_result["archive"])
         self.assertEqual(
-            "releases/MtoULiveLink-0.3.0-UE5.7.zip",
+            "releases/MtoULiveLink-0.4.0-UE5.7.zip",
             unreal_result["archive"],
         )
         self.assertGreater(maya_result["file_count"], 0)

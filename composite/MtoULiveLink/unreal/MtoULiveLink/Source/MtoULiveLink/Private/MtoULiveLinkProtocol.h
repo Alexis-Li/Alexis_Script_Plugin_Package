@@ -16,12 +16,38 @@ struct FMtoUInitMessage
     TArray<FMtoUDescriptionBone> Bones;
     TArray<FTransform> SourceBindLocalPose;
     TArray<FName> Curves;
+    FString Workflow;
+    bool bBlendshapesEnabled = false;
+    // Authoritative character snapshot revision established by Maya during
+    // connection negotiation; echoed in the ready outcome.
+    int32 Revision = 0;
+};
+
+struct FMtoUWorkflows
+{
+    static constexpr TCHAR Animation[] = TEXT("animation");
+    static constexpr TCHAR Model[] = TEXT("model");
+    static bool IsValid(const FString& Workflow)
+    {
+        return Workflow == Animation || Workflow == Model;
+    }
 };
 
 struct FMtoUFrameMessage
 {
     TArray<FMtoUTransform> Transforms;
     TArray<double> Curves;
+};
+
+struct FMtoUCacheBeginMessage
+{
+    int32 UploadId = 0;
+    int32 Revision = 0;
+    double Fps = 0.0;
+    int32 StartFrame = 0;
+    int32 EndFrame = 0;
+    int32 FrameCount = 0;
+    int64 PayloadSize = 0;
 };
 
 enum class EMtoUDecodeResult
@@ -44,37 +70,100 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 3;
+    static constexpr int32 Version = 6;
+    // Transient Unreal cache limits, recalibrated with the first real-project
+    // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
+    // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
+    // frozen wire values; the single source of truth is the `limits` block of
+    // protocol/conformance-v6.json, and both host adapters assert their
+    // constants against the corpus. Encoded bytes are metered from the framing
+    // boundary; parsed transient memory is preflighted from the negotiated
+    // transform and curve counts before any allocation.
+    static constexpr int64 MaxCachePayloadBytes = 1024ll * 1024ll * 1024ll;
+    static constexpr int64 MaxCacheParsedMemoryBytes = 1536ll * 1024ll * 1024ll;
+    static constexpr int32 MaxCacheFrameCount = 20000;
+    static constexpr double MinCacheFps = 1.0;
+    static constexpr double MaxCacheFps = 60.0;
+    // Frozen per-message framing ceiling enforced at the length header by the
+    // decoder before any JSON parse or allocation; oversized messages close
+    // the connection. Pinned by limits.max_message_bytes in the corpus.
+    static constexpr int64 MaxMessageBytes = 32ll * 1024ll * 1024ll;
+    // Bounded admission budget for parsed cache frames queued between the
+    // network worker and the Game Thread. A stalled Game Thread can never
+    // grow queued parsed-frame ownership beyond these limits; the producer
+    // waits (interruptibly) and the sender sees TCP backpressure instead.
+    static constexpr int64 MaxQueuedCacheFrames = 512;
+    static constexpr int64 MaxQueuedCacheBytes = 64ll * 1024ll * 1024ll;
+
     static bool ParseInit(
         const TArray<uint8>& Payload,
         FMtoUInitMessage& OutMessage,
         FString& OutError,
         FString* OutErrorCode = nullptr);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
+    static bool PeekType(const TArray<uint8>& Payload, FString& OutType, FString& OutError);
     static bool ValidateFrame(
         const FMtoUFrameMessage& Frame,
         int32 ExpectedTransformCount,
         int32 ExpectedCurveCount,
         FString& OutError,
         bool& bOutStructuralError);
+    static bool ParseCacheEnter(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCacheBegin(
+        const TArray<uint8>& Payload,
+        FMtoUCacheBeginMessage& OutMessage,
+        FString& OutError,
+        FString& OutErrorCode);
+    static bool ParseCacheFrame(
+        const TArray<uint8>& Payload,
+        int32 ExpectedTransformCount,
+        int32 ExpectedCurveCount,
+        int32& OutIndex,
+        FMtoUFrameMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseCacheEnd(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCachePlay(
+        const TArray<uint8>& Payload,
+        int32& OutPlayId,
+        FString& OutError);
+    static bool ParseCacheStop(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCacheClear(const TArray<uint8>& Payload, FString& OutError);
     static TArray<uint8> EncodeReady(
         const TArray<FName>& MissingInUnreal,
         const TArray<FName>& MissingInMaya,
-        const TArray<FString>& BoneNameRemaps);
+        const TArray<FString>& BoneNameRemaps,
+        const FString& Workflow,
+        int32 TargetMorphCount,
+        int32 AcceptedMorphCount,
+        int32 NegotiatedRevision);
+    static TArray<uint8> EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount);
+    static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);
+    static TArray<uint8> EncodeCacheComplete(int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds);
+    static TArray<uint8> EncodeCacheStopped(int32 PlayId);
+    // Cleared echoes the owning identity of the cache ownership that was
+    // dropped so Maya can discard late outcomes from older operations.
+    static TArray<uint8> EncodeCacheCleared(int32 UploadId, int32 PlayId);
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,
-        const FString& Details = FString());
+        const FString& Details = FString(),
+        int32 UploadId = INDEX_NONE,
+        int32 PlayId = INDEX_NONE);
     static FLiveLinkStaticDataStruct MakeStaticData(
         const FMtoUInitMessage& Init,
         const TArray<FName>& AcceptedCurveNames);
     static FLiveLinkFrameDataStruct MakeFrameData(
         const FMtoUFrameMessage& Frame,
         const TArray<int32>& AcceptedCurveIndices);
-    static FLiveLinkFrameDataStruct MakeRetargetedFrameData(
+    // Returns false and publishes nothing when any local transform needed by
+    // retargeting is singular; OutError then names the offending bone.
+    static bool MakeRetargetedFrameData(
         const FMtoUFrameMessage& Frame,
         const TArray<int32>& AcceptedCurveIndices,
         const TArray<FTransform>& SourceBindLocalPose,
         const TArray<FTransform>& TargetRefLocalPose,
-        const TArray<int32>& BoneParents);
+        const TArray<int32>& BoneParents,
+        FLiveLinkFrameDataStruct& OutFrameData,
+        FString& OutError);
 };
