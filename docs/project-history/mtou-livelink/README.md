@@ -1,8 +1,8 @@
 # MtoU_LiveLink Development History
 
-The current implementation is MtoU_LiveLink 0.4.0, a composite Maya 2022.4 and
-stock Unreal Editor 5.7.4 Live Link product. Version 0.4.0 is merged to `main`
-and remains unreleased.
+MtoU_LiveLink 0.4.0 is the completed Maya 2022.4 and stock Unreal Editor 5.7.4
+baseline. It is merged to `main`, accepted, and closed without formal release
+packages; subsequent development uses version 0.5.0.
 
 ## Timeline
 
@@ -125,6 +125,9 @@ and remains unreleased.
   The merged tree passed both GitHub validation checks, the stock UE 5.7.4
   build, all 51 `MtoULiveLink` Automation tests, Maya pure and host tests,
   protocol and repository validation, scoped Ruff, and both package checks.
+  The project owner then manually reverified the complete C01 and Topia paths,
+  closing 0.4.0 without producing formal release packages; subsequent
+  development advances to 0.5.0.
 
 ## Stable Records
 

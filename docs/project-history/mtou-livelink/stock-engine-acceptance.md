@@ -173,9 +173,10 @@ protocol v6, module rules, the plugin descriptor, or the Topia helper. The
 merged tree passed both GitHub validation checks, the stock UE 5.7.4 build, all
 51 `MtoULiveLink` Automation tests, Maya pure tests 121/121, Maya 2022.4 host
 tests 19/19, protocol and repository validation, scoped Ruff, and both package
-checks. The complete C01 and Topia gates were not rerun after these Unreal-only
-changes; the dated results above remain the production and third-party-engine
-evidence.
+checks. The project owner subsequently reran and manually accepted the complete
+C01 and Topia paths against the merged 0.4.0 implementation, closing the
+post-acceptance gap. The dated measurements above remain the quantitative
+production and third-party-engine evidence.
 
 ## Resolved Production Blocker
 

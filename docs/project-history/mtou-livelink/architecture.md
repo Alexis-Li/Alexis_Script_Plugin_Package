@@ -1,10 +1,11 @@
 # MtoU_LiveLink Architecture
 
 Date: 2026-07-31
-Status: Version 0.4.0 implemented, merged, and verified; unreleased
+Status: Version 0.4.0 completed, merged, and manually accepted
 Production acceptance baseline: Stock Unreal Editor 5.7.4 completed 2026-08-11
 Current production acceptance fixture: C01 animation/binding/Clothes 09 export;
 complete stock-engine gate passed 2026-09-02
+Post-merge C01 and Topia paths manually reverified 2026-09-03
 Last aligned with implementation: 2026-09-03
 
 ## Summary
@@ -870,7 +871,8 @@ Preview Morph set, partial Morph coverage, bone-only comparison, and Model
 diagnostics consume readiness and cannot modify Ready or Warning. Runtime
 tests establish readiness through one development-only friend seam that drives
 the same private transition path, and the old exported mutation getters are
-removed without a forwarding shim because 0.4.0 is unreleased. User assets,
+removed without a forwarding shim because 0.4.0 had not yet been released when
+the interface changed. User assets,
 serialized Binding fields, and the artist workflow are unchanged.
 
 ## Full-character Model Display Composition

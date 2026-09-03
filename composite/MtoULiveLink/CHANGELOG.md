@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-09-03
 
 - Resolve renamed Driver material slots and keep the Driver visible after a failed Refresh (Issue #35): when a source group has no imported identity match, Refresh accepts one unique current displayed match corroborated by the current LOD mapping, still prefers imported identity, and still fails closed on missing, duplicate, conflicting, or shared-slot evidence without using polygon-group ordinals as slot indices; diagnostics name the affected group and distinguish missing, duplicate, and conflicting evidence with available candidates. A failed Refresh discards stale or partial preview data, keeps Error readiness with no usable preview, and restores the bound Driver display while Model connection stays blocked.
 
@@ -123,7 +123,7 @@
   display meshes so face, hair, and other Driver-only curves remain visible.
   Animation preview, garment-only Drivers, serialized Binding fields, source
   assets, and protocol v6 are unchanged.
-- Deepen Preview readiness on the Binding Actor (unreleased 0.4.0 C++
+- Deepen Preview readiness on the Binding Actor (0.4.0 C++
   interface change): Runtime callers now read one coherent
   `FMtoUPreviewReadiness` snapshot (state, build stage, ready Generated
   Preview, summary, and diagnostics) instead of six independent getters, and

@@ -1,6 +1,8 @@
 # MtoU_LiveLink Topia-Engine Build and Load Acceptance
 
 Date: 2026-08-28
+Revalidated: 2026-09-03 by project-owner manual acceptance after the final
+0.4.0 Unreal changes
 
 Status: Passed for Win64 plugin compilation and Athena editor loading with
 Topia Engine 5.7.4. Full functional and production-scene acceptance remains
