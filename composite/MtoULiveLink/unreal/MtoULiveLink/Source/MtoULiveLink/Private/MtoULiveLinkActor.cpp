@@ -188,7 +188,18 @@ bool AMtoULiveLinkActor::FailPreviewBuild(
     }
 
     ReleaseGeneratedPreview();
-    HideDisplay();
+    // A failed refresh keeps Error readiness with no usable Generated Preview,
+    // but restores the bound Driver for inspection (Issue #35). Model preview
+    // stays blocked because readiness is not usable; display and usability
+    // are separate concerns. Without a bound Driver there is nothing to show.
+    if (Binding && Binding->SkeletalMesh)
+    {
+        ShowDriverMesh();
+    }
+    else
+    {
+        HideDisplay();
+    }
     PreviewState = EMtoUPreviewState::Error;
     PreviewBuildStage = Stage;
     PreviewDiagnostics = Diagnostics;

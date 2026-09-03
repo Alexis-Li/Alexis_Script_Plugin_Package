@@ -3511,11 +3511,12 @@ bool FMtoUPreviewReadinessTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("a failure is accepted while Building"),
         FMtoUPreviewReadinessTestAccess::Fail(
             *Actor, EMtoUPreviewBuildStage::WeightTransfer, TEXT("transfer failed")));
-    TestTrue(TEXT("a failed refresh establishes Error with the actionable stage and hides display"),
+    TestTrue(TEXT("a failed refresh establishes Error with the actionable stage and restores the Driver"),
         Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && Actor->GetPreviewReadiness().Stage == EMtoUPreviewBuildStage::WeightTransfer
         && Actor->GetPreviewReadiness().Diagnostics == TEXT("transfer failed")
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
 
     FMtoUPreviewReadinessTestAccess::Begin(*Actor);
     FMtoUPreviewReadinessTestAccess::Commit(*Actor,

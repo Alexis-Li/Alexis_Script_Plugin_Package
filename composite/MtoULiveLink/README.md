@@ -85,7 +85,10 @@ Install the Maya and Unreal components from the same release.
    Generated Preview replaces the resolved original garment slots. Driver-only
    face and hair Morph Targets continue to receive matching Maya curves. Keep
    garment and non-garment geometry in separate imported material slots;
-   Refresh reports a shared slot instead of hiding part of the character.
+   Refresh reports a shared slot instead of hiding part of the character. A
+   failed Refresh keeps Error readiness with no usable preview but restores the
+   bound Driver display for inspection; Model connection stays blocked until a
+   later Refresh succeeds.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
    Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
    reimport), deleting the Binding Actor, or unloading its Editor world ends

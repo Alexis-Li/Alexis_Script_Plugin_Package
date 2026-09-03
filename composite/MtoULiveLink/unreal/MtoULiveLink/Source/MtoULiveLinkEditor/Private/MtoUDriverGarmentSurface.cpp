@@ -147,9 +147,10 @@ struct FDriverMaterialSlotMaps
 {
     TArray<int32> SlotByPolygonGroup;
     TArray<int32> SlotByTriangleGroup;
+    /** Stored source polygon-group name per ordinal; NAME_None when the ordinal has no group. */
+    TArray<FName> GroupNamesByOrdinal;
     bool bHasTriangleGroupMapping = false;
 };
-
 bool BuildDriverMaterialSlotMaps(
     const USkeletalMesh& DriverAsset,
     FDriverMaterialSlotMaps& OutMaps)
@@ -158,6 +159,23 @@ bool BuildDriverMaterialSlotMaps(
             DriverAsset, OutMaps.SlotByPolygonGroup))
     {
         return false;
+    }
+    // Cache the stored source polygon-group name per ordinal so the
+    // compatibility fallback can match a stale imported identity against the
+    // unique current displayed identity without re-reading the description.
+    if (FMeshDescription* Description = DriverAsset.GetMeshDescription(0))
+    {
+        FStaticMeshAttributes DescriptionAttributes(*Description);
+        const TPolygonGroupAttributesConstRef<FName> GroupSlotNames =
+            DescriptionAttributes.GetPolygonGroupMaterialSlotNames();
+        OutMaps.GroupNamesByOrdinal.Init(NAME_None, OutMaps.SlotByPolygonGroup.Num());
+        for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+        {
+            if (OutMaps.GroupNamesByOrdinal.IsValidIndex(GroupID.GetValue()))
+            {
+                OutMaps.GroupNamesByOrdinal[GroupID.GetValue()] = GroupSlotNames[GroupID];
+            }
+        }
     }
     OutMaps.bHasTriangleGroupMapping =
         BuildTriangleGroupToMaterialSlotMap(
@@ -221,7 +239,31 @@ enum class EDriverMaterialSlotResolutionResult : uint8
     Resolved,
     Unmapped,
     Conflict,
+    Duplicate,
 };
+
+FString DescribeSlotCandidates(
+    const TArray<FSkeletalMaterial>& Slots,
+    const TArray<int32>& Candidates)
+{
+    TArray<FString> Descriptions;
+    for (const int32 SlotIndex : Candidates)
+    {
+        if (Slots.IsValidIndex(SlotIndex))
+        {
+            Descriptions.Add(FString::Printf(TEXT("slot %d %s"), SlotIndex, *DescribeDriverSlot(Slots, SlotIndex)));
+        }
+    }
+    Descriptions.Sort();
+    return FString::Join(Descriptions, TEXT(", "));
+}
+
+FString DescribeSourceGroup(const int32 Ordinal, const FName GroupName)
+{
+    return GroupName.IsNone()
+        ? FString::Printf(TEXT("group %d ('unknown')"), Ordinal)
+        : FString::Printf(TEXT("group %d ('%s')"), Ordinal, *GroupName.ToString());
+}
 
 /** Resolves both stable metadata signals for one triangle without ordinal guessing. */
 struct FDriverMaterialSlotResolver
@@ -231,6 +273,117 @@ struct FDriverMaterialSlotResolver
     const FDynamicMeshMaterialAttribute* MaterialIDs;
     const TArray<int32>& SlotByPolygonGroup;
     const TArray<int32>& SlotByTriangleGroup;
+    const TArray<FName>& GroupNamesByOrdinal;
+
+    FName GetSourceGroupName(const int32 Ordinal) const
+    {
+        return GroupNamesByOrdinal.IsValidIndex(Ordinal) ? GroupNamesByOrdinal[Ordinal] : NAME_None;
+    }
+
+    void FindDisplayedCandidates(const FName GroupName, TArray<int32>& OutCandidates) const
+    {
+        OutCandidates.Reset();
+        if (GroupName.IsNone())
+        {
+            return;
+        }
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (Slots[SlotIndex].MaterialSlotName == GroupName)
+            {
+                OutCandidates.Add(SlotIndex);
+            }
+        }
+    }
+
+    void FindImportedCandidates(const FName GroupName, TArray<int32>& OutCandidates) const
+    {
+        OutCandidates.Reset();
+        if (GroupName.IsNone())
+        {
+            return;
+        }
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (GetDriverSlotIdentity(Slots[SlotIndex]) == GroupName)
+            {
+                OutCandidates.Add(SlotIndex);
+            }
+        }
+    }
+
+    // Compatibility fallback for a renamed slot (Issue #35): only when the
+    // imported identity has zero matches. A unique current displayed identity
+    // plus agreeing current-LOD assignment proves one conflict-free slot.
+    // Duplicate displayed names, missing candidates, shared-slot ambiguity
+    // (handled later), and displayed/current-LOD disagreement all fail
+    // closed. The polygon-group ordinal is never treated as a slot index.
+    EDriverMaterialSlotResolutionResult TryCompatibilityFallback(
+        const int32 MaterialOrdinal,
+        const int32 TriangleGroup,
+        const int32 TriangleGroupSlot,
+        const bool bTriangleGroupSlotValid,
+        int32& OutSlot,
+        FString& OutError) const
+    {
+        const FName GroupName = GetSourceGroupName(MaterialOrdinal);
+        if (GroupName.IsNone())
+        {
+            return EDriverMaterialSlotResolutionResult::Unmapped;
+        }
+        TArray<int32> DisplayedMatches;
+        FindDisplayedCandidates(GroupName, DisplayedMatches);
+        if (DisplayedMatches.IsEmpty())
+        {
+            return EDriverMaterialSlotResolutionResult::Unmapped;
+        }
+        if (DisplayedMatches.Num() > 1)
+        {
+            OutError = FString::Printf(
+                TEXT("Driver source material %s has no imported material identity match (missing), but displayed material identity '%s' matches more than one current material slot (duplicate: %s) and cannot be mapped uniquely. Rename the displayed slots to unique names or restore unique imported material-slot names before Refresh Preview."),
+                *DescribeSourceGroup(MaterialOrdinal, GroupName),
+                *GroupName.ToString(),
+                *DescribeSlotCandidates(Slots, DisplayedMatches));
+            return EDriverMaterialSlotResolutionResult::Duplicate;
+        }
+        const int32 DisplayedSlot = DisplayedMatches[0];
+        // The fallback target itself must keep a unique imported identity;
+        // otherwise current metadata cannot prove which slot is intended.
+        TArray<int32> ImportedOfDisplayed;
+        const FName DisplayedImported = GetDriverSlotIdentity(Slots[DisplayedSlot]);
+        for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+        {
+            if (GetDriverSlotIdentity(Slots[SlotIndex]) == DisplayedImported)
+            {
+                ImportedOfDisplayed.Add(SlotIndex);
+            }
+        }
+        if (ImportedOfDisplayed.Num() > 1)
+        {
+            OutError = FString::Printf(
+                TEXT("Driver source material %s has no imported material identity match (missing), and its unique displayed match %s shares imported identity '%s' with more than one current slot (duplicate: %s). Restore unique imported material-slot names before Refresh Preview."),
+                *DescribeSourceGroup(MaterialOrdinal, GroupName),
+                *DescribeDriverSlot(Slots, DisplayedSlot),
+                *DisplayedImported.ToString(),
+                *DescribeSlotCandidates(Slots, ImportedOfDisplayed));
+            return EDriverMaterialSlotResolutionResult::Duplicate;
+        }
+        if (bTriangleGroupSlotValid)
+        {
+            if (TriangleGroupSlot != DisplayedSlot)
+            {
+                OutError = FString::Printf(
+                    TEXT("Driver source material %s has no imported material identity match (missing); displayed material identity matches %s, while current LOD triangle-group %d maps to %s (conflicting). Correct the current LOD material mapping or restore unique imported material-slot names before Refresh Preview."),
+                    *DescribeSourceGroup(MaterialOrdinal, GroupName),
+                    *DescribeDriverSlot(Slots, DisplayedSlot),
+                    TriangleGroup,
+                    *DescribeDriverSlot(Slots, TriangleGroupSlot));
+                return EDriverMaterialSlotResolutionResult::Conflict;
+            }
+        }
+        OutSlot = DisplayedSlot;
+        return EDriverMaterialSlotResolutionResult::Resolved;
+    }
 
     EDriverMaterialSlotResolutionResult Resolve(
         const int32 TriangleID,
@@ -292,6 +445,28 @@ struct FDriverMaterialSlotResolver
                 OutSlot = PolygonGroupSlot;
                 return EDriverMaterialSlotResolutionResult::Resolved;
             }
+            // A duplicated imported identity stays a hard error and never
+            // enters the displayed-name fallback.
+            if (SlotByPolygonGroup.IsValidIndex(MaterialOrdinal)
+                && SlotByPolygonGroup[MaterialOrdinal] == AmbiguousMaterialSlot)
+            {
+                const FName GroupName = GetSourceGroupName(MaterialOrdinal);
+                TArray<int32> ImportedMatches;
+                FindImportedCandidates(GroupName, ImportedMatches);
+                OutError = FString::Printf(
+                    TEXT("Driver source material %s matches more than one imported material slot (duplicate: %s) and cannot be mapped uniquely. Restore unique imported material-slot names before Refresh Preview."),
+                    *DescribeSourceGroup(MaterialOrdinal, GroupName),
+                    *DescribeSlotCandidates(Slots, ImportedMatches));
+                return EDriverMaterialSlotResolutionResult::Duplicate;
+            }
+            const EDriverMaterialSlotResolutionResult Fallback = TryCompatibilityFallback(
+                MaterialOrdinal, TriangleGroup, TriangleGroupSlot, bTriangleGroupSlotValid, OutSlot, OutError);
+            if (Fallback == EDriverMaterialSlotResolutionResult::Resolved
+                || Fallback == EDriverMaterialSlotResolutionResult::Duplicate
+                || Fallback == EDriverMaterialSlotResolutionResult::Conflict)
+            {
+                return Fallback;
+            }
             if (bTriangleGroupSlotValid)
             {
                 OutSlot = TriangleGroupSlot;
@@ -302,7 +477,20 @@ struct FDriverMaterialSlotResolver
 
         if (!bPolygonSlotValid)
         {
-            return EDriverMaterialSlotResolutionResult::Unmapped;
+            if (SlotByPolygonGroup.IsValidIndex(MaterialOrdinal)
+                && SlotByPolygonGroup[MaterialOrdinal] == AmbiguousMaterialSlot)
+            {
+                const FName GroupName = GetSourceGroupName(MaterialOrdinal);
+                TArray<int32> ImportedMatches;
+                FindImportedCandidates(GroupName, ImportedMatches);
+                OutError = FString::Printf(
+                    TEXT("Driver source material %s matches more than one imported material slot (duplicate: %s) and cannot be mapped uniquely. Restore unique imported material-slot names before Refresh Preview."),
+                    *DescribeSourceGroup(MaterialOrdinal, GroupName),
+                    *DescribeSlotCandidates(Slots, ImportedMatches));
+                return EDriverMaterialSlotResolutionResult::Duplicate;
+            }
+            return TryCompatibilityFallback(
+                MaterialOrdinal, TriangleGroup, TriangleGroupSlot, bTriangleGroupSlotValid, OutSlot, OutError);
         }
         OutSlot = PolygonGroupSlot;
         return EDriverMaterialSlotResolutionResult::Resolved;
@@ -322,20 +510,32 @@ struct FDriverMaterialSlotResolver
 /** Shared fail-closed diagnostic for source groups that map to no final slot. */
 void BuildUnmappableMaterialGroupsError(
     const TSet<int32>& UnmappedOrdinals,
+    const TArray<FName>& GroupNamesByOrdinal,
+    const TArray<FSkeletalMaterial>& Slots,
     FString& OutError)
 {
     TArray<int32> SortedOrdinals = UnmappedOrdinals.Array();
     SortedOrdinals.Sort();
     TArray<FString> OrdinalLabels;
+    TArray<FString> DetailLabels;
+    TArray<FString> AvailableSlots;
+    for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
+    {
+        AvailableSlots.Add(FString::Printf(TEXT("slot %d %s"), SlotIndex, *DescribeDriverSlot(Slots, SlotIndex)));
+    }
     for (const int32 Ordinal : SortedOrdinals)
     {
         OrdinalLabels.Add(FString::FromInt(Ordinal));
+        const FName GroupName = GroupNamesByOrdinal.IsValidIndex(Ordinal) ? GroupNamesByOrdinal[Ordinal] : NAME_None;
+        DetailLabels.Add(DescribeSourceGroup(Ordinal, GroupName));
     }
     OutError = FString::Printf(
-        TEXT("Driver source material group(s) [%s] cannot be mapped uniquely through current Driver "
-            "material metadata to a material slot. Restore unique imported material-slot "
+        TEXT("Driver source material group(s) [%s] (%s) cannot be mapped uniquely through current Driver "
+            "material metadata to a material slot (missing: no imported identity match and no unique current displayed or current-LOD candidate). Available current slots: %s. Restore unique imported material-slot "
             "names or split and reimport the Driver before Refresh Preview."),
-        *FString::Join(OrdinalLabels, TEXT(", ")));
+        *FString::Join(OrdinalLabels, TEXT(", ")),
+        *FString::Join(DetailLabels, TEXT(", ")),
+        *FString::Join(AvailableSlots, TEXT(", ")));
 }
 
 bool MatchManualOverrideSlots(
@@ -572,7 +772,8 @@ bool CollectMaterialSlotIndices(
         Slots,
         DriverMaterialIDs,
         SlotMaps.SlotByPolygonGroup,
-        SlotMaps.SlotByTriangleGroup};
+        SlotMaps.SlotByTriangleGroup,
+        SlotMaps.GroupNamesByOrdinal};
     TSet<int32> SelectedSlots;
     TSet<int32> UnselectedSlots;
     TSet<int32> UnmappedOrdinals;
@@ -586,7 +787,8 @@ bool CollectMaterialSlotIndices(
                 Metadata,
                 SlotIndex,
                 OutError);
-        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
+        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict
+            || Resolution == EDriverMaterialSlotResolutionResult::Duplicate)
         {
             return false;
         }
@@ -607,7 +809,7 @@ bool CollectMaterialSlotIndices(
     }
     if (!UnmappedOrdinals.IsEmpty() || SelectedSlots.IsEmpty())
     {
-        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, OutError);
+        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, SlotMaps.GroupNamesByOrdinal, Slots, OutError);
         return false;
     }
     for (const int32 SlotIndex : SelectedSlots)
@@ -1055,7 +1257,8 @@ bool ResolveDriverGarmentSurface(
         Slots,
         DriverMaterialIDs,
         SlotMaps.SlotByPolygonGroup,
-        SlotMaps.SlotByTriangleGroup};
+        SlotMaps.SlotByTriangleGroup,
+        SlotMaps.GroupNamesByOrdinal};
 
     FMeshConnectedComponents Components(&Driver);
     Components.FindConnectedTriangles();
@@ -1239,7 +1442,8 @@ bool ResolveDriverGarmentSurfaceFromSlots(
         Slots,
         MaterialIDs,
         SlotMaps.SlotByPolygonGroup,
-        SlotMaps.SlotByTriangleGroup};
+        SlotMaps.SlotByTriangleGroup,
+        SlotMaps.GroupNamesByOrdinal};
     TBitArray<> SlotSelected(false, Slots.Num());
     TArray<int32> UnselectedTriangles;
     TSet<int32> UnmappedOrdinals;
@@ -1253,7 +1457,8 @@ bool ResolveDriverGarmentSurfaceFromSlots(
                 Metadata,
                 SlotIndex,
                 OutError);
-        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict)
+        if (Resolution == EDriverMaterialSlotResolutionResult::Conflict
+            || Resolution == EDriverMaterialSlotResolutionResult::Duplicate)
         {
             return false;
         }
@@ -1275,7 +1480,7 @@ bool ResolveDriverGarmentSurfaceFromSlots(
     }
     if (!UnmappedOrdinals.IsEmpty())
     {
-        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, OutError);
+        BuildUnmappableMaterialGroupsError(UnmappedOrdinals, SlotMaps.GroupNamesByOrdinal, Slots, OutError);
         return false;
     }
     for (const int32 SlotIndex : MatchedSlots)

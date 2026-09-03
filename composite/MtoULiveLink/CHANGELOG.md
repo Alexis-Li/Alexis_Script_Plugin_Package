@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve renamed Driver material slots and keep the Driver visible after a failed Refresh (Issue #35): when a source group has no imported identity match, Refresh accepts one unique current displayed match corroborated by the current LOD mapping, still prefers imported identity, and still fails closed on missing, duplicate, conflicting, or shared-slot evidence without using polygon-group ordinals as slot indices; diagnostics name the affected group and distinguish missing, duplicate, and conflicting evidence with available candidates. A failed Refresh discards stale or partial preview data, keeps Error readiness with no usable preview, and restores the bound Driver display while Model connection stays blocked.
+
 - Speed up Preview refresh Morph transfer without changing its behavior: one
   reused transient mesh and projection scratch replace the per-Morph full-mesh
   copy, so large Morph libraries refresh faster with flat peak allocation

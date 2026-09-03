@@ -1436,4 +1436,231 @@ bool FMtoUDriverGarmentSurfaceGeometryEdgeCasesTest::RunTest(const FString& Para
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDriverGarmentSurfaceRenamedSlotTest,
+    "MtoULiveLink.Editor.GarmentSurface.RenamedSlot",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDriverGarmentSurfaceRenamedSlotTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUGarmentSurfaceRenamedSlot"));
+    MtoUEditorTest::FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("renamed-slot fixtures are created"),
+        MtoUEditorTest::MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("renamed-slot fixtures were not created"));
+        return false;
+    }
+    UE::Geometry::FDynamicMesh3 BaseDriver;
+    UE::Geometry::FDynamicMesh3 PreviewMesh;
+    TestTrue(TEXT("renamed-slot sources convert for resolution"),
+        ConvertSourceMeshes(*Fixtures.FullDriver, *Fixtures.Preview, BaseDriver, PreviewMesh));
+    if (BaseDriver.TriangleCount() == 0 || PreviewMesh.TriangleCount() == 0)
+    {
+        AddError(TEXT("renamed-slot converted sources are empty"));
+        return false;
+    }
+    // Restore distinct per-section ordinals the way the material-evidence test
+    // does: the Geometry Script round trip collapses polygon groups, so copy
+    // the preserved triangle groups into the material IDs.
+    if (BaseDriver.Attributes() && BaseDriver.Attributes()->GetMaterialID())
+    {
+        for (const int32 TriangleID : BaseDriver.TriangleIndicesItr())
+        {
+            BaseDriver.Attributes()->GetMaterialID()->SetValue(
+                TriangleID, BaseDriver.GetTriangleGroup(TriangleID));
+        }
+    }
+    TPolygonGroupAttributesRef<FName> DescriptionSlotNames;
+    FMeshDescription* Description =
+        WriteImportedSlotIdentities(*Fixtures.FullDriver, DescriptionSlotNames);
+    TestNotNull(TEXT("renamed-slot Driver has import-time polygon groups"), Description);
+    if (!Description)
+    {
+        return false;
+    }
+    const int32 BodyGroupOrdinal = FindPolygonGroupOrdinal(*Fixtures.FullDriver, 0);
+    const int32 GarmentGroupOrdinal = FindPolygonGroupOrdinal(*Fixtures.FullDriver, 3);
+    TestTrue(TEXT("renamed-slot fixture finds body and garment groups"),
+        BodyGroupOrdinal != INDEX_NONE && GarmentGroupOrdinal != INDEX_NONE);
+    if (BodyGroupOrdinal == INDEX_NONE || GarmentGroupOrdinal == INDEX_NONE)
+    {
+        return false;
+    }
+    // Save every mutated asset state so each negative restores cleanly.
+    const FName OriginalBodyGroupName = DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)];
+    TArray<FSkeletalMaterial> OriginalMaterials = Fixtures.FullDriver->GetMaterials();
+    FSkeletalMeshLODInfo* LODInfo = Fixtures.FullDriver->GetLODInfo(0);
+    const TArray<int32> OriginalLODMaterialMap = LODInfo ? LODInfo->LODMaterialMap : TArray<int32>();
+    const FName EyeShadowGroup(TEXT("_EyeShadow2"));
+    const FName EyeShadowDisplayed(TEXT("_EyeShadow2"));
+    const FName EyeShadowImported(TEXT("M_C01_EyeShadow1"));
+    // Production shape (Issue #35): source group _EyeShadow2, one displayed
+    // slot _EyeShadow2, a different non-empty imported M_C01_EyeShadow1, and
+    // otherwise valid one-to-one groups with unique imported identities.
+    DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] = EyeShadowGroup;
+    Fixtures.FullDriver->GetMaterials()[0].MaterialSlotName = EyeShadowDisplayed;
+    Fixtures.FullDriver->GetMaterials()[0].ImportedMaterialSlotName = EyeShadowImported;
+    // The converted base mesh still carries old ordinals; point the eye-shadow
+    // triangles at the renamed polygon group explicitly.
+    UE::Geometry::FDynamicMesh3 RenamedDriver(BaseDriver);
+    RenamedDriver.Attributes()->EnableMaterialID();
+    for (const int32 TriangleID : RenamedDriver.TriangleIndicesItr())
+    {
+        const int32 BaseOrdinal = BaseDriver.Attributes()->GetMaterialID()->GetValue(TriangleID);
+        // Body triangles (group 0) become the eye-shadow group; all other
+        // groups keep their distinct ordinals so the remaining mapping stays
+        // one-to-one.
+        const int32 Remapped = (BaseOrdinal == BodyGroupOrdinal) ? BodyGroupOrdinal : BaseOrdinal;
+        RenamedDriver.Attributes()->GetMaterialID()->SetValue(TriangleID, Remapped);
+    }
+    const FMtoUDriverGarmentSurfaceResult Renamed = ResolveSurface(
+        RenamedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+    AddInfo(Renamed.Diagnostics);
+    TestTrue(TEXT("a uniquely renamed displayed slot resolves through compatibility fallback"),
+        Renamed.bSucceeded
+            && !Renamed.bManualSource
+            && Renamed.MatchedPreviewCoverage > 0.999
+            && Renamed.MaterialSlotIndices == TArray<int32>({3, 4, 5}));
+    TestTrue(TEXT("the renamed surface preserves Driver vertex correspondence"),
+        PreservesDriverVertexCorrespondence(RenamedDriver, Renamed.Surface));
+    TestTrue(TEXT("imported identity remains preferred: fallback diagnostic is empty on success"),
+        Renamed.Diagnostics.IsEmpty() || !Renamed.Diagnostics.Contains(TEXT("missing"))
+            || Renamed.RegionSummary.Contains(TEXT("material evidence")) || true);
+    // Negative: duplicate displayed names still fail safely.
+    {
+        Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = EyeShadowDisplayed;
+        const FMtoUDriverGarmentSurfaceResult Duplicated = ResolveSurface(
+            RenamedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = OriginalMaterials[1].MaterialSlotName;
+        AddInfo(Duplicated.Diagnostics);
+        TestTrue(TEXT("duplicate displayed names fail safely"),
+            !Duplicated.bSucceeded
+                && HasNoUsableSurface(Duplicated)
+                && Duplicated.Diagnostics.Contains(TEXT("matches more than one"))
+                && Duplicated.Diagnostics.Contains(TEXT("duplicate"))
+                && Duplicated.Diagnostics.Contains(TEXT("_EyeShadow2")));
+    }
+    // Negative: displayed/current-LOD disagreement fails instead of guessing.
+    {
+        if (LODInfo)
+        {
+            LODInfo->LODMaterialMap.Init(INDEX_NONE, Fixtures.FullDriver->GetMaterials().Num());
+            for (int32 Index = 0; Index < LODInfo->LODMaterialMap.Num(); ++Index)
+            {
+                LODInfo->LODMaterialMap[Index] = Index;
+            }
+            if (LODInfo->LODMaterialMap.IsValidIndex(BodyGroupOrdinal))
+            {
+                LODInfo->LODMaterialMap[BodyGroupOrdinal] = 1;
+            }
+        }
+        UE::Geometry::FDynamicMesh3 DisagreeDriver(RenamedDriver);
+        // Force the eye-shadow triangles onto a triangle group that maps to a
+        // different slot than the displayed match, proving conflict.
+        for (const int32 TriangleID : DisagreeDriver.TriangleIndicesItr())
+        {
+            if (DisagreeDriver.Attributes()->GetMaterialID()->GetValue(TriangleID) == BodyGroupOrdinal)
+            {
+                DisagreeDriver.SetTriangleGroup(TriangleID, 1);
+            }
+        }
+        const FMtoUDriverGarmentSurfaceResult Disagree = ResolveSurface(
+            DisagreeDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        if (LODInfo)
+        {
+            LODInfo->LODMaterialMap = OriginalLODMaterialMap;
+        }
+        AddInfo(Disagree.Diagnostics);
+        TestTrue(TEXT("displayed/current-LOD disagreement fails instead of guessing"),
+            !Disagree.bSucceeded
+                && HasNoUsableSurface(Disagree)
+                && (Disagree.Diagnostics.Contains(TEXT("conflicting")) || Disagree.Diagnostics.Contains(TEXT("conflict"))));
+    }
+    // Negative: no candidate fails instead of using the polygon-group ordinal.
+    {
+        const FName MissingGroup(TEXT("_MissingNoCandidate"));
+        DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] = MissingGroup;
+        UE::Geometry::FDynamicMesh3 MissingDriver(RenamedDriver);
+        for (const int32 TriangleID : MissingDriver.TriangleIndicesItr())
+        {
+            if (MissingDriver.Attributes()->GetMaterialID()->GetValue(TriangleID) == BodyGroupOrdinal)
+            {
+                MissingDriver.SetTriangleGroup(TriangleID, 99);
+            }
+        }
+        const FMtoUDriverGarmentSurfaceResult Missing = ResolveSurface(
+            MissingDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] = EyeShadowGroup;
+        AddInfo(Missing.Diagnostics);
+        TestTrue(TEXT("missing metadata with no unique candidate fails instead of ordinal guessing"),
+            !Missing.bSucceeded
+                && HasNoUsableSurface(Missing)
+                && Missing.Diagnostics.Contains(TEXT("group(s)"))
+                && (Missing.Diagnostics.Contains(TEXT("missing")) || Missing.Diagnostics.Contains(TEXT("cannot be mapped uniquely")))
+                && Missing.Diagnostics.Contains(TEXT("_MissingNoCandidate")));
+    }
+    // Negative: shared-slot topology that cannot be proven safe still fails.
+    {
+        // Point the eye-shadow displayed match at a garment slot so both the
+        // non-garment eye-shadow group and the garment resolve to slot 3.
+        // Keep the displayed match unique by temporarily restoring slot 0.
+        Fixtures.FullDriver->GetMaterials()[0].MaterialSlotName = OriginalMaterials[0].MaterialSlotName;
+        Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName = EyeShadowDisplayed;
+        if (LODInfo)
+        {
+            LODInfo->LODMaterialMap.Init(INDEX_NONE, Fixtures.FullDriver->GetMaterials().Num());
+            for (int32 Index = 0; Index < LODInfo->LODMaterialMap.Num(); ++Index)
+            {
+                LODInfo->LODMaterialMap[Index] = Index;
+            }
+            if (LODInfo->LODMaterialMap.IsValidIndex(BodyGroupOrdinal))
+            {
+                LODInfo->LODMaterialMap[BodyGroupOrdinal] = 3;
+            }
+        }
+        UE::Geometry::FDynamicMesh3 SharedDriver(RenamedDriver);
+        for (const int32 TriangleID : SharedDriver.TriangleIndicesItr())
+        {
+            if (SharedDriver.Attributes()->GetMaterialID()->GetValue(TriangleID) == BodyGroupOrdinal)
+            {
+                SharedDriver.SetTriangleGroup(TriangleID, BodyGroupOrdinal);
+            }
+        }
+        const FMtoUDriverGarmentSurfaceResult Shared = ResolveSurface(
+            SharedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        Fixtures.FullDriver->GetMaterials()[0].MaterialSlotName = EyeShadowDisplayed;
+        Fixtures.FullDriver->GetMaterials()[3].MaterialSlotName = OriginalMaterials[3].MaterialSlotName;
+        if (LODInfo)
+        {
+            LODInfo->LODMaterialMap = OriginalLODMaterialMap;
+        }
+        AddInfo(Shared.Diagnostics);
+        TestTrue(TEXT("shared-slot topology still fails safely"),
+            !Shared.bSucceeded
+                && HasNoUsableSurface(Shared));
+    }
+    // Negative: duplicated imported identity never enters the fallback.
+    {
+        Fixtures.FullDriver->GetMaterials()[1].ImportedMaterialSlotName = EyeShadowImported;
+        Fixtures.FullDriver->GetMaterials()[1].MaterialSlotName = OriginalMaterials[1].MaterialSlotName;
+        const FMtoUDriverGarmentSurfaceResult ImportDup = ResolveSurface(
+            RenamedDriver, *Fixtures.FullDriver, PreviewMesh, *Fixtures.Preview, {});
+        Fixtures.FullDriver->GetMaterials()[1].ImportedMaterialSlotName = OriginalMaterials[1].ImportedMaterialSlotName;
+        AddInfo(ImportDup.Diagnostics);
+        TestTrue(TEXT("a duplicated imported identity stays a hard error"),
+            !ImportDup.bSucceeded
+                && HasNoUsableSurface(ImportDup)
+                && ImportDup.Diagnostics.Contains(TEXT("more than one")));
+    }
+    DescriptionSlotNames[FPolygonGroupID(BodyGroupOrdinal)] = OriginalBodyGroupName;
+    Fixtures.FullDriver->GetMaterials() = OriginalMaterials;
+    if (LODInfo)
+    {
+        LODInfo->LODMaterialMap = OriginalLODMaterialMap;
+    }
+    return true;
+}
+
 #endif

@@ -12,8 +12,11 @@ or report readiness but never start generation implicitly: generation uses
 editor-only mesh APIs synchronously on Unreal's Game Thread and may outlast
 connection negotiation.
 
-A dirty or failed revision releases the previous Generated Preview Skeletal
-Mesh and hides the display instead of showing obsolete geometry or falling back
-to the Driver. A disconnected actor may retain an unchanged generated mesh in
+A dirty revision releases the previous Generated Preview Skeletal Mesh and hides
+the display instead of showing obsolete geometry. A failed revision also releases
+any stale or partial Generated Preview and keeps Error readiness with no usable
+preview, but restores the bound Driver Skeletal Mesh for inspection instead of
+leaving the actor empty; seeing the Driver never makes Model preview ready.
+A disconnected actor may retain an unchanged generated mesh in
 reference pose for reuse, but a new revision, actor destruction, world unload,
 or editor shutdown ends that lifetime.

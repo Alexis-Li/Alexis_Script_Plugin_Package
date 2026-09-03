@@ -665,7 +665,8 @@ bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
         && Failed.GeneratedPreview == nullptr
         && Failed.State == EMtoUPreviewState::Error
         && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
 
     const FProperty* GeneratedProperty = FindFProperty<FProperty>(
         AMtoULiveLinkActor::StaticClass(), TEXT("GeneratedPreviewMesh"));
@@ -988,13 +989,14 @@ bool FMtoUPreviewMorphProjectionTest::RunTest(const FString& Parameters)
         Driver, FName(TEXT("BrokenRequired")), RF_Transient));
     const FMtoUPreviewReadiness FailedRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-    TestTrue(TEXT("one required Morph failure transactionally discards and hides the preview"),
+    TestTrue(TEXT("one required Morph failure transactionally discards stale preview and restores the Driver"),
         !FailedRefresh.IsUsable()
         && FailedRefresh.GeneratedPreview == nullptr
         && FailedRefresh.Stage == EMtoUPreviewBuildStage::SkeletalMeshBuild
         && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && !Actor->GetPreviewReadiness().IsUsable()
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver
         && !SecondLibrary.IsValid());
 
     if (World)
@@ -1363,13 +1365,14 @@ bool FMtoUPreviewMisalignmentTest::RunTest(const FString& Parameters)
     const FMtoUPreviewReadiness Failed =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-    TestTrue(TEXT("a misaligned Refresh transactionally discards and hides the stale preview"),
+    TestTrue(TEXT("a misaligned Refresh transactionally discards stale preview and restores the Driver"),
         !Failed.IsUsable()
         && Failed.GeneratedPreview == nullptr
         && Failed.State == EMtoUPreviewState::Error
         && Failed.Stage == EMtoUPreviewBuildStage::GeometryConversion
         && !StaleMesh.IsValid()
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
 
     Binding->PreviewStaticMesh = AlignedPreview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
@@ -1705,7 +1708,8 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
         && Partial.State == EMtoUPreviewState::Error
         && Partial.Stage == EMtoUPreviewBuildStage::GeometryConversion
         && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver);
 
     // Driver Reimport invalidates readiness, and a stale override keeps
     // failing through RefreshActor instead of silently returning to Auto.
@@ -1736,7 +1740,9 @@ bool FMtoUPreviewGarmentOverrideTest::RunTest(const FString& Parameters)
         !Stale.IsUsable()
         && Stale.GeneratedPreview == nullptr
         && Stale.Diagnostics.Contains(TEXT("unknown Driver material slot"))
-        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error);
+        && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver);
 
     // Clearing the override recovers the safe automatic preview.
     Binding->DriverGarmentSlotOverride.Reset();
@@ -2232,14 +2238,15 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     Binding->PostEditChangeProperty(PreviewInputChanged);
     const FMtoUPreviewReadiness NaNRefresh =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
-    TestTrue(TEXT("a NaN Refresh commits no partial Generated Preview and preserves actor readiness"),
+    TestTrue(TEXT("a NaN Refresh discards stale preview and restores the Driver"),
         !NaNRefresh.IsUsable()
         && NaNRefresh.GeneratedPreview == nullptr
         && NaNRefresh.State == EMtoUPreviewState::Error
         && NaNRefresh.Stage == EMtoUPreviewBuildStage::GeometryConversion
         && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && !Actor->GetPreviewReadiness().IsUsable()
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
 
     Binding->PreviewStaticMesh = ValidPreview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
@@ -2369,14 +2376,15 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     Binding->PostEditChangeProperty(PreviewInputChanged);
     const FMtoUPreviewReadiness CollinearRefresh =
         FMtoUPreviewPreparation::RefreshActor(*Actor);
-    TestTrue(TEXT("a collinear Refresh commits no partial Generated Preview and preserves actor readiness"),
+    TestTrue(TEXT("a collinear Refresh discards stale preview and restores the Driver"),
         !CollinearRefresh.IsUsable()
         && CollinearRefresh.GeneratedPreview == nullptr
         && CollinearRefresh.State == EMtoUPreviewState::Error
         && CollinearRefresh.Stage == EMtoUPreviewBuildStage::GeometryConversion
         && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
         && !Actor->GetPreviewReadiness().IsUsable()
-        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
 
     Binding->PreviewStaticMesh = ValidPreview;
     Binding->PostEditChangeProperty(PreviewInputChanged);
@@ -2512,6 +2520,126 @@ bool FMtoUPreviewRefreshBenchmarkTest::RunTest(const FString& Parameters)
         }
     }
 
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewRenamedSlotTest,
+    "MtoULiveLink.Editor.Preview.RenamedSlot",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewRenamedSlotTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUPreviewRenamedSlotWorld"));
+    MtoUEditorTest::FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("renamed preview fixtures are created"),
+        MtoUEditorTest::MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("renamed preview fixtures were not created"));
+        return false;
+    }
+    // Production shape: source group _EyeShadow2 with one displayed match and
+    // a different non-empty imported identity; all other groups stay 1-1.
+    // Body lives at slot/group 0 in the deterministic fixture.
+    const FName EyeShadowGroup(TEXT("_EyeShadow2"));
+    const FName EyeShadowImported(TEXT("M_C01_EyeShadow1"));
+    FMeshDescription* Description = Fixtures.FullDriver->GetMeshDescription(0);
+    TestNotNull(TEXT("renamed preview Driver has LOD0 source data"), Description);
+    if (!Description)
+    {
+        return false;
+    }
+    FStaticMeshAttributes DescAttributes(*Description);
+    TPolygonGroupAttributesRef<FName> GroupNames = DescAttributes.GetPolygonGroupMaterialSlotNames();
+    FPolygonGroupID BodyGroupID(0);
+    bool bFoundBodyGroup = false;
+    const FName BodyImported = Fixtures.FullDriver->GetMaterials()[0].ImportedMaterialSlotName != NAME_None
+        ? Fixtures.FullDriver->GetMaterials()[0].ImportedMaterialSlotName
+        : Fixtures.FullDriver->GetMaterials()[0].MaterialSlotName;
+    for (const FPolygonGroupID GroupID : Description->PolygonGroups().GetElementIDs())
+    {
+        if (GroupNames[GroupID] == BodyImported)
+        {
+            BodyGroupID = GroupID;
+            bFoundBodyGroup = true;
+            break;
+        }
+    }
+    TestTrue(TEXT("renamed preview finds the Body source group"), bFoundBodyGroup);
+    if (!bFoundBodyGroup)
+    {
+        return false;
+    }
+    const FName OriginalGroup0 = GroupNames[BodyGroupID];
+    GroupNames[BodyGroupID] = EyeShadowGroup;
+    TArray<FSkeletalMaterial> OriginalMaterials = Fixtures.FullDriver->GetMaterials();
+    Fixtures.FullDriver->GetMaterials()[0].MaterialSlotName = EyeShadowGroup;
+    Fixtures.FullDriver->GetMaterials()[0].ImportedMaterialSlotName = EyeShadowImported;
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUPreviewRenamedSlotWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Binding->SkeletalMesh = Fixtures.FullDriver;
+    Binding->PreviewStaticMesh = Fixtures.Preview;
+    if (!Actor)
+    {
+        AddError(TEXT("renamed preview world was not created"));
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    const FMtoUPreviewPreparationResult Prepared = MtoUPreparePreview(*Actor, *Binding);
+    AddInfo(Prepared.Diagnostics);
+    TestTrue(TEXT("renamed production shape prepares a usable preview"),
+        Prepared.bSucceeded && Prepared.GeneratedPreview != nullptr);
+    TestTrue(TEXT("renamed preview keeps body/face/hair/garment composition"),
+        Prepared.DriverGarmentMaterialSlotIndices == TArray<int32>({3, 4, 5})
+            && Prepared.GarmentSourceRegionCount >= 2
+            && Prepared.MatchedPreviewCoverage > 0.999);
+    const FMtoUPreviewReadiness Ready = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("renamed Refresh completes with a usable Generated Preview"),
+        Ready.IsUsable() && Ready.GeneratedPreview != nullptr
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Ready.GeneratedPreview);
+    TWeakObjectPtr<USkeletalMesh> StalePreview = Ready.GeneratedPreview;
+    UStaticMesh* MisalignedPreview = MakePreview(*Fixtures.FullDriver, *WorldPackage, false, false, false, true);
+    TestNotNull(TEXT("misaligned failure preview is created"), MisalignedPreview);
+    TStrongObjectPtr<UStaticMesh> MisalignedGuard(MisalignedPreview);
+    UStaticMesh* AlignedPreview = Fixtures.Preview;
+    TStrongObjectPtr<UStaticMesh> AlignedGuard(AlignedPreview);
+    Binding->PreviewStaticMesh = MisalignedPreview;
+    const FMtoUPreviewReadiness Failed = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("failed Refresh keeps Error, no usable preview, and Driver display"),
+        !Failed.IsUsable()
+            && Failed.GeneratedPreview == nullptr
+            && Failed.State == EMtoUPreviewState::Error
+            && !Actor->GetPreviewReadiness().IsUsable()
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver
+            && !StalePreview.IsValid());
+    TestTrue(TEXT("Binding Driver and Preview references remain intact after failure"),
+        Binding->SkeletalMesh == Fixtures.FullDriver && Binding->PreviewStaticMesh == MisalignedPreview);
+    TestTrue(TEXT("Model remains blocked without a usable preview"),
+        !Actor->GetPreviewReadiness().IsUsable());
+    Actor->ShowDriverMesh();
+    TestTrue(TEXT("Animation connection continues to select the bound Driver"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver);
+    // Correct the input and retry without recreating the actor.
+    Binding->PreviewStaticMesh = AlignedPreview;
+    const FMtoUPreviewReadiness Recovered = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("retry after correcting metadata recovers without a new actor"),
+        Recovered.IsUsable()
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
+    GroupNames[BodyGroupID] = OriginalGroup0;
+    Fixtures.FullDriver->GetMaterials() = OriginalMaterials;
     if (World)
     {
         World->DestroyWorld(false);

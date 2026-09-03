@@ -72,7 +72,8 @@ Maya 与 Unreal 组件必须来自同一版本。
    材质槽，并用生成的 Preview 替换解析出的原服装材质槽；Driver 独有的脸部、
    头发 Morph Target 也会继续接收 Maya 中的同名曲线。服装与非服装几何体应使用
    不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
-   其他部分。
+   其他部分。Refresh 失败时会保持 Error 状态且无可用预览，但会恢复显示已绑定的
+   Driver 以便检查；在下一次 Refresh 成功之前，模型连接仍会被阻止。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
    Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
    所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：
