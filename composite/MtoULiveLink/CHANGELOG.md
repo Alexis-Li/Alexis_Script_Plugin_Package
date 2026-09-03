@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Speed up Preview refresh Morph transfer without changing its behavior: one
+  reused transient mesh and projection scratch replace the per-Morph full-mesh
+  copy, so large Morph libraries refresh faster with flat peak allocation
+  while geometry, skin weights, Morph coverage, diagnostics, readiness, and
+  the explicit refresh boundary stay identical.
 - Align the English and Chinese user documentation with the supported
   workflow: the MtoU_LiveLink Binding Actor is created by dragging a Binding
   asset into the level, the actor's Binding reference is visible but not an

@@ -294,6 +294,27 @@ bool GeneratePreviewMorphs(
 
     const FSkeletalMeshLODModel& DriverLOD = DriverModel->LODModels[0];
     const FDynamicMesh3& PreviewMesh = PreviewDynamic.GetMeshRef();
+    // Reused projection scratch: the Preview topology never changes across
+    // Morphs, so one transient mesh plus dense delta buffers replace one
+    // full Dynamic Mesh copy, one UObject, and two zeroed arrays per Morph.
+    // Each Morph resets every scratch position from the captured base plus
+    // its own interpolated delta, which matches the previous fresh-copy
+    // result exactly while keeping peak allocation flat in library size.
+    TArray<FVector3f> DriverPointDeltas;
+    DriverPointDeltas.SetNumZeroed(DriverMesh.MaxVertexID());
+    TBitArray<> AssignedDriverPoints(false, DriverMesh.MaxVertexID());
+    TArray<int32> TouchedDriverPoints;
+    TouchedDriverPoints.Reserve(FMath::Max(1, DriverMesh.VertexCount()));
+    TArray<FVector3f> PreviewPointDeltas;
+    PreviewPointDeltas.SetNum(PreviewMesh.MaxVertexID());
+    TArray<FVector3d> BasePositions;
+    BasePositions.SetNum(PreviewMesh.MaxVertexID());
+    for (const int32 PreviewVertexID : PreviewMesh.VertexIndicesItr())
+    {
+        BasePositions[PreviewVertexID] = PreviewMesh.GetVertex(PreviewVertexID);
+    }
+    UDynamicMesh* ScratchMorphMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+    ScratchMorphMesh->SetMesh(FDynamicMesh3(PreviewMesh));
     for (const TObjectPtr<UMorphTarget>& DriverMorph : DriverAsset.GetMorphTargets())
     {
         if (!DriverMorph || !DriverMorph->HasDataForLOD(0))
@@ -304,9 +325,7 @@ bool GeneratePreviewMorphs(
             return false;
         }
 
-        TArray<FVector3f> DriverPointDeltas;
-        DriverPointDeltas.SetNumZeroed(DriverMesh.MaxVertexID());
-        TBitArray<> AssignedDriverPoints(false, DriverMesh.MaxVertexID());
+        TouchedDriverPoints.Reset();
         for (const FMorphTargetDelta& Delta : DriverMorph->GetMorphTargetDeltas(0))
         {
             if (!DriverLOD.MeshToImportVertexMap.IsValidIndex(Delta.SourceIdx))
@@ -324,20 +343,22 @@ bool GeneratePreviewMorphs(
                 // Preview; only deltas on the resolved surface are projected.
                 continue;
             }
-            if (AssignedDriverPoints[DriverPointID]
-                && !DriverPointDeltas[DriverPointID].Equals(Delta.PositionDelta, 1.0e-4f))
+            if (AssignedDriverPoints[DriverPointID])
             {
-                OutError = FString::Printf(
-                    TEXT("Driver Morph '%s' has inconsistent position deltas across a source seam."),
-                    *DriverMorph->GetName());
-                return false;
+                if (!DriverPointDeltas[DriverPointID].Equals(Delta.PositionDelta, 1.0e-4f))
+                {
+                    OutError = FString::Printf(
+                        TEXT("Driver Morph '%s' has inconsistent position deltas across a source seam."),
+                        *DriverMorph->GetName());
+                    return false;
+                }
+                continue;
             }
             AssignedDriverPoints[DriverPointID] = true;
             DriverPointDeltas[DriverPointID] = Delta.PositionDelta;
+            TouchedDriverPoints.Add(DriverPointID);
         }
 
-        TArray<FVector3f> PreviewPointDeltas;
-        PreviewPointDeltas.SetNumZeroed(PreviewMesh.MaxVertexID());
         for (const int32 PreviewVertexID : PreviewMesh.VertexIndicesItr())
         {
             if (!Correspondence.IsValidIndex(PreviewVertexID))
@@ -361,21 +382,24 @@ bool GeneratePreviewMorphs(
                 + DriverPointDeltas[Mapping.DriverTriangle.C] * Mapping.Barycentric.Z;
         }
 
-        UDynamicMesh* MorphMesh = NewObject<UDynamicMesh>(GetTransientPackage());
-        MorphMesh->SetMesh(FDynamicMesh3(PreviewMesh));
         int32 ProjectedDeltaCount = 0;
-        MorphMesh->EditMesh([&PreviewPointDeltas, &ProjectedDeltaCount](FDynamicMesh3& Mesh)
+        ScratchMorphMesh->EditMesh([&PreviewPointDeltas, &BasePositions, &ProjectedDeltaCount](FDynamicMesh3& Mesh)
         {
             for (const int32 VertexID : Mesh.VertexIndicesItr())
             {
                 const FVector3f Delta = PreviewPointDeltas[VertexID];
+                Mesh.SetVertex(VertexID, BasePositions[VertexID] + FVector3d(Delta));
                 if (!Delta.IsNearlyZero())
                 {
-                    Mesh.SetVertex(VertexID, Mesh.GetVertex(VertexID) + FVector3d(Delta));
                     ++ProjectedDeltaCount;
                 }
             }
         });
+        for (const int32 DriverPointID : TouchedDriverPoints)
+        {
+            DriverPointDeltas[DriverPointID] = FVector3f::Zero();
+            AssignedDriverPoints[DriverPointID] = false;
+        }
         if (ProjectedDeltaCount == 0)
         {
             ++OutSkippedMorphCount;
@@ -390,7 +414,7 @@ bool GeneratePreviewMorphs(
         MorphLOD.LODIndex = 0;
         EGeometryScriptOutcomePins MorphOutcome = EGeometryScriptOutcomePins::Failure;
         UGeometryScriptLibrary_StaticMeshFunctions::CopyMorphTargetToSkeletalMesh(
-            MorphMesh,
+            ScratchMorphMesh,
             &Generated,
             DriverMorph->GetFName(),
             MorphOptions,

@@ -2389,5 +2389,134 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     }
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewRefreshBenchmarkTest,
+    "MtoULiveLink.Editor.Preview.RefreshBenchmark",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewRefreshBenchmarkTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUPreviewBenchmarkWorld"));
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUPreviewBenchmarkWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    if (!Actor || !Binding)
+    {
+        AddError(TEXT("benchmark world was not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+
+    auto LogAndCheck = [this, Actor, Binding, WorldPackage](
+        const TCHAR* ScaleName, USkeletalMesh* Driver, UStaticMesh* Preview,
+        int32 ExpectedMorphs, bool bExpectSuccess)
+    {
+        Binding->SkeletalMesh = Driver;
+        Binding->PreviewStaticMesh = Preview;
+        const double StartSeconds = FPlatformTime::Seconds();
+        const FMtoUPreviewPreparationResult Result = MtoUPreparePreview(*Actor, *Binding);
+        const double TotalMilliseconds = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
+        const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+        AddInfo(FString::Printf(
+            TEXT("{\"benchmark\":\"PreviewRefresh\",\"scale\":\"%s\",\"vertices\":%d,\"triangles\":%d,")
+            TEXT("\"morph_count\":%d,\"skipped_morphs\":%d,\"sparse_deltas\":%lld,")
+            TEXT("\"closest_ms\":%.3f,\"inpaint_ms\":%.3f,\"morph_projection_ms\":%.3f,")
+            TEXT("\"total_refresh_ms\":%.1f,\"used_physical_mib\":%.1f,\"peak_physical_mib\":%.1f,\"status\":\"%s\"}"),
+            ScaleName,
+            Result.VertexCount,
+            Result.TriangleCount,
+            Result.MorphTargetCount,
+            Result.SkippedMorphTargetCount,
+            Result.SparseMorphDeltaCount,
+            Result.ClosestTransferMilliseconds,
+            Result.InpaintTransferMilliseconds,
+            Result.MorphProjectionMilliseconds,
+            TotalMilliseconds,
+            Stats.UsedPhysical / (1024.0 * 1024.0),
+            Stats.PeakUsedPhysical / (1024.0 * 1024.0),
+            Result.bSucceeded
+                ? (Result.Quality == EMtoUPreviewQuality::Ready ? TEXT("Ready") : TEXT("Warning"))
+                : TEXT("Error")));
+        AddInfo(Result.Diagnostics);
+        if (bExpectSuccess)
+        {
+            TestTrue(FString::Printf(TEXT("%s builds a usable preview"), ScaleName),
+                Result.bSucceeded && Result.GeneratedPreview != nullptr);
+            TestEqual(FString::Printf(TEXT("%s projects the complete Morph library"), ScaleName),
+                Result.MorphTargetCount + Result.SkippedMorphTargetCount, ExpectedMorphs);
+            TestTrue(FString::Printf(TEXT("%s records stage timings"), ScaleName),
+                Result.ClosestTransferMilliseconds > 0.0
+                && Result.InpaintTransferMilliseconds > 0.0
+                && Result.MorphProjectionMilliseconds >= 0.0
+                && TotalMilliseconds > 0.0);
+        }
+        return Result;
+    };
+
+    // Small: stock SkeletalCube with its 5-Morph library and same-topology Preview.
+    USkeletalMesh* SmallDriver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* SmallPreview = SmallDriver ? MakePreview(*SmallDriver, *WorldPackage) : nullptr;
+    TStrongObjectPtr<USkeletalMesh> SmallDriverGuard(SmallDriver);
+    TStrongObjectPtr<UStaticMesh> SmallPreviewGuard(SmallPreview);
+    if (!SmallDriver || !SmallPreview)
+    {
+        AddError(TEXT("small benchmark fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    LogAndCheck(TEXT("Small"), SmallDriver, SmallPreview, 5, true);
+
+    // Representative: full-character Driver with garment-only Preview (4 region Morphs).
+    FMtoUFullCharacterFixtures Representative;
+    TestTrue(TEXT("representative fixtures are created"),
+        MakeFullCharacterFixtures(*WorldPackage, *this, Representative));
+    if (Representative.IsValid())
+    {
+        TStrongObjectPtr<USkeletalMesh> RepDriverGuard(Representative.FullDriver);
+        TStrongObjectPtr<USkeletalMesh> RepGarmentGuard(Representative.GarmentOnlyDriver);
+        TStrongObjectPtr<UStaticMesh> RepPreviewGuard(Representative.Preview);
+        LogAndCheck(TEXT("Representative"),
+            Representative.FullDriver, Representative.Preview,
+            Representative.FullDriver->GetMorphTargets().Num(), true);
+
+        // Production-scale: same Preview revision geometry with a 64-Morph library.
+        // The extra uniform Morphs stress the per-Morph projection path without
+        // changing the Driver/Preview revision under test.
+        const int32 BaseMorphs = Representative.FullDriver->GetMorphTargets().Num();
+        for (int32 Index = 0; Index < 60; ++Index)
+        {
+            const FName MorphName(*FString::Printf(TEXT("BenchMorph%02d"), Index));
+            const FVector3f Delta(0.1f * (Index + 1), 0.05f * (Index + 1), 0.02f * (Index + 1));
+            if (!AddUniformMorph(*Representative.FullDriver, MorphName, Delta))
+            {
+                AddError(FString::Printf(TEXT("production-scale Morph %s was not registered"), *MorphName.ToString()));
+                break;
+            }
+        }
+        Representative.FullDriver->InitMorphTargets();
+        const int32 ProductionMorphs = Representative.FullDriver->GetMorphTargets().Num();
+        TestEqual(TEXT("production-scale library holds 60 additional Morphs"),
+            ProductionMorphs, BaseMorphs + 60);
+        if (ProductionMorphs == BaseMorphs + 60)
+        {
+            LogAndCheck(TEXT("ProductionScale"),
+                Representative.FullDriver, Representative.Preview, ProductionMorphs, true);
+        }
+    }
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
 
 #endif
