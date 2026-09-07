@@ -28,7 +28,8 @@ testable, versioned, and packageable.
 
 - Make the smallest coherent change required by the task.
 - Do not refactor unrelated code.
-- Do not rename public APIs without explicit approval.
+- Rename public APIs only when the user has authorized that rename or breaking
+  migration; existing authorization does not need to be reconfirmed.
 - Do not add machine-specific absolute paths.
 - Do not commit secrets, credentials, personal paths, caches, or generated files.
 - Do not modify third-party code unless explicitly required.
@@ -43,9 +44,10 @@ testable, versioned, and packageable.
   usage. Put development rules and internal details in `AGENTS.md` or `docs/`.
 - Keep platform-specific development and naming rules in the nearest platform
   `AGENTS.md`.
-- After a project is complete, integrate durable design and acceptance records
-  under `docs/project-history/<project-name>/` with stable purpose-based names.
-  Do not retain completed implementation plans as active documentation.
+- Preserve substantial, reusable design and acceptance conclusions under
+  `docs/project-history/<project-name>/` with stable purpose-based names.
+  Small fixes do not need new history documents. Do not retain completed
+  implementation plans as active documentation.
 
 ## Naming Conventions
 

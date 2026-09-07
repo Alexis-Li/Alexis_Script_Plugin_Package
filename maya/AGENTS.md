@@ -19,8 +19,10 @@ The file must expose `run()` or `main()` and execute that entry point when run
 as `__main__`. It must not depend on the repository being on `PYTHONPATH`.
 
 Move a project to `maya/tools/<ToolName>/` only when it needs a Maya plug-in,
-multiple functional files, resources, installation, tests, persistent UI,
-long-lived callbacks, custom nodes or commands, or a reusable API.
+multiple functional files, resources, installation, persistent UI,
+long-lived callbacks, custom nodes or commands, or a reusable API. A small
+regression test may live beside a shelf script; tests alone do not require
+a move to `maya/tools/`.
 
 ## Tool Layout
 
@@ -61,9 +63,10 @@ explicit requirement. Declare the version once as `__version__` or
 
 ## Python Compatibility
 
-- Make Maya runtime code compatible with both Python 2 and Python 3 when
-  practical. If one implementation cannot support both, prioritize Python 3
-  and state the supported Maya versions in the project README.
+- Target the Maya versions requested by the user or declared by the project.
+  Preserve existing supported versions. For new tools without a legacy target,
+  use the available Python 3 host and state the supported versions; add Python 2
+  compatibility only when a target host requires it.
 - For dual-compatible files, avoid Python-3-only syntax and APIs, use explicit
   compatibility shims only where needed, and test in both host generations
   before claiming support.

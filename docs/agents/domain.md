@@ -43,9 +43,9 @@ durable.
 first real context rather than as an empty placeholder. Create context files
 and ADR directories lazily; their presence is not required before work begins.
 
-When work is completed, integrate its durable architecture, migration, and
-acceptance conclusions into `docs/project-history/<project>/` according to the
-repository documentation rules.
+Preserve substantial, reusable architecture, migration, and acceptance
+conclusions in `docs/project-history/<project>/` according to the repository
+rules. Small fixes do not require new history documents.
 
 ## Vocabulary
 

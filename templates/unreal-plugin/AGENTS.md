@@ -3,4 +3,5 @@
 - Keep the plugin independently buildable and installable.
 - Put editor-only behavior in the Editor module.
 - Keep implementation details in `Private/`.
-- Update the descriptor, changelog, tests, and documentation together.
+- Update the descriptor, changelog, tests, and documentation only where the
+  change affects their behavior, version, installation, or public contract.
