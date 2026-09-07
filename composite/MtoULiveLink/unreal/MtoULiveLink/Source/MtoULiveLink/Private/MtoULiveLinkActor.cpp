@@ -114,6 +114,12 @@ bool AMtoULiveLinkActor::BeginPreviewBuild()
         return false;
     }
 
+    // An explicit refresh ends any active session owning the Binding Actor
+    // before replacing its display (Issue #39). The idempotent boundary is
+    // also the synchronous publish gate: old queued frames and cached
+    // commands fail closed from here, without waiting for the worker to
+    // close the socket. A rejected reentrant start above never terminates.
+    MtoURequestStreamingSessionEnd();
     ReleaseGeneratedPreview();
     HideDisplay();
     PreviewState = EMtoUPreviewState::Building;

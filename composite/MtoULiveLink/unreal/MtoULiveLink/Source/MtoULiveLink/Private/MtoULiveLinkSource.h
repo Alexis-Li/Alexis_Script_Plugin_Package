@@ -20,8 +20,13 @@ class FSocket;
  * new Preview revision can never receive frames negotiated for an older
  * Character snapshot. Requests made while no session is active are no-ops;
  * a new connection is always required to stream the newer revision.
+ * An explicit Preview refresh ends its actor's session through the same
+ * boundary before replacing the display (Issue #39).
  */
 void MtoURequestStreamingSessionEnd();
+
+/** Current value of the idempotent termination counter for publish gating. */
+uint64 MtoUGetStreamingSessionEndCount();
 
 /**
  * The world-unload seam of the same idempotent termination boundary: the
@@ -56,7 +61,7 @@ struct FMtoUPendingFrame
     FMtoUFrameMessage Message;
 };
 
-class FMtoULiveLinkSource final : public ILiveLinkSource,
+class MTOULIVELINK_API FMtoULiveLinkSource final : public ILiveLinkSource,
                                   public FRunnable,
                                   public TSharedFromThis<FMtoULiveLinkSource>
 {
@@ -95,6 +100,12 @@ private:
         const FString& Message,
         const FString& Details = FString());
     bool IsCurrentSession(uint64 SessionId) const;
+    // True only while the session still owns GameThread publication: the
+    // worker still considers it current and no explicit refresh has ended it
+    // since negotiation. A refresh increments the termination counter before
+    // replacing the display, so old queued frames and cached commands fail
+    // this gate synchronously without waiting for the worker to close.
+    bool IsSessionPublishableOnGameThread(uint64 SessionId) const;
     void SetStatus(const FString& InStatus);
 
     const uint16 ConfiguredPort;
@@ -117,6 +128,11 @@ private:
     FGuid SourceGuid;
     FLiveLinkSubjectKey SubjectKey;
     uint64 GameThreadSession = 0;
+    // Termination-counter value observed when GameThreadSession was
+    // negotiated. An explicit refresh increments the counter before replacing
+    // the display, so any later publish for the older epoch fails closed even
+    // before the worker closes the socket.
+    uint64 GameThreadSessionEndEpoch = 0;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
     // Authoritative character snapshot revision from the accepted init.

@@ -134,6 +134,11 @@ void MtoURequestStreamingSessionEnd()
     ++GStreamingSessionEndRequests;
 }
 
+uint64 MtoUGetStreamingSessionEndCount()
+{
+    return GStreamingSessionEndRequests.Load();
+}
+
 void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
     (void)bSessionEnded;
@@ -166,7 +171,7 @@ FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
         [this](int32 PlayId, int32 AppliedFrames)
     {
         const uint64 SessionId = GameThreadSession;
-        if (SessionId == 0 || !IsCurrentSession(SessionId))
+        if (SessionId == 0 || !IsSessionPublishableOnGameThread(SessionId))
         {
             return;
         }
@@ -246,8 +251,19 @@ void FMtoULiveLinkSource::Update()
     }
     if (Init.IsSet() && IsCurrentSession(Init->SessionId))
     {
-        GameThreadSession = Init->SessionId;
-        HandleInitOnGameThread(MoveTemp(Init->Message));
+        // An explicit refresh increments the termination counter before
+        // replacing the display. An init queued for the replaced session must
+        // never negotiate after the refresh started; only a new session id
+        // may establish a new epoch and stream the newer revision.
+        const bool bStaleInitForReplacedSession = Init->SessionId == GameThreadSession
+            && GameThreadSession != 0
+            && MtoUGetStreamingSessionEndCount() != GameThreadSessionEndEpoch;
+        if (!bStaleInitForReplacedSession)
+        {
+            GameThreadSession = Init->SessionId;
+            GameThreadSessionEndEpoch = MtoUGetStreamingSessionEndCount();
+            HandleInitOnGameThread(MoveTemp(Init->Message));
+        }
     }
     HandleCacheCommandsOnGameThread();
 
@@ -1219,7 +1235,8 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
     FMtoUCacheCommand Command;
     while (CacheCommands.TryConsume(Command))
     {
-        if (Command.SessionId != GameThreadSession || GameThreadSession == 0)
+        if (Command.SessionId != GameThreadSession || GameThreadSession == 0
+            || !IsSessionPublishableOnGameThread(Command.SessionId))
         {
             continue;
         }
@@ -1241,7 +1258,7 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
             // Realtime is off. Terminated sessions never re-enable.
             if (CacheSession.GetState() == EMtoUCacheState::Idle
                 && GameThreadSession != 0
-                && IsCurrentSession(GameThreadSession)
+                && IsSessionPublishableOnGameThread(GameThreadSession)
                 && bSourceValid.Load())
             {
                 SetEditorViewportRealtimeOverride(true);
@@ -1298,7 +1315,7 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
                 // base setting is preserved. Terminated sessions only remove.
                 if (bSourceValid.Load()
                     && GameThreadSession != 0
-                    && IsCurrentSession(GameThreadSession))
+                    && IsSessionPublishableOnGameThread(GameThreadSession))
                 {
                     SetEditorViewportRealtimeOverride(true);
                 }
@@ -1323,9 +1340,19 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
 
     // Drive local replay and report exactly one outcome per attempt:
     // completion with applied-frame evidence, or a stable performance error.
-    if (CacheSession.GetState() == EMtoUCacheState::Playing)
+    // A replaced session never advances local replay: its Tick and outcome
+    // stay gated here and its publishes fail closed below.
+    const bool bSessionPublishable = GameThreadSession != 0
+        && IsSessionPublishableOnGameThread(GameThreadSession);
+    if (CacheSession.GetState() == EMtoUCacheState::Playing && bSessionPublishable)
     {
         CacheSession.Tick();
+    }
+    if (bPlaybackOutcomePending && !bSessionPublishable)
+    {
+        // The owning session was replaced: its completion or failure must
+        // never reach the new revision. The disconnect path resets the cache.
+        bPlaybackOutcomePending = false;
     }
     if (bPlaybackOutcomePending)
     {
@@ -1421,7 +1448,7 @@ bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheComma
 void FMtoULiveLinkSource::EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter)
 {
     check(IsInGameThread());
-    if (!IsCurrentSession(SessionId))
+    if (!IsSessionPublishableOnGameThread(SessionId))
     {
         return;
     }
@@ -1446,6 +1473,7 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     }
     if (!Frame.IsSet()
         || Frame->SessionId != GameThreadSession
+        || !IsSessionPublishableOnGameThread(Frame->SessionId)
         || !Client
         || !SourceGuid.IsValid())
     {
@@ -1453,11 +1481,14 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     }
     PublishFrameOnGameThread(Frame->Message);
 }
-
 bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Frame)
 {
     check(IsInGameThread());
     if (!Client || !SourceGuid.IsValid())
+    {
+        return false;
+    }
+    if (GameThreadSession == 0 || !IsSessionPublishableOnGameThread(GameThreadSession))
     {
         return false;
     }
@@ -1504,7 +1535,7 @@ void FMtoULiveLinkSource::EnqueueErrorOnGameThread(
     const FString& Details)
 {
     check(IsInGameThread());
-    if (!IsCurrentSession(GameThreadSession))
+    if (!IsSessionPublishableOnGameThread(GameThreadSession))
     {
         return;
     }
@@ -1520,6 +1551,20 @@ bool FMtoULiveLinkSource::IsCurrentSession(uint64 SessionId) const
 {
     FScopeLock Lock(&PendingMutex);
     return SessionId != 0 && CurrentWorkerSession == SessionId;
+}
+
+bool FMtoULiveLinkSource::IsSessionPublishableOnGameThread(uint64 SessionId) const
+{
+    check(IsInGameThread());
+    if (SessionId == 0 || SessionId != GameThreadSession)
+    {
+        return false;
+    }
+    if (MtoUGetStreamingSessionEndCount() != GameThreadSessionEndEpoch)
+    {
+        return false;
+    }
+    return IsCurrentSession(SessionId);
 }
 
 void FMtoULiveLinkSource::SetStatus(const FString& InStatus)

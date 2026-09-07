@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Scope Cached Playback upload/play identities to each Streaming session (Issue #37): a newly negotiated connection accepts its own fresh upload/play sequence starting at 1, while duplicate or stale attempts within the same session stay rejected after clear and old-session commands/outcomes can never advance the new session. Protocol v6 shapes and monotonic identity semantics are unchanged.
+- End the active Streaming session before explicit Preview refresh replaces its display (Issue #39): refresh requests termination through the existing idempotent boundary before releasing the mesh, and old queued frames plus cached commands fail the synchronous publish gate from that point without waiting for the worker to close the socket. Success still shows the Generated Preview immediately while disconnected and failure still keeps Error readiness with the Driver restored; Animation reconnect selects the Driver and Model reconnect renegotiates Morph coverage on the new display. Protocol v6 and the explicit refresh/reconnect boundary are unchanged.
 
 ## 0.4.0 - 2026-09-03
 
