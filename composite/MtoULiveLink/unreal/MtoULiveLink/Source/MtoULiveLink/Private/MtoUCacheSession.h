@@ -103,6 +103,16 @@ public:
     // per-session teardown.
     void ResetToIdle();
 
+    // Drops all streaming-session-scoped cache ownership and identity history
+    // for a newly negotiated session. Unlike ResetToIdle (which preserves
+    // LastSeen identities so same-session stale attempts stay rejected after
+    // clear), this also clears LastSeenUploadId/PlayId and the last-cleared
+    // echo so the new session accepts its own fresh upload/play sequence
+    // starting at 1. Preserves publication callbacks and negotiated
+    // validation counts/revision; the caller sets fresh counts/revision
+    // immediately after.
+    void ResetForNewStreamingSession();
+
 private:
     bool HandleEnter(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleBegin(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);

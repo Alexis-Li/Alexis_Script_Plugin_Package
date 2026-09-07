@@ -80,6 +80,16 @@ void FMtoUCacheSession::ResetToIdle()
     ActivePlayId = 0;
 }
 
+void FMtoUCacheSession::ResetForNewStreamingSession()
+{
+    ResetToIdle();
+    LastSeenUploadId = 0;
+    LastSeenPlayId = 0;
+    LastClearedUploadId = 0;
+    LastClearedPlayId = 0;
+    ErrorDetails.Reset();
+}
+
 bool FMtoUCacheSession::HandleCommand(
     const FMtoUCacheCommand& Command,
     FString& OutErrorCode,

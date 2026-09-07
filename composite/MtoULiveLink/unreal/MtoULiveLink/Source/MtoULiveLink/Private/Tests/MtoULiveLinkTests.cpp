@@ -2619,6 +2619,304 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionReconnectTest,
+    "MtoULiveLink.Source.CacheSessionReconnect",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const USkeletalMesh* TestMesh = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has the two streamed bones"),
+        TestSkeleton && TestSkeleton->GetNum() >= 2);
+    const FString RootBoneName = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TestSkeleton->GetBoneName(0).ToString()
+        : TEXT("Bone01");
+    const FString ChildBoneName = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TestSkeleton->GetBoneName(1).ToString()
+        : TEXT("Bone02");
+    const FString RootBind = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TransformJson(TestSkeleton->GetRefBonePose()[0])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
+    const FString ChildBind = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TransformJson(TestSkeleton->GetRefBonePose()[1])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        *RootBoneName,
+        *RootBind,
+        *ChildBoneName,
+        *ChildBind));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+
+    auto SendText = [&](FSocket* Client, const FString& Text) -> bool
+    {
+        if (!Client)
+        {
+            return false;
+        }
+        const TArray<uint8> Bytes = Packet(Text);
+        return SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    auto NegotiateReady = [&](FSocket* Client) -> FString
+    {
+        if (!Client || !SendBytes(*Client, Init.GetData(), Init.Num()))
+        {
+            return FString();
+        }
+        TArray<uint8> Payload;
+        if (!ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+    auto ReceiveText = [&](FSocket* Client) -> FString
+    {
+        TArray<uint8> Payload;
+        if (!Client || !ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+    auto WaitListening = [&]() -> bool
+    {
+        return PollUntil([&]()
+        {
+            Source->Update();
+            return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+        });
+    };
+    auto WaitNoSubject = [&]() -> bool
+    {
+        return PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            FLiveLinkSubjectFrameData StaleFrame;
+            return !LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
+        });
+    };
+    auto PlayToCompletion = [&](FSocket* Client, int32 PlayId, const FVector& FirstRoot,
+        const FVector& SecondRoot, FString& OutCompletion) -> bool
+    {
+        OutCompletion.Reset();
+        bool bFirstApplied = false;
+        bool bSecondApplied = false;
+        FVector ObservedRoot = FVector::ZeroVector;
+        const bool bCompleted = PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            FLiveLinkSubjectFrameData Evaluated;
+            if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                    SubjectKey, ULiveLinkAnimationRole::StaticClass(), Evaluated))
+            {
+                if (const FLiveLinkAnimationFrameData* Animation =
+                        Evaluated.FrameData.Cast<FLiveLinkAnimationFrameData>())
+                {
+                    if (Animation->Transforms.IsValidIndex(0))
+                    {
+                        ObservedRoot = Animation->Transforms[0].GetTranslation();
+                        bFirstApplied = bFirstApplied || ObservedRoot.Equals(FirstRoot);
+                        bSecondApplied = ObservedRoot.Equals(SecondRoot);
+                    }
+                }
+            }
+            if (bSecondApplied && Client)
+            {
+                uint8 Buffer[65536];
+                int32 Read = 0;
+                while (Client->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+                {
+                    OutCompletion.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+                }
+                return OutCompletion.Contains(TEXT("\"type\":\"cache_complete\""));
+            }
+            return false;
+        });
+        return bCompleted && bFirstApplied && bSecondApplied
+            && OutCompletion.Contains(FString::Printf(TEXT("\"play_id\":%d"), PlayId))
+            && OutCompletion.Contains(TEXT("\"applied_frame_count\":2"));
+    };
+
+    // Session A on the same listener: complete one upload/play cycle, then
+    // leave a partial upload in flight while the transport drops.
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("first Maya client connects"), Primary);
+    TestTrue(TEXT("initial negotiation reaches ready"),
+        NegotiateReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("session A cache entry is sent"),
+        SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("session A upload is sent"),
+        SendText(Primary, TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendText(Primary, TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Primary, TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[31,32,33,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Primary, TEXT("{\"type\":\"cache_end\"}")));
+    TestTrue(TEXT("session A upload produces identity-matched ready"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_ready\"")));
+    TestTrue(TEXT("session A play is sent"),
+        SendText(Primary, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    {
+        FString Completion;
+        TestTrue(TEXT("session A play completes with its own applied frames"),
+            PlayToCompletion(Primary, 1, FVector(21.0, 22.0, 23.0), FVector(31.0, 32.0, 33.0), Completion));
+    }
+    TestTrue(TEXT("stale in-flight upload is sent before transport loss"),
+        SendText(Primary, TEXT("{\"type\":\"cache_begin\",\"upload_id\":2,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
+    DestroySocket(*SocketSubsystem, Primary);
+    TestTrue(TEXT("transport loss returns source to listening"), WaitListening());
+    TestTrue(TEXT("transport loss clears the last streamed pose"), WaitNoSubject());
+
+    // Session B on the same source/listener: the new negotiation must accept
+    // its own fresh identities and ignore everything from session A.
+    FSocket* Reconnect = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("reconnected Maya client connects"), Reconnect);
+    TestTrue(TEXT("second connection negotiates ready on the same listener"),
+        NegotiateReady(Reconnect).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("reconnected play without upload is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("new session starts without inherited readiness"),
+        ReceiveText(Reconnect).Contains(TEXT("CACHE_NOT_READY")));
+    TestTrue(TEXT("reconnected cache entry is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("reconnected upload is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendText(Reconnect, TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[41,42,43,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Reconnect, TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[51,52,53,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Reconnect, TEXT("{\"type\":\"cache_end\"}")));
+    {
+        const FString ReadyText = ReceiveText(Reconnect);
+        TestTrue(TEXT("reconnected session accepts fresh upload identity"),
+            ReadyText.Contains(TEXT("\"type\":\"cache_ready\""))
+            && ReadyText.Contains(TEXT("\"upload_id\":1")));
+    }
+    TestTrue(TEXT("reconnected play is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    {
+        FString Completion;
+        TestTrue(TEXT("reconnected session accepts fresh play identity with its own frames"),
+            PlayToCompletion(Reconnect, 1, FVector(41.0, 42.0, 43.0), FVector(51.0, 52.0, 53.0), Completion));
+    }
+    TestTrue(TEXT("reconnected clear is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("clear is acknowledged"),
+        ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("duplicate upload after clear is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}")));
+    TestTrue(TEXT("same-session stale upload stays rejected after clear"),
+        ReceiveText(Reconnect).Contains(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("duplicate play after clear is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("same-session stale play stays rejected after clear"),
+        ReceiveText(Reconnect).Contains(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("increasing upload after stale rejections is sent"),
+        SendText(Reconnect, TEXT("{\"type\":\"cache_begin\",\"upload_id\":2,\"revision\":9,\"fps\":30,\"start_frame\":3001,\"end_frame\":3001,\"frame_count\":1,\"payload_size\":256}"))
+        && SendText(Reconnect, TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[55,56,57,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Reconnect, TEXT("{\"type\":\"cache_end\"}")));
+    TestTrue(TEXT("increasing upload stays usable after stale rejections"),
+        ReceiveText(Reconnect).Contains(TEXT("\"upload_id\":2")));
+    DestroySocket(*SocketSubsystem, Reconnect);
+    TestTrue(TEXT("second transport loss returns source to listening"), WaitListening());
+    TestTrue(TEXT("second loss clears the last streamed pose"), WaitNoSubject());
+
+    // Session C proves repeated reconnects stay consistent with no hidden
+    // accumulation from either prior session.
+    FSocket* Third = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("third Maya client connects"), Third);
+    TestTrue(TEXT("third connection negotiates ready on the same listener"),
+        NegotiateReady(Third).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("third cache entry is sent"),
+        SendText(Third, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("third upload is sent"),
+        SendText(Third, TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendText(Third, TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[61,62,63,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Third, TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[71,72,73,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendText(Third, TEXT("{\"type\":\"cache_end\"}")));
+    {
+        const FString ReadyText = ReceiveText(Third);
+        TestTrue(TEXT("third session accepts fresh upload identity"),
+            ReadyText.Contains(TEXT("\"type\":\"cache_ready\""))
+            && ReadyText.Contains(TEXT("\"upload_id\":1")));
+    }
+    TestTrue(TEXT("third play is sent"),
+        SendText(Third, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    {
+        FString Completion;
+        TestTrue(TEXT("third session accepts fresh play identity with its own frames"),
+            PlayToCompletion(Third, 1, FVector(61.0, 62.0, 63.0), FVector(71.0, 72.0, 73.0), Completion));
+    }
+    DestroySocket(*SocketSubsystem, Third);
+    TestTrue(TEXT("final disconnect returns source to listening"), WaitListening());
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheBackpressureSocketTest,
     "MtoULiveLink.Source.CacheBackpressure",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

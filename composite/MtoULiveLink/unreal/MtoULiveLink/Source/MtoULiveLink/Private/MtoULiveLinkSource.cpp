@@ -227,9 +227,11 @@ void FMtoULiveLinkSource::Update()
             BoneParents.Reset();
             AcceptedCurveIndices.Reset();
             AcceptedCurveNames.Reset();
-            // The transient cache is scoped to one negotiated streaming
-            // session; a newer connection never inherits it.
-            CacheSession.ResetToIdle();
+            // The transient cache and its upload/play identity history are
+            // scoped to one negotiated streaming session; a newer connection
+            // starts its own fresh sequence at 1.
+            CacheSession.ResetForNewStreamingSession();
+            bPlaybackOutcomePending = false;
         }
     }
 
@@ -1141,6 +1143,10 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
+    // A newly negotiated Streaming session starts its own fresh upload/play
+    // sequence. Same-session stale rejection lives in ResetToIdle (kept by
+    // cache_clear and rejections); only this boundary clears LastSeen history.
+    CacheSession.ResetForNewStreamingSession();
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
     NegotiatedRevision = Message.Revision;

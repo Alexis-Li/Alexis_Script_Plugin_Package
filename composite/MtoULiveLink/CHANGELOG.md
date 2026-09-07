@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scope Cached Playback upload/play identities to each Streaming session (Issue #37): a newly negotiated connection accepts its own fresh upload/play sequence starting at 1, while duplicate or stale attempts within the same session stay rejected after clear and old-session commands/outcomes can never advance the new session. Protocol v6 shapes and monotonic identity semantics are unchanged.
+
 ## 0.4.0 - 2026-09-03
 
 - Resolve renamed Driver material slots and keep the Driver visible after a failed Refresh (Issue #35): when a source group has no imported identity match, Refresh accepts one unique current displayed match corroborated by the current LOD mapping, still prefers imported identity, and still fails closed on missing, duplicate, conflicting, or shared-slot evidence without using polygon-group ordinals as slot indices; diagnostics name the affected group and distinguish missing, duplicate, and conflicting evidence with available candidates. A failed Refresh discards stale or partial preview data, keeps Error readiness with no usable preview, and restores the bound Driver display while Model connection stays blocked.
