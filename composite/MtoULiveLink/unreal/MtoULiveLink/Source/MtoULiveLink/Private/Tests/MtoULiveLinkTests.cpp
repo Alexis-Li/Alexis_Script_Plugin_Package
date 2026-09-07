@@ -2619,6 +2619,335 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheClearRestoresLivePreviewTest,
+    "MtoULiveLink.Source.CacheClearRestoresLivePreview",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World)
+    {
+        return false;
+    }
+    if (GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = AddBoundActor(*World);
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    // Collect prior tests' destroyed-world actors so this negotiation never
+    // sees a stale second binding actor (same pattern as the reconnect test).
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    if (!Actor)
+    {
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    // Save the user's base Realtime preference before negotiation owns any
+    // override; with no override present the effective value is the base.
+    TArray<TPair<FLevelEditorViewportClient*, bool>> SavedBaseRealtime;
+#if WITH_EDITOR
+    const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+    if (GEditor)
+    {
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                SavedBaseRealtime.Add(TPair<FLevelEditorViewportClient*, bool>(
+                    ViewportClient, ViewportClient->IsRealtime()));
+            }
+        }
+    }
+#endif
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const USkeletalMesh* TestMesh = Actor
+        ? Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+        : nullptr;
+    const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh has the two streamed bones"),
+        TestSkeleton && TestSkeleton->GetNum() >= 2);
+    const FString RootBoneName = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TestSkeleton->GetBoneName(0).ToString()
+        : TEXT("Bone01");
+    const FString ChildBoneName = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TestSkeleton->GetBoneName(1).ToString()
+        : TEXT("Bone02");
+    const FString RootBind = TestSkeleton && TestSkeleton->GetNum() >= 1
+        ? TransformJson(TestSkeleton->GetRefBonePose()[0])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
+    const FString ChildBind = TestSkeleton && TestSkeleton->GetNum() >= 2
+        ? TransformJson(TestSkeleton->GetRefBonePose()[1])
+        : TEXT("[0,0,0,0,0,0,1,1,1,1]");
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+
+    auto SendText = [&](FSocket* Client, const FString& Text) -> bool
+    {
+        if (!Client)
+        {
+            return false;
+        }
+        const TArray<uint8> Bytes = Packet(Text);
+        return SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    auto ReceiveText = [&](FSocket* Client) -> FString
+    {
+        TArray<uint8> Payload;
+        if (!Client || !ReceivePacket(*Client, Payload, [&]() { Source->Update(); }))
+        {
+            return FString();
+        }
+        return FromUtf8(Payload);
+    };
+    auto HasOverride = [&]() -> bool
+    {
+#if WITH_EDITOR
+        if (!GEditor)
+        {
+            return true;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient && !ViewportClient->HasRealtimeOverride(OverrideName))
+            {
+                return false;
+            }
+        }
+#endif
+        return true;
+    };
+    auto HasNoOverride = [&]() -> bool
+    {
+#if WITH_EDITOR
+        if (!GEditor)
+        {
+            return true;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient && ViewportClient->HasRealtimeOverride(OverrideName))
+            {
+                return false;
+            }
+        }
+#endif
+        return true;
+    };
+    auto WaitEvaluatedRoot = [&](const FVector& Expected) -> bool
+    {
+        return PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            FLiveLinkSubjectFrameData Evaluated;
+            if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                    SubjectKey, ULiveLinkAnimationRole::StaticClass(), Evaluated))
+            {
+                return false;
+            }
+            const FLiveLinkAnimationFrameData* Animation =
+                Evaluated.FrameData.Cast<FLiveLinkAnimationFrameData>();
+            return Animation && Animation->Transforms.IsValidIndex(0)
+                && Animation->Transforms[0].GetTranslation().Equals(Expected);
+        });
+    };
+    auto SendLiveAndExpect = [&](FSocket* Client, const FVector& Root, const TCHAR* What) -> void
+    {
+        const FString Text = FString::Printf(
+            TEXT("{\"type\":\"frame\",\"transforms\":[[%.17g,%.17g,%.17g,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"),
+            Root.X, Root.Y, Root.Z);
+        TestTrue(What, Client && SendText(Client, Text));
+        TestTrue(*(FString(What) + TEXT(" reaches Live Link")), WaitEvaluatedRoot(Root));
+    };
+
+    FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("first Maya client connects"), Primary);
+    if (!Primary)
+    {
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        *RootBoneName,
+        *RootBind,
+        *ChildBoneName,
+        *ChildBind));
+    TestTrue(TEXT("init is sent"), SendBytes(*Primary, Init.GetData(), Init.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("negotiation reaches ready"), ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready response is received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("connected stream forces editor viewport realtime"), HasOverride());
+
+    // Disable the underlying viewport Realtime so only the plugin override
+    // can keep the preview refreshing; the base preference is restored below.
+#if WITH_EDITOR
+    if (GEditor)
+    {
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                ViewportClient->SetRealtime(false);
+            }
+        }
+    }
+#endif
+    TestTrue(TEXT("plugin override keeps viewport realtime while base is off"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(41.0, 42.0, 43.0), TEXT("initial live frame is sent"));
+
+    // Normal leave and capture cancellation share one path: enter cached
+    // ownership, then clear without any upload before live resumes.
+    TestTrue(TEXT("cache entry is sent"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
+    TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("leaving cached ownership restores live preview realtime"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(51.0, 52.0, 53.0), TEXT("live frame after clear is sent"));
+
+    // Repeated switches stay idempotent and leave no override residue.
+    TestTrue(TEXT("second cache entry is sent"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("second entry releases viewport realtime again"), HasNoOverride());
+    TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("second clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("repeated clear restores live preview realtime again"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(61.0, 62.0, 63.0), TEXT("live frame after second clear is sent"));
+
+    // A recoverable upload validation failure drops to Idle and must restore
+    // the same live preview behavior, with the ordered clear keeping the
+    // Maya recovery path ahead of resumed live poses.
+    TestTrue(TEXT("failure-path cache entry is sent"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("failure-path entry releases viewport realtime"), HasNoOverride());
+    TestTrue(TEXT("mismatched-revision upload is sent"),
+        SendText(Primary, TEXT("{\"type\":\"cache_begin\",\"upload_id\":7,\"revision\":8,\"fps\":30,\"start_frame\":2001,\"end_frame\":2001,\"frame_count\":1,\"payload_size\":256}")));
+    TestTrue(TEXT("mismatched revision reports a recoverable error"),
+        ReceiveText(Primary).Contains(TEXT("CACHE_REVISION_MISMATCH")));
+    TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
+    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("recovery clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(71.0, 72.0, 73.0), TEXT("live frame after recovery is sent"));
+
+    // Disconnect removes only the plugin override and preserves the user's
+    // base Realtime preference (still off here). The worker reports
+    // Listening immediately, but the game-thread disconnect cleanup that
+    // removes the override runs on Update, so pump it before asserting.
+    DestroySocket(*SocketSubsystem, Primary);
+    TestTrue(TEXT("disconnected session returns source to listening"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    TestTrue(TEXT("disconnect cleanup removes the plugin viewport override"), PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return HasNoOverride();
+        }));
+    TestTrue(TEXT("disconnect removes the plugin viewport override"), HasNoOverride());
+#if WITH_EDITOR
+    if (GEditor)
+    {
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                TestFalse(TEXT("disconnect preserves the disabled base realtime"),
+                    ViewportClient->IsRealtime());
+            }
+        }
+    }
+#endif
+
+    // Shutdown leaves no override residue either.
+    Source->StopListener();
+    TestTrue(TEXT("shutdown removes the plugin viewport override"), HasNoOverride());
+    LiveLinkClient.RemoveSource(Source);
+
+    // Restore the user's original viewport Realtime preference.
+#if WITH_EDITOR
+    if (GEditor)
+    {
+        for (const TPair<FLevelEditorViewportClient*, bool>& Saved : SavedBaseRealtime)
+        {
+            if (Saved.Key)
+            {
+                Saved.Key->SetRealtime(Saved.Value);
+                Saved.Key->RemoveRealtimeOverride(OverrideName, false);
+            }
+        }
+    }
+#endif
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionReconnectTest,
     "MtoULiveLink.Source.CacheSessionReconnect",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

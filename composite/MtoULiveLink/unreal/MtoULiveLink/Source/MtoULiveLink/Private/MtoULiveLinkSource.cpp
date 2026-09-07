@@ -1235,6 +1235,17 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
         }
         if (!DispatchCacheCommandOnGameThread(Command))
         {
+            // Recoverable upload validation failures drop to Idle and resume
+            // live streaming; regain the live preview override so a
+            // still-connected session keeps refreshing viewports whose base
+            // Realtime is off. Terminated sessions never re-enable.
+            if (CacheSession.GetState() == EMtoUCacheState::Idle
+                && GameThreadSession != 0
+                && IsCurrentSession(GameThreadSession)
+                && bSourceValid.Load())
+            {
+                SetEditorViewportRealtimeOverride(true);
+            }
             continue;
         }
         const EMtoUCacheState State = CacheSession.GetState();
@@ -1281,7 +1292,20 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
                 }
                 break;
             case FMtoUCacheCommand::EKind::Clear:
-                SetEditorViewportRealtimeOverride(false);
+                // Leaving cached ownership returns to live streaming: regain
+                // the plugin override so viewports with base Realtime off keep
+                // refreshing. Only the named override is touched; the user's
+                // base setting is preserved. Terminated sessions only remove.
+                if (bSourceValid.Load()
+                    && GameThreadSession != 0
+                    && IsCurrentSession(GameThreadSession))
+                {
+                    SetEditorViewportRealtimeOverride(true);
+                }
+                else
+                {
+                    SetEditorViewportRealtimeOverride(false);
+                }
                 SetStatus(TEXT("Connected to Maya"));
                 {
                     FMtoUOutgoing Reply;
