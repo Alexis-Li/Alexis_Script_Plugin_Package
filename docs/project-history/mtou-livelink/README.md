@@ -133,6 +133,7 @@ packages; subsequent development uses version 0.5.0.
 
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
+- [Cached Playback reconnect acceptance](cached-playback-reconnect-acceptance.md)
 - [Topia-engine build and load acceptance](topia-engine-acceptance.md)
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)

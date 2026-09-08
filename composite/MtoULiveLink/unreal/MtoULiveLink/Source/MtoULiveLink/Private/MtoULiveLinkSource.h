@@ -89,6 +89,9 @@ public:
     int32 GetQueuedCacheFrameCount() const;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMtoUSessionIsolationTestAccess;
+#endif
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
     bool DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command);

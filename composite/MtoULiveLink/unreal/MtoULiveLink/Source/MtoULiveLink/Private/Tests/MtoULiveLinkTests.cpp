@@ -22,6 +22,10 @@
 #include "IPAddress.h"
 #include "LiveLinkInstance.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "ReferenceSkeleton.h"
 #include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
@@ -82,6 +86,75 @@ public:
     static void Release(AMtoULiveLinkActor& Actor)
     {
         Actor.ReleaseGeneratedPreview();
+    }
+};
+
+// Deliver delayed A envelopes through the real queues after B negotiates.
+// Operation IDs collide deliberately; assertions inspect wire replies and poses.
+class FMtoUSessionIsolationTestAccess
+{
+public:
+    static void ObserveApplied(FMtoULiveLinkSource& Source,
+        TFunction<void(uint64, const FMtoUFrameMessage&)> Observer)
+    {
+        Source.CacheSession.SetPublish([&Source, Observer = MoveTemp(Observer)](
+            const FMtoUFrameMessage& Frame)
+        {
+            const bool bApplied = Source.PublishFrameOnGameThread(Frame);
+            if (bApplied)
+            {
+                Observer(Source.GameThreadSession, Frame);
+            }
+            return bApplied;
+        });
+    }
+
+    static uint64 Session(const FMtoULiveLinkSource& Source)
+    {
+        return Source.GameThreadSession;
+    }
+
+    static void DeliverDelayed(FMtoULiveLinkSource& Source, uint64 OldSession)
+    {
+        FMtoUCacheCommand Frame;
+        Frame.SessionId = OldSession;
+        Frame.UploadId = 1;
+        Frame.Kind = FMtoUCacheCommand::EKind::Frame;
+        Frame.Index = 1;
+        Frame.Frame.Transforms.Add({FVector(777), FQuat::Identity, FVector::OneVector});
+        Frame.Frame.Transforms.Add({FVector::ZeroVector, FQuat::Identity, FVector::OneVector});
+        Frame.Frame.Curves.Add(0);
+        Frame.EncodedBytes = 200;
+        Source.CacheCommands.Produce(MoveTemp(Frame), [] { return false; });
+        for (const auto Kind : {FMtoUCacheCommand::EKind::End,
+                FMtoUCacheCommand::EKind::Play, FMtoUCacheCommand::EKind::Clear})
+        {
+            FMtoUCacheCommand Command;
+            Command.SessionId = OldSession;
+            Command.UploadId = 1;
+            Command.PlayId = 1;
+            Command.Kind = Kind;
+            Source.CacheCommands.Produce(MoveTemp(Command), [] { return false; });
+        }
+        TArray<FMtoUOutgoing> Delayed;
+        FMtoUOutgoing Ready;
+        Ready.Packet = FMtoUProtocol::EncodeCacheReady(1, 9, 2);
+        Delayed.Add(MoveTemp(Ready));
+        FMtoUOutgoing Progress;
+        Progress.Packet = FMtoUProtocol::EncodeCacheProgress(1, 777);
+        Delayed.Add(MoveTemp(Progress));
+        FMtoUOutgoing Complete;
+        Complete.Packet = FMtoUProtocol::EncodeCacheComplete(1, 777, 0.5);
+        Delayed.Add(MoveTemp(Complete));
+        FMtoUOutgoing Error;
+        Error.Packet = FMtoUProtocol::EncodeError(TEXT("CACHE_NOT_READY"), TEXT("delayed session A"));
+        Error.bCloseAfter = true;
+        Delayed.Add(MoveTemp(Error));
+        for (FMtoUOutgoing& Reply : Delayed)
+        {
+            Reply.SessionId = OldSession;
+            Source.OutgoingReplies.Enqueue(MoveTemp(Reply));
+        }
     }
 };
 
@@ -3075,12 +3148,14 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
                 SubjectKey, ULiveLinkAnimationRole::StaticClass(), StaleFrame);
         });
     };
+    TFunction<void()> AfterFirstApplied;
     auto PlayToCompletion = [&](FSocket* Client, int32 PlayId, const FVector& FirstRoot,
         const FVector& SecondRoot, FString& OutCompletion) -> bool
     {
         OutCompletion.Reset();
         bool bFirstApplied = false;
         bool bSecondApplied = false;
+        bool bForeignPose = false;
         FVector ObservedRoot = FVector::ZeroVector;
         const bool bCompleted = PollUntil([&]()
         {
@@ -3098,6 +3173,13 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
                         ObservedRoot = Animation->Transforms[0].GetTranslation();
                         bFirstApplied = bFirstApplied || ObservedRoot.Equals(FirstRoot);
                         bSecondApplied = ObservedRoot.Equals(SecondRoot);
+                        bForeignPose |= !ObservedRoot.Equals(FirstRoot) && !ObservedRoot.Equals(SecondRoot);
+                        if (bFirstApplied && AfterFirstApplied)
+                        {
+                            TFunction<void()> Deliver = MoveTemp(AfterFirstApplied);
+                            AfterFirstApplied = nullptr;
+                            Deliver();
+                        }
                     }
                 }
             }
@@ -3113,7 +3195,11 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
             }
             return false;
         });
-        return bCompleted && bFirstApplied && bSecondApplied
+        return bCompleted && bFirstApplied && bSecondApplied && !bForeignPose
+            && !OutCompletion.Contains(TEXT("\"applied\":777"))
+            && !OutCompletion.Contains(TEXT("\"applied_frame_count\":777"))
+            && !OutCompletion.Contains(TEXT("delayed session A"))
+            && !OutCompletion.Contains(TEXT("cache_ready"))
             && OutCompletion.Contains(FString::Printf(TEXT("\"play_id\":%d"), PlayId))
             && OutCompletion.Contains(TEXT("\"applied_frame_count\":2"));
     };
@@ -3124,6 +3210,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("first Maya client connects"), Primary);
     TestTrue(TEXT("initial negotiation reaches ready"),
         NegotiateReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
+    const uint64 OldSession = FMtoUSessionIsolationTestAccess::Session(*Source);
     TestTrue(TEXT("session A cache entry is sent"),
         SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
     FPlatformProcess::Sleep(0.02f);
@@ -3154,6 +3241,29 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("reconnected Maya client connects"), Reconnect);
     TestTrue(TEXT("second connection negotiates ready on the same listener"),
         NegotiateReady(Reconnect).Contains(TEXT("\"type\":\"ready\"")));
+    auto ExpectDelayedIsolation = [&](const TCHAR* Stage)
+    {
+        FMtoUSessionIsolationTestAccess::DeliverDelayed(*Source, OldSession);
+        const double Deadline = FPlatformTime::Seconds() + 0.15;
+        bool bUnexpectedReply = false;
+        bool bUnexpectedPose = false;
+        while (FPlatformTime::Seconds() < Deadline)
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            uint32 PendingBytes = 0;
+            bUnexpectedReply |= Reconnect->HasPendingData(PendingBytes) && PendingBytes > 0;
+            FLiveLinkSubjectFrameData Frame;
+            bUnexpectedPose |= LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), Frame);
+            FPlatformProcess::Sleep(0.001f);
+        }
+        TestFalse(FString::Printf(TEXT("%s: A cannot emit replies on B"), Stage), bUnexpectedReply);
+        TestFalse(FString::Printf(TEXT("%s: A cannot publish a pose on B"), Stage), bUnexpectedPose);
+        TestTrue(FString::Printf(TEXT("%s: delayed A error cannot close B"), Stage),
+            Reconnect->GetConnectionState() == SCS_Connected);
+    };
+    ExpectDelayedIsolation(TEXT("B before upload"));
     TestTrue(TEXT("reconnected play without upload is sent"),
         SendText(Reconnect, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
     TestTrue(TEXT("new session starts without inherited readiness"),
@@ -3173,6 +3283,11 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
             ReadyText.Contains(TEXT("\"type\":\"cache_ready\""))
             && ReadyText.Contains(TEXT("\"upload_id\":1")));
     }
+    ExpectDelayedIsolation(TEXT("B ready before play"));
+    AfterFirstApplied = [&]()
+    {
+        FMtoUSessionIsolationTestAccess::DeliverDelayed(*Source, OldSession);
+    };
     TestTrue(TEXT("reconnected play is sent"),
         SendText(Reconnect, TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
     {
@@ -3243,6 +3358,144 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
             GEngine->DestroyWorldContext(World);
         }
     }
+    return true;
+}
+
+// Explicit opt-in: the ordinary Runtime suite never assumes Maya is installed.
+// The peer executes real Maya capture, controller reconnect and retained replay.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCacheReconnectTest,
+    "MtoULiveLink.Source.MayaCacheReconnect",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Mayapy, Peer, Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
+    {
+        AddInfo(TEXT("Host check not requested; supply MtoUMayapy, MtoUMayaPeer and MtoUEvidence."));
+        return true;
+    }
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer))
+    {
+        AddError(TEXT("Host check requires existing mayapy/peer paths and an evidence directory."));
+        return false;
+    }
+    ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    if (!Sockets) { return false; }
+    FSocket* Reservation = BindLoopback(*Sockets, 0, true);
+    if (!Reservation) { return false; }
+    TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+    Reservation->GetAddress(*Address);
+    const uint16 Port = static_cast<uint16>(Address->GetPort());
+    DestroySocket(*Sockets, Reservation);
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    if (!World) { return false; }
+    FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    Context.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = AddBoundActor(*World);
+    TestNotNull(TEXT("real host binding actor"), Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    ILiveLinkClient& Client = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+        ILiveLinkClient::ModularFeatureName);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid Guid = Client.AddSource(Source);
+    const FLiveLinkSubjectKey Key(Guid, FName(TEXT("MtoU_Character")));
+    TArray<uint64> Sessions;
+    TArray<FVector> Applied;
+    TArray<FVector> Evaluated;
+    FMtoUSessionIsolationTestAccess::ObserveApplied(*Source,
+        [&](uint64 Session, const FMtoUFrameMessage& Frame)
+        {
+            Sessions.Add(Session);
+            Applied.Add(Frame.Transforms[0].Translation);
+        });
+    const FReferenceSkeleton& Skeleton = Actor->GetSkeletalMeshComponent()
+        ->GetSkeletalMeshAsset()->GetRefSkeleton();
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index) { Bones += TEXT(","); }
+        Bones += FString::Printf(TEXT("[\"%s\",%d]"),
+            *Skeleton.GetBoneName(Index).ToString(), Skeleton.GetParentIndex(Index));
+    }
+    const FString Fixture = FPaths::Combine(Evidence, TEXT("maya-fixture.json"));
+    const FString Result = FPaths::Combine(Evidence, TEXT("maya-result.json"));
+    TestTrue(TEXT("write host fixture"), FFileHelper::SaveStringToFile(
+        FString::Printf(TEXT("{\"port\":%d,\"bones\":[%s]}"), Port, *Bones), *Fixture));
+    const FString Args = FString::Printf(TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
+        *Peer, *Fixture, *Result);
+    FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *Args, false, true, true,
+        nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+    const double Deadline = FPlatformTime::Seconds() + 120.0;
+    while (Process.IsValid() && FPlatformProcess::IsProcRunning(Process)
+        && FPlatformTime::Seconds() < Deadline)
+    {
+        const int32 Before = Applied.Num();
+        Source->Update();
+        Client.ForceTick();
+        if (Applied.Num() > Before)
+        {
+            FLiveLinkSubjectFrameData Frame;
+            if (Client.EvaluateFrameFromSource_AnyThread(Key,
+                    ULiveLinkAnimationRole::StaticClass(), Frame))
+            {
+                const auto* Animation = Frame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+                if (Animation && !Animation->Transforms.IsEmpty())
+                {
+                    Evaluated.Add(Animation->Transforms[0].GetTranslation());
+                }
+            }
+        }
+        FPlatformProcess::Sleep(0.001f);
+    }
+    int32 ExitCode = -1;
+    if (Process.IsValid())
+    {
+        if (FPlatformProcess::IsProcRunning(Process))
+        {
+            FPlatformProcess::TerminateProc(Process, true);
+            AddError(TEXT("Maya host check timed out"));
+        }
+        FPlatformProcess::GetProcReturnCode(Process, &ExitCode);
+        FPlatformProcess::CloseProc(Process);
+    }
+    TestEqual(TEXT("Maya host assertions and cleanup pass"), ExitCode, 0);
+    FString ResultText;
+    TSharedPtr<FJsonObject> ResultObject;
+    TestTrue(TEXT("Maya result exists"), FFileHelper::LoadFileToString(ResultText, *Result));
+    if (JsonObjectFromBytes(Utf8(ResultText), ResultObject))
+    {
+        TestTrue(TEXT("Maya reports retained-cache recovery"), ResultObject->GetBoolField(TEXT("ok")));
+        AddInfo(ResultText);
+    }
+    else { AddError(TEXT("Invalid Maya result JSON")); }
+    TestEqual(TEXT("two real Maya cached cycles publish exactly four frames each"), Applied.Num(), 8);
+    TestEqual(TEXT("every cached frame can be evaluated from the Live Link subject"), Evaluated.Num(), 8);
+    if (Applied.Num() == 8 && Evaluated.Num() == 8)
+    {
+        TestTrue(TEXT("same source negotiated a different session"), Sessions[0] != Sessions[4]);
+        for (int32 Index = 0; Index < 4; ++Index)
+        {
+            TestEqual(TEXT("A owns its four frames"), Sessions[Index], Sessions[0]);
+            TestEqual(TEXT("B owns its four frames"), Sessions[Index + 4], Sessions[4]);
+            TestTrue(TEXT("B applies retained poses despite changed Maya animation"),
+                Applied[Index].Equals(Applied[Index + 4]));
+            TestTrue(TEXT("B evaluated pose matches A"), Evaluated[Index].Equals(Evaluated[Index + 4]));
+            if (Index) { TestFalse(TEXT("animated frames differ"), Applied[Index].Equals(Applied[Index - 1])); }
+            AddInfo(FString::Printf(TEXT("Applied frame %d: A session=%llu B session=%llu input=%s evaluated=%s"),
+                Index, Sessions[Index], Sessions[Index + 4], *Applied[Index].ToString(),
+                *Evaluated[Index].ToString()));
+        }
+    }
+    Source->StopListener();
+    Client.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
     return true;
 }
 
