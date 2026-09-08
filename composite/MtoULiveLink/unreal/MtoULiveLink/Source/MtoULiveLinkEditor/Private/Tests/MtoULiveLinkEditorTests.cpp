@@ -23,6 +23,7 @@
 #include "GeometryScript/GeometryScriptTypes.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Materials/Material.h"
 #include "MeshDescription.h"
 #include "Misc/AutomationTest.h"
@@ -66,6 +67,40 @@
 #include "Sockets.h"
 
 #include <limits>
+
+// Deterministic observation for the Refresh-ends-session critical window
+// (Issue #39). Reads Game Thread session state without disturbing it, so the
+// test can prove the synchronous publish gate refuses old items while the
+// worker still serves the replaced session. Only this test uses it.
+class FMtoURefreshEndsSessionTestAccess
+{
+public:
+    static uint64 Session(const FMtoULiveLinkSource& Source)
+    {
+        return Source.GameThreadSession;
+    }
+    static bool IsWorkerCurrent(const FMtoULiveLinkSource& Source, uint64 SessionId)
+    {
+        return Source.IsCurrentSession(SessionId);
+    }
+    static bool IsPublishable(FMtoULiveLinkSource& Source, uint64 SessionId)
+    {
+        return Source.IsSessionPublishableOnGameThread(SessionId);
+    }
+    static bool HasPendingLiveFrame(const FMtoULiveLinkSource& Source)
+    {
+        FScopeLock Lock(&Source.PendingMutex);
+        return Source.PendingFrame.IsSet();
+    }
+    static int32 PendingCacheCommandCount(const FMtoULiveLinkSource& Source)
+    {
+        return Source.GetPendingCacheCommandCount();
+    }
+    static EMtoUCacheState CacheState(const FMtoULiveLinkSource& Source)
+    {
+        return Source.GetCacheSessionState();
+    }
+};
 
 namespace
 {
@@ -3051,6 +3086,24 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
         }
         return FString::Printf(TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":%s}"), *Transforms, *CurvesJson);
     };
+    auto CacheFrameJsonFor = [&](const FReferenceSkeleton& Skeleton, int32 FrameIndex, const FVector& RootTranslation, const FString& CurvesJson)
+    {
+        FString Transforms;
+        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+        {
+            if (Index > 0)
+            {
+                Transforms += TEXT(",");
+            }
+            FTransform Pose = Skeleton.GetRefBonePose()[Index];
+            if (Index == 0)
+            {
+                Pose.SetTranslation(RootTranslation);
+            }
+            Transforms += TransformJson(Pose);
+        }
+        return FString::Printf(TEXT("{\"type\":\"cache_frame\",\"index\":%d,\"transforms\":[%s],\"curves\":%s}"), FrameIndex, *Transforms, *CurvesJson);
+    };
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -3213,6 +3266,38 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             return !Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read);
         });
     };
+    auto TryReceiveOnce = [&](FSocket& Socket, TArray<uint8>& Pending, TArray<uint8>& OutPayload)
+    {
+        // One non-blocking pass over the same framing: true only when a full
+        // packet is already available, so silence is observable without a
+        // timing assumption.
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+        {
+            Pending.Append(Buffer, Read);
+        }
+        if (Pending.Num() < 8)
+        {
+            return false;
+        }
+        uint64 Length = 0;
+        for (int32 Index = 0; Index < 8; ++Index)
+        {
+            Length = (Length << 8) | Pending[Index];
+        }
+        if (Length > 1024 * 1024 || (uint64)Pending.Num() < 8 + Length)
+        {
+            return false;
+        }
+        OutPayload.SetNumUninitialized((int32)Length);
+        if (Length > 0)
+        {
+            FMemory::Memcpy(OutPayload.GetData(), Pending.GetData() + 8, (int32)Length);
+        }
+        Pending.RemoveAt(0, (int32)(8 + Length), EAllowShrinking::No);
+        return true;
+    };
     auto ConnectClient = [&]()
     {
         FSocket* Socket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoURefreshEndsSession client"));
@@ -3266,10 +3351,43 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             LiveLinkClient.ForceTick();
             return EvaluateRoot(AnimRoot) && AnimRoot.Equals(FVector(11.0, 12.0, 13.0));
         }));
+    // Critical window W1: queued old-session items must fail the synchronous
+    // publish gate before any worker disconnect cleanup. The test-only hold
+    // below keeps the worker serving the old socket and session, so anything
+    // refused from here is refused by the gate, not by asynchronous close
+    // handling. No Update runs between intake and the public refresh, and no
+    // Sleep sizes the window: intake is observed, not waited out.
+    MtoUSetDeferStreamingSessionEndCleanup(true);
+    const uint64 AnimSession = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+    TestTrue(TEXT("animation session is established on the Game Thread"), AnimSession != 0);
     const TArray<uint8> StaleAnimFrame = PacketFor(FrameJsonFor(*TestSkeleton, FVector(21.0, 22.0, 23.0), TEXT("[]")));
-    TestTrue(TEXT("stale animation frame is queued before refresh"),
+    TestTrue(TEXT("stale animation frame is sent before refresh"),
         AnimClient && SendBytes(*AnimClient, StaleAnimFrame.GetData(), StaleAnimFrame.Num()));
-    FPlatformProcess::Sleep(0.05f);
+    // A real stale cached upload for the same old session, in wire order:
+    // enter, begin, one frame, end, then a play outcome request.
+    const TArray<uint8> StaleAnimCacheEnter = PacketFor(TEXT("{\"type\":\"cache_enter\"}"));
+    TestTrue(TEXT("stale animation cache entry is sent before refresh"),
+        AnimClient && SendBytes(*AnimClient, StaleAnimCacheEnter.GetData(), StaleAnimCacheEnter.Num()));
+    const TArray<uint8> StaleAnimCacheBegin = PacketFor(
+        TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":1001,\"end_frame\":1001,\"frame_count\":1,\"payload_size\":512}"));
+    TestTrue(TEXT("stale animation cache begin is sent before refresh"),
+        AnimClient && SendBytes(*AnimClient, StaleAnimCacheBegin.GetData(), StaleAnimCacheBegin.Num()));
+    const TArray<uint8> StaleAnimCacheFrame = PacketFor(CacheFrameJsonFor(*TestSkeleton, 0, FVector(61.0, 62.0, 63.0), TEXT("[]")));
+    TestTrue(TEXT("stale animation cache frame is sent before refresh"),
+        AnimClient && SendBytes(*AnimClient, StaleAnimCacheFrame.GetData(), StaleAnimCacheFrame.Num()));
+    const TArray<uint8> StaleAnimCacheEnd = PacketFor(TEXT("{\"type\":\"cache_end\"}"));
+    TestTrue(TEXT("stale animation cache end is sent before refresh"),
+        AnimClient && SendBytes(*AnimClient, StaleAnimCacheEnd.GetData(), StaleAnimCacheEnd.Num()));
+    const TArray<uint8> StaleAnimCachePlay = PacketFor(TEXT("{\"type\":\"cache_play\",\"play_id\":1}"));
+    TestTrue(TEXT("stale animation cache play is sent before refresh"),
+        AnimClient && SendBytes(*AnimClient, StaleAnimCachePlay.GetData(), StaleAnimCachePlay.Num()));
+    TestTrue(TEXT("worker admits the stale live frame and cached upload before refresh"),
+        PollUntil([&]()
+        {
+            return FMtoURefreshEndsSessionTestAccess::HasPendingLiveFrame(*Source)
+                && Source->GetQueuedCacheFrameCount() == 1
+                && FMtoURefreshEndsSessionTestAccess::PendingCacheCommandCount(*Source) == 5;
+        }));
     TWeakObjectPtr<USkeletalMesh> AnimReplaced = SecondMesh;
     const FMtoUPreviewReadiness AfterAnimRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     USkeletalMesh* AnimRefreshedMesh = AfterAnimRefresh.GeneratedPreview;
@@ -3277,6 +3395,38 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
         AfterAnimRefresh.IsUsable() && AnimRefreshedMesh != nullptr && AnimRefreshedMesh != SecondMesh
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
             && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == AnimRefreshedMesh);
+    // The distinguishing pair: the worker still serves the replaced session
+    // (cleanup held above), yet the session no longer owns Game Thread
+    // publication. Without the synchronous epoch gate this would read
+    // true/true and every stale item below would publish.
+    TestTrue(TEXT("worker still serves the replaced animation session"),
+        FMtoURefreshEndsSessionTestAccess::IsWorkerCurrent(*Source, AnimSession));
+    TestFalse(TEXT("replaced animation session loses publication at the refresh boundary"),
+        FMtoURefreshEndsSessionTestAccess::IsPublishable(*Source, AnimSession));
+    TestTrue(TEXT("stale items are still queued at the refresh boundary"),
+        FMtoURefreshEndsSessionTestAccess::HasPendingLiveFrame(*Source)
+            && FMtoURefreshEndsSessionTestAccess::PendingCacheCommandCount(*Source) == 5);
+    // Drive consumption/publication at the boundary: one Update must refuse
+    // the stale live frame, the whole cached upload, and its play outcome
+    // without publishing anything.
+    Source->Update();
+    LiveLinkClient.ForceTick();
+    FVector AnimHeldRoot = FVector::ZeroVector;
+    TestTrue(TEXT("pre-refresh pose is held, never replaced by the stale frame"),
+        EvaluateRoot(AnimHeldRoot) && AnimHeldRoot.Equals(FVector(11.0, 12.0, 13.0)));
+    TestFalse(TEXT("stale live frame slot is consumed without publishing"),
+        FMtoURefreshEndsSessionTestAccess::HasPendingLiveFrame(*Source));
+    TestTrue(TEXT("stale cached upload gains no ownership and cache never enters"),
+        Source->GetQueuedCacheFrameCount() == 0
+            && FMtoURefreshEndsSessionTestAccess::PendingCacheCommandCount(*Source) == 0
+            && FMtoURefreshEndsSessionTestAccess::CacheState(*Source) == EMtoUCacheState::Idle);
+    // The old socket is still open (cleanup held): prove nothing was queued
+    // for it to send.
+    TArray<uint8> AnimDrainPending;
+    TArray<uint8> AnimDrainPayload;
+    TestFalse(TEXT("no reply is produced for the replaced animation session"),
+        TryReceiveOnce(*AnimClient, AnimDrainPending, AnimDrainPayload));
+    MtoUSetDeferStreamingSessionEndCleanup(false);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("animation refresh releases the replaced preview"), AnimReplaced.IsValid());
     TestTrue(TEXT("animation refresh closes the old socket"), AnimClient && WaitForClose(*AnimClient));
@@ -3364,20 +3514,126 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             LiveLinkClient.ForceTick();
             return EvaluateRoot(ModelRoot) && ModelRoot.Equals(FVector(41.0, 42.0, 43.0));
         }));
+    // Critical window W2: an in-flight cached playback must freeze at the
+    // refresh boundary. Drive a real upload to Ready, then to Playing, while
+    // the session is still live.
+    const TArray<uint8> ModelCacheEnter = PacketFor(TEXT("{\"type\":\"cache_enter\"}"));
+    TestTrue(TEXT("model cache entry is sent"),
+        ModelClient && SendBytes(*ModelClient, ModelCacheEnter.GetData(), ModelCacheEnter.Num()));
+    // A three-frame upload: a one-frame replay would complete inside the
+    // dispatch Update itself, so Playing would never survive to the refresh
+    // boundary this window must freeze.
+    const TArray<uint8> ModelCacheBegin = PacketFor(
+        TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":2001,\"end_frame\":2003,\"frame_count\":3,\"payload_size\":2048}"));
+    TestTrue(TEXT("model cache begin is sent"),
+        ModelClient && SendBytes(*ModelClient, ModelCacheBegin.GetData(), ModelCacheBegin.Num()));
+    for (int32 CacheFrameIndex = 0; CacheFrameIndex < 3; ++CacheFrameIndex)
+    {
+        const TArray<uint8> ModelCacheFrame = PacketFor(CacheFrameJsonFor(*TestSkeleton, CacheFrameIndex, FVector(61.0, 62.0, 63.0), TEXT("[0.9]")));
+        TestTrue(TEXT("model cache frame is sent before refresh"),
+            ModelClient && SendBytes(*ModelClient, ModelCacheFrame.GetData(), ModelCacheFrame.Num()));
+    }
+    const TArray<uint8> ModelCacheEnd = PacketFor(TEXT("{\"type\":\"cache_end\"}"));
+    TestTrue(TEXT("model cache end is sent"),
+        ModelClient && SendBytes(*ModelClient, ModelCacheEnd.GetData(), ModelCacheEnd.Num()));
+    TestTrue(TEXT("model cache upload reaches Ready before refresh"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return FMtoURefreshEndsSessionTestAccess::CacheState(*Source) == EMtoUCacheState::Ready;
+        }));
+    TestTrue(TEXT("model cache Ready reply is received"),
+        ModelClient && ReceiveOne(*ModelClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("model cache Ready reply is well formed"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\"")));
+    const TArray<uint8> ModelCachePlay = PacketFor(TEXT("{\"type\":\"cache_play\",\"play_id\":1}"));
+    TestTrue(TEXT("model cache play is sent"),
+        ModelClient && SendBytes(*ModelClient, ModelCachePlay.GetData(), ModelCachePlay.Num()));
+    TestTrue(TEXT("model cached playback starts before refresh"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return FMtoURefreshEndsSessionTestAccess::CacheState(*Source) == EMtoUCacheState::Playing;
+        }));
+    // Drain pre-refresh progress so the window below observes only
+    // post-boundary traffic.
+    TArray<uint8> ModelDrainPending;
+    TArray<uint8> ModelDrainPayload;
+    for (int32 Drain = 0; Drain < 50 && TryReceiveOnce(*ModelClient, ModelDrainPending, ModelDrainPayload); ++Drain)
+    {
+    }
+    // Hold worker disconnect cleanup for the boundary, then deliver a real
+    // stale live frame over the still-served old socket. No Update runs
+    // until after the public refresh below.
+    MtoUSetDeferStreamingSessionEndCleanup(true);
+    const uint64 ModelSession = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+    TestTrue(TEXT("model session is established on the Game Thread"), ModelSession != 0);
     const TArray<uint8> StaleModelFrame = PacketFor(FrameJsonFor(*TestSkeleton, FVector(51.0, 52.0, 53.0), TEXT("[0.9]")));
-    TestTrue(TEXT("stale model frame is queued before refresh"),
+    TestTrue(TEXT("stale model frame is sent before refresh"),
         ModelClient && SendBytes(*ModelClient, StaleModelFrame.GetData(), StaleModelFrame.Num()));
-    const TArray<uint8> StaleCacheBegin = PacketFor(
-        TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30,\"start_frame\":1001,\"end_frame\":1001,\"frame_count\":1,\"payload_size\":512}"));
-    TestTrue(TEXT("stale cached upload is queued before refresh"),
-        ModelClient && SendBytes(*ModelClient, StaleCacheBegin.GetData(), StaleCacheBegin.Num()));
-    FPlatformProcess::Sleep(0.05f);
+    TestTrue(TEXT("worker admits the stale model frame before refresh"),
+        PollUntil([&]() { return FMtoURefreshEndsSessionTestAccess::HasPendingLiveFrame(*Source); }));
     TWeakObjectPtr<USkeletalMesh> ModelReplaced = AnimRefreshedMesh;
     const FMtoUPreviewReadiness AfterModelRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
     USkeletalMesh* ModelRefreshedMesh = AfterModelRefresh.GeneratedPreview;
     TestTrue(TEXT("refresh during Model ends the old session but still shows Generated Preview disconnected"),
         AfterModelRefresh.IsUsable() && ModelRefreshedMesh != nullptr && ModelRefreshedMesh != AnimRefreshedMesh
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
+    // Same distinguishing pair as W1: worker still serves the old Model
+    // session, yet it no longer owns publication. The in-flight replay must
+    // neither advance nor report an outcome from this boundary.
+    TestTrue(TEXT("worker still serves the replaced model session"),
+        FMtoURefreshEndsSessionTestAccess::IsWorkerCurrent(*Source, ModelSession));
+    TestFalse(TEXT("replaced model session loses publication at the refresh boundary"),
+        FMtoURefreshEndsSessionTestAccess::IsPublishable(*Source, ModelSession));
+    TestTrue(TEXT("stale model frame is still queued at the refresh boundary"),
+        FMtoURefreshEndsSessionTestAccess::HasPendingLiveFrame(*Source));
+    TestTrue(TEXT("in-flight playback is untouched at the refresh boundary"),
+        FMtoURefreshEndsSessionTestAccess::CacheState(*Source) == EMtoUCacheState::Playing);
+    // Freeze window: many gated Updates over wall-clock time that would
+    // finish a three-frame replay at 30 fps. The replay must stay Playing,
+    // the stale live frame must never evaluate, and no completion may reach
+    // the still-open old socket. Without the gate the replay would complete
+    // here and report cache_complete, so this window is the regression.
+    bool bModelStaleEvaluated = false;
+    bool bModelCompleteReply = false;
+    int32 ModelProgressReplies = 0;
+    const double ModelWindowEnd = FPlatformTime::Seconds() + 0.5;
+    do
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FVector WindowRoot = FVector::ZeroVector;
+        if (EvaluateRoot(WindowRoot) && WindowRoot.Equals(FVector(51.0, 52.0, 53.0)))
+        {
+            bModelStaleEvaluated = true;
+        }
+        while (TryReceiveOnce(*ModelClient, ModelDrainPending, ModelDrainPayload))
+        {
+            const FString ReplyText = FromUtf8(ModelDrainPayload);
+            if (ReplyText.Contains(TEXT("cache_complete")))
+            {
+                bModelCompleteReply = true;
+            }
+            else if (ReplyText.Contains(TEXT("cache_progress")))
+            {
+                // A pre-refresh progress packet can still be in flight from
+                // the live replay above; it is reported, not failed on.
+                ++ModelProgressReplies;
+            }
+        }
+        FPlatformProcess::Sleep(0.005f);
+    }
+    while (FPlatformTime::Seconds() < ModelWindowEnd);
+    TestFalse(TEXT("stale model frame never publishes during the freeze window"), bModelStaleEvaluated);
+    TestFalse(TEXT("in-flight playback reports no completion during the freeze window"), bModelCompleteReply);
+    AddInfo(FString::Printf(TEXT("progress packets observed during the freeze window: %d"), ModelProgressReplies));
+    TestTrue(TEXT("in-flight playback stays frozen, never completing on the replaced session"),
+        FMtoURefreshEndsSessionTestAccess::CacheState(*Source) == EMtoUCacheState::Playing);
+    TestTrue(TEXT("frozen upload holds no parsed queue ownership after the window"),
+        Source->GetQueuedCacheFrameCount() == 0);
+    MtoUSetDeferStreamingSessionEndCleanup(false);
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestFalse(TEXT("model refresh releases the replaced preview"), ModelReplaced.IsValid());
     TestTrue(TEXT("model refresh closes the old socket"), ModelClient && WaitForClose(*ModelClient));
@@ -3446,6 +3702,48 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
             && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == RecoveredMesh);
     DestroySocket(ModelReconnect);
+    // The previous socket close is observed asynchronously: a new client
+    // connecting first would be rejected as a second client.
+    TestTrue(TEXT("source returns to listening before the animation failure session"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+        }));
+    // Failed refresh during an active Animation session: the same
+    // termination applies, Error readiness keeps the Driver for inspection,
+    // and a later refresh recovers without a new actor.
+    FSocket* AnimFailClient = ConnectClient();
+    TestNotNull(TEXT("animation session for failed refresh connects"), AnimFailClient);
+    TestTrue(TEXT("failing-session animation init is sent"),
+        AnimFailClient && SendBytes(*AnimFailClient, AnimInit.GetData(), AnimInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("failing-session animation ready is received"),
+        AnimFailClient && ReceiveOne(*AnimFailClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("failing animation session selects the Driver display"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+    UStaticMesh* AnimMisalignedPreview = MakePreview(*Driver, *WorldPackage, false, false, false, true);
+    TestNotNull(TEXT("misaligned animation-failure preview is created"), AnimMisalignedPreview);
+    TStrongObjectPtr<UStaticMesh> AnimMisalignedGuard(AnimMisalignedPreview);
+    Binding->PreviewStaticMesh = AnimMisalignedPreview;
+    const FMtoUPreviewReadiness AnimFailed = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("failed Refresh during Animation keeps Error readiness and restores the Driver"),
+        !AnimFailed.IsUsable() && AnimFailed.GeneratedPreview == nullptr
+            && AnimFailed.State == EMtoUPreviewState::Error
+            && Actor->GetPreviewReadiness().State == EMtoUPreviewState::Error
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+    TestTrue(TEXT("failed Animation refresh terminates the session"), AnimFailClient && WaitForClose(*AnimFailClient));
+    TestTrue(TEXT("failed Animation refresh returns source to listening"),
+        PollUntil([&]() { return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on")); }));
+    DestroySocket(AnimFailClient);
+    Binding->PreviewStaticMesh = AlignedPreview;
+    const FMtoUPreviewReadiness AnimRecovered = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("animation failed-refresh recovery restores Generated Preview"),
+        AnimRecovered.IsUsable() && AnimRecovered.GeneratedPreview != nullptr
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
     TestTrue(TEXT("source returns to listening after final disconnect"),
         PollUntil([&]()
         {
@@ -3461,6 +3759,307 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
         {
             GEngine->DestroyWorldContext(World);
         }
+    }
+    return true;
+}
+
+// Explicit opt-in: the ordinary Editor suite never assumes Maya is installed.
+// A real Maya host runs the real sender transport through an Animation
+// session while this test performs the public explicit refresh, so the
+// dual-host half of Issue #39 is observed from Maya itself: transport loss,
+// no automatic reconnect, and streaming resumed only by an explicit connect.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaRefreshPeerTest,
+    "MtoULiveLink.Editor.Preview.MayaRefreshPeer",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Mayapy;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
+    {
+        AddInfo(TEXT("Real Maya peer not requested; supply MtoUMayapy, MtoURefreshPeer and MtoUEvidence."));
+        return true;
+    }
+    FString Peer;
+    FString Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoURefreshPeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer))
+    {
+        AddError(TEXT("Real Maya peer requires existing mayapy/peer paths and an evidence directory."));
+        return false;
+    }
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUMayaRefreshPeerWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    TestNotNull(TEXT("peer Driver with Morphs is created"), Driver);
+    TestNotNull(TEXT("peer Preview is created"), Preview);
+    if (!Driver || !Preview)
+    {
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, TEXT("MtoUMayaRefreshPeerWorld"), WorldPackage, true);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World)
+    {
+        return false;
+    }
+    if (GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    TestNotNull(TEXT("binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    const FReferenceSkeleton& Skeleton = Driver->GetRefSkeleton();
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index)
+        {
+            Bones += TEXT(",");
+        }
+        Bones += FString::Printf(TEXT("[\"%s\",%d]"),
+            *Skeleton.GetBoneName(Index).ToString(), Skeleton.GetParentIndex(Index));
+    }
+    IFileManager::Get().MakeDirectory(*Evidence, true);
+    const FString FixturePath = FPaths::Combine(Evidence, TEXT("maya-refresh-fixture.json"));
+    const FString ResultPath = FPaths::Combine(Evidence, TEXT("maya-refresh-result.json"));
+    const FString CommandPath = FPaths::Combine(Evidence, TEXT("maya-refresh-command.json"));
+    FSocket* Reservation = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoUMayaRefreshPeer reservation"));
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    auto Loopback = [&](uint16 Port)
+    {
+        TSharedRef<FInternetAddr> Address = SocketSubsystem->CreateInternetAddr();
+        bool bValid = false;
+        Address->SetIp(TEXT("127.0.0.1"), bValid);
+        check(bValid);
+        Address->SetPort(Port);
+        return Address;
+    };
+    Reservation->Bind(*Loopback(0));
+    Reservation->Listen(1);
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    Reservation->Close();
+    SocketSubsystem->DestroySocket(Reservation);
+    TestTrue(TEXT("ephemeral listening port is reported"), Port > 0);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    const FLiveLinkSubjectKey LiveSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    auto WriteCommand = [&](const FString& Action, int32 Time)
+    {
+        return FFileHelper::SaveStringToFile(
+            FString::Printf(TEXT("{\"action\":\"%s\",\"time\":%d}"), *Action, Time), *CommandPath);
+    };
+    auto ReadResult = [&]() -> TSharedPtr<FJsonObject>
+    {
+        FString Text;
+        if (!FFileHelper::LoadFileToString(Text, *ResultPath))
+        {
+            return nullptr;
+        }
+        TSharedPtr<FJsonObject> Object;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+        if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+        {
+            return nullptr;
+        }
+        return Object;
+    };
+    auto EvaluateRootX = [&](double& OutX)
+    {
+        FLiveLinkSubjectFrameData Evaluated;
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                LiveSubjectKey, ULiveLinkAnimationRole::StaticClass(), Evaluated))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            Evaluated.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        if (!Animation || !Animation->Transforms.IsValidIndex(0))
+        {
+            return false;
+        }
+        OutX = Animation->Transforms[0].GetTranslation().X;
+        return true;
+    };
+    TestTrue(TEXT("peer fixture is written"),
+        FFileHelper::SaveStringToFile(
+            FString::Printf(TEXT("{\"port\":%d,\"bones\":[%s],\"command\":\"%s\"}"),
+                Port, *Bones, *CommandPath.Replace(TEXT("\\"), TEXT("/"))),
+            *FixturePath));
+    // Empty result so the first poll cannot read a stale file.
+    TestTrue(TEXT("peer result is initialized"),
+        FFileHelper::SaveStringToFile(TEXT("{\"phase\":\"starting\"}"), *ResultPath));
+    TestTrue(TEXT("initial stream command is written"), WriteCommand(TEXT("stream"), 1));
+    const FString ProcArgs = FString::Printf(TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
+        *Peer, *FixturePath, *ResultPath);
+    FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *ProcArgs, false, true, true,
+        nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+    int32 Stage = 0;
+    bool bSawFirstPose = false;
+    bool bSawSecondPose = false;
+    bool bRefreshed = false;
+    bool bPeerDisconnected = false;
+    bool bReconnectCommanded = false;
+    const double Deadline = FPlatformTime::Seconds() + 300.0;
+    while (Process.IsValid() && FPlatformProcess::IsProcRunning(Process)
+        && FPlatformTime::Seconds() < Deadline && Stage < 5)
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        double RootX = 0.0;
+        const bool bEvaluated = EvaluateRootX(RootX);
+        TSharedPtr<FJsonObject> ResultObject = ReadResult();
+        const FString Phase = ResultObject.IsValid()
+            ? ResultObject->GetStringField(TEXT("phase")) : FString();
+        switch (Stage)
+        {
+            case 0:
+                if (Phase == TEXT("streaming") && bEvaluated
+                    && FMath::IsNearlyEqual(RootX, 10.0, 0.1))
+                {
+                    bSawFirstPose = true;
+                    WriteCommand(TEXT("stream"), 2);
+                    Stage = 1;
+                }
+                break;
+            case 1:
+                if (bEvaluated && FMath::IsNearlyEqual(RootX, 20.0, 0.1))
+                {
+                    bSawSecondPose = true;
+                    const FMtoUPreviewReadiness Readiness =
+                        FMtoUPreviewPreparation::RefreshActor(*Actor);
+                    bRefreshed = Readiness.IsUsable() && Readiness.GeneratedPreview != nullptr
+                        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+                        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()
+                            == Readiness.GeneratedPreview;
+                    Stage = 2;
+                }
+                break;
+            case 2:
+                if (Phase == TEXT("disconnected"))
+                {
+                    Stage = 3;
+                }
+                break;
+            case 3:
+                if (Source->GetSourceStatus().ToString().Contains(TEXT("Listening on")))
+                {
+                    // The actor's Disconnected status lands on the Update that
+                    // drains the ended session, after the refresh itself.
+                    Source->Update();
+                    LiveLinkClient.ForceTick();
+                    bPeerDisconnected = Actor->GetConnectionStatus().Contains(TEXT("Disconnected"));
+                    WriteCommand(TEXT("reconnect"), 0);
+                    bReconnectCommanded = true;
+                    Stage = 4;
+                }
+                break;
+            case 4:
+                if (Phase == TEXT("reconnected") && bEvaluated
+                    && FMath::IsNearlyEqual(RootX, 30.0, 0.1)
+                    && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver)
+                {
+                    WriteCommand(TEXT("stop"), 0);
+                    Stage = 5;
+                }
+                break;
+            default:
+                break;
+        }
+        FPlatformProcess::Sleep(0.005f);
+    }
+    TestTrue(TEXT("real Maya animation streams before refresh"), bSawFirstPose);
+    TestTrue(TEXT("real Maya animation advances while streaming"), bSawSecondPose);
+    TestTrue(TEXT("public refresh ends the Maya session and shows Generated Preview"), bRefreshed);
+    TestTrue(TEXT("Unreal observes Disconnected after the ended session drains"), bPeerDisconnected);
+    TestTrue(TEXT("reconnect was commanded only after Maya observed the disconnect"), bReconnectCommanded);
+    const double PeerExitDeadline = FPlatformTime::Seconds() + 60.0;
+    while (Process.IsValid() && FPlatformProcess::IsProcRunning(Process)
+        && FPlatformTime::Seconds() < PeerExitDeadline)
+    {
+        FPlatformProcess::Sleep(0.05f);
+    }
+    int32 ExitCode = -1;
+    if (Process.IsValid())
+    {
+        if (FPlatformProcess::IsProcRunning(Process))
+        {
+            FPlatformProcess::TerminateProc(Process, true);
+            AddError(TEXT("Real Maya peer timed out"));
+        }
+        FPlatformProcess::GetProcReturnCode(Process, &ExitCode);
+        FPlatformProcess::CloseProc(Process);
+    }
+    TestEqual(TEXT("real Maya peer exits cleanly"), ExitCode, 0);
+    TSharedPtr<FJsonObject> FinalResult = ReadResult();
+    TestTrue(TEXT("Maya result is readable"), FinalResult.IsValid());
+    if (FinalResult.IsValid())
+    {
+        TestTrue(TEXT("Maya peer completed all phases"), FinalResult->GetBoolField(TEXT("ok")));
+        const TSharedPtr<FJsonObject>* Disconnected = nullptr;
+        if (FinalResult->TryGetObjectField(TEXT("disconnected"), Disconnected) && Disconnected)
+        {
+            TestTrue(TEXT("Maya observed the refresh disconnect"),
+                (*Disconnected)->GetBoolField(TEXT("observed")));
+            TestFalse(TEXT("Maya never reconnected on its own"),
+                (*Disconnected)->GetBoolField(TEXT("auto_reconnect")));
+            FString DiagnosticCode;
+            (*Disconnected)->TryGetStringField(TEXT("diagnostic_code"), DiagnosticCode);
+            AddInfo(FString::Printf(TEXT("Maya terminal diagnostic: %s"), *DiagnosticCode));
+        }
+        else
+        {
+            AddError(TEXT("Maya result lacks the disconnect record"));
+        }
+        const TSharedPtr<FJsonObject>* Reconnected = nullptr;
+        if (FinalResult->TryGetObjectField(TEXT("reconnected"), Reconnected) && Reconnected)
+        {
+            TestTrue(TEXT("Maya reconnected with a new explicit session"),
+                (*Reconnected)->GetBoolField(TEXT("new_session")));
+        }
+        else
+        {
+            AddError(TEXT("Maya result lacks the reconnect record"));
+        }
+        FString FinalText;
+        FFileHelper::LoadFileToString(FinalText, *ResultPath);
+        AddInfo(FString::Printf(TEXT("Maya result: %s"), *FinalText));
     }
     return true;
 }

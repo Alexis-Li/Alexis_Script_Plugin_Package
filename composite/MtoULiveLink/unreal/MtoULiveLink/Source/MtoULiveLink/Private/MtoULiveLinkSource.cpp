@@ -127,6 +127,11 @@ bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
 }
 
 TAtomic<uint64> GStreamingSessionEndRequests{0};
+#if WITH_DEV_AUTOMATION_TESTS
+// Test-only hold on worker disconnect cleanup (see header). Defaults off, so
+// production and ordinary automation never observe it.
+TAtomic<bool> GDeferStreamingSessionEndCleanup{false};
+#endif
 }
 
 void MtoURequestStreamingSessionEnd()
@@ -138,6 +143,12 @@ uint64 MtoUGetStreamingSessionEndCount()
 {
     return GStreamingSessionEndRequests.Load();
 }
+#if WITH_DEV_AUTOMATION_TESTS
+void MtoUSetDeferStreamingSessionEndCleanup(bool bDefer)
+{
+    GDeferStreamingSessionEndCleanup.Store(bDefer);
+}
+#endif
 
 void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
 {
@@ -368,6 +379,17 @@ int32 FMtoULiveLinkSource::GetQueuedCacheFrameCount() const
 {
     return CacheCommands.GetPendingFrameCount();
 }
+#if WITH_DEV_AUTOMATION_TESTS
+int32 FMtoULiveLinkSource::GetPendingCacheCommandCount() const
+{
+    return CacheCommands.GetPendingCommandCount();
+}
+
+EMtoUCacheState FMtoULiveLinkSource::GetCacheSessionState() const
+{
+    return CacheSession.GetState();
+}
+#endif
 
 uint32 FMtoULiveLinkSource::Run()
 {
@@ -601,12 +623,19 @@ uint32 FMtoULiveLinkSource::Run()
     while (!bStopRequested.Load())
     {
         bool bDidWork = false;
-
         // One shared idempotent termination boundary: a Preview revision
         // invalidation or Binding actor lifetime end closes the socket here,
         // and the existing disconnect path performs the Game Thread cleanup.
+        // Test-only deferral (automation, off by default) holds this cleanup
+        // so the synchronous Game Thread publish gate can be proven before
+        // any worker close; the pending counter is left unread so release
+        // still disconnects exactly once.
         const uint64 SessionEndRequests = GStreamingSessionEndRequests.Load();
-        if (SessionEndRequests != LastSeenSessionEndRequests)
+        bool bSessionEndCleanupDeferred = false;
+#if WITH_DEV_AUTOMATION_TESTS
+        bSessionEndCleanupDeferred = GDeferStreamingSessionEndCleanup.Load();
+#endif
+        if (SessionEndRequests != LastSeenSessionEndRequests && !bSessionEndCleanupDeferred)
         {
             LastSeenSessionEndRequests = SessionEndRequests;
             if (ActiveSession != 0)

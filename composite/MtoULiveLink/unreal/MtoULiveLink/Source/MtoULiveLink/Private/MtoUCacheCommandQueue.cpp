@@ -126,6 +126,12 @@ int64 FMtoUCacheCommandQueue::GetPendingBytes() const
     return PendingBytes;
 }
 
+int32 FMtoUCacheCommandQueue::GetPendingCommandCount() const
+{
+    FScopeLock Lock(&Mutex);
+    return Pending.Num();
+}
+
 void FMtoUCacheCommandQueue::ReleaseOwnership(const FMtoUCacheCommand& Command)
 {
     if (Command.Kind == FMtoUCacheCommand::EKind::Frame)

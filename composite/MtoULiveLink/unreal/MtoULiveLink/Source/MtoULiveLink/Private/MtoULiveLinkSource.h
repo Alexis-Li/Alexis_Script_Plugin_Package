@@ -27,6 +27,16 @@ void MtoURequestStreamingSessionEnd();
 
 /** Current value of the idempotent termination counter for publish gating. */
 uint64 MtoUGetStreamingSessionEndCount();
+#if WITH_DEV_AUTOMATION_TESTS
+/**
+ * Test-only deterministic hold on the worker's disconnect cleanup: while set,
+ * the worker keeps serving the pre-refresh socket and session instead of
+ * closing on the termination counter, so automation can prove the
+ * Game Thread publish gate refuses old frames before any worker cleanup.
+ * Production builds never see this; automation must always release it.
+ */
+MTOULIVELINK_API void MtoUSetDeferStreamingSessionEndCleanup(bool bDefer);
+#endif
 
 /**
  * The world-unload seam of the same idempotent termination boundary: the
@@ -83,14 +93,25 @@ public:
 
     bool StartListener();
     void StopListener();
-
     // Admission intake gauge used by automation to prove a stalled Game Thread
     // cannot grow queued parsed-cache ownership beyond the frozen budget.
     int32 GetQueuedCacheFrameCount() const;
 
+#if WITH_DEV_AUTOMATION_TESTS
+    // Automation-only gauges for the explicit-refresh critical window
+    // (Issue #39): total queued cache commands and the transient cache
+    // state, read without disturbing the session. Production never calls
+    // these; they exist so the Editor integration test needs no wider
+    // production-type exports.
+    int32 GetPendingCacheCommandCount() const;
+    EMtoUCacheState GetCacheSessionState() const;
+#endif
+
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMtoUSessionIsolationTestAccess;
+    // Editor integration coverage for explicit refresh during a session.
+    friend class FMtoURefreshEndsSessionTestAccess;
 #endif
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();

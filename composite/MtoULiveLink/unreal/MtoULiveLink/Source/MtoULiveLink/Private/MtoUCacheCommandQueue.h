@@ -37,6 +37,9 @@ public:
 
     int32 GetPendingFrameCount() const;
     int64 GetPendingBytes() const;
+    // Total queued commands (frames plus control messages) for deterministic
+    // automation intake coordination. Never a production admission input.
+    int32 GetPendingCommandCount() const;
 
 private:
     void ReleaseOwnership(const FMtoUCacheCommand& Command);
