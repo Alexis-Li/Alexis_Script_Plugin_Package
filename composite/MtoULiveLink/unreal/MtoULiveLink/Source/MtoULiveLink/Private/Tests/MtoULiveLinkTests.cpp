@@ -2814,29 +2814,54 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
         }
         return FromUtf8(Payload);
     };
+    auto CountLevelViewports = [&]() -> int32
+    {
+#if WITH_EDITOR
+        int32 Count = 0;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient)
+                {
+                    ++Count;
+                }
+            }
+        }
+        return Count;
+#else
+        return 0;
+#endif
+    };
+    // Strict host checks: an empty viewport set must never count as proof.
+    // Every override assertion below first requires at least one real Level
+    // viewport; a viewport-less run fails instead of silently passing.
     auto HasOverride = [&]() -> bool
     {
 #if WITH_EDITOR
-        if (!GEditor)
+        if (!GEditor || CountLevelViewports() == 0)
         {
-            return true;
+            return false;
         }
         for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
         {
-            if (ViewportClient && !ViewportClient->HasRealtimeOverride(OverrideName))
+            if (!ViewportClient || !ViewportClient->HasRealtimeOverride(OverrideName)
+                || !ViewportClient->IsRealtime())
             {
                 return false;
             }
         }
+#else
+        return false;
 #endif
         return true;
     };
     auto HasNoOverride = [&]() -> bool
     {
 #if WITH_EDITOR
-        if (!GEditor)
+        if (!GEditor || CountLevelViewports() == 0)
         {
-            return true;
+            return false;
         }
         for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
         {
@@ -2845,6 +2870,27 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
                 return false;
             }
         }
+#else
+        return false;
+#endif
+        return true;
+    };
+    auto EffectiveMatchesBase = [&](bool bExpectedBase) -> bool
+    {
+#if WITH_EDITOR
+        if (!GEditor || CountLevelViewports() == 0)
+        {
+            return false;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient && ViewportClient->IsRealtime() != bExpectedBase)
+            {
+                return false;
+            }
+        }
+#else
+        return false;
 #endif
         return true;
     };
@@ -2866,6 +2912,42 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
                 && Animation->Transforms[0].GetTranslation().Equals(Expected);
         });
     };
+    // Visible-chain proof: pump the ordinary Live Link tick plus the component
+    // animation tick, then read the displayed skeletal bone. This exercises
+    // the LiveLinkInstance -> SkeletalMeshComponent path instead of only
+    // proving the subject cache is readable.
+    FVector LastDisplayedSeen = FVector::ZeroVector;
+    bool bDisplaySeen = false;
+    auto WaitDisplayedRoot = [&](const FVector& Expected) -> bool
+    {
+        const FName RootBoneId(*RootBoneName);
+        LastDisplayedSeen = FVector::ZeroVector;
+        bDisplaySeen = false;
+        return PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            USkeletalMeshComponent* Display =
+                Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
+            if (!Display || !Display->IsRegistered())
+            {
+                return false;
+            }
+            // The transient test world tick does not drive skeletal animation;
+            // the explicit component animation tick is the per-frame editor
+            // path that evaluates the Live Link instance into bone transforms.
+            Display->TickAnimation(1.0f / 60.0f, false);
+            Display->RefreshBoneTransforms();
+            // World space is what the viewport shows: it follows the stream
+            // whether the retarget applies root translation to the bone or
+            // carries it as actor root motion.
+            const FTransform Displayed =
+                Display->GetBoneTransform(RootBoneId, RTS_World);
+            LastDisplayedSeen = Displayed.GetTranslation();
+            bDisplaySeen = true;
+            return LastDisplayedSeen.Equals(Expected, 1.0f);
+        });
+    };
     auto SendLiveAndExpect = [&](FSocket* Client, const FVector& Root, const TCHAR* What) -> void
     {
         const FString Text = FString::Printf(
@@ -2873,6 +2955,16 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
             Root.X, Root.Y, Root.Z);
         TestTrue(What, Client && SendText(Client, Text));
         TestTrue(*(FString(What) + TEXT(" reaches Live Link")), WaitEvaluatedRoot(Root));
+        const bool bDisplayed = WaitDisplayedRoot(Root);
+        if (!bDisplayed)
+        {
+            AddError(FString::Printf(TEXT("%s: displayed bone %s, expected %s."),
+                What,
+                bDisplaySeen ? *LastDisplayedSeen.ToString() : TEXT("<unseen>"),
+                *Root.ToString()));
+        }
+        TestTrue(*(FString(What) + TEXT(" reaches the displayed bone through the editor tick")),
+            bDisplayed);
     };
 
     FSocket* Primary = ConnectLoopback(*SocketSubsystem, Port);
@@ -2903,6 +2995,21 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready response is received"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
     TestTrue(TEXT("connected stream forces editor viewport realtime"), HasOverride());
+    TestTrue(TEXT("at least one real level viewport backs the override check"),
+        CountLevelViewports() > 0);
+    USkeletalMeshComponent* DisplayComponent =
+        Actor ? Actor->GetSkeletalMeshComponent() : nullptr;
+    TestNotNull(TEXT("binding actor exposes its skeletal mesh component"), DisplayComponent);
+    TestTrue(TEXT("editor skeletal mesh component tick is enabled"),
+        DisplayComponent && DisplayComponent->IsComponentTickEnabled());
+    TestTrue(TEXT("editor skeletal mesh component is registered"),
+        DisplayComponent && DisplayComponent->IsRegistered());
+    ULiveLinkInstance* DisplayInstance = DisplayComponent
+        ? Cast<ULiveLinkInstance>(DisplayComponent->GetAnimInstance())
+        : nullptr;
+    TestNotNull(TEXT("binding actor owns a Live Link animation instance"), DisplayInstance);
+    TestTrue(TEXT("Live Link animation evaluation is enabled"),
+        DisplayInstance && DisplayInstance->GetEnableLiveLinkEvaluation());
 
     // Disable the underlying viewport Realtime so only the plugin override
     // can keep the preview refreshing; the base preference is restored below.
@@ -2927,6 +3034,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     FPlatformProcess::Sleep(0.02f);
     Source->Update();
     TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
+    TestTrue(TEXT("cached entry exposes the disabled base realtime"), EffectiveMatchesBase(false));
     TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
     TestTrue(TEXT("clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
@@ -2938,6 +3046,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     FPlatformProcess::Sleep(0.02f);
     Source->Update();
     TestTrue(TEXT("second entry releases viewport realtime again"), HasNoOverride());
+    TestTrue(TEXT("second entry exposes the disabled base realtime again"), EffectiveMatchesBase(false));
     TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
     TestTrue(TEXT("second clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
@@ -2951,6 +3060,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     FPlatformProcess::Sleep(0.02f);
     Source->Update();
     TestTrue(TEXT("failure-path entry releases viewport realtime"), HasNoOverride());
+    TestTrue(TEXT("failure-path entry exposes the disabled base realtime"), EffectiveMatchesBase(false));
     TestTrue(TEXT("mismatched-revision upload is sent"),
         SendText(Primary, TEXT("{\"type\":\"cache_begin\",\"upload_id\":7,\"revision\":8,\"fps\":30,\"start_frame\":2001,\"end_frame\":2001,\"frame_count\":1,\"payload_size\":256}")));
     TestTrue(TEXT("mismatched revision reports a recoverable error"),
@@ -2962,10 +3072,9 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());
     SendLiveAndExpect(Primary, FVector(71.0, 72.0, 73.0), TEXT("live frame after recovery is sent"));
 
-    // Disconnect removes only the plugin override and preserves the user's
-    // base Realtime preference (still off here). The worker reports
-    // Listening immediately, but the game-thread disconnect cleanup that
-    // removes the override runs on Update, so pump it before asserting.
+    // Disconnect under base-off removes only the plugin override and preserves
+    // the disabled base. The worker reports Listening immediately, but the
+    // game-thread disconnect cleanup runs on Update, so pump it first.
     DestroySocket(*SocketSubsystem, Primary);
     TestTrue(TEXT("disconnected session returns source to listening"),
         WaitForStatus(Source, TEXT("Listening on")));
@@ -2976,6 +3085,11 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
             return HasNoOverride();
         }));
     TestTrue(TEXT("disconnect removes the plugin viewport override"), HasNoOverride());
+    TestTrue(TEXT("disconnect preserves the disabled base realtime"), EffectiveMatchesBase(false));
+    // Initially-on phase on a fresh negotiation of the same listener: raise the
+    // base first so this connection starts with Realtime on, then prove the
+    // same enter/clear cycle keeps the preview refreshing and the display bone
+    // tracking consecutive distinct poses through the normal editor tick.
 #if WITH_EDITOR
     if (GEditor)
     {
@@ -2983,16 +3097,61 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
         {
             if (ViewportClient)
             {
-                TestFalse(TEXT("disconnect preserves the disabled base realtime"),
-                    ViewportClient->IsRealtime());
+                ViewportClient->SetRealtime(true);
             }
         }
     }
 #endif
-
-    // Shutdown leaves no override residue either.
+    FSocket* Reconnect = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("reconnected Maya client connects"), Reconnect);
+    if (!Reconnect)
+    {
+#if WITH_EDITOR
+        if (GEditor)
+        {
+            for (const TPair<FLevelEditorViewportClient*, bool>& Saved : SavedBaseRealtime)
+            {
+                if (Saved.Key)
+                {
+                    Saved.Key->SetRealtime(Saved.Value);
+                    Saved.Key->RemoveRealtimeOverride(OverrideName, false);
+                }
+            }
+        }
+#endif
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+    TestTrue(TEXT("reconnected init is sent"), SendBytes(*Reconnect, Init.GetData(), Init.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("reconnected negotiation reaches ready"), ReceivePacket(
+        *Reconnect, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("reconnected stream forces editor viewport realtime"), HasOverride());
+    SendLiveAndExpect(Reconnect, FVector(81.0, 82.0, 83.0), TEXT("initial live frame on base-on is sent"));
+    TestTrue(TEXT("base-on cache entry is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("base-on entry releases the plugin viewport override"), HasNoOverride());
+    TestTrue(TEXT("base-on entry keeps the enabled base realtime"), EffectiveMatchesBase(true));
+    TestTrue(TEXT("base-on cache clear is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("base-on clear is acknowledged"),
+        ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("base-on clear restores live preview realtime"), HasOverride());
+    SendLiveAndExpect(Reconnect, FVector(91.0, 92.0, 93.0), TEXT("live frame after base-on clear is sent"));
+    // Active shutdown while still connected removes the override without
+    // touching the enabled base preference.
     Source->StopListener();
-    TestTrue(TEXT("shutdown removes the plugin viewport override"), HasNoOverride());
+    TestTrue(TEXT("active shutdown removes the plugin viewport override"), HasNoOverride());
+    TestTrue(TEXT("active shutdown preserves the enabled base realtime"), EffectiveMatchesBase(true));
+    DestroySocket(*SocketSubsystem, Reconnect);
     LiveLinkClient.RemoveSource(Source);
 
     // Restore the user's original viewport Realtime preference.
