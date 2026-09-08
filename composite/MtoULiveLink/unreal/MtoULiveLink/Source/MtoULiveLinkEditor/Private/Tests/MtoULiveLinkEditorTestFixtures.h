@@ -199,8 +199,13 @@ struct FMtoUFullCharacterFixtures
  * own slot names and material assignment.
  */
 inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
-    FMtoUFullCharacterFixtures& Fixtures)
+    FMtoUFullCharacterFixtures& Fixtures, const int32 ReducedPreviewPokes = -1)
 {
+    if (ReducedPreviewPokes < -1 || ReducedPreviewPokes > 24)
+    {
+        Test.AddError(TEXT("reduced Preview requires -1 (original) or 0..24 planar pokes"));
+        return false;
+    }
     USkeletalMesh* Base = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     if (!Base)
@@ -229,6 +234,7 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
         Test.AddError(TEXT("fixture SkeletalCube faces were not welded"));
         return false;
     }
+    const FDynamicMesh3 CoarseCube(Cube);
     TArray<int32> CubeTriangles;
     for (const int32 TriangleID : Cube.TriangleIndicesItr())
     {
@@ -379,8 +385,22 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
     UDynamicMesh* PreviewSource = NewObject<UDynamicMesh>(&Outer);
     PreviewSource->EditMesh([&](FDynamicMesh3& Mesh)
     {
-        AppendPartCopy(Mesh, Cube, GarmentUpperOffset, GarmentUpperScale, 0);
-        AppendPartCopy(Mesh, Cube, GarmentLowerOffset, GarmentLowerScale, 1);
+        const FDynamicMesh3& PreviewCube = ReducedPreviewPokes < 0 ? Cube : CoarseCube;
+        AppendPartCopy(Mesh, PreviewCube, GarmentUpperOffset, GarmentUpperScale, 0);
+        AppendPartCopy(Mesh, PreviewCube, GarmentLowerOffset, GarmentLowerScale, 1);
+        // A poke replaces one planar triangle with three on exactly the same
+        // surface. 24 + 2*N triangles vary density without changing coverage,
+        // bounds, layers, material slots, or the two garment components.
+        TArray<int32> OriginalTriangles;
+        for (const int32 TriangleID : Mesh.TriangleIndicesItr())
+        {
+            OriginalTriangles.Add(TriangleID);
+        }
+        for (int32 Index = 0; Index < ReducedPreviewPokes; ++Index)
+        {
+            FDynamicMesh3::FPokeTriangleInfo PokeInfo;
+            Mesh.PokeTriangle(OriginalTriangles[Index], PokeInfo);
+        }
     });
     Fixtures.PreviewTriangleCount = PreviewSource->GetMeshRef().TriangleCount();
 

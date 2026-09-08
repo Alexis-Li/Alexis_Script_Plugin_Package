@@ -1923,6 +1923,98 @@ bool FMtoUFullCharacterQualityCorpusTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUReducedTopologyTest,
+    "MtoULiveLink.Editor.Preview.ReducedTopology",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUReducedTopologyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* Package = CreatePackage(TEXT("/Temp/MtoUReducedTopology"));
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUReducedTopology"), Package, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    if (!Actor)
+    {
+        if (World) { World->DestroyWorld(false); }
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(Package);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Actor->SetBinding(Binding);
+    const TArray<FName> GarmentSlots = {
+        FName(TEXT("Garment_Upper_A")), FName(TEXT("Garment_Upper_B")),
+        FName(TEXT("Garment_Lower"))};
+    struct FRow { int32 Pokes; int32 Triangles; bool bAutoAccepted; };
+    // Nearest attainable even triangle counts on either side of 72 / 1.7,
+    // plus the original and a threefold density difference.
+    const FRow Rows[] = {{-1, 72, true}, {10, 44, true}, {9, 42, false}, {0, 24, false}};
+    for (const FRow& Row : Rows)
+    {
+        FMtoUFullCharacterFixtures Fixtures;
+        if (!MakeFullCharacterFixtures(*Package, *this, Fixtures, Row.Pokes))
+        {
+            AddError(TEXT("reduced-topology fixture creation failed"));
+            continue;
+        }
+        TestEqual(TEXT("Preview density is deterministic"), Fixtures.PreviewTriangleCount, Row.Triangles);
+        Binding->SkeletalMesh = Fixtures.FullDriver;
+        Binding->PreviewStaticMesh = Fixtures.Preview;
+        Binding->DriverGarmentSlotOverride.Reset();
+        FEnsureScope InpaintEnsureScope;
+        const FMtoUPreviewPreparationResult Auto = MtoUPreparePreview(*Actor, *Binding);
+        AddInfo(Auto.Diagnostics);
+        TestEqual(TEXT("Auto respects the measured reduction boundary"), Auto.bSucceeded, Row.bAutoAccepted);
+        if (Row.bAutoAccepted)
+        {
+            TestTrue(TEXT("Auto selects only the two garment regions and their slots"),
+                Auto.GeneratedPreview && Auto.Quality != EMtoUPreviewQuality::Error
+                && Auto.GarmentSourceRegionCount == 2 && Auto.GarmentSourceTriangleCount == 72
+                && Auto.DriverGarmentMaterialSlotIndices == TArray<int32>({3, 4, 5}));
+        }
+        else
+        {
+            TestTrue(TEXT("the reduction limit fails transactionally in the source-mass category"),
+                !Auto.GeneratedPreview && Auto.Quality == EMtoUPreviewQuality::Error
+                && Auto.FailureStage == EMtoUPreviewBuildStage::GeometryConversion
+                && Auto.Diagnostics.Contains(TEXT("source-mass boundary"))
+                && Auto.Diagnostics.Contains(TEXT("legitimate same-surface reduction"))
+                && Auto.Diagnostics.Contains(TEXT("triangle count alone does not prove"))
+                && Auto.Diagnostics.Contains(TEXT("Driver Garment Slot Override")));
+        }
+        const FMtoUPreviewReadiness AutoRefresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+        TestEqual(TEXT("public readiness agrees with the Auto operation"),
+            AutoRefresh.IsUsable(), Row.bAutoAccepted);
+        if (!Row.bAutoAccepted)
+        {
+            TestTrue(TEXT("rejected reduction restores Driver with no stale preview"),
+                AutoRefresh.State == EMtoUPreviewState::Error && !AutoRefresh.GeneratedPreview
+                && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver);
+        }
+
+        Binding->DriverGarmentSlotOverride = GarmentSlots;
+        const FMtoUPreviewPreparationResult Manual = MtoUPreparePreview(*Actor, *Binding);
+        AddInfo(Manual.Diagnostics);
+        TestTrue(TEXT("manual control recovers exactly the garment surface at every density"),
+            Manual.bSucceeded && Manual.GeneratedPreview && Manual.bManualGarmentSource
+            && Manual.Quality != EMtoUPreviewQuality::Error
+            && Manual.GarmentSourceRegionCount == 2 && Manual.GarmentSourceTriangleCount == 72
+            && Manual.DriverGarmentMaterialSlotIndices == TArray<int32>({3, 4, 5})
+            && Manual.MatchedPreviewCoverage > 0.999
+            && Manual.SurfaceDistanceMax < 1.e-6);
+        TestTrue(TEXT("manual remedy restores usable public readiness"),
+            FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable());
+        AddInfo(FString::Printf(
+            TEXT("reduction corpus: Driver=216 garment=72 Preview=%d ratio=%.6f Auto=%s "
+                "ManualQuality=%d regions=%d slots=3,4,5 coverage=%.6f distance_max=%.9f inpaint=%.6f"),
+            Row.Triangles, 72.0 / Row.Triangles, Auto.bSucceeded ? TEXT("accepted") : TEXT("rejected"),
+            static_cast<int32>(Manual.Quality), Manual.GarmentSourceRegionCount,
+            Manual.MatchedPreviewCoverage, Manual.SurfaceDistanceMax, Manual.InpaintLowConfidenceRatio));
+    }
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCorpusMeasurementTest,
     "MtoULiveLink.Editor.Preview.QualityCorpus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -49,6 +49,10 @@ geometry-validation rules):
   all rejected deterministically with actionable diagnostics naming both
   remedies (remove duplicates/split sections, or the manual Driver Garment Slot
   Override).
+  This is a conservative topology-density support limit, not proof of excess
+  surface area or ambiguity. Issue #40 below measures legitimate reduction
+  rejected by the same limit and verifies the manual remedy; no threshold was
+  raised and the original #22 anchors remain historical measurements.
 * Twin-region boundary — a selected region and an unselected alternative whose
   surfaces mutually agree within 2% of Preview scale for at least 98% of their
   vertices are indistinguishable candidates. Exact and near-shifted duplicate
@@ -139,3 +143,82 @@ No constant changed except the new resolution boundaries above (mass 1.70x,
 twin proximity/agreement shares); Issue #32 added no constant at all, only the
 shared zero-area admission gate and the Preview-triangle-count mass floor,
 recorded next to their implementation comments.
+
+## Same-surface topology reduction (Issue #40, 2026-09-08)
+
+Stock UE 5.7.4 Win64 (5.7.4-51494982) reproduced the suspected false rejection
+before the runtime diagnostic changed. `Preview.ReducedTopology` extends
+`MakeFullCharacterFixtures` through `MtoUPreparePreview` and the public
+`RefreshActor` entry point. The full Driver has 216 triangles across six
+connected components: body, face, hair, arm, and two garment shells. The
+garment contributes 72 triangles (36 per shell) in final slots 3/4/5,
+`Garment_Upper_A`, `Garment_Upper_B`, and `Garment_Lower`.
+
+The Preview uses the identical upper/lower transforms and surface positions.
+Starting with two welded coarse cubes (24 triangles total), a deterministic
+planar triangle poke replaces one triangle with three without changing its
+surface. Ten pokes produce 44 triangles; nine produce 42; zero produce 24.
+The original 72-triangle fixture is unchanged. Material assignments, shell
+count, bounds, reference pose, and full-character Driver stay equivalent;
+only Preview triangulation density changes. The 44/42 counts are the nearest
+attainable even counts on either side of 72/1.70 for this construction.
+
+| Preview tris / vertices | Selected Driver / Preview ratio | Auto preparation and Refresh | Manual preparation and Refresh | Manual inpaint ratio |
+| --- | ---: | --- | --- | ---: |
+| 72 / 40 | 1.000000 | Usable Warning, 2 regions / 72 tris | Usable Warning, 2 regions / 72 tris | 0.400000 |
+| 44 / 26 | 1.636364 | Usable Warning, 2 regions / 72 tris | Usable Warning, 2 regions / 72 tris | 0.461538 |
+| 42 / 25 | 1.714286 | Source-mass Error, no Generated Preview | Usable Warning, 2 regions / 72 tris | 0.400000 |
+| 24 / 16 | 3.000000 | Source-mass Error, no Generated Preview | Usable Warning, 2 regions / 72 tris | 0.000000 (closest fallback) |
+
+Every accepted row selects exactly garment slots 3/4/5, excluding body, face,
+hair, and arm. Manual whole-Preview coverage is 1.000000 and normalized maximum
+surface distance is 0.000000000 in all four rows. Rejected Auto diagnostics
+report the 72-triangle candidate count; no candidate is committed as a usable
+surface. Public Refresh restores the Driver, returns Error with no stale
+Generated Preview, then becomes usable after the explicit garment-slot override.
+Warnings remain honest: the first three toy rows exceed the Ready inpaint
+ratio; the 24-triangle case uses the existing closest-point fallback after the
+inpaint solve fails, so zero reported inpaint ratio is not a Ready claim.
+
+**Decision:** retain the calibrated 1.70 ceiling as an intentional conservative
+Auto support limit (more than one Driver connected component, Preview at least
+8 triangles; equality is permitted). These rows prove density sensitivity,
+not a new discriminator between reduced garments and unsafe mixed sources.
+Raising the limit to accommodate the 3.00x example would remove rejection at
+the original 2.00x duplicate-mass and 2.31x proximity-mixing anchors. No general
+topology matcher or new dependency is justified by these planar fixtures.
+The narrow correction is diagnostic: explicitly name legitimate reduction as
+a possible cause, state that triangle count does not prove duplicate/foreign
+geometry, and explain the verified manual remedy. Both READMEs now describe
+the actual limit and require source inspection plus distinct garment slots.
+Manual selection retains geometry, coverage, alignment, shared-slot, and
+transfer-quality checks; it is not permission to select duplicated garments.
+
+**Retained controls and verification:**
+
+- `GarmentSurface.Failures`: exact/shifted duplicates, source-mass refusal,
+  and misalignment; `GarmentSurface.Auto` retains full-character geometry
+  isolation from the underlying body and shared-slot/mapping refusal.
+- `GarmentSurface.MaterialEvidence`, `Manual`, `GeometryEdgeCases`, and
+  `RenamedSlot`: final-slot evidence, fail-closed manual selection, tiny
+  Preview floor/twin ambiguity, invalid/collinear/non-finite geometry.
+- `Preview.GarmentOverride`, `InvalidGeometry`, `Misalignment`,
+  `FullCharacterQualityCorpus`, and `QualityBoundaries` retain their existing
+  safety and readiness assertions; their acceptance thresholds are unchanged.
+- Initial `Automation RunTests MtoULiveLink.Editor.Preview.ReducedTopology`:
+  passed against the original diagnostic and selection policy, establishing
+  the measured rejection before the correction.
+- Final `Build.bat UnrealEditor Win64 Development`: succeeded, no compiler
+  warnings. A disposable copy of the supplied Backups host descriptor loaded
+  the independently copied plugin; the existing host project was untouched.
+- Final `Automation RunTests MtoULiveLink`: 55/55 passed (49 without warnings,
+  6 with diagnostic warnings; 0 failed, 0 not run), including ReducedTopology.
+- `python tools/package_unreal_plugin.py MtoULiveLink --engine 5.7 --json`:
+  dry-run passed, 32 files. `git diff --check`: passed.
+
+This is deterministic synthetic calibration and headless UE host evidence,
+not arbitrary-retopology support or production visual acceptance. No new C01
+asset run, Maya host test, or Topia build was performed: this slice changes
+only the Unreal selection diagnostic and its corpus/documentation. The #22
+external production rows and #13 quality baseline above were not rerun or
+replaced. No generated files or machine-specific paths belong in the commit.

@@ -74,6 +74,14 @@ Maya 与 Unreal 组件必须来自同一版本。
    不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
    其他部分。Refresh 失败时会保持 Error 状态且无可用预览，但会恢复显示已绑定的
    Driver 以便检查；在下一次 Refresh 成功之前，模型连接仍会被阻止。
+   Auto 使用保守的拓扑密度限制：Driver 有多个连通区域且 Preview 至少有 8 个
+   三角形时，选中的 Driver 三角形数不能超过 Preview 的 1.70 倍。
+   即使对齐且表面完全相同，减面也可能超限；该诊断不能证明存在重复或身体几何。
+   请检查源模型，删除实际存在的重复副本，并拆分服装与身体混用的材质槽。
+   对于有意减面的 Preview，在 Binding 的 **Driver Garment Slot Override** 中
+   仅指定服装独立的材质槽，再点击 **Refresh Preview**。手动选择仍会检查几何、
+   整个 Preview 的覆盖率、对齐、共用槽和传递质量。可用的黄色 Warning 仍需检查
+   后才能验收。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
    Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
    所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：

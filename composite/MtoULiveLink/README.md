@@ -89,6 +89,16 @@ Install the Maya and Unreal components from the same release.
    failed Refresh keeps Error readiness with no usable preview but restores the
    bound Driver display for inspection; Model connection stays blocked until a
    later Refresh succeeds.
+   Auto uses a conservative topology-density limit: when the Driver has more
+   than one connected region and the Preview has at least 8 triangles, selected
+   Driver triangles must not exceed 1.70 times the Preview triangle count.
+   Even an aligned, same-surface reduction can exceed this limit; the diagnostic
+   does not prove duplicate or body geometry. Inspect the source, remove any
+   duplicates, and separate mixed garment/body material slots. For an intended
+   reduction, set **Driver Garment Slot Override** on the Binding to only the
+   garment's distinct slots, then **Refresh Preview**. Manual selection still
+   checks geometry, whole-Preview coverage, alignment, shared slots, and transfer
+   quality. A usable yellow Warning still needs inspection before acceptance.
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
    Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
    reimport), deleting the Binding Actor, or unloading its Editor world ends

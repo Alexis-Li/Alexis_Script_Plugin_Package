@@ -878,12 +878,13 @@ FString DescribeConnectedRegion(
  * whole Driver is the legacy garment-only contract: metrics alone judge it,
  * so this gate never runs on that passthrough. Duplicated candidate garments
  * and foreign geometry welded into garment surfaces both inflate the selected
- * source mass far beyond the Preview garment area, so one numeric boundary
- * rejects both deterministically; the message names both remedies.
+ * triangle count. This is a conservative density heuristic, not a surface
+ * area or ambiguity measurement: same-surface reduction can also exceed it.
  */
-// ponytail: fixed 1.7 ceiling between anchors (legit fixture measures ~1.42,
-// whole duplicated garments measure 2.0+); refine from the recorded #22
-// external-corpus rows if a production revision lands nearby.
+// Retain #22's 1.7 safety ceiling (valid ~1.42, duplicates 2.0+).
+// Issue #40 measures same-surface reduction at 72/44 (accepted) and 72/42
+// (rejected), with a validated manual-slot remedy. Raising this ceiling on
+// density evidence alone would also admit the existing unsafe mass anchors.
 constexpr double MaxDriverToPreviewTriangleRatio = 1.7;
 /** Preview triangle counts below this floor are exempt from mass accounting. */
 constexpr int32 MinTrianglesForMassAccounting = 8;
@@ -1322,8 +1323,8 @@ bool ResolveDriverGarmentSurface(
     {
         if (Preview.TriangleCount() >= MinTrianglesForMassAccounting)
         {
-            // Mass bound: duplicated copies or proximity-pulled foreign geometry
-            // inflate the selected source far beyond the Preview garment.
+            // Conservative Auto support limit; triangle density alone cannot
+            // distinguish legitimate reduction from duplicated/foreign surfaces.
             const int32 PreviewTriangleCount = Preview.TriangleCount();
             const double MaxSelectedTriangles =
                 static_cast<double>(PreviewTriangleCount)
@@ -1332,11 +1333,13 @@ bool ResolveDriverGarmentSurface(
             {
                 OutError = FString::Printf(
                     TEXT("Automatic garment resolution failed the source-mass boundary: the resolved surface holds %d "
-                        "Driver LOD0 triangles for a Preview garment of %d triangles (%.2fx allowed %.2f); duplicated "
-                        "garment copies are indistinguishable sources (ambiguous) or foreign geometry is welded into "
-                        "garment source/material sections, and automatic resolution cannot separate them safely. Remove "
-                        "duplicates or split the garment into its own material section in the source FBX, or pin an "
-                        "explicit selection with the manual Driver Garment Slot Override."),
+                        "Driver LOD0 triangles for a Preview garment of %d triangles (%.2fx allowed %.2f). This "
+                        "conservative Auto topology-density limit can also reject legitimate same-surface reduction; "
+                        "triangle count alone does not prove duplicate or foreign geometry. Inspect the Driver for "
+                        "ambiguous garment copies or mixed body sections; remove duplicates or separate mixed sections "
+                        "if present. For an intentionally reduced Preview, select only the intended garment's distinct "
+                        "material slots with Driver Garment Slot Override and Refresh Preview. Manual selection still "
+                        "requires valid geometry, whole-Preview coverage, alignment, and no shared non-garment slots."),
                     Out.TriangleCount,
                     PreviewTriangleCount,
                     static_cast<double>(Out.TriangleCount) / PreviewTriangleCount,
