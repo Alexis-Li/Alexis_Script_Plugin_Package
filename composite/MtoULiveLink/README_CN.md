@@ -82,6 +82,10 @@ Maya 与 Unreal 组件必须来自同一版本。
    仅指定服装独立的材质槽，再点击 **Refresh Preview**。手动选择仍会检查几何、
    整个 Preview 的覆盖率、对齐、共用槽和传递质量。可用的黄色 Warning 仍需检查
    后才能验收。
+   Refresh 同步执行，可能阻塞 Editor 数秒：在记录的测试主机上，合成夹具的服装
+   为 27,744 个三角形、完整 Driver 为 147,744 个三角形，4–64 个 Driver Morph
+   的刷新约需 1.6–3.1 秒。这是已测语料范围，并非通用规模或延迟保证；详见
+   [几何规模测量记录](../../docs/project-history/mtou-livelink/preview-refresh-geometry-scale.md)。
 6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
    Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
    所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：

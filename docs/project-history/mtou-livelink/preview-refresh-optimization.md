@@ -6,6 +6,14 @@ Record type: Durable performance conclusion; method is repeatable via automation
 
 ## Scope
 
+Scope clarification from Issue #41 (2026-09-08): all timing and allocation
+conclusions below concern the original tiny geometry only. The historical
+`ProductionScale` name meant Morph-library scale (40 vertices / 72 triangles),
+not production geometry. It is now named `Library64` in the benchmark. These
+historical measurements remain unchanged. For substantial geometry, seconds-long
+waits and the current follow-up decision, see
+[geometry-scale measurements](preview-refresh-geometry-scale.md).
+
 Issue #34 required evidence-backed Preview refresh improvements that preserve
 transactional behavior: reuse projection data and scratch storage, remove
 avoidable full-mesh copies, keep the explicit refresh boundary, and add

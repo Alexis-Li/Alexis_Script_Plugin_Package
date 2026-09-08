@@ -26,6 +26,12 @@
 #include "Materials/Material.h"
 #include "MeshDescription.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "UObject/GarbageCollection.h"
 #include "Misc/PackageName.h"
 #include "PropertyEditorModule.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -2530,105 +2536,298 @@ bool FMtoUPreviewRefreshBenchmarkTest::RunTest(const FString& Parameters)
         return false;
     }
 
-    auto LogAndCheck = [this, Actor, Binding, WorldPackage](
-        const TCHAR* ScaleName, USkeletalMesh* Driver, UStaticMesh* Preview,
-        int32 ExpectedMorphs, bool bExpectSuccess)
+    // A selector allows each case's first refresh to be measured in a fresh
+    // Editor process. Without it, only the first case is process-cold.
+    FString SelectedCase;
+    FParse::Value(FCommandLine::Get(), TEXT("MtoUBenchmarkCase="), SelectedCase);
+    struct FCase
     {
+        const TCHAR* Name;
+        int32 GarmentCells;
+        int32 OtherCells;
+        int32 Morphs;
+    };
+    const FCase Cases[] = {
+        {TEXT("Small"), 0, 0, 5},
+        {TEXT("Representative"), 0, 0, 4},
+        {TEXT("Library64"), 0, 0, 64},
+        {TEXT("GeometryMedium4"), 10, 15, 4},
+        {TEXT("GeometryMedium32"), 10, 15, 32},
+        {TEXT("GeometryMedium64"), 10, 15, 64},
+        {TEXT("GeometryLarge4"), 34, 50, 4},
+        {TEXT("GeometryLarge32"), 34, 50, 32},
+        {TEXT("GeometryLarge64"), 34, 50, 64},
+    };
+    bool bFirstRefresh = true;
+    bool bMatchedCase = false;
+    for (const FCase& Case : Cases)
+    {
+        if (!SelectedCase.IsEmpty() && SelectedCase != Case.Name)
+        {
+            continue;
+        }
+        bMatchedCase = true;
+        const bool bSmall = FString(Case.Name) == TEXT("Small");
+        FMtoUFullCharacterFixtures Fixtures;
+        if (bSmall)
+        {
+            Fixtures.FullDriver = MakeMorphDriver(*WorldPackage);
+            Fixtures.Preview = Fixtures.FullDriver
+                ? MakePreview(*Fixtures.FullDriver, *WorldPackage) : nullptr;
+        }
+        else if (!MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures,
+            -1, Case.GarmentCells, Case.OtherCells))
+        {
+            AddError(FString::Printf(TEXT("%s fixture creation failed"), Case.Name));
+            continue;
+        }
+        USkeletalMesh* Driver = Fixtures.FullDriver;
+        UStaticMesh* Preview = Fixtures.Preview;
+        TStrongObjectPtr<USkeletalMesh> DriverGuard(Driver);
+        TStrongObjectPtr<USkeletalMesh> GarmentGuard(Fixtures.GarmentOnlyDriver);
+        TStrongObjectPtr<UStaticMesh> PreviewGuard(Preview);
+        if (!Driver || !Preview)
+        {
+            AddError(TEXT("benchmark input assets are missing"));
+            continue;
+        }
+        for (int32 Index = 0; Index < Case.Morphs - (bSmall ? 5 : 4); ++Index)
+        {
+            TestTrue(TEXT("benchmark uniform Morph is registered"), AddUniformMorph(*Driver,
+                FName(*FString::Printf(TEXT("BenchMorph%02d"), Index)),
+                FVector3f(0.1f * (Index + 1), 0.05f * (Index + 1), 0.02f * (Index + 1))));
+        }
+        Driver->InitMorphTargets();
+        TestEqual(TEXT("input library size"), Driver->GetMorphTargets().Num(), Case.Morphs);
+        // Fix the selected garment independently of dense proximity sampling,
+        // matching the explicit garment-slot workflow in the historical C01 run.
+        Binding->DriverGarmentSlotOverride.Reset();
+        if (Case.GarmentCells > 0)
+        {
+            Binding->DriverGarmentSlotOverride = {FName(TEXT("Garment_Upper_A")),
+                FName(TEXT("Garment_Upper_B")), FName(TEXT("Garment_Lower"))};
+        }
         Binding->SkeletalMesh = Driver;
         Binding->PreviewStaticMesh = Preview;
-        const double StartSeconds = FPlatformTime::Seconds();
-        const FMtoUPreviewPreparationResult Result = MtoUPreparePreview(*Actor, *Binding);
-        const double TotalMilliseconds = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
-        const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
-        AddInfo(FString::Printf(
-            TEXT("{\"benchmark\":\"PreviewRefresh\",\"scale\":\"%s\",\"vertices\":%d,\"triangles\":%d,")
-            TEXT("\"morph_count\":%d,\"skipped_morphs\":%d,\"sparse_deltas\":%lld,")
-            TEXT("\"closest_ms\":%.3f,\"inpaint_ms\":%.3f,\"morph_projection_ms\":%.3f,")
-            TEXT("\"total_refresh_ms\":%.1f,\"used_physical_mib\":%.1f,\"peak_physical_mib\":%.1f,\"status\":\"%s\"}"),
-            ScaleName,
-            Result.VertexCount,
-            Result.TriangleCount,
-            Result.MorphTargetCount,
-            Result.SkippedMorphTargetCount,
-            Result.SparseMorphDeltaCount,
-            Result.ClosestTransferMilliseconds,
-            Result.InpaintTransferMilliseconds,
-            Result.MorphProjectionMilliseconds,
-            TotalMilliseconds,
-            Stats.UsedPhysical / (1024.0 * 1024.0),
-            Stats.PeakUsedPhysical / (1024.0 * 1024.0),
-            Result.bSucceeded
-                ? (Result.Quality == EMtoUPreviewQuality::Ready ? TEXT("Ready") : TEXT("Warning"))
-                : TEXT("Error")));
-        AddInfo(Result.Diagnostics);
-        if (bExpectSuccess)
+        Actor->SetBinding(nullptr);
+        Actor->SetBinding(Binding);
+        const FMeshDescription* Input = Preview->GetMeshDescription(0);
+        const FMeshDescription* DriverInput = Driver->GetMeshDescription(0);
+        if (!Input || !DriverInput)
         {
-            TestTrue(FString::Printf(TEXT("%s builds a usable preview"), ScaleName),
-                Result.bSucceeded && Result.GeneratedPreview != nullptr);
-            TestEqual(FString::Printf(TEXT("%s projects the complete Morph library"), ScaleName),
-                Result.MorphTargetCount + Result.SkippedMorphTargetCount, ExpectedMorphs);
-            TestTrue(FString::Printf(TEXT("%s records stage timings"), ScaleName),
-                Result.ClosestTransferMilliseconds > 0.0
-                && Result.InpaintTransferMilliseconds > 0.0
-                && Result.MorphProjectionMilliseconds >= 0.0
-                && TotalMilliseconds > 0.0);
+            AddError(TEXT("benchmark inputs have no LOD0 descriptions"));
+            continue;
         }
-        return Result;
-    };
-
-    // Small: stock SkeletalCube with its 5-Morph library and same-topology Preview.
-    USkeletalMesh* SmallDriver = MakeMorphDriver(*WorldPackage);
-    UStaticMesh* SmallPreview = SmallDriver ? MakePreview(*SmallDriver, *WorldPackage) : nullptr;
-    TStrongObjectPtr<USkeletalMesh> SmallDriverGuard(SmallDriver);
-    TStrongObjectPtr<UStaticMesh> SmallPreviewGuard(SmallPreview);
-    if (!SmallDriver || !SmallPreview)
-    {
-        AddError(TEXT("small benchmark fixtures were not created"));
-        if (World)
+        if (Case.GarmentCells > 0)
         {
-            World->DestroyWorld(false);
+            TestEqual(TEXT("declared garment geometry scale"), Input->Triangles().Num(),
+                24 * Case.GarmentCells * Case.GarmentCells);
+            TestEqual(TEXT("declared full-character geometry scale"), DriverInput->Triangles().Num(),
+                24 * Case.GarmentCells * Case.GarmentCells + 48 * Case.OtherCells * Case.OtherCells);
         }
-        return false;
-    }
-    LogAndCheck(TEXT("Small"), SmallDriver, SmallPreview, 5, true);
-
-    // Representative: full-character Driver with garment-only Preview (4 region Morphs).
-    FMtoUFullCharacterFixtures Representative;
-    TestTrue(TEXT("representative fixtures are created"),
-        MakeFullCharacterFixtures(*WorldPackage, *this, Representative));
-    if (Representative.IsValid())
-    {
-        TStrongObjectPtr<USkeletalMesh> RepDriverGuard(Representative.FullDriver);
-        TStrongObjectPtr<USkeletalMesh> RepGarmentGuard(Representative.GarmentOnlyDriver);
-        TStrongObjectPtr<UStaticMesh> RepPreviewGuard(Representative.Preview);
-        LogAndCheck(TEXT("Representative"),
-            Representative.FullDriver, Representative.Preview,
-            Representative.FullDriver->GetMorphTargets().Num(), true);
-
-        // Production-scale: same Preview revision geometry with a 64-Morph library.
-        // The extra uniform Morphs stress the per-Morph projection path without
-        // changing the Driver/Preview revision under test.
-        const int32 BaseMorphs = Representative.FullDriver->GetMorphTargets().Num();
-        for (int32 Index = 0; Index < 60; ++Index)
+        for (int32 Run = 0; Run < 4; ++Run)
         {
-            const FName MorphName(*FString::Printf(TEXT("BenchMorph%02d"), Index));
-            const FVector3f Delta(0.1f * (Index + 1), 0.05f * (Index + 1), 0.02f * (Index + 1));
-            if (!AddUniformMorph(*Representative.FullDriver, MorphName, Delta))
+            // Release abandoned scratch/output from previous runs before sampling.
+            // The actor still retains the previous committed output for warmed runs.
+            CollectGarbage(RF_NoFlags);
+            const FPlatformMemoryStats Before = FPlatformMemory::GetStats();
+            double Stages[6] = {};
+            EMtoUPreviewBuildStage PreviousStage = EMtoUPreviewBuildStage::None;
+            const double Start = FPlatformTime::Seconds();
+            double StageStart = Start;
+            const FMtoUPreviewReadiness Result = FMtoUPreviewPreparation::RefreshActor(*Actor,
+                [&](EMtoUPreviewBuildStage Stage)
+                {
+                    const double Now = FPlatformTime::Seconds();
+                    Stages[static_cast<int32>(PreviousStage)] += (Now - StageStart) * 1000.0;
+                    PreviousStage = Stage;
+                    StageStart = Now;
+                });
+            const double End = FPlatformTime::Seconds();
+            Stages[static_cast<int32>(PreviousStage)] += (End - StageStart) * 1000.0;
+            const FPlatformMemoryStats After = FPlatformMemory::GetStats();
+            AddInfo(FString::Printf(TEXT("%s run %d: %s"), Case.Name, Run, *Result.Diagnostics));
+            USkeletalMesh* Generated = Result.GeneratedPreview;
+            bool bOutputOK = Result.IsUsable() && Generated
+                && Generated->HasAnyFlags(RF_Transient) && Generated->GetOuter() == Actor
+                && Actor->GetPreviewReadiness().GeneratedPreview == Generated
+                && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+                && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Generated;
+            const FMeshDescription* Output = Generated ? Generated->GetMeshDescription(0) : nullptr;
+            bOutputOK &= Output && Output->Vertices().Num() == Input->Vertices().Num()
+                && Output->Triangles().Num() == Input->Triangles().Num();
+            if (Output)
             {
-                AddError(FString::Printf(TEXT("production-scale Morph %s was not registered"), *MorphName.ToString()));
-                break;
+                // Compare the complete position multiset, independent of vertex reindexing.
+                TArray<FVector3f> ExpectedPositions, ActualPositions;
+                for (const FVertexID ID : Input->Vertices().GetElementIDs())
+                {
+                    ExpectedPositions.Add(Input->GetVertexPositions()[ID]);
+                }
+                for (const FVertexID ID : Output->Vertices().GetElementIDs())
+                {
+                    ActualPositions.Add(Output->GetVertexPositions()[ID]);
+                }
+                const auto PositionLess = [](const FVector3f& A, const FVector3f& B)
+                {
+                    return A.X != B.X ? A.X < B.X : (A.Y != B.Y ? A.Y < B.Y : A.Z < B.Z);
+                };
+                ExpectedPositions.Sort(PositionLess);
+                ActualPositions.Sort(PositionLess);
+                for (int32 Index = 0; Index < FMath::Min(ExpectedPositions.Num(), ActualPositions.Num()); ++Index)
+                {
+                    bOutputOK &= ExpectedPositions[Index].Equals(ActualPositions[Index], 0.001f);
+                }
             }
+            UDynamicMesh* Readback = NewObject<UDynamicMesh>(GetTransientPackage());
+            FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+            FGeometryScriptMeshReadLOD ReadLOD;
+            ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+            EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+            if (Generated)
+            {
+                UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(
+                    Generated, Readback, ReadOptions, ReadLOD, Outcome);
+            }
+            bool bWeightsOK = Outcome == EGeometryScriptOutcomePins::Success;
+            const FDynamicMesh3& Mesh = Readback->GetMeshRef();
+            const auto* Weights = Mesh.HasAttributes() ? Mesh.Attributes()->GetSkinWeightsAttribute(
+                FSkeletalMeshAttributes::DefaultSkinWeightProfileName) : nullptr;
+            bWeightsOK &= Weights != nullptr;
+            if (Weights)
+            {
+                for (const int32 VertexID : Mesh.VertexIndicesItr())
+                {
+                    UE::AnimationCore::FBoneWeights Influences;
+                    Weights->GetValue(VertexID, Influences);
+                    float Sum = 0.0f;
+                    bWeightsOK &= Influences.Num() > 0;
+                    for (const auto& Influence : Influences)
+                    {
+                        Sum += Influence.GetWeight();
+                        bWeightsOK &= Generated->GetRefSkeleton().IsValidIndex(Influence.GetBoneIndex());
+                        if (!bSmall)
+                        {
+                            bWeightsOK &= Influence.GetBoneIndex() == 0;
+                        }
+                    }
+                    bWeightsOK &= FMath::IsNearlyEqual(Sum, 1.0f, 0.001f);
+                }
+            }
+            int64 SparseDeltas = 0;
+            int32 Projected = 0;
+            bool bMorphsOK = Generated != nullptr;
+            const TSet<FName> Skipped = {FName(TEXT("ArmRaise")), FName(TEXT("FaceBlink")), FName(TEXT("HairSway"))};
+            if (Generated)
+            {
+                Projected = Generated->GetMorphTargets().Num();
+                bMorphsOK &= Projected == Case.Morphs - (bSmall ? 0 : 3);
+                for (const UMorphTarget* SourceMorph : Driver->GetMorphTargets())
+                {
+                    const FName Name = SourceMorph->GetFName();
+                    const UMorphTarget* Morph = Generated->FindMorphTarget(Name);
+                    if (!bSmall && Skipped.Contains(Name))
+                    {
+                        bMorphsOK &= Morph == nullptr;
+                        continue;
+                    }
+                    if (!Morph || !Morph->HasDataForLOD(0))
+                    {
+                        bMorphsOK = false;
+                        continue;
+                    }
+                    const FMorphTargetLODModel& LOD = Morph->GetMorphLODModels()[0];
+                    const FVector3f ExpectedDelta = SourceMorph->GetMorphLODModels()[0].Vertices[0].PositionDelta;
+                    SparseDeltas += LOD.Vertices.Num();
+                    bMorphsOK &= !LOD.Vertices.IsEmpty();
+                    const FSkeletalMeshLODModel& GeneratedLOD = Generated->GetImportedModel()->LODModels[0];
+                    TMap<uint32, FVector3f> ActualDeltas;
+                    for (const FMorphTargetDelta& Delta : LOD.Vertices)
+                    {
+                        bMorphsOK &= Delta.SourceIdx < GeneratedLOD.NumVertices
+                            && !ActualDeltas.Contains(Delta.SourceIdx)
+                            && !Delta.PositionDelta.ContainsNaN() && !Delta.TangentZDelta.ContainsNaN();
+                        ActualDeltas.Add(Delta.SourceIdx, Delta.PositionDelta);
+                    }
+                    // Same-topology inputs give an independent analytic oracle:
+                    // uniform translations everywhere, or +2 X inside Flare's box.
+                    // UE also emits normal-only deltas near that box boundary;
+                    // those sparse entries legitimately have zero position delta.
+                    const FAxisAlignedBox3d FlareBox(
+                        Fixtures.GarmentABounds.Min - 2.0, Fixtures.GarmentABounds.Max + 2.0);
+                    bool bDeltasOK = Output != nullptr;
+                    for (uint32 Index = 0; Output && Index < GeneratedLOD.NumVertices; ++Index)
+                    {
+                        if (!GeneratedLOD.MeshToImportVertexMap.IsValidIndex(Index))
+                        {
+                            bDeltasOK = false;
+                            continue;
+                        }
+                        const FVertexID PointID(GeneratedLOD.MeshToImportVertexMap[Index]);
+                        if (!Output->Vertices().IsValid(PointID))
+                        {
+                            bDeltasOK = false;
+                            continue;
+                        }
+                        const FVector3f Expected = Name == FName(TEXT("GarmentFlare"))
+                            ? (FlareBox.Contains(FVector3d(Output->GetVertexPositions()[PointID]))
+                                ? FVector3f(2.0f, 0.0f, 0.0f) : FVector3f::ZeroVector)
+                            : ExpectedDelta;
+                        const FVector3f* Actual = ActualDeltas.Find(Index);
+                        bDeltasOK &= (Actual ? *Actual : FVector3f::ZeroVector).Equals(Expected, 0.001f);
+                    }
+                    bMorphsOK &= TestTrue(*FString::Printf(TEXT("%s complete expected position deltas"),
+                        *Name.ToString()), bDeltasOK);
+                }
+            }
+            TestTrue(FString::Printf(TEXT("%s run %d geometry, ownership and readiness"), Case.Name, Run), bOutputOK);
+            TestTrue(FString::Printf(TEXT("%s run %d normalized skin weights"), Case.Name, Run), bWeightsOK);
+            TestTrue(FString::Printf(TEXT("%s run %d Morph names, coverage and deltas"), Case.Name, Run), bMorphsOK);
+            TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+            Row->SetStringField(TEXT("benchmark"), TEXT("PreviewRefresh"));
+            Row->SetStringField(TEXT("scale"), Case.Name);
+            Row->SetStringField(TEXT("diagnostics"), Result.Diagnostics);
+            Row->SetStringField(TEXT("phase"), Run == 0
+                ? (bFirstRefresh ? TEXT("process_first_refresh") : TEXT("case_first_refresh")) : TEXT("warmed"));
+            Row->SetStringField(TEXT("selection"), Case.GarmentCells > 0 ? TEXT("Manual") : TEXT("Auto"));
+            Row->SetNumberField(TEXT("run"), Run);
+            Row->SetNumberField(TEXT("garment_grid_cells"), Case.GarmentCells);
+            Row->SetNumberField(TEXT("other_grid_cells"), Case.OtherCells);
+            Row->SetNumberField(TEXT("driver_vertices"), DriverInput->Vertices().Num());
+            Row->SetNumberField(TEXT("driver_triangles"), DriverInput->Triangles().Num());
+            Row->SetNumberField(TEXT("vertices"), Input->Vertices().Num());
+            Row->SetNumberField(TEXT("triangles"), Input->Triangles().Num());
+            Row->SetNumberField(TEXT("output_vertices"), Output ? Output->Vertices().Num() : 0);
+            Row->SetNumberField(TEXT("output_triangles"), Output ? Output->Triangles().Num() : 0);
+            Row->SetNumberField(TEXT("driver_morphs"), Case.Morphs);
+            Row->SetNumberField(TEXT("morph_count"), Projected);
+            Row->SetNumberField(TEXT("skipped_morphs"), Case.Morphs - Projected);
+            Row->SetNumberField(TEXT("sparse_deltas"), SparseDeltas);
+            const TCHAR* StageNames[] = {TEXT("begin_ms"), TEXT("preflight_ms"), TEXT("geometry_resolution_ms"),
+                TEXT("weight_transfer_ms"), TEXT("build_and_morph_ms"), TEXT("validation_commit_display_ms")};
+            for (int32 Index = 0; Index < 6; ++Index)
+            {
+                Row->SetNumberField(StageNames[Index], Stages[Index]);
+            }
+            Row->SetNumberField(TEXT("total_refresh_ms"), (End - Start) * 1000.0);
+            Row->SetNumberField(TEXT("before_used_physical_mib"), Before.UsedPhysical / (1024.0 * 1024.0));
+            Row->SetNumberField(TEXT("after_used_physical_mib"), After.UsedPhysical / (1024.0 * 1024.0));
+            Row->SetNumberField(TEXT("used_physical_change_mib"),
+                (static_cast<double>(After.UsedPhysical) - Before.UsedPhysical) / (1024.0 * 1024.0));
+            Row->SetNumberField(TEXT("before_process_peak_mib"), Before.PeakUsedPhysical / (1024.0 * 1024.0));
+            Row->SetNumberField(TEXT("after_process_peak_mib"), After.PeakUsedPhysical / (1024.0 * 1024.0));
+            Row->SetBoolField(TEXT("output_checks_passed"), bOutputOK && bWeightsOK && bMorphsOK);
+            Row->SetStringField(TEXT("status"), Result.State == EMtoUPreviewState::Ready ? TEXT("Ready")
+                : (Result.State == EMtoUPreviewState::Warning ? TEXT("Warning") : TEXT("Error")));
+            FString Json;
+            const auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json);
+            FJsonSerializer::Serialize(Row, Writer);
+            AddInfo(Json);
+            bFirstRefresh = false;
         }
-        Representative.FullDriver->InitMorphTargets();
-        const int32 ProductionMorphs = Representative.FullDriver->GetMorphTargets().Num();
-        TestEqual(TEXT("production-scale library holds 60 additional Morphs"),
-            ProductionMorphs, BaseMorphs + 60);
-        if (ProductionMorphs == BaseMorphs + 60)
-        {
-            LogAndCheck(TEXT("ProductionScale"),
-                Representative.FullDriver, Representative.Preview, ProductionMorphs, true);
-        }
+        Actor->SetBinding(nullptr);
     }
+    TestTrue(TEXT("benchmark selector matches a known fixture"), bMatchedCase);
 
     if (World)
     {

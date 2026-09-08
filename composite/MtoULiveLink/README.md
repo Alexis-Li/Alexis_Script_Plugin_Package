@@ -99,6 +99,11 @@ Install the Maya and Unreal components from the same release.
    garment's distinct slots, then **Refresh Preview**. Manual selection still
    checks geometry, whole-Preview coverage, alignment, shared slots, and transfer
    quality. A usable yellow Warning still needs inspection before acceptance.
+   Refresh runs synchronously and can block the Editor for seconds: the measured
+   synthetic 27,744-triangle garment / 147,744-triangle Driver takes about
+   1.6–3.1 seconds with 4–64 Driver Morphs on the recorded host. This is a measured
+   corpus, not a universal size or latency guarantee; see the
+   [geometry-scale measurements](../../docs/project-history/mtou-livelink/preview-refresh-geometry-scale.md).
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
    Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
    reimport), deleting the Binding Actor, or unloading its Editor world ends

@@ -12,6 +12,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryScript/GeometryScriptTypes.h"
+#include "Generators/GridBoxMeshGenerator.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "Materials/Material.h"
 #include "MeshDescription.h"
@@ -199,7 +200,8 @@ struct FMtoUFullCharacterFixtures
  * own slot names and material assignment.
  */
 inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
-    FMtoUFullCharacterFixtures& Fixtures, const int32 ReducedPreviewPokes = -1)
+    FMtoUFullCharacterFixtures& Fixtures, const int32 ReducedPreviewPokes = -1,
+    const int32 GarmentGridCells = 0, const int32 OtherGridCells = 0)
 {
     if (ReducedPreviewPokes < -1 || ReducedPreviewPokes > 24)
     {
@@ -245,6 +247,32 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
         FDynamicMesh3::FPokeTriangleInfo PokeInfo;
         Cube.PokeTriangle(TriangleID, PokeInfo);
     }
+    // Benchmark-only density controls preserve the original spatial layout.
+    // Each gridded closed box has 12*cells^2 triangles; zero keeps the legacy fixture.
+    const auto GriddedCube = [&](int32 Cells)
+    {
+        UE::Geometry::FGridBoxMeshGenerator Generator;
+        Generator.Box = UE::Geometry::FOrientedBox3d(Cube.GetBounds());
+        Generator.EdgeVertices = FIndex3i(Cells + 1, Cells + 1, Cells + 1);
+        Generator.Generate();
+        FDynamicMesh3 Grid(&Generator);
+        for (const int32 TriangleID : Grid.TriangleIndicesItr())
+        {
+            Grid.SetTriangleGroup(TriangleID, 0);
+        }
+        Grid.EnableAttributes();
+        Grid.Attributes()->CopyBoneAttributes(*Cube.Attributes());
+        Grid.Attributes()->AttachSkinWeightsAttribute(
+            FSkeletalMeshAttributes::DefaultSkinWeightProfileName,
+            new UE::Geometry::FDynamicMeshVertexSkinWeightsAttribute(&Grid));
+        SetUniformBoneWeights(Grid);
+        return Grid;
+    };
+    const FDynamicMesh3 OtherCube = OtherGridCells > 0 ? GriddedCube(OtherGridCells) : Cube;
+    if (GarmentGridCells > 0)
+    {
+        Cube = GriddedCube(GarmentGridCells);
+    }
     const FVector3d BodyCenter = Cube.GetBounds().Center();
     const double BodyHeight = Cube.GetBounds().Height();
 
@@ -257,7 +285,7 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
         BodyCenter - FVector3d(0.0, 0.0, BodyHeight * 1.05);
     const double GarmentLowerScale = 0.55;
     UDynamicMesh* Merged = NewObject<UDynamicMesh>(&Outer);
-    Merged->SetMesh(FDynamicMesh3(Cube));
+    Merged->SetMesh(FDynamicMesh3(OtherCube));
     FAxisAlignedBox3d FaceBounds;
     FAxisAlignedBox3d HairBounds;
     FAxisAlignedBox3d ArmBounds;
@@ -265,24 +293,24 @@ inline bool MakeFullCharacterFixtures(UObject& Outer, FAutomationTestBase& Test,
     bool bAppendOk = true;
     Merged->EditMesh([&](FDynamicMesh3& Mesh)
     {
-        FaceBounds = AppendPartCopy(Mesh, Cube,
+        FaceBounds = AppendPartCopy(Mesh, OtherCube,
             BodyCenter + FVector3d(0.0, 0.0, BodyHeight), 0.35, 1);
-        HairBounds = AppendPartCopy(Mesh, Cube,
+        HairBounds = AppendPartCopy(Mesh, OtherCube,
             BodyCenter + FVector3d(0.0, 0.0, BodyHeight * 1.35), 0.4, 2);
         Fixtures.GarmentABounds = AppendPartCopy(Mesh, Cube,
             GarmentUpperOffset, GarmentUpperScale, 3, 2);
         GarmentBBounds = AppendPartCopy(Mesh, Cube,
             GarmentLowerOffset, GarmentLowerScale, 5);
-        ArmBounds = AppendPartCopy(Mesh, Cube,
+        ArmBounds = AppendPartCopy(Mesh, OtherCube,
             BodyCenter + FVector3d(BodyHeight * 0.9, 0.0, BodyHeight * 0.35), 0.3, 6);
         SetUniformBoneWeights(Mesh);
-        bAppendOk = Mesh.TriangleCount() == Cube.TriangleCount() * 6;
+        bAppendOk = Mesh.TriangleCount() == OtherCube.TriangleCount() * 4 + Cube.TriangleCount() * 2;
     });
     if (!bAppendOk)
     {
         Test.AddError(FString::Printf(
             TEXT("fixture merge produced %d triangles instead of %d"),
-            Merged->GetMeshRef().TriangleCount(), Cube.TriangleCount() * 6));
+            Merged->GetMeshRef().TriangleCount(), OtherCube.TriangleCount() * 4 + Cube.TriangleCount() * 2));
         return false;
     }
     Fixtures.GarmentBounds = Fixtures.GarmentABounds;

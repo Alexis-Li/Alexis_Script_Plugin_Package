@@ -139,6 +139,7 @@ packages; subsequent development uses version 0.5.0.
 - [Model Preview quality calibration](model-preview-quality-calibration.md)
 - [Model Preview full-character recalibration](model-preview-full-character-recalibration.md)
 - [Preview Refresh optimization](preview-refresh-optimization.md)
+- [Preview Refresh geometry-scale measurements](preview-refresh-geometry-scale.md)
 
 ## Current Project
 
