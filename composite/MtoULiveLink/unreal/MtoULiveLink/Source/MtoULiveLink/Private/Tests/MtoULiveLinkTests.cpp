@@ -33,6 +33,7 @@
 #include "Sockets.h"
 #include "Tests/EnsureScope.h"
 #include "UObject/GarbageCollection.h"
+#include "UObject/UObjectIterator.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -3178,6 +3179,513 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     }
     return true;
 }
+// Natural-refresh proof for Issue #38. The simple CacheClear test above keeps
+// the full override/preference matrix with manually pumped Live Link and
+// component animation ticks. This latent test keeps the same cached
+// enter/clear and recoverable-error preconditions but proves the actual
+// editor refresh: the binding actor lives in the real viewport-driven editor
+// world, and every displayed-bone observation below reads
+// GetBoneTransform only. The observation lambdas never call
+// Source->Update, LiveLinkClient.ForceTick, TickAnimation, or
+// RefreshBoneTransforms; between the socket send and the bone read only the
+// editor main loop (LiveLinkClient::Tick -> Source::Update plus the natural
+// component tick behind the restored realtime override) may advance the
+// pose. Control-plane steps (negotiation, cache_enter/clear, error acks)
+// still pump Source->Update for determinism; the display proof itself does
+// not.
+struct FMtoUNaturalRefreshState
+{
+    ISocketSubsystem* SocketSubsystem = nullptr;
+    FSocket* Client = nullptr;
+    TSharedPtr<FMtoULiveLinkSource> Source;
+    FGuid SourceGuid;
+    UWorld* EditorWorld = nullptr;
+    AMtoULiveLinkActor* Actor = nullptr;
+    FName RootBoneId = NAME_None;
+    FString InitPacket;
+    TArray<TPair<FLevelEditorViewportClient*, bool>> SavedBase;
+    bool bSetupFailed = false;
+};
+
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FMtoUCacheClearNaturalRefreshTest,
+    "MtoULiveLink.Source.CacheClearNaturalRefresh",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FMtoUCacheClearNaturalRefreshTest::GetTests(
+    TArray<FString>& OutBeautifiedNames, TArray<FString>& OutTestCommands) const
+{
+    OutBeautifiedNames.Add(TEXT("MtoULiveLink.Source.CacheClearNaturalRefresh"));
+    OutTestCommands.Add(TEXT(""));
+}
+
+bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+#if !WITH_EDITOR
+    AddError(TEXT("natural refresh test requires an editor build."));
+    return false;
+#else
+    if (!GEditor)
+    {
+        AddError(TEXT("natural refresh test requires GEditor."));
+        return false;
+    }
+    FMtoUCacheClearNaturalRefreshTest* Self = this;
+    TSharedRef<FMtoUNaturalRefreshState> State = MakeShared<FMtoUNaturalRefreshState>();
+    const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+
+    auto CountEditorViewports = []() -> int32
+    {
+        int32 Count = 0;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient)
+                {
+                    ++Count;
+                }
+            }
+        }
+        return Count;
+    };
+    auto HasOverride = [OverrideName, CountEditorViewports]() -> bool
+    {
+        if (!GEditor || CountEditorViewports() == 0)
+        {
+            return false;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (!ViewportClient || !ViewportClient->HasRealtimeOverride(OverrideName)
+                || !ViewportClient->IsRealtime())
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto HasNoOverride = [OverrideName, CountEditorViewports]() -> bool
+    {
+        if (!GEditor || CountEditorViewports() == 0)
+        {
+            return false;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient && ViewportClient->HasRealtimeOverride(OverrideName))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Setup: negotiate in the real editor world with base Realtime off, then
+    // prove cached enter releases the override and clear restores it. This
+    // control plane pumps Source->Update for determinism; no displayed-bone
+    // conclusion is drawn here.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName, HasOverride, HasNoOverride, CountEditorViewports]()
+    {
+        ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+        Self->TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+        if (!SocketSubsystem)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->SocketSubsystem = SocketSubsystem;
+        IModularFeatures& Features = IModularFeatures::Get();
+        Self->TestTrue(TEXT("Live Link client feature is available"),
+            Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+        if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        ILiveLinkClient& LiveLinkClient =
+            Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+        UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        Self->TestNotNull(TEXT("real editor world is available"), EditorWorld);
+        Self->TestTrue(TEXT("real editor world is an editor world"),
+            EditorWorld && EditorWorld->WorldType == EWorldType::Editor);
+        if (!EditorWorld || EditorWorld->WorldType != EWorldType::Editor)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->EditorWorld = EditorWorld;
+        Self->TestTrue(TEXT("at least one real level viewport backs the override check"),
+            CountEditorViewports() > 0);
+        if (CountEditorViewports() == 0)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        int32 ExistingPlaced = 0;
+        for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+        {
+            if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It) && It->GetWorld() == EditorWorld)
+            {
+                ++ExistingPlaced;
+            }
+        }
+        Self->TestEqual(TEXT("editor world starts without a stale binding actor"), ExistingPlaced, 0);
+        if (ExistingPlaced != 0)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                State->SavedBase.Add(TPair<FLevelEditorViewportClient*, bool>(
+                    ViewportClient, ViewportClient->IsRealtime()));
+            }
+        }
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        AMtoULiveLinkActor* Actor = AddBoundActor(*EditorWorld);
+        Self->TestNotNull(TEXT("binding actor is placed in the editor world"), Actor);
+        if (!Actor)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Actor = Actor;
+
+        FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+        Self->TestNotNull(TEXT("test port can be reserved"), Reservation);
+        if (!Reservation)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+        Reservation->GetAddress(*ReservedAddress);
+        const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+        DestroySocket(*SocketSubsystem, Reservation);
+
+        TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+        State->Source = Source;
+        const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+        State->SourceGuid = SourceGuid;
+        Self->TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+        Self->TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+        USkeletalMeshComponent* DisplayComponent = Actor->GetSkeletalMeshComponent();
+        Self->TestNotNull(TEXT("binding actor exposes its skeletal mesh component"), DisplayComponent);
+        const USkeletalMesh* TestMesh = DisplayComponent
+            ? DisplayComponent->GetSkeletalMeshAsset()
+            : nullptr;
+        const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+        Self->TestTrue(TEXT("test mesh has the two streamed bones"),
+            TestSkeleton && TestSkeleton->GetNum() >= 2);
+        if (!TestSkeleton || TestSkeleton->GetNum() < 2)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        const FString RootBoneName = TestSkeleton->GetBoneName(0).ToString();
+        const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
+        State->RootBoneId = TestSkeleton->GetBoneName(0);
+        State->InitPacket = FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+            *RootBoneName,
+            *TransformJson(TestSkeleton->GetRefBonePose()[0]),
+            *ChildBoneName,
+            *TransformJson(TestSkeleton->GetRefBonePose()[1]));
+
+        FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+        Self->TestNotNull(TEXT("Maya client connects"), Client);
+        if (!Client)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Client = Client;
+        const TArray<uint8> InitBytes = Packet(State->InitPacket);
+        Self->TestTrue(TEXT("init is sent"), SendBytes(*Client, InitBytes.GetData(), InitBytes.Num()));
+        TArray<uint8> Payload;
+        Self->TestTrue(TEXT("negotiation reaches ready"),
+            ReceivePacket(*Client, Payload, [&]() { Source->Update(); }));
+        Self->TestTrue(TEXT("ready response is received"),
+            FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+        Self->TestTrue(TEXT("connected stream forces editor viewport realtime"), HasOverride());
+        Self->TestTrue(TEXT("editor skeletal mesh component tick is enabled"),
+            DisplayComponent && DisplayComponent->IsComponentTickEnabled());
+        Self->TestTrue(TEXT("editor skeletal mesh component is registered"),
+            DisplayComponent && DisplayComponent->IsRegistered());
+        ULiveLinkInstance* DisplayInstance = DisplayComponent
+            ? Cast<ULiveLinkInstance>(DisplayComponent->GetAnimInstance())
+            : nullptr;
+        Self->TestNotNull(TEXT("binding actor owns a Live Link animation instance"), DisplayInstance);
+        Self->TestTrue(TEXT("Live Link animation evaluation is enabled"),
+            DisplayInstance && DisplayInstance->GetEnableLiveLinkEvaluation());
+
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                ViewportClient->SetRealtime(false);
+            }
+        }
+        Self->TestTrue(TEXT("plugin override keeps viewport realtime while base is off"), HasOverride());
+
+        const TArray<uint8> EnterBytes = Packet(TEXT("{\"type\":\"cache_enter\"}"));
+        Self->TestTrue(TEXT("cache entry is sent"),
+            SendBytes(*Client, EnterBytes.GetData(), EnterBytes.Num()));
+        FPlatformProcess::Sleep(0.02f);
+        Source->Update();
+        Self->TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        Self->TestTrue(TEXT("cache clear is sent"),
+            SendBytes(*Client, ClearBytes.GetData(), ClearBytes.Num()));
+        TArray<uint8> ClearPayload;
+        Self->TestTrue(TEXT("clear is acknowledged"),
+            ReceivePacket(*Client, ClearPayload, [&]() { Source->Update(); })
+            && FromUtf8(ClearPayload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+        Self->TestTrue(TEXT("leaving cached ownership restores live preview realtime"), HasOverride());
+        return true;
+    }));
+
+    // Natural observation 1: pose after a normal cache clear. The send only
+    // writes socket bytes; the wait below reads the displayed bone while the
+    // editor main loop advances. No manual pumps here by construction.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Client)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = Packet(
+            TEXT("{\"type\":\"frame\",\"transforms\":[[101,102,103,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+        Self->TestTrue(TEXT("natural live frame after clear is sent"),
+            SendBytes(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State]() -> bool
+        {
+            if (State->bSetupFailed || !State->Actor || State->RootBoneId.IsNone())
+            {
+                return true;
+            }
+            const USkeletalMeshComponent* Display = State->Actor->GetSkeletalMeshComponent();
+            if (!Display || !Display->IsRegistered())
+            {
+                return false;
+            }
+            return Display->GetBoneTransform(State->RootBoneId, RTS_World)
+                .GetTranslation().Equals(FVector(101.0, 102.0, 103.0), 1.0f);
+        },
+        [Self, State]() -> bool
+        {
+            FVector Seen = FVector::ZeroVector;
+            bool bSeen = false;
+            if (State->Actor && State->Actor->GetSkeletalMeshComponent()
+                && State->Actor->GetSkeletalMeshComponent()->IsRegistered()
+                && !State->RootBoneId.IsNone())
+            {
+                Seen = State->Actor->GetSkeletalMeshComponent()
+                    ->GetBoneTransform(State->RootBoneId, RTS_World).GetTranslation();
+                bSeen = true;
+            }
+            Self->AddError(FString::Printf(TEXT("natural refresh after clear: displayed bone %s, expected %s."),
+                bSeen ? *Seen.ToString() : TEXT("<unseen>"),
+                *FVector(101.0, 102.0, 103.0).ToString()));
+            return true;
+        }, 5.0f));
+
+    // Natural observation 2: a second consecutive distinct pose proves the
+    // preview keeps refreshing instead of holding one frame.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Client)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = Packet(
+            TEXT("{\"type\":\"frame\",\"transforms\":[[111,112,113,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+        Self->TestTrue(TEXT("second natural live frame is sent"),
+            SendBytes(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State]() -> bool
+        {
+            if (State->bSetupFailed || !State->Actor || State->RootBoneId.IsNone())
+            {
+                return true;
+            }
+            const USkeletalMeshComponent* Display = State->Actor->GetSkeletalMeshComponent();
+            if (!Display || !Display->IsRegistered())
+            {
+                return false;
+            }
+            return Display->GetBoneTransform(State->RootBoneId, RTS_World)
+                .GetTranslation().Equals(FVector(111.0, 112.0, 113.0), 1.0f);
+        },
+        [Self, State]() -> bool
+        {
+            FVector Seen = FVector::ZeroVector;
+            bool bSeen = false;
+            if (State->Actor && State->Actor->GetSkeletalMeshComponent()
+                && State->Actor->GetSkeletalMeshComponent()->IsRegistered()
+                && !State->RootBoneId.IsNone())
+            {
+                Seen = State->Actor->GetSkeletalMeshComponent()
+                    ->GetBoneTransform(State->RootBoneId, RTS_World).GetTranslation();
+                bSeen = true;
+            }
+            Self->AddError(FString::Printf(TEXT("continuous natural refresh: displayed bone %s, expected %s."),
+                bSeen ? *Seen.ToString() : TEXT("<unseen>"),
+                *FVector(111.0, 112.0, 113.0).ToString()));
+            return true;
+        }, 5.0f));
+
+    // Recoverable-error precondition (control plane, pumped): a revision
+    // mismatch drops to Idle and must restore the same live override before
+    // the next natural observation.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, HasOverride, HasNoOverride]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Source.IsValid())
+        {
+            return true;
+        }
+        FSocket& Client = *State->Client;
+        FMtoULiveLinkSource& Source = *State->Source;
+        const TArray<uint8> EnterBytes = Packet(TEXT("{\"type\":\"cache_enter\"}"));
+        Self->TestTrue(TEXT("failure-path cache entry is sent"),
+            SendBytes(Client, EnterBytes.GetData(), EnterBytes.Num()));
+        FPlatformProcess::Sleep(0.02f);
+        Source.Update();
+        Self->TestTrue(TEXT("failure-path entry releases viewport realtime"), HasNoOverride());
+        const TArray<uint8> BadBegin = Packet(
+            TEXT("{\"type\":\"cache_begin\",\"upload_id\":7,\"revision\":8,\"fps\":30,\"start_frame\":2001,\"end_frame\":2001,\"frame_count\":1,\"payload_size\":256}"));
+        Self->TestTrue(TEXT("mismatched-revision upload is sent"),
+            SendBytes(Client, BadBegin.GetData(), BadBegin.Num()));
+        TArray<uint8> ErrorPayload;
+        Self->TestTrue(TEXT("mismatched revision reports a recoverable error"),
+            ReceivePacket(Client, ErrorPayload, [&]() { Source.Update(); })
+            && FromUtf8(ErrorPayload).Contains(TEXT("CACHE_REVISION_MISMATCH")));
+        Self->TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        Self->TestTrue(TEXT("recovery clear is sent"),
+            SendBytes(Client, ClearBytes.GetData(), ClearBytes.Num()));
+        TArray<uint8> ClearPayload;
+        Self->TestTrue(TEXT("recovery clear is acknowledged"),
+            ReceivePacket(Client, ClearPayload, [&]() { Source.Update(); })
+            && FromUtf8(ClearPayload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+        Self->TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());
+        return true;
+    }));
+
+    // Natural observation 3: pose after the recoverable failure takes the
+    // same natural path as the normal clear above.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Client)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = Packet(
+            TEXT("{\"type\":\"frame\",\"transforms\":[[121,122,123,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"));
+        Self->TestTrue(TEXT("natural live frame after recovery is sent"),
+            SendBytes(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State]() -> bool
+        {
+            if (State->bSetupFailed || !State->Actor || State->RootBoneId.IsNone())
+            {
+                return true;
+            }
+            const USkeletalMeshComponent* Display = State->Actor->GetSkeletalMeshComponent();
+            if (!Display || !Display->IsRegistered())
+            {
+                return false;
+            }
+            return Display->GetBoneTransform(State->RootBoneId, RTS_World)
+                .GetTranslation().Equals(FVector(121.0, 122.0, 123.0), 1.0f);
+        },
+        [Self, State]() -> bool
+        {
+            FVector Seen = FVector::ZeroVector;
+            bool bSeen = false;
+            if (State->Actor && State->Actor->GetSkeletalMeshComponent()
+                && State->Actor->GetSkeletalMeshComponent()->IsRegistered()
+                && !State->RootBoneId.IsNone())
+            {
+                Seen = State->Actor->GetSkeletalMeshComponent()
+                    ->GetBoneTransform(State->RootBoneId, RTS_World).GetTranslation();
+                bSeen = true;
+            }
+            Self->AddError(FString::Printf(TEXT("natural refresh after recovery: displayed bone %s, expected %s."),
+                bSeen ? *Seen.ToString() : TEXT("<unseen>"),
+                *FVector(121.0, 122.0, 123.0).ToString()));
+            return true;
+        }, 5.0f));
+
+    // Cleanup always runs: active shutdown removes only the plugin override,
+    // the original base preference is restored, and the editor-world actor
+    // is destroyed so later tests never see a second binding actor.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName]()
+    {
+        if (State->Source.IsValid())
+        {
+            State->Source->StopListener();
+        }
+        if (IModularFeatures::Get().IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName)
+            && State->Source.IsValid())
+        {
+            IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+                ILiveLinkClient::ModularFeatureName).RemoveSource(State->Source);
+        }
+        State->Source.Reset();
+        if (GEditor)
+        {
+            for (const TPair<FLevelEditorViewportClient*, bool>& Saved : State->SavedBase)
+            {
+                if (Saved.Key)
+                {
+                    Saved.Key->SetRealtime(Saved.Value);
+                    Saved.Key->RemoveRealtimeOverride(OverrideName, false);
+                }
+            }
+        }
+        if (State->Actor && State->EditorWorld)
+        {
+            State->EditorWorld->DestroyActor(State->Actor);
+            State->Actor = nullptr;
+        }
+        if (State->SocketSubsystem && State->Client)
+        {
+            FSocket* Client = State->Client;
+            State->Client = nullptr;
+            DestroySocket(*State->SocketSubsystem, Client);
+        }
+        bool bNoOverride = true;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient && ViewportClient->HasRealtimeOverride(OverrideName))
+                {
+                    bNoOverride = false;
+                    break;
+                }
+            }
+        }
+        Self->TestTrue(TEXT("cleanup leaves no plugin viewport override"), bNoOverride);
+        return true;
+    }));
+    return true;
+#endif
+}
+
 
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionReconnectTest,
