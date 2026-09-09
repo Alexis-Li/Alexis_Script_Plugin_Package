@@ -65,6 +65,9 @@
 #include "ReferenceSkeleton.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
+#include "Input/Reply.h"
+#include "Misc/ScopeExit.h"
+#include "MtoULiveLinkActorDetails.h"
 
 #include <limits>
 
@@ -3805,6 +3808,36 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
     }
     ILiveLinkClient& LiveLinkClient =
         Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+    // Issue #39 re-review: this host test must not leak its world, source,
+    // or Maya process into later tests in the same UE process. The guard
+    // covers normal completion and every early return below.
+    TSharedPtr<FMtoULiveLinkSource> PeerSource;
+    UWorld* PeerWorld = nullptr;
+    FProcHandle PeerProcess;
+    ON_SCOPE_EXIT
+    {
+        if (PeerProcess.IsValid())
+        {
+            if (FPlatformProcess::IsProcRunning(PeerProcess))
+            {
+                FPlatformProcess::TerminateProc(PeerProcess, true);
+            }
+            FPlatformProcess::CloseProc(PeerProcess);
+        }
+        if (PeerSource.IsValid())
+        {
+            PeerSource->StopListener();
+            LiveLinkClient.RemoveSource(PeerSource.ToSharedRef());
+        }
+        if (PeerWorld)
+        {
+            PeerWorld->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(PeerWorld);
+            }
+        }
+    };
     UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUMayaRefreshPeerWorld"));
     USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
     UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
@@ -3815,6 +3848,7 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
         return false;
     }
     UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, TEXT("MtoUMayaRefreshPeerWorld"), WorldPackage, true);
+    PeerWorld = World;
     TestNotNull(TEXT("editor world is created"), World);
     if (!World)
     {
@@ -3877,6 +3911,7 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ephemeral listening port is reported"), Port > 0);
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    PeerSource = Source;
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     const FLiveLinkSubjectKey LiveSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
     auto WriteCommand = [&](const FString& Action, int32 Time)
@@ -3929,6 +3964,7 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
         *Peer, *FixturePath, *ResultPath);
     FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *ProcArgs, false, true, true,
         nullptr, 0, nullptr, nullptr);
+    PeerProcess = Process;
     TestTrue(TEXT("real Maya process starts"), Process.IsValid());
     int32 Stage = 0;
     bool bSawFirstPose = false;
@@ -4025,6 +4061,7 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
         }
         FPlatformProcess::GetProcReturnCode(Process, &ExitCode);
         FPlatformProcess::CloseProc(Process);
+        PeerProcess.Reset();
     }
     TestEqual(TEXT("real Maya peer exits cleanly"), ExitCode, 0);
     TSharedPtr<FJsonObject> FinalResult = ReadResult();
@@ -4061,6 +4098,364 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
         FFileHelper::LoadFileToString(FinalText, *ResultPath);
         AddInfo(FString::Printf(TEXT("Maya result: %s"), *FinalText));
     }
+    return true;
+}
+
+// Issue #39 re-review: the Details "Refresh Preview" button body (scoped
+// slow task plus public RefreshActor with stage progress) must end the
+// active Animation session. Automation executes the exact click handler the
+// button invokes and proves the customization stays registered; a synthetic
+// Slate click is unreliable headless (an unhosted DetailsView materializes
+// no property rows in NullRHI), so one physical click still needs manual
+// confirmation.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsRefreshClickTest,
+    "MtoULiveLink.Editor.Details.RefreshClick",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    auto PollUntil = [](TFunctionRef<bool()> Predicate)
+    {
+        const double Deadline = FPlatformTime::Seconds() + 2.0;
+        do
+        {
+            if (Predicate())
+            {
+                return true;
+            }
+            FPlatformProcess::Sleep(0.005f);
+        }
+        while (FPlatformTime::Seconds() < Deadline);
+        return Predicate();
+    };
+    auto Utf8 = [](const FString& Text)
+    {
+        FTCHARToUTF8 Converted(*Text);
+        TArray<uint8> Bytes;
+        Bytes.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
+        return Bytes;
+    };
+    auto FromUtf8 = [](const TArray<uint8>& Bytes)
+    {
+        FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+        return FString::ConstructFromPtrSize(Converted.Get(), Converted.Length());
+    };
+    auto Prefix = [](uint64 Length)
+    {
+        TArray<uint8> Bytes;
+        Bytes.SetNumUninitialized(8);
+        for (int32 Index = 0; Index < 8; ++Index)
+        {
+            Bytes[Index] = static_cast<uint8>(Length >> ((7 - Index) * 8));
+        }
+        return Bytes;
+    };
+    auto PacketFor = [&](const FString& Text)
+    {
+        TArray<uint8> Payload = Utf8(Text);
+        TArray<uint8> Bytes = Prefix(Payload.Num());
+        Bytes.Append(Payload);
+        return Bytes;
+    };
+    auto TransformJson = [](const FTransform& Transform)
+    {
+        const FVector Translation = Transform.GetTranslation();
+        const FQuat Rotation = Transform.GetRotation();
+        const FVector Scale = Transform.GetScale3D();
+        return FString::Printf(
+            TEXT("[%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g]"),
+            Translation.X, Translation.Y, Translation.Z,
+            Rotation.X, Rotation.Y, Rotation.Z, Rotation.W,
+            Scale.X, Scale.Y, Scale.Z);
+    };
+    auto BonesJsonFor = [&](const FReferenceSkeleton& Skeleton)
+    {
+        FString Bones;
+        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+        {
+            if (Index > 0)
+            {
+                Bones += TEXT(",");
+            }
+            Bones += FString::Printf(
+                TEXT("[\"%s\",%d,%s]"),
+                *Skeleton.GetBoneName(Index).ToString(),
+                Skeleton.GetParentIndex(Index),
+                *TransformJson(Skeleton.GetRefBonePose()[Index]));
+        }
+        return Bones;
+    };
+    auto FrameJsonFor = [&](const FReferenceSkeleton& Skeleton, const FVector& RootTranslation)
+    {
+        FString Transforms;
+        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+        {
+            if (Index > 0)
+            {
+                Transforms += TEXT(",");
+            }
+            FTransform Pose = Skeleton.GetRefBonePose()[Index];
+            if (Index == 0)
+            {
+                Pose.SetTranslation(RootTranslation);
+            }
+            Transforms += TransformJson(Pose);
+        }
+        return FString::Printf(TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[]}"), *Transforms);
+    };
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+    TSharedPtr<FMtoULiveLinkSource> GuardSource;
+    UWorld* GuardWorld = nullptr;
+    ON_SCOPE_EXIT
+    {
+        if (GuardSource.IsValid())
+        {
+            GuardSource->StopListener();
+            LiveLinkClient.RemoveSource(GuardSource.ToSharedRef());
+        }
+        if (GuardWorld)
+        {
+            GuardWorld->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(GuardWorld);
+            }
+        }
+    };
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUDetailsRefreshClickWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    TestNotNull(TEXT("click Driver with Morphs is created"), Driver);
+    TestNotNull(TEXT("click Preview is created"), Preview);
+    if (!Driver || !Preview)
+    {
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false, TEXT("MtoUDetailsRefreshClickWorld"), WorldPackage, true);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World)
+    {
+        return false;
+    }
+    GuardWorld = World;
+    if (GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    TestNotNull(TEXT("binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    const FReferenceSkeleton* TestSkeleton = &Driver->GetRefSkeleton();
+    const FString BonesJson = BonesJsonFor(*TestSkeleton);
+    auto Loopback = [&](uint16 Port)
+    {
+        TSharedRef<FInternetAddr> Address = SocketSubsystem->CreateInternetAddr();
+        bool bValid = false;
+        Address->SetIp(TEXT("127.0.0.1"), bValid);
+        check(bValid);
+        Address->SetPort(Port);
+        return Address;
+    };
+    auto DestroySocket = [&](FSocket*& Socket)
+    {
+        if (Socket)
+        {
+            Socket->Close();
+            SocketSubsystem->DestroySocket(Socket);
+            Socket = nullptr;
+        }
+    };
+    auto SendBytes = [&](FSocket& Socket, const uint8* Data, int32 Num)
+    {
+        int32 Offset = 0;
+        const double Deadline = FPlatformTime::Seconds() + 2.0;
+        while (Offset < Num && FPlatformTime::Seconds() < Deadline)
+        {
+            int32 Sent = 0;
+            if (Socket.Send(Data + Offset, Num - Offset, Sent) && Sent > 0)
+            {
+                Offset += Sent;
+            }
+            else
+            {
+                Socket.Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(5));
+            }
+        }
+        return Offset == Num;
+    };
+    FSocket* Reservation = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoUDetailsRefreshClick reservation"));
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    Reservation->Bind(*Loopback(0));
+    Reservation->Listen(1);
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(Reservation);
+    TestTrue(TEXT("ephemeral listening port is reported"), Port > 0);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    GuardSource = Source;
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    const FLiveLinkSubjectKey LiveSubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    TestTrue(TEXT("source reaches listening state"),
+        PollUntil([&]() { return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on")); }));
+    auto ReceiveOne = [&](FSocket& Socket, TArray<uint8>& OutPayload, TFunctionRef<void()> Pump)
+    {
+        TArray<uint8> Pending;
+        return PollUntil([&]()
+        {
+            Pump();
+            uint8 Buffer[65536];
+            int32 Read = 0;
+            if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+            {
+                Pending.Append(Buffer, Read);
+            }
+            if (Pending.Num() < 8)
+            {
+                return false;
+            }
+            uint64 Length = 0;
+            for (int32 Index = 0; Index < 8; ++Index)
+            {
+                Length = (Length << 8) | Pending[Index];
+            }
+            if ((uint64)Pending.Num() < 8 + Length)
+            {
+                return false;
+            }
+            OutPayload.SetNumUninitialized((int32)Length);
+            if (Length > 0)
+            {
+                FMemory::Memcpy(OutPayload.GetData(), Pending.GetData() + 8, (int32)Length);
+            }
+            return true;
+        });
+    };
+    auto WaitForClose = [&](FSocket& Socket)
+    {
+        return PollUntil([&]()
+        {
+            uint8 Buffer[1024];
+            int32 Read = 0;
+            return !Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read);
+        });
+    };
+    auto ConnectClient = [&]()
+    {
+        FSocket* Socket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("MtoUDetailsRefreshClick client"));
+        if (!Socket || !Socket->Connect(*Loopback(Port)))
+        {
+            DestroySocket(Socket);
+            return (FSocket*)nullptr;
+        }
+        Socket->SetNonBlocking(true);
+        return Socket;
+    };
+    auto EvaluateRootX = [&](double& OutX)
+    {
+        FLiveLinkSubjectFrameData Evaluated;
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                LiveSubjectKey, ULiveLinkAnimationRole::StaticClass(), Evaluated))
+        {
+            return false;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            Evaluated.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        if (!Animation || !Animation->Transforms.IsValidIndex(0))
+        {
+            return false;
+        }
+        OutX = Animation->Transforms[0].GetTranslation().X;
+        return true;
+    };
+    FSocket* AnimClient = ConnectClient();
+    TestNotNull(TEXT("animation client connects"), AnimClient);
+    const TArray<uint8> AnimInit = PacketFor(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *BonesJson));
+    TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("animation negotiation produces ready"), AnimClient && ReceiveOne(*AnimClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("animation ready selects the Driver display"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+    const TArray<uint8> AnimFrame = PacketFor(FrameJsonFor(*TestSkeleton, FVector(11.0, 12.0, 13.0)));
+    TestTrue(TEXT("animation frame is sent"), AnimClient && SendBytes(*AnimClient, AnimFrame.GetData(), AnimFrame.Num()));
+    TestTrue(TEXT("animation frame reaches Live Link"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            double RootX = 0.0;
+            return EvaluateRootX(RootX) && FMath::IsNearlyEqual(RootX, 11.0, 0.1);
+        }));
+    FPropertyEditorModule& PropertyEditor =
+        FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+    TestTrue(TEXT("Details keeps the MtoU Preview customization registered for the Binding actor"),
+        PropertyEditor.GetClassNameToDetailLayoutNameMap().Contains(
+            AMtoULiveLinkActor::StaticClass()->GetFName()));
+    // Execute the exact code the Details button invokes, including the
+    // FScopedSlowTask/stage-callback path a direct RefreshActor call skips.
+    FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(Actor);
+    TestTrue(TEXT("Details click terminates the Animation session"), AnimClient && WaitForClose(*AnimClient));
+    DestroySocket(AnimClient);
+    TestTrue(TEXT("Details click returns source to listening"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on"));
+        }));
+    TestTrue(TEXT("Details click shows Generated Preview while disconnected"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Actor->GetConnectionStatus().Contains(TEXT("Disconnected"))
+                && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+                && Actor->GetPreviewReadiness().GeneratedPreview != nullptr
+                && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Actor->GetPreviewReadiness().GeneratedPreview;
+        }));
+    FSocket* ReconnectClient = ConnectClient();
+    TestNotNull(TEXT("animation reconnects explicitly after the Details click"), ReconnectClient);
+    TestTrue(TEXT("reconnect init is sent"),
+        ReconnectClient && SendBytes(*ReconnectClient, AnimInit.GetData(), AnimInit.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("reconnect produces ready"), ReconnectClient && ReceiveOne(*ReconnectClient, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("reconnect selects the Driver display"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+    DestroySocket(ReconnectClient);
     return true;
 }
 

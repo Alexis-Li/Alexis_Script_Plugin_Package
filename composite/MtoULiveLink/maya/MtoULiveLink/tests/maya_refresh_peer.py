@@ -30,8 +30,17 @@ def read_json(path):
 
 
 def write_json(path, payload):
-    Path(path).write_text(
-        json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    # The Unreal test polls the result file every few milliseconds; on
+    # Windows that read can briefly lock the file against our rewrite.
+    data = json.dumps(payload, indent=2, ensure_ascii=True)
+    for attempt in range(50):
+        try:
+            Path(path).write_text(data, encoding="utf-8")
+            return
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.02)
 
 
 def main():
