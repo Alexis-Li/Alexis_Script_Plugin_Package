@@ -1,47 +1,27 @@
 # Unreal Engine Development Instructions
 
-These instructions apply to the Unreal Engine test project and all plugins
-under `unreal/Plugins/`.
+These host conventions cover the ToolsLab test project and plugins, including
+composite components and templates that reference this file.
 
-## Plugin Boundaries
+## Plugin and module boundaries
 
-- Every directory directly under `Plugins/` must be a valid standalone plugin.
-- The `.uplugin` file must remain at the plugin root.
-- Dependencies must be declared in `.uplugin` and `.Build.cs`.
-- Do not depend on files outside the plugin unless explicitly documented.
-- Do not place reusable plugin code in the ToolsLab host project.
+- Keep each plugin complete inside its root with its `.uplugin` descriptor.
+  Declare applicable plugin/module dependencies in `.uplugin` and `.Build.cs`.
+  Document external dependencies; reusable code belongs in its plugin, not ToolsLab.
+- Put runtime behavior in Runtime modules and editor-only behavior in Editor
+  modules. Public headers expose intentional APIs; implementation stays in
+  `Private/`. Use public module dependencies only when the public API needs them.
+- Plugin/module names use PascalCase; C++ follows Unreal naming conventions.
+- Keep plugin-owned assets in its `Content/`, use Git LFS for binary assets, and
+  document substantial samples. Do not commit `Binaries/`, `Intermediate/`,
+  `Saved/`, `DerivedDataCache/`, `.vs/`, or generated IDE projects.
 
-## Module Structure
+## Verification
 
-- Runtime code belongs in Runtime modules.
-- Editor UI, menus, asset actions, and editor utilities belong in Editor modules.
-- Public headers expose only intentional public APIs.
-- Implementation details belong in `Private/`.
-- Avoid unnecessary `PublicDependencyModuleNames`.
-
-## Naming
-
-- Unreal plugins and modules use PascalCase.
-- Unreal C++ classes follow Unreal Engine naming conventions.
-
-## Generated Files
-
-Do not commit `Binaries/`, `Intermediate/`, `Saved/`, `DerivedDataCache/`,
-`.vs/`, or generated solution and project files.
-
-## Assets
-
-- Keep plugin assets inside the plugin's own `Content/`.
-- Do not place plugin assets in the host project's main `Content/`.
-- Use Git LFS for Unreal binary assets.
-- Do not add large samples without documenting their purpose.
-
-## Validation
-
-After code changes:
-
-1. Compile affected modules.
-2. Check for new warnings.
-3. Run relevant automation tests.
-4. Verify the plugin loads in ToolsLab.
-5. Confirm no generated folders were staged.
+- For code/build changes, compile affected modules with the supported engine,
+  inspect new warnings, and run relevant Automation tests.
+- Verify changed host behavior in ToolsLab or the project's designated acceptance
+  host. Use the project's documented build/package checks when applicable.
+- Documentation-only changes do not require an engine build. If a required host
+  is unavailable, report that limit and use useful available checks without
+  claiming host verification.

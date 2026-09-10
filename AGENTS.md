@@ -1,134 +1,82 @@
 # Repository Instructions
 
-## Repository Purpose
+This monorepo contains independent Autodesk Maya scripts/tools and Unreal Engine
+plugins for 3D art production. The repository root is the only Git repository.
 
-This repository is a monorepo containing independent Autodesk Maya scripts,
-Maya tools, and Unreal Engine plugins for 3D art production.
+## Layout and rule scope
 
-The repository root is the only Git repository. Do not create nested Git
-repositories under any project directory.
+- `maya/scripts/<ToolName>/`: self-contained Maya shelf scripts.
+- `maya/tools/<ToolName>/`: structured Maya tools and plug-ins.
+- `unreal/Plugins/<PluginName>/`: standalone Unreal plugins.
+- `composite/<ProjectName>/<host>/<ComponentName>/`: cross-host products with
+  independently installable components.
+- `templates/`, `tools/`, `tests/`: project templates and repository tooling.
+- `docs/`: shared guides; `docs/project-history/<project-name>/`: durable design
+  and acceptance records.
 
-Every structured tool or plugin must remain independently installable,
-testable, versioned, and packageable.
+Read the applicable nested AGENTS.md before editing. For Maya or Unreal code,
+including composite components and templates, also read `maya/AGENTS.md` or
+`unreal/AGENTS.md`; sibling rule files are not inherited automatically.
+Composite metadata ownership takes precedence over standalone layout examples.
+Keep nested rules focused on local exceptions, contracts, and useful commands.
 
-## Repository Layout
+## Project contracts
 
-- `maya/scripts/<ToolName>/`: self-contained Maya shelf scripts
-- `maya/tools/<ToolName>/`: Maya tools and plug-ins using standard runtime folders
-- `unreal/Plugins/`: standalone Unreal Engine plugins
-- `composite/<ProjectName>/<host>/<ComponentName>/`: independently installable
-  host components that form one cross-application product
-- `templates/`: project templates
-- `tools/`: repository-level validation and packaging scripts
-- `docs/`: shared development documentation
-- `docs/project-history/<project-name>/`: stable architecture, migration, and
-  acceptance history for completed projects
+- Each structured tool/plugin remains independently installable, testable,
+  versioned, and packageable. Document and package any sibling dependency.
+- Standalone projects own their README pair, changelog, version, dependencies,
+  and relevant tests. Composite ownership is defined in `composite/AGENTS.md`.
+- Preserve public APIs and supported versions unless the task authorizes a
+  breaking migration. Avoid unrelated refactoring and third-party edits;
+  task-required changes to either should have a clear reason.
+- Do not check in secrets, machine-specific paths, caches, host/IDE build output,
+  or release archives. Intentional source assets and generated source required
+  by the project are distinct from disposable output.
+- General directories use lowercase kebab-case; Maya/Unreal project names follow
+  their platform rules. Python internals use snake_case and classes PascalCase.
+  Use Semantic Versioning where practical.
+- Do not create nested repositories, force-push, or discard unrelated history.
+  Keep commits coherent and release tags project-prefixed, for example
+  `maya-mesh-normal-tool-v0.2.0` or `ue-asset-audit-v1.1.0`.
 
-## General Rules
+## Documentation
 
-- Make the smallest coherent change required by the task.
-- Do not refactor unrelated code.
-- Rename public APIs only when the user has authorized that rename or breaking
-  migration; existing authorization does not need to be reconfirmed.
-- Do not add machine-specific absolute paths.
-- Do not commit secrets, credentials, personal paths, caches, or generated files.
-- Do not modify third-party code unless explicitly required.
-- Preserve backward compatibility unless a breaking change is requested.
-- Update documentation when installation, public APIs, supported versions,
-  directory structures, or user-visible behavior change.
-- Keep user-facing `README.md` files in English and pair them with a Chinese
-  `README_CN.md` containing the same information.
-- Keep the repository README comprehensive: repository purpose, tool index,
-  documentation links, and development setup.
-- Limit project READMEs to introduction, supported versions, installation, and
-  usage. Put development rules and internal details in `AGENTS.md` or `docs/`.
-- Keep platform-specific development and naming rules in the nearest platform
-  `AGENTS.md`.
-- Preserve substantial, reusable design and acceptance conclusions under
-  `docs/project-history/<project-name>/` with stable purpose-based names.
-  Small fixes do not need new history documents. Do not retain completed
-  implementation plans as active documentation.
-
-## Naming Conventions
-
-- General repository directories: lowercase kebab-case
-- Python packages and modules: lowercase snake_case
-- Python classes: PascalCase
-- Public versions: Semantic Versioning where practical
-
-## Project Boundaries
-
-Each independent project under `maya/` or `unreal/` owns its README, changelog,
-version information, runtime dependencies, and any project-specific tests or
-documentation it needs. These existing single-host ownership rules do not
-change for legacy or future standalone Maya and Unreal projects.
-
-For a project under `composite/`, the composite project root is the sole owner
-of `README.md`, `README_CN.md`, `CHANGELOG.md`, and `LICENSE`. Host component
-roots contain only their implementation, host-required descriptors or assets,
-and tests that must stay beside that implementation. Do not duplicate project
-metadata inside a composite host component.
-
-Every standalone or composite project defines its own acceptance scope through
-colocated tests, build and package commands, applicable platform rules, and any
-stable acceptance record under `docs/project-history/<project-name>/`.
-
-Repository-level scripts may provide shared validation and packaging behavior.
-
-Sibling projects must not depend on each other unless the dependency is
-explicitly documented and independently packageable.
-
-Composite products group cooperating host components without merging their
-installation boundaries. Each host component must remain independently
-installable, testable, versioned, and packageable; follow `composite/AGENTS.md`
-and the applicable host development conventions.
-
-## Generated Files
-
-Never commit Python caches, Maya temporary files, Unreal generated folders,
-Visual Studio generated files, or packaged release archives. Release archives
-belong in GitHub Releases, not Git history.
+- Update affected documentation when installation, public contracts, supported
+  versions, or user-visible behavior changes. Keep English `README.md` and
+  Chinese `README_CN.md` aligned.
+- Project READMEs focus on introduction, compatibility, installation, and usage;
+  include troubleshooting or limitations when useful. Put internal development
+  detail in AGENTS.md or docs. The root README also owns the tool index and
+  development setup.
+- Keep reusable architecture and acceptance conclusions in existing domain or
+  history records; use `docs/project-history/<project-name>/` for substantial
+  completed work. Small fixes do not need new documents. Replace completed plans
+  with durable conclusions when needed, rather than leaving active-looking plans.
 
 ## Validation
 
-Before considering a task complete:
+- Start with the owning project's relevant checks and scope generic linters to
+  its files. Test changed composite components independently; include cross-host
+  acceptance when shared behavior or contracts are affected.
+- Run repository gates for tooling, templates, shared rules/workflows, root
+  metadata, or layout changes:
 
-1. Run only the owning project's relevant tests, lint, build, host, and package
-   checks. Scope generic tools such as Ruff to that project's files.
-2. For a composite project, test each changed host component independently;
-   run cross-host acceptance only for cross-host behavior changes.
-3. Run repository tests and structural validation only for changes to
-   repository tooling, templates, shared rules or workflows, root metadata, or
-   project layout, or when explicitly requested.
-4. Confirm no generated files were added and documentation remains accurate.
-5. Report commands run, pass/fail status, skipped checks, and remaining risks.
+  ```powershell
+  python tools/validate_repository.py
+  python -m unittest discover -s tests -v
+  ```
 
-Sibling-project failures are outside the acceptance scope of a project change.
-Do not run repository-wide lint or tests as a fallback for missing project
-checks.
+- Broaden checks when a concrete dependency or regression risk justifies it.
+  Unrelated sibling failures do not redefine the task's acceptance scope; do not
+  use repository-wide tests as a substitute for missing project coverage.
+- Check the final diff for unrelated/generated files and documentation accuracy.
+  Report commands, results, skipped checks, and remaining risks.
 
-## Git Rules
+## Task-specific workflows
 
-- Do not initialize nested repositories.
-- Do not force-push or use destructive reset operations.
-- Do not rewrite unrelated history.
-- Keep commits scoped to one logical change.
-- Use project-prefixed release tags such as `maya-mesh-normal-tool-v0.2.0`
-  and `ue-asset-audit-v1.1.0`.
-
-## Agent skills
-
-### Issue tracker
-
-Track issues and specs in GitHub Issues using the `gh` CLI. See
-`docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the canonical triage label mapping when classifying or updating issues.
-See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Use the multi-context domain layout when exploring terminology or architectural
-decisions. See `docs/agents/domain.md`.
+- For requested issue/spec tracking, use GitHub Issues through `gh` and read
+  `docs/agents/issue-tracker.md`. Routine implementation does not require a ticket.
+- For issue classification, read `docs/agents/triage-labels.md`.
+- For terminology or architecture work, read `docs/agents/domain.md` and relevant
+  context/decision records. These workflows do not mandate extra artifacts for
+  every task.

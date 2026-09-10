@@ -13,7 +13,8 @@ requirements live in the repository and nearest platform `AGENTS.md`; use the
 3. Make the smallest coherent change and preserve public entry points unless a
    breaking change is explicitly required.
 4. Update the owning user documentation and changelog when behavior changes.
-5. Run the owning project's acceptance checks only.
+5. Run the owning project's acceptance checks, broadening for concrete dependency
+   or regression risks as described in the root AGENTS.md.
 6. Inspect `git status` for generated or unrelated files before handoff.
 
 For changes to repository tooling, templates, shared rules or workflows, root
@@ -30,8 +31,9 @@ project; sibling projects are not part of its acceptance result.
 
 ## Repository tools
 
-Repository Python tools must use the standard library unless a dependency is
-explicitly approved. Write commands default to dry-run and require `--apply`.
+Prefer the standard library for repository Python tools; justify and declare
+necessary dependencies under the applicable dependency rules. Existing write
+commands default to dry-run and require `--apply`; preserve that CLI contract.
 Maya and Unreal runtime code must use the versions shipped by the target host.
 
 ## Documentation ownership

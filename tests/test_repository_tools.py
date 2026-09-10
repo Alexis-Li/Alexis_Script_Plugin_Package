@@ -181,7 +181,7 @@ class RepositoryToolTests(unittest.TestCase):
 
     def test_composite_components_reject_duplicate_metadata(self):
         for host_name, component_index in (("maya", 1), ("unreal", 2)):
-            for metadata in validate_repository.COMPOSITE_COMPONENT_METADATA:
+            for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
                 with self.subTest(host=host_name, metadata=metadata):
                     with tempfile.TemporaryDirectory() as directory:
                         root = pathlib.Path(directory)
@@ -197,6 +197,34 @@ class RepositoryToolTests(unittest.TestCase):
                             ),
                             errors,
                         )
+
+    def test_composite_components_allow_local_instructions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            _, maya_component, unreal_component = self._create_composite_fixture(root)
+            for component in (maya_component, unreal_component):
+                (component / "AGENTS.md").write_text("# Local host checks\n", encoding="utf-8")
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual([], errors)
+
+    def test_shelf_script_allows_tests_but_rejects_runtime_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project = root / "maya" / "scripts" / "SampleScript"
+            (project / "tests").mkdir(parents=True)
+            (project / "SampleScript.py").write_text("def run(): pass\n", encoding="utf-8")
+            for metadata in ("README.md", "README_CN.md"):
+                (project / metadata).write_text("Usage\n", encoding="utf-8")
+            (project / "tests" / "test_sample.py").write_text(
+                "# Regression checks\n", encoding="utf-8"
+            )
+            errors = []
+            validate_repository._validate_shelf_scripts(root, errors)
+            self.assertEqual([], errors)
+            (project / "runtime").mkdir()
+            validate_repository._validate_shelf_scripts(root, errors)
+            self.assertEqual(["shelf script SampleScript contains directories: runtime"], errors)
 
     def test_legacy_maya_tool_still_requires_its_own_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

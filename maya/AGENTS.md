@@ -1,95 +1,50 @@
 # Maya Development Instructions
 
-## Default to One File
+These host conventions also apply when referenced by composite projects or
+templates. Composite roots own their shared metadata.
 
-Start with one Python file that runs directly in Maya's Python Script Editor.
-Do not add a package, bootstrap module, installer, icon, configuration, or
-resource directory unless the requested behavior needs it.
+## Project shape and installation
 
-Place a self-contained script at:
+- Use `maya/scripts/<ToolName>/<ToolName>.py` for a self-contained Script Editor
+  or shelf script, with its README pair beside it. Expose `run()` or `main()` and
+  invoke it under `__main__`; do not depend on the repository being on PYTHONPATH.
+- Use `maya/tools/<ToolName>/` for structured tools. Choose modules, packages,
+  resources, and UI structure according to maintainability and runtime needs.
+  A small tool can still use one entry file; do not force complex tools into one.
+- Put standard runtime folders (`scripts/`, `plug-ins/`, `icons/`, `presets/`)
+  directly at the tool root, creating only those needed. The repository validator
+  requires at least one of scripts, plug-ins, or icons. Avoid `package/<ToolName>/`
+  nesting. Standalone tools also own README pairs, CHANGELOG.md, and LICENSE.
+- Prefer copying runtime files for simple installs. Use Maya module deployment
+  (`.mod`) when isolation, resources, or deployment needs justify it; document
+  installation without hardcoded machine paths and include the descriptor in
+  project packaging. The shared packager currently includes runtime folders and
+  metadata, so extend it or use project packaging when introducing a descriptor.
+- Declare one consistent runtime version through `__version__` or
+  `PLUGIN_VERSION`. Keep tests beside the owning implementation; shelf script
+  tests may use `tests/` without changing the runtime classification.
 
-```text
-maya/scripts/<ToolName>/
-├─ <ToolName>.py
-├─ README.md
-└─ README_CN.md
-```
+## Naming and compatibility
 
-The file must expose `run()` or `main()` and execute that entry point when run
-as `__main__`. It must not depend on the repository being on `PYTHONPATH`.
+- Project directories and user-run Python files use PascalCase, such as
+  `FlattenMeshToUV/FlattenMeshToUV.py`. Internal modules, functions, and variables
+  use snake_case; classes use PascalCase.
+- Target requested or declared Maya versions and preserve existing support.
+  New tools default to a supported Python 3 host; add Python 2 support only for a
+  required legacy host. Distinguish intended compatibility from versions tested.
+- Use Maya's bundled Python and Qt. Guard version-specific APIs and add PyMEL
+  only when justified by the tool's needs.
+- For Python 2 targets, avoid unsupported syntax/APIs and verify both generations
+  before claiming dual support. Directly executed Maya 2020/Python 2 source stays
+  ASCII-only with Unicode escapes for localized text to avoid Script Editor
+  encoding corruption.
 
-Move a project to `maya/tools/<ToolName>/` only when it needs a Maya plug-in,
-multiple functional files, resources, installation, persistent UI,
-long-lived callbacks, custom nodes or commands, or a reusable API. A small
-regression test may live beside a shelf script; tests alone do not require
-a move to `maya/tools/`.
+## Scene safety and verification
 
-## Tool Layout
-
-Structured Maya tools use Maya's standard runtime directory names directly at
-the project root:
-
-```text
-maya/tools/<ToolName>/
-├─ scripts/       # optional
-├─ plug-ins/      # optional
-├─ icons/         # optional
-├─ presets/       # optional
-├─ README.md
-├─ README_CN.md
-├─ CHANGELOG.md
-├─ LICENSE
-└─ tests/         # when automated checks are useful
-```
-
-Create only the runtime directories the tool uses. Do not add
-`package/<ToolName>/` nesting. Keep a single user-facing entry file when that
-is enough; add Python packages or separate modules only when the implementation
-requires them.
-
-Install small and medium tools by copying runtime files to Maya's matching
-directories. Do not add a `.mod` file unless module-based deployment is an
-explicit requirement. Declare the version once as `__version__` or
-`PLUGIN_VERSION` in a runtime Python file.
-
-## Naming
-
-- Maya project directories use PascalCase: `FlattenMeshToUV`.
-- User-run Python files use PascalCase without hyphens or underscores:
-  `FlattenMeshToUV.py` or `RunFlattenMeshToUV.py`.
-- Internal Python packages and modules may use snake_case when multiple modules
-  are genuinely required.
-- Classes use PascalCase; functions and variables use snake_case.
-
-## Python Compatibility
-
-- Target the Maya versions requested by the user or declared by the project.
-  Preserve existing supported versions. For new tools without a legacy target,
-  use the available Python 3 host and state the supported versions; add Python 2
-  compatibility only when a target host requires it.
-- For dual-compatible files, avoid Python-3-only syntax and APIs, use explicit
-  compatibility shims only where needed, and test in both host generations
-  before claiming support.
-- Keep directly executed Maya 2020/Python 2 source ASCII-only; encode localized
-  UI text with Unicode escapes so the Script Editor cannot corrupt the source.
-- Use the Python and Qt versions bundled with Maya. Do not assume a system
-  Python installation, hardcode Maya paths, or add PyMEL unless required.
-- Guard Maya- or Qt-version-specific APIs explicitly.
-
-## Runtime Safety
-
-- Validate selections and external input.
-- Use actionable Maya warnings and errors.
-- Group multi-step scene edits into one undo operation where practical.
-- Repeated launches must not create duplicate windows or callbacks.
-- Clean up temporary nodes, contexts, Script Jobs, event handlers, and UI.
-- Avoid Maya commands during import unless Maya plug-in registration requires it.
-
-## Documentation and Tests
-
-Project `README.md` and `README_CN.md` contain only an introduction, supported
-versions, installation, and usage, with matching information in both languages.
-
-Use the smallest runnable check for new logic. Pure Python logic should run
-outside Maya where practical; Maya integration checks must use a supported
-Maya or `mayapy` and must not modify user preferences or production scenes.
+- Validate selections and provide actionable Maya warnings/errors. Group scene
+  edits into an undo operation where practical.
+- Repeated launches must not duplicate windows or callbacks. Clean up temporary
+  nodes, contexts, Script Jobs, event handlers, and UI.
+- Avoid Maya commands during import except required plug-in registration.
+- Test pure Python outside Maya where practical. Use supported Maya or `mayapy`
+  for host behavior, with disposable scenes and isolated preferences.

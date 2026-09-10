@@ -95,7 +95,7 @@ COMPOSITE_ROOT_METADATA = (
     "CHANGELOG.md",
     "LICENSE",
 )
-COMPOSITE_COMPONENT_METADATA = COMPOSITE_ROOT_METADATA + ("AGENTS.md",)
+COMPOSITE_COMPONENT_METADATA = COMPOSITE_ROOT_METADATA
 
 
 def _iter_files(root: Path):
@@ -162,7 +162,7 @@ def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
         unexpected = [
             path.name
             for path in project.iterdir()
-            if path.is_dir() and path.name.lower() not in FORBIDDEN_DIRS
+            if path.is_dir() and path.name != "tests" and path.name.lower() not in FORBIDDEN_DIRS
         ]
         if unexpected:
             errors.append(

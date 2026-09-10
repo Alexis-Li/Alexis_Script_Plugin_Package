@@ -1,36 +1,31 @@
 # Composite Project Rules
 
-## Project Boundary
+## Product and component boundaries
 
-Each direct child of `composite/` is one cross-host product and uses a
-PascalCase directory name. Host directories below it use lowercase names such
-as `maya/` and `unreal/`. Each host directory contains a complete,
-independently installable component root.
+- Each direct child of `composite/` is one cross-host product with a PascalCase
+  name. Lowercase host directories contain independently installable components:
+  `composite/<ProjectName>/<host>/<ComponentName>/`.
+- Components cooperate through documented protocols; they must not load source,
+  configuration, or runtime files from sibling host directories. Keep versions,
+  dependencies, packaging, tests, and lifecycle cleanup independently verifiable.
+- Apply `maya/AGENTS.md` to Maya components and `unreal/AGENTS.md` to Unreal
+  components, using paths relative to the repository root. These sibling files
+  need explicit reading; their standalone metadata layouts do not apply here.
 
-Host components may cooperate through a documented protocol, but they must not
-load source, configuration, or runtime files from sibling host directories.
-Keep component versions, dependencies, packaging, tests, and cleanup behavior
-independently verifiable.
+## Ownership
 
-## Required Files
+- The product root alone owns `README.md`, `README_CN.md`, `CHANGELOG.md`, and
+  `LICENSE`. The README pair covers installation and usage for each host.
+- Components own implementation, host-required descriptors/assets, and relevant
+  tests. A local AGENTS.md may capture component-specific contracts or commands;
+  do not duplicate inherited rules or product metadata.
+- Maya components use the standard tool runtime folders, including at least one
+  of `scripts/`, `plug-ins/`, or `icons/`. Unreal code components contain one
+  root `.uplugin` and `Source/`; keep Automation tests with their modules.
 
-Every composite project owns `README.md`, `README_CN.md`, `CHANGELOG.md`, and
-`LICENSE` exactly once at its project root. The root README pair contains the
-host-specific installation and usage instructions. Keep both languages aligned.
-Host component roots contain implementation and colocated tests only; do not
-duplicate project metadata or add component-level `AGENTS.md` files there.
+## Acceptance
 
-Maya component roots follow the Maya tool runtime layout and include at least
-one of `scripts/`, `plug-ins/`, or `icons/`; keep Maya tests in that component
-when they require its source layout or host runtime. Unreal component roots
-contain exactly one root `.uplugin` descriptor and their runtime `Source/`;
-keep Unreal Automation tests embedded with the module source they exercise.
-
-## Validation
-
-Test and package every changed host component independently. For a cross-host
-behavior change, also run the product's end-to-end or production acceptance
-checks. Repository validation must apply the root metadata contract to composite
-projects without weakening the existing metadata requirements for standalone
-projects under `maya/` and `unreal/`. Never commit generated host output, caches,
-IDE files, or release archives.
+Test changed hosts independently and run applicable package checks. Add product
+end-to-end checks for changes to cross-host behavior or contracts. Follow the
+repository validation scope; keep standalone and composite metadata ownership
+distinct in repository tooling.

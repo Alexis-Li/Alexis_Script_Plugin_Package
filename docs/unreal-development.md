@@ -27,7 +27,8 @@ and validates plug-ins; reusable plug-in code stays in its owning plug-in.
 
 ## Verification path
 
-After a change, compile affected modules, inspect new warnings, run relevant
-Automation tests, load the plug-in in ToolsLab, and run repository validation.
-Finish by checking `git status` against the generated-file rules in
-`unreal/AGENTS.md`.
+For code/build changes, compile affected modules, inspect new warnings, and run
+relevant Automation tests. Verify changed host behavior in ToolsLab or the
+project's designated acceptance host. Documentation-only changes need no engine
+build; repository gates follow the scope in the root AGENTS.md. Finish by checking
+`git status` against the generated-file rules in `unreal/AGENTS.md`.

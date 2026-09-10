@@ -6,6 +6,9 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Simplify agent rules around outcomes and scoped verification; allow local
+  composite component instructions and shelf-script regression test directories
+  while preserving product metadata and runtime layout boundaries.
 - Scope routine acceptance to the owning project and reserve repository-wide
   validation for repository tooling, shared rules, metadata, and layout changes.
 - Move MtoU_LiveLink into the new `composite/` category with independently
