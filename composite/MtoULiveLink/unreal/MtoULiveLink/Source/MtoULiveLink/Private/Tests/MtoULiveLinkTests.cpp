@@ -880,10 +880,9 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 double FakeNow = 100.0;
                 FMtoUCacheSession Session;
                 Session.SetClock([&FakeNow]() { return FakeNow; });
-                Session.SetValidationCounts(1, 0);
-                Session.SetNegotiatedRevision(Case->HasField(TEXT("negotiated_revision"))
+                Session.BeginSession({1, 0, Case->HasField(TEXT("negotiated_revision"))
                     ? static_cast<int32>(Case->GetNumberField(TEXT("negotiated_revision")))
-                    : 7);
+                    : 7});
                 if (SessionMode == TEXT("uploaded"))
                 {
                     FMtoUCacheCommand SeedBegin;
@@ -903,15 +902,16 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                         MakeCachedFrameCommand(0, 1.0f, 64);
                     FMtoUCacheCommand SeedEnd;
                     SeedEnd.Kind = FMtoUCacheCommand::EKind::End;
-                    FString SeedCode;
-                    FString SeedDetails;
                     TestTrue(*FString::Printf(TEXT("%s seeds an uploaded session"), *Id),
-                        Session.HandleCommand(SeedBegin, SeedCode, SeedDetails)
-                        && Session.HandleCommand(SeedFrame, SeedCode, SeedDetails)
-                        && Session.HandleCommand(SeedEnd, SeedCode, SeedDetails));
+                        Session.HandleCommand(SeedBegin).bAccepted
+                        && Session.HandleCommand(SeedFrame).bAccepted
+                        && Session.HandleCommand(SeedEnd).bAccepted);
                 }
                 ErrorCode = TEXT("");
-                bAccepted = Session.HandleCommand(Command, ErrorCode, Error);
+                const FMtoUCacheTransition Result = Session.HandleCommand(Command);
+                bAccepted = Result.bAccepted;
+                ErrorCode = Result.ErrorCode;
+                Error = Result.Details;
                 if (!bAccepted && ErrorCode.IsEmpty())
                 {
                     ErrorCode = TEXT("INVALID_MESSAGE");
@@ -969,8 +969,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     {
         TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
         Session->SetClock([&Clock]() { return Clock; });
-        Session->SetValidationCounts(1, 0);
-        Session->SetNegotiatedRevision(7);
+        Session->BeginSession({1, 0, 7});
         Session->SetPublish([&Applied](const FMtoUFrameMessage& Frame) -> bool
         {
             Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
@@ -984,19 +983,19 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     };
     const auto UploadFrames = [](FMtoUCacheSession& Session, int32 Revision,
                                  int32 UploadId, const TArray<float>& Values,
-                                 FString& Code, FString& Details)
+                                 FMtoUCacheTransition& Result)
     {
-        bool bOk = Session.HandleCommand(
-            MakeCacheBeginCommand(Revision, Values.Num(), 30.0, UploadId), Code, Details);
+        bool bOk = (Result = Session.HandleCommand(
+            MakeCacheBeginCommand(Revision, Values.Num(), 30.0, UploadId))).bAccepted;
         for (int32 Index = 0; Index < Values.Num() && bOk; ++Index)
         {
-            bOk = Session.HandleCommand(
-                MakeCachedFrameCommand(Index, Values[Index], 64), Code, Details);
+            bOk = (Result = Session.HandleCommand(
+                MakeCachedFrameCommand(Index, Values[Index], 64))).bAccepted;
         }
         if (bOk)
         {
-            bOk = Session.HandleCommand(
-                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End), Code, Details);
+            bOk = (Result = Session.HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End))).bAccepted;
         }
         return bOk;
     };
@@ -1005,39 +1004,38 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TArray<float> Applied;
     TArray<int32> ProgressPlays;
     TSharedRef<FMtoUCacheSession> Session = MakeSession(Clock, Applied, ProgressPlays);
-    FString Code;
-    FString Details;
+    FMtoUCacheTransition Result;
 
     // Authoritative revision: the negotiated snapshot wins over client claims.
     TestFalse(TEXT("cache_begin for a foreign revision is rejected"),
-        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1))).bAccepted);
     TestEqual(TEXT("authoritative revision code"),
-        Code, FString(TEXT("CACHE_REVISION_MISMATCH")));
+        Result.ErrorCode, FString(TEXT("CACHE_REVISION_MISMATCH")));
     TestEqual(TEXT("foreign-revision upload retains no frames"),
         Session->GetBufferedFrameCount(), 0);
     TestFalse(TEXT("a rejected upload identity is still consumed"),
-        Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(6, 3, 30.0, 1))).bAccepted);
     TestEqual(TEXT("rejected upload identity reuse code"),
-        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+        Result.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
 
     // Upload identity must increase within the streaming session.
     TestTrue(TEXT("first upload identity is accepted"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4))).bAccepted);
     TestFalse(TEXT("reused upload identity is rejected"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 4))).bAccepted);
     TestEqual(TEXT("reused upload identity code"),
-        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+        Result.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
     TestTrue(TEXT("increasing upload identity is accepted"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 5), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(7, 2, 30.0, 5))).bAccepted);
 
     // Actual encoded bytes are metered against the frozen limit with
     // overflow-safe accumulation.
     FMtoUCacheCommand HugeFrame = MakeCachedFrameCommand(0, 10.0f, 64);
     HugeFrame.EncodedBytes = (1ll << 40);
     TestFalse(TEXT("overflow-safe byte metering rejects the upload"),
-        Session->HandleCommand(HugeFrame, Code, Details));
+        (Result = Session->HandleCommand(HugeFrame)).bAccepted);
     TestEqual(TEXT("metering code"),
-        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+        Result.ErrorCode, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
     TestEqual(TEXT("metered upload retains no frames"),
         Session->GetBufferedFrameCount(), 0);
 
@@ -1045,34 +1043,34 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         MakeCacheBeginCommand(7, 2, 30.0, 6);
     UnderdeclaredBegin.Begin.PayloadSize = 8;
     TestTrue(TEXT("underdeclared upload begins"),
-        Session->HandleCommand(UnderdeclaredBegin, Code, Details));
+        (Result = Session->HandleCommand(UnderdeclaredBegin)).bAccepted);
     TestTrue(TEXT("frame within declaration is accepted"),
-        Session->HandleCommand(MakeCachedFrameCommand(0, 11.0f, 8), Code, Details));
+        (Result = Session->HandleCommand(MakeCachedFrameCommand(0, 11.0f, 8))).bAccepted);
     TestFalse(TEXT("actual bytes above the declared size reject the upload"),
-        Session->HandleCommand(MakeCachedFrameCommand(1, 12.0f, 8), Code, Details));
+        (Result = Session->HandleCommand(MakeCachedFrameCommand(1, 12.0f, 8))).bAccepted);
     TestEqual(TEXT("low-declared-size code"),
-        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+        Result.ErrorCode, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
 
     // Parsed-memory preflight from negotiated counts, before any allocation.
     // With the production counts of this session the prediction stays inside
     // the budget, so begin must succeed.
     TestTrue(TEXT("production-count begin stays within the parsed budget"),
-        Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7), Code, Details));
+        (Result = Session->HandleCommand(MakeCacheBeginCommand(7, 20000, 30.0, 7))).bAccepted);
     double BudgetClock = 50.0;
     TArray<float> BudgetApplied;
     TArray<int32> BudgetProgress;
     TSharedRef<FMtoUCacheSession> BudgetSession =
         MakeSession(BudgetClock, BudgetApplied, BudgetProgress);
-    BudgetSession->SetValidationCounts(10000, 5000);
+    BudgetSession->BeginSession({10000, 5000, 7});
     FMtoUCacheCommand HugeBegin = MakeCacheBeginCommand(7, 20000, 30.0, 1);
     TestFalse(TEXT("predicted parsed memory above the budget rejects the upload"),
-        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+        (Result = BudgetSession->HandleCommand(HugeBegin)).bAccepted);
     TestEqual(TEXT("memory preflight code"),
-        Code, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
+        Result.ErrorCode, FString(TEXT("CACHE_PAYLOAD_TOO_LARGE")));
     TestFalse(TEXT("memory-rejected upload identity is still consumed"),
-        BudgetSession->HandleCommand(HugeBegin, Code, Details));
+        (Result = BudgetSession->HandleCommand(HugeBegin)).bAccepted);
     TestEqual(TEXT("memory-rejected upload identity reuse code"),
-        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+        Result.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
 
     // A documented large production Character (701 bones, 500 BlendShapes)
     // stays supported at the maximum frozen frame count within the fixed
@@ -1082,15 +1080,15 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TArray<int32> ProductionProgress;
     TSharedRef<FMtoUCacheSession> ProductionSession =
         MakeSession(ProductionClock, ProductionApplied, ProductionProgress);
-    ProductionSession->SetValidationCounts(701, 500);
+    ProductionSession->BeginSession({701, 500, 7});
     TestTrue(TEXT("a 701-bone production character at the maximum frame count"
                   " stays inside the fixed cache budget"),
-        ProductionSession->HandleCommand(
-            MakeCacheBeginCommand(7, 20000, 30.0, 1), Code, Details));
+        (Result = ProductionSession->HandleCommand(
+            MakeCacheBeginCommand(7, 20000, 30.0, 1))).bAccepted);
 
     // Atomic Ready then identity-matched playback.
     TestTrue(TEXT("complete upload becomes Ready"),
-        UploadFrames(*Session, 7, 8, {50.0f, 51.0f, 52.0f}, Code, Details));
+        UploadFrames(*Session, 7, 8, {50.0f, 51.0f, 52.0f}, Result));
     TestEqual(TEXT("complete upload is Ready"),
         Session->GetState(), EMtoUCacheState::Ready);
 
@@ -1099,16 +1097,16 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     FirstPlay.Kind = FMtoUCacheCommand::EKind::Play;
     FirstPlay.PlayId = 1;
     TestTrue(TEXT("initial play request is accepted"),
-        Session->HandleCommand(FirstPlay, Code, Details));
+        (Result = Session->HandleCommand(FirstPlay)).bAccepted);
     TestTrue(TEXT("stop holds the attempt"),
-        Session->HandleCommand(
-            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Stop), Code, Details));
+        (Result = Session->HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::Stop))).bAccepted);
     TestEqual(TEXT("stopped state"),
         Session->GetState(), EMtoUCacheState::Stopped);
     TestFalse(TEXT("a reused play identity cannot start a second attempt"),
-        Session->HandleCommand(FirstPlay, Code, Details));
+        (Result = Session->HandleCommand(FirstPlay)).bAccepted);
     TestEqual(TEXT("play-identity reuse code"),
-        Code, FString(TEXT("CACHE_METADATA_INVALID")));
+        Result.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
 
     // Replay with deterministic windows: one pose per update at most, and
     // every pose - including the first - published by a later Tick.
@@ -1117,7 +1115,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     Play.PlayId = 2;
     const double Interval = 1.0 / 30.0;
     TestTrue(TEXT("matching play attempt starts local playback"),
-        Session->HandleCommand(Play, Code, Details));
+        (Result = Session->HandleCommand(Play)).bAccepted);
     TestEqual(TEXT("playback state"),
         Session->GetState(), EMtoUCacheState::Playing);
     TestEqual(TEXT("cache_play only initializes the attempt"),
@@ -1125,9 +1123,9 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
 
     Clock += Interval / 2.0;
     TestEqual(TEXT("first cached pose is published by a later tick"),
-        Session->Tick(), 1);
+        Session->Tick().AppliedFramesThisTick, 1);
     Clock += Interval / 2.0;
-    TestEqual(TEXT("second pose applies in its own window"), Session->Tick(), 1);
+    TestEqual(TEXT("second pose applies in its own window"), Session->Tick().AppliedFramesThisTick, 1);
     Clock += Interval * 3.0;
     const int32 PosesBeforeLateTick = Applied.Num();
     Session->Tick();
@@ -1143,7 +1141,7 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     RetryPlay.Kind = FMtoUCacheCommand::EKind::Play;
     RetryPlay.PlayId = 9;
     TestTrue(TEXT("retry after failure reuses the uploaded cache"),
-        Session->HandleCommand(RetryPlay, Code, Details));
+        (Result = Session->HandleCommand(RetryPlay)).bAccepted);
     Clock += Interval;
     Session->Tick();
     Clock += Interval;
@@ -1168,12 +1166,12 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         return false;
     });
     TestTrue(TEXT("refusing session accepts its upload"),
-        UploadFrames(*RefusingSession, 7, 3, {70.0f, 71.0f}, Code, Details));
+        UploadFrames(*RefusingSession, 7, 3, {70.0f, 71.0f}, Result));
     FMtoUCacheCommand RefusingPlay;
     RefusingPlay.Kind = FMtoUCacheCommand::EKind::Play;
     RefusingPlay.PlayId = 4;
     TestTrue(TEXT("refusing session accepts play"),
-        RefusingSession->HandleCommand(RefusingPlay, Code, Details));
+        (Result = RefusingSession->HandleCommand(RefusingPlay)).bAccepted);
     Clock += Interval / 2.0;
     RefusingSession->Tick();
     TestEqual(TEXT("refused publication advances no applied evidence"),
@@ -1183,6 +1181,143 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("sustained refusal ends as a performance failure"),
         RefusingSession->GetState(), EMtoUCacheState::Failed);
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheTransitionTest,
+    "MtoULiveLink.CachedPlayback.Transitions",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    using EKind = FMtoUCacheTransition::EKind;
+    using ECommand = FMtoUCacheCommand::EKind;
+    double Clock = 100.0;
+    int32 Publications = 0;
+    FMtoUCacheSession Session;
+    Session.SetClock([&Clock]() { return Clock; });
+    Session.SetPublish([&Publications](const FMtoUFrameMessage&)
+    {
+        ++Publications;
+        return true;
+    });
+    Session.BeginSession({1, 0, 7});
+    const auto CheckDemand = [this](const TCHAR* Label,
+                                    const FMtoUCacheTransition& Result, bool bExpected)
+    {
+        TestTrue(Label, Result.RealtimeOverride.IsSet());
+        if (Result.RealtimeOverride.IsSet())
+        {
+            TestEqual(Label, Result.RealtimeOverride.GetValue(), bExpected);
+        }
+    };
+    const auto Upload = [this, &Session](int32 Revision, int32 UploadId)
+    {
+        const auto Receiving = Session.HandleCommand(MakeCacheBeginCommand(Revision, 1, 30.0, UploadId));
+        TestTrue(TEXT("begin accepted"), Receiving.bAccepted);
+        TestEqual(TEXT("begin reports expected frames"), Receiving.FrameCount, 1);
+        TestFalse(TEXT("begin preserves refresh demand"), Receiving.RealtimeOverride.IsSet());
+        TestTrue(TEXT("frame accepted"), Session.HandleCommand(MakeCachedFrameCommand(0, 42.0f, 64)).bAccepted);
+        const auto Ready = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::End));
+        TestEqual(TEXT("complete upload outcome"), Ready.Kind, EKind::Ready);
+        TestEqual(TEXT("ready upload identity"), Ready.UploadId, UploadId);
+        TestEqual(TEXT("ready authoritative revision"), Ready.Revision, Revision);
+        TestEqual(TEXT("ready buffered frames"), Ready.FrameCount, 1);
+        TestFalse(TEXT("ready preserves refresh demand"), Ready.RealtimeOverride.IsSet());
+    };
+    const auto Play = [&Session](int32 PlayId)
+    {
+        auto Command = MakeSimpleCacheCommand(ECommand::Play);
+        Command.PlayId = PlayId;
+        return Session.HandleCommand(Command);
+    };
+
+    TestTrue(TEXT("new session accepts live frames"), Session.AcceptsLiveFrames());
+    CheckDemand(TEXT("entry releases realtime"), Session.HandleCommand(MakeSimpleCacheCommand(ECommand::Enter)), false);
+    TestFalse(TEXT("cached ownership excludes live frames"), Session.AcceptsLiveFrames());
+    Upload(7, 1);
+    CheckDemand(TEXT("play enables realtime"), Play(1), true);
+    const auto Completed = Session.Tick();
+    TestEqual(TEXT("final accepted pose emits completion"), Completed.Kind, EKind::Completed);
+    TestEqual(TEXT("completion belongs to current play"), Completed.PlayId, 1);
+    TestEqual(TEXT("completion reports actual accepted frames"), Completed.FrameCount, 1);
+    TestEqual(TEXT("tick applies at most one pose"), Completed.AppliedFramesThisTick, 1);
+    TestEqual(TEXT("injected clock determines elapsed time"), Completed.ElapsedSeconds, 0.0);
+    TestFalse(TEXT("completion preserves realtime for natural final-pose evaluation"), Completed.RealtimeOverride.IsSet());
+    TestEqual(TEXT("completion is emitted only once"), Session.Tick().Kind, EKind::None);
+    TestEqual(TEXT("terminal tick does not republish"), Publications, 1);
+
+    const auto Stopped = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::Stop));
+    CheckDemand(TEXT("stop releases realtime"), Stopped, false);
+    TestEqual(TEXT("stop echoes held play identity"), Stopped.PlayId, 1);
+    const auto StalePlay = Play(1);
+    TestFalse(TEXT("stale play is rejected"), StalePlay.bAccepted);
+    TestEqual(TEXT("rejected play echoes requested ID"), StalePlay.PlayId, 1);
+    TestEqual(TEXT("rejected play retains upload identity"), StalePlay.UploadId, 1);
+    TestFalse(TEXT("ownership-retaining rejection preserves refresh demand"), StalePlay.RealtimeOverride.IsSet());
+    CheckDemand(TEXT("retry enables realtime"), Play(2), true);
+    Clock += 1.0;
+    const auto Failed = Session.Tick();
+    TestEqual(TEXT("missed frame produces performance outcome"), Failed.Kind, EKind::PerformanceFailed);
+    TestEqual(TEXT("performance outcome play identity"), Failed.PlayId, 2);
+    TestEqual(TEXT("performance outcome upload identity"), Failed.UploadId, 1);
+    TestEqual(TEXT("performance outcome stable code"), Failed.ErrorCode, FString(TEXT("CACHED_PLAYBACK_PERFORMANCE")));
+    CheckDemand(TEXT("performance failure releases realtime"), Failed, false);
+    TestEqual(TEXT("performance failure is emitted only once"), Session.Tick().Kind, EKind::None);
+
+    const auto Cleared = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::Clear));
+    CheckDemand(TEXT("clear restores realtime"), Cleared, true);
+    TestEqual(TEXT("clear captures released upload"), Cleared.UploadId, 1);
+    TestEqual(TEXT("clear captures released play"), Cleared.PlayId, 2);
+    TestTrue(TEXT("clear permits live frames"), Session.AcceptsLiveFrames());
+    TestFalse(TEXT("clear preserves same-session stale upload rejection"),
+        Session.HandleCommand(MakeCacheBeginCommand(7, 1, 30.0, 1)).bAccepted);
+    const auto RejectedBegin = Session.HandleCommand(MakeCacheBeginCommand(8, 1, 30.0, 2));
+    TestEqual(TEXT("rejected begin carries incoming identity after reset"), RejectedBegin.UploadId, 2);
+    CheckDemand(TEXT("revision failure restores realtime"), RejectedBegin, true);
+    Session.HandleCommand(MakeCacheBeginCommand(7, 1, 30.0, 3));
+    const auto RejectedFrame = Session.HandleCommand(MakeCachedFrameCommand(-1, 42.0f, 64));
+    TestEqual(TEXT("rejected frame retains pre-reset upload identity"), RejectedFrame.UploadId, 3);
+    CheckDemand(TEXT("frame failure restores realtime"), RejectedFrame, true);
+    Session.HandleCommand(MakeCacheBeginCommand(7, 1, 30.0, 4));
+    const auto RejectedEnd = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::End));
+    TestEqual(TEXT("incomplete end retains pre-reset upload identity"), RejectedEnd.UploadId, 4);
+    CheckDemand(TEXT("incomplete end restores realtime"), RejectedEnd, true);
+    auto Reject = MakeSimpleCacheCommand(ECommand::Reject);
+    Reject.UploadId = 5;
+    Reject.ErrorCode = TEXT("CACHE_PAYLOAD_TOO_LARGE");
+    Reject.ErrorDetails = TEXT("worker pre-allocation rejection");
+    const auto RejectedIntake = Session.HandleCommand(Reject);
+    TestEqual(TEXT("intake rejection uses worker-owned identity"), RejectedIntake.UploadId, 5);
+    CheckDemand(TEXT("intake rejection restores realtime"), RejectedIntake, true);
+
+    // Replacing a still-owned cache is atomic; it changes all validation
+    // inputs and resets operation IDs while preserving injected dependencies.
+    Upload(7, 6);
+    Play(3);
+    Session.BeginSession({2, 0, 8});
+    TestEqual(TEXT("new session cancels old terminal work"), Session.Tick().Kind, EKind::None);
+    TestEqual(TEXT("new session releases old frames"), Session.GetBufferedFrameCount(), 0);
+    TestTrue(TEXT("new revision accepts fresh upload one"),
+        Session.HandleCommand(MakeCacheBeginCommand(8, 1, 30.0, 1)).bAccepted);
+    TestEqual(TEXT("new transform count is authoritative"),
+        Session.HandleCommand(MakeCachedFrameCommand(0, 42.0f, 64)).ErrorCode,
+        FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    Session.BeginSession({1, 1, 9});
+    Session.HandleCommand(MakeCacheBeginCommand(9, 1, 30.0, 1));
+    TestEqual(TEXT("new curve count is authoritative"),
+        Session.HandleCommand(MakeCachedFrameCommand(0, 42.0f, 64)).ErrorCode,
+        FString(TEXT("CACHE_FRAME_CONTENTS_INVALID")));
+    Session.BeginSession({1, 0, 10});
+    Upload(10, 1);
+    TestTrue(TEXT("new session accepts fresh play one"), Play(1).bAccepted);
+    TestEqual(TEXT("new session uses retained publication dependency"), Session.Tick().Kind, EKind::Completed);
+    TestEqual(TEXT("new session publishes exactly one additional pose"), Publications, 2);
+    Play(2);
+    Session.EndSession();
+    TestEqual(TEXT("teardown cannot emit old completion"), Session.Tick().Kind, EKind::None);
+    TestEqual(TEXT("teardown releases frames"), Session.GetBufferedFrameCount(), 0);
     return true;
 }
 

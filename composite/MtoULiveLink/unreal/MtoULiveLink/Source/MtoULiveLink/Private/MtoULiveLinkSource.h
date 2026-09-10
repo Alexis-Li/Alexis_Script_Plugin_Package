@@ -115,7 +115,7 @@ private:
 #endif
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
-    bool DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command);
+    void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
     bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
     void PublishLatestFrameOnGameThread();
     void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
@@ -170,7 +170,4 @@ private:
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.
     FMtoUCacheSession CacheSession;
-    // Set when playback starts; one completion or performance-failure reply
-    // is reported exactly once per replay attempt.
-    bool bPlaybackOutcomePending = false;
 };

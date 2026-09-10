@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Consolidate Unreal Cached Playback transitions in the cache-session module:
+  initialize negotiated counts and revision atomically, return identity-bearing
+  outcomes and realtime-override demands, and emit completion/performance failure
+  once from the playback tick. The Live Link source retains transport admission,
+  synchronous session publication gates, protocol encoding, and editor effects.
+  Protocol v6, playback timing, and viewport behavior are unchanged.
+
 - Complete the Issue #37 reconnect acceptance coverage with deterministic delayed old-session command/outcome delivery and an opt-in real Maya-to-Unreal retained-cache replay check. Preserve the three-connection and same-session stale-ID regression; record accepted poses and negative controls in the project history.
 
 - Extend Preview RefreshBenchmark with deterministic 2,400/27,744-triangle garments and 13,200/147,744-triangle full-character Drivers at independently varied 4/32/64 Morphs (Issue #41). Retain the small geometry baselines, measure the public actor refresh with first-process and repeated warmed runs, verify generated output each time, and document process-memory instrumentation limits. Seconds-long waits on the larger measured corpus warrant a separate responsiveness follow-up; synchronous production behavior is unchanged.

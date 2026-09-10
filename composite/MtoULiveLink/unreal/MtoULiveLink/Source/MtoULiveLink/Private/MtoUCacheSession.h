@@ -57,6 +57,38 @@ struct FMtoUCacheCommand
     FMtoUFrameMessage Frame;
 };
 
+struct FMtoUCacheSessionContext
+{
+    int32 TransformCount = INDEX_NONE;
+    int32 CurveCount = INDEX_NONE;
+    int32 Revision = 0;
+};
+
+/** A semantic result, consumed inline by the source behind its publication gate. */
+struct FMtoUCacheTransition
+{
+    enum class EKind : uint8
+    {
+        None, Entered, Receiving, Ready, Playing, Stopped, Cleared, Completed,
+        Rejected, PerformanceFailed,
+    };
+
+    EKind Kind = EKind::None;
+    bool bAccepted = true;
+    // Unset means preserve the existing override (including on completion).
+    // The source alone applies this demand to editor viewports, and only for
+    // a still-publishable streaming session.
+    TOptional<bool> RealtimeOverride;
+    int32 UploadId = INDEX_NONE;
+    int32 PlayId = INDEX_NONE;
+    int32 Revision = 0;
+    int32 FrameCount = 0;
+    int32 AppliedFramesThisTick = 0;
+    double ElapsedSeconds = 0.0;
+    FString ErrorCode;
+    FString Details;
+};
+
 class FMtoUCacheSession
 {
 public:
@@ -75,45 +107,33 @@ public:
     void SetClock(FNow InNow);
     void SetPublish(FPublish InPublish);
     void SetProgressSink(FProgress InProgress);
-    void SetValidationCounts(int32 ExpectedTransformCount, int32 ExpectedCurveCount);
-    void SetNegotiatedRevision(int32 NegotiatedRevision);
+    // Atomically replaces the previous session, including stale-ID history
+    // and negotiated validation inputs. Publication dependencies survive.
+    void BeginSession(const FMtoUCacheSessionContext& Context);
+    void EndSession();
+
+    bool AcceptsLiveFrames() const { return State == EMtoUCacheState::Idle; }
 
     EMtoUCacheState GetState() const { return State; }
     const FString& GetErrorDetails() const { return ErrorDetails; }
     int32 GetBufferedFrameCount() const { return Frames.Num(); }
-    int32 GetExpectedFrameCount() const { return Begin.FrameCount; }
     int32 GetAppliedFrameCount() const { return AppliedCount; }
     int32 GetLastAppliedIndex() const { return LastAppliedIndex; }
     int32 GetActiveUploadId() const { return ActiveUploadId; }
-    int32 GetActivePlayId() const { return ActivePlayId; }
-    // Owning identity of the cache ownership dropped by the most recent
-    // clear, echoed by the cache_cleared outcome.
-    int32 GetLastClearedUploadId() const { return LastClearedUploadId; }
-    int32 GetLastClearedPlayId() const { return LastClearedPlayId; }
-    double GetElapsedPlaybackSeconds() const { return ElapsedSeconds; }
 
-    // Returns false and fills the stable protocol error code when the
-    // command violates the frozen contract. Rejected uploads drop to Idle.
-    bool HandleCommand(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
+    // Captures identities before destructive transitions; callers never need
+    // to reconstruct an outcome from the command and post-transition getters.
+    FMtoUCacheTransition HandleCommand(const FMtoUCacheCommand& Command);
 
-    // Advances local replay; returns the number of frames applied this tick.
-    int32 Tick();
+    // Advances local replay and emits completion/failure only on the tick
+    // that enters that terminal state. Later ticks produce no outcome.
+    FMtoUCacheTransition Tick();
 
+private:
     // Drops any buffered cache and returns to Idle. Used by clear and
     // per-session teardown.
     void ResetToIdle();
 
-    // Drops all streaming-session-scoped cache ownership and identity history
-    // for a newly negotiated session. Unlike ResetToIdle (which preserves
-    // LastSeen identities so same-session stale attempts stay rejected after
-    // clear), this also clears LastSeenUploadId/PlayId and the last-cleared
-    // echo so the new session accepts its own fresh upload/play sequence
-    // starting at 1. Preserves publication callbacks and negotiated
-    // validation counts/revision; the caller sets fresh counts/revision
-    // immediately after.
-    void ResetForNewStreamingSession();
-
-private:
     bool HandleEnter(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleBegin(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleFrame(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
@@ -136,8 +156,6 @@ private:
     int32 LastSeenPlayId = 0;
     int32 ActiveUploadId = 0;
     int32 ActivePlayId = 0;
-    int32 LastClearedUploadId = 0;
-    int32 LastClearedPlayId = 0;
     int64 ActualPayloadBytes = 0;
     int32 NextFrame = 0;
     int32 AppliedCount = 0;

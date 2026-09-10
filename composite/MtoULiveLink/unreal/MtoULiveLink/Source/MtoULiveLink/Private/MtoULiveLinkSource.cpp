@@ -246,8 +246,7 @@ void FMtoULiveLinkSource::Update()
             // The transient cache and its upload/play identity history are
             // scoped to one negotiated streaming session; a newer connection
             // starts its own fresh sequence at 1.
-            CacheSession.ResetForNewStreamingSession();
-            bPlaybackOutcomePending = false;
+            CacheSession.EndSession();
         }
     }
 
@@ -281,7 +280,7 @@ void FMtoULiveLinkSource::Update()
     // While a cache owns this session, ordinary live frames must neither
     // mutate the cache nor overwrite local playback; drop them and their
     // stale pending slots silently.
-    if (CacheSession.GetState() == EMtoUCacheState::Idle)
+    if (CacheSession.AcceptsLiveFrames())
     {
         PublishLatestFrameOnGameThread();
     }
@@ -361,8 +360,7 @@ void FMtoULiveLinkSource::StopListener()
     SetStatus(TEXT("Stopped"));
     if (IsInGameThread())
     {
-        CacheSession.ResetToIdle();
-        bPlaybackOutcomePending = false;
+        CacheSession.EndSession();
         SetEditorViewportRealtimeOverride(false);
         for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
         {
@@ -1188,15 +1186,10 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
-    // A newly negotiated Streaming session starts its own fresh upload/play
-    // sequence. Same-session stale rejection lives in ResetToIdle (kept by
-    // cache_clear and rejections); only this boundary clears LastSeen history.
-    CacheSession.ResetForNewStreamingSession();
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
     NegotiatedRevision = Message.Revision;
-    CacheSession.SetValidationCounts(ExpectedBoneCount, ExpectedCurveCount);
-    CacheSession.SetNegotiatedRevision(NegotiatedRevision);
+    CacheSession.BeginSession({ExpectedBoneCount, ExpectedCurveCount, NegotiatedRevision});
     SourceBindLocalPose = Message.SourceBindLocalPose;
     TargetRefLocalPose.Reset(ExpectedBoneCount);
     BoneParents.Reset(ExpectedBoneCount);
@@ -1279,199 +1272,90 @@ void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()
             CacheCommands.CancelUpload(Command.SessionId, Command.UploadId);
             continue;
         }
-        if (!DispatchCacheCommandOnGameThread(Command))
-        {
-            // Recoverable upload validation failures drop to Idle and resume
-            // live streaming; regain the live preview override so a
-            // still-connected session keeps refreshing viewports whose base
-            // Realtime is off. Terminated sessions never re-enable.
-            if (CacheSession.GetState() == EMtoUCacheState::Idle
-                && GameThreadSession != 0
-                && IsSessionPublishableOnGameThread(GameThreadSession)
-                && bSourceValid.Load())
-            {
-                SetEditorViewportRealtimeOverride(true);
-            }
-            continue;
-        }
-        const EMtoUCacheState State = CacheSession.GetState();
-        switch (Command.Kind)
-        {
-            case FMtoUCacheCommand::EKind::Enter:
-                // Cached ownership begins here: hold the recent pose, isolate
-                // live frames, and release viewport realtime for the capture
-                // and upload work that matters.
-                SetEditorViewportRealtimeOverride(false);
-                SetStatus(TEXT("Cached Playback entry; holding recent pose"));
-                break;
-            case FMtoUCacheCommand::EKind::Begin:
-                SetStatus(FString::Printf(
-                    TEXT("Receiving animation cache (%d frames)..."), CacheSession.GetExpectedFrameCount()));
-                break;
-            case FMtoUCacheCommand::EKind::End:
-                {
-                    SetStatus(TEXT("Cached animation ready"));
-                    FMtoUOutgoing Reply;
-                    Reply.SessionId = GameThreadSession;
-                    Reply.Packet = FMtoUProtocol::EncodeCacheReady(
-                        CacheSession.GetActiveUploadId(),
-                        NegotiatedRevision,
-                        CacheSession.GetBufferedFrameCount());
-                    OutgoingReplies.Enqueue(MoveTemp(Reply));
-                }
-                break;
-            case FMtoUCacheCommand::EKind::Play:
-                SetEditorViewportRealtimeOverride(true);
-                SetStatus(TEXT("Playing cached animation locally"));
-                bPlaybackOutcomePending = true;
-                break;
-            case FMtoUCacheCommand::EKind::Stop:
-                SetEditorViewportRealtimeOverride(false);
-                SetStatus(TEXT("Cached playback stopped; last applied frame held"));
-                if (CacheSession.GetActivePlayId() > 0)
-                {
-                    FMtoUOutgoing Reply;
-                    Reply.SessionId = GameThreadSession;
-                    Reply.Packet = FMtoUProtocol::EncodeCacheStopped(
-                        CacheSession.GetActivePlayId());
-                    OutgoingReplies.Enqueue(MoveTemp(Reply));
-                }
-                break;
-            case FMtoUCacheCommand::EKind::Clear:
-                // Leaving cached ownership returns to live streaming: regain
-                // the plugin override so viewports with base Realtime off keep
-                // refreshing. Only the named override is touched; the user's
-                // base setting is preserved. Terminated sessions only remove.
-                if (bSourceValid.Load()
-                    && GameThreadSession != 0
-                    && IsSessionPublishableOnGameThread(GameThreadSession))
-                {
-                    SetEditorViewportRealtimeOverride(true);
-                }
-                else
-                {
-                    SetEditorViewportRealtimeOverride(false);
-                }
-                SetStatus(TEXT("Connected to Maya"));
-                {
-                    FMtoUOutgoing Reply;
-                    Reply.SessionId = GameThreadSession;
-                    Reply.Packet = FMtoUProtocol::EncodeCacheCleared(
-                        CacheSession.GetLastClearedUploadId(),
-                        CacheSession.GetLastClearedPlayId());
-                    OutgoingReplies.Enqueue(MoveTemp(Reply));
-                }
-                break;
-            default:
-                break;
-        }
+        ApplyCacheTransitionOnGameThread(
+            Command.SessionId, CacheSession.HandleCommand(Command));
     }
 
-    // Drive local replay and report exactly one outcome per attempt:
-    // completion with applied-frame evidence, or a stable performance error.
-    // A replaced session never advances local replay: its Tick and outcome
-    // stay gated here and its publishes fail closed below.
-    const bool bSessionPublishable = GameThreadSession != 0
-        && IsSessionPublishableOnGameThread(GameThreadSession);
-    if (CacheSession.GetState() == EMtoUCacheState::Playing && bSessionPublishable)
+    // The synchronous epoch gate stays in the source: a replaced session
+    // neither advances cached replay nor applies a transition's side effects.
+    if (IsSessionPublishableOnGameThread(GameThreadSession))
     {
-        CacheSession.Tick();
-    }
-    if (bPlaybackOutcomePending && !bSessionPublishable)
-    {
-        // The owning session was replaced: its completion or failure must
-        // never reach the new revision. The disconnect path resets the cache.
-        bPlaybackOutcomePending = false;
-    }
-    if (bPlaybackOutcomePending)
-    {
-        switch (CacheSession.GetState())
-        {
-            case EMtoUCacheState::Completed:
-                SetStatus(TEXT("Cached playback complete; final frame held"));
-                {
-                    FMtoUOutgoing Reply;
-                    Reply.SessionId = GameThreadSession;
-                    Reply.Packet = FMtoUProtocol::EncodeCacheComplete(
-                        CacheSession.GetActivePlayId(),
-                        CacheSession.GetAppliedFrameCount(),
-                        CacheSession.GetElapsedPlaybackSeconds());
-                    OutgoingReplies.Enqueue(MoveTemp(Reply));
-                }
-                bPlaybackOutcomePending = false;
-                break;
-            case EMtoUCacheState::Failed:
-                SetEditorViewportRealtimeOverride(false);
-                SetStatus(TEXT("Cached playback missed the captured scene rate"));
-                // The performance failure is recoverable and identity-scoped:
-                // it ends this play attempt only, keeps the negotiated
-                // connection open, and echoes the attempt it belongs to so
-                // Maya never applies a stale failure to a newer replay.
-                EnqueueReplyPacketOnGameThread(
-                    GameThreadSession,
-                    FMtoUProtocol::EncodeError(
-                        TEXT("CACHED_PLAYBACK_PERFORMANCE"),
-                        TEXT("Local playback fell behind the captured scene rate."),
-                        CacheSession.GetErrorDetails(),
-                        CacheSession.GetActiveUploadId(),
-                        CacheSession.GetActivePlayId()),
-                    false);
-                bPlaybackOutcomePending = false;
-                break;
-            case EMtoUCacheState::Stopped:
-            case EMtoUCacheState::Idle:
-                // Manual stop, clear, or session loss supersedes the outcome.
-                bPlaybackOutcomePending = false;
-                break;
-            default:
-                break; // still playing
-        }
+        ApplyCacheTransitionOnGameThread(GameThreadSession, CacheSession.Tick());
     }
 }
 
-bool FMtoULiveLinkSource::DispatchCacheCommandOnGameThread(const FMtoUCacheCommand& Command)
+void FMtoULiveLinkSource::ApplyCacheTransitionOnGameThread(
+    uint64 SessionId, const FMtoUCacheTransition& Transition)
 {
-    FString ErrorCode;
-    FString Details;
-    // Capture the owning identity before dispatch: a rejection resets the
-    // session, so afterwards only the last-seen identities survive. Begin
-    // echoes its own declared upload id because the previous ownership, if
-    // any, is older than the request being rejected.
-    int32 EchoUploadId = INDEX_NONE;
-    int32 EchoPlayId = INDEX_NONE;
-    switch (Command.Kind)
+    check(IsInGameThread());
+    if (!IsSessionPublishableOnGameThread(SessionId))
     {
-        case FMtoUCacheCommand::EKind::Begin:
-            EchoUploadId = Command.Begin.UploadId;
+        return;
+    }
+    if (Transition.RealtimeOverride.IsSet())
+    {
+        SetEditorViewportRealtimeOverride(
+            Transition.RealtimeOverride.GetValue() && bSourceValid.Load());
+    }
+
+    // This adapter only formats status and encodes semantic outcomes. Cache
+    // command/state interpretation and identity capture belong to the session.
+    TArray<uint8> Packet;
+    using EKind = FMtoUCacheTransition::EKind;
+    switch (Transition.Kind)
+    {
+        case EKind::Entered:
+            SetStatus(TEXT("Cached Playback entry; holding recent pose"));
             break;
-        case FMtoUCacheCommand::EKind::Reject:
-            EchoUploadId = Command.UploadId;
+        case EKind::Receiving:
+            SetStatus(FString::Printf(
+                TEXT("Receiving animation cache (%d frames)..."), Transition.FrameCount));
             break;
-        case FMtoUCacheCommand::EKind::Frame:
-        case FMtoUCacheCommand::EKind::End:
-            EchoUploadId = CacheSession.GetActiveUploadId();
+        case EKind::Ready:
+            SetStatus(TEXT("Cached animation ready"));
+            Packet = FMtoUProtocol::EncodeCacheReady(
+                Transition.UploadId, Transition.Revision, Transition.FrameCount);
             break;
-        case FMtoUCacheCommand::EKind::Play:
-            EchoUploadId = CacheSession.GetActiveUploadId();
-            EchoPlayId = Command.PlayId;
+        case EKind::Playing:
+            SetStatus(TEXT("Playing cached animation locally"));
             break;
-        default:
+        case EKind::Stopped:
+            SetStatus(TEXT("Cached playback stopped; last applied frame held"));
+            if (Transition.PlayId > 0)
+            {
+                Packet = FMtoUProtocol::EncodeCacheStopped(Transition.PlayId);
+            }
+            break;
+        case EKind::Cleared:
+            SetStatus(TEXT("Connected to Maya"));
+            Packet = FMtoUProtocol::EncodeCacheCleared(Transition.UploadId, Transition.PlayId);
+            break;
+        case EKind::Completed:
+            SetStatus(TEXT("Cached playback complete; final frame held"));
+            Packet = FMtoUProtocol::EncodeCacheComplete(
+                Transition.PlayId, Transition.FrameCount, Transition.ElapsedSeconds);
+            break;
+        case EKind::PerformanceFailed:
+            SetStatus(TEXT("Cached playback missed the captured scene rate"));
+            Packet = FMtoUProtocol::EncodeError(
+                Transition.ErrorCode,
+                TEXT("Local playback fell behind the captured scene rate."),
+                Transition.Details, Transition.UploadId, Transition.PlayId);
+            break;
+        case EKind::Rejected:
+            UE_LOG(LogMtoULiveLinkSource, Warning,
+                TEXT("Rejected cache command: %s"), *Transition.Details);
+            Packet = FMtoUProtocol::EncodeError(
+                Transition.ErrorCode, Transition.Details, Transition.Details,
+                Transition.UploadId, Transition.PlayId);
+            break;
+        case EKind::None:
             break;
     }
-    if (CacheSession.HandleCommand(Command, ErrorCode, Details))
+    if (!Packet.IsEmpty())
     {
-        return true;
+        EnqueueReplyPacketOnGameThread(SessionId, MoveTemp(Packet), false);
     }
-    UE_LOG(LogMtoULiveLinkSource, Warning, TEXT("Rejected cache command: %s"), *Details);
-    // Upload and control errors reject the offending request but keep the
-    // negotiated connection open; only structural garbage closes. The echoed
-    // operation identity lets Maya discard late errors from older attempts.
-    EnqueueReplyPacketOnGameThread(
-        GameThreadSession,
-        FMtoUProtocol::EncodeError(
-            ErrorCode, Details, Details, EchoUploadId, EchoPlayId),
-        false);
-    return false;
 }
 
 void FMtoULiveLinkSource::EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter)

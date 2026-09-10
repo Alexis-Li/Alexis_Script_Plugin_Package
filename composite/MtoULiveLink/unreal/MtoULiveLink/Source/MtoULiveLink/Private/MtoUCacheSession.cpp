@@ -49,15 +49,12 @@ void FMtoUCacheSession::SetProgressSink(FProgress InProgress)
     ProgressSink = MoveTemp(InProgress);
 }
 
-void FMtoUCacheSession::SetValidationCounts(int32 InExpectedTransformCount, int32 InExpectedCurveCount)
+void FMtoUCacheSession::BeginSession(const FMtoUCacheSessionContext& Context)
 {
-    ExpectedTransformCount = InExpectedTransformCount;
-    ExpectedCurveCount = InExpectedCurveCount;
-}
-
-void FMtoUCacheSession::SetNegotiatedRevision(int32 InNegotiatedRevision)
-{
-    NegotiatedRevision = InNegotiatedRevision;
+    EndSession();
+    ExpectedTransformCount = Context.TransformCount;
+    ExpectedCurveCount = Context.CurveCount;
+    NegotiatedRevision = Context.Revision;
 }
 
 double FMtoUCacheSession::FrameInterval() const
@@ -80,75 +77,102 @@ void FMtoUCacheSession::ResetToIdle()
     ActivePlayId = 0;
 }
 
-void FMtoUCacheSession::ResetForNewStreamingSession()
+void FMtoUCacheSession::EndSession()
 {
     ResetToIdle();
     LastSeenUploadId = 0;
     LastSeenPlayId = 0;
-    LastClearedUploadId = 0;
-    LastClearedPlayId = 0;
+    ExpectedTransformCount = INDEX_NONE;
+    ExpectedCurveCount = INDEX_NONE;
+    NegotiatedRevision = 0;
     ErrorDetails.Reset();
 }
 
-bool FMtoUCacheSession::HandleCommand(
-    const FMtoUCacheCommand& Command,
-    FString& OutErrorCode,
-    FString& OutDetails)
+FMtoUCacheTransition FMtoUCacheSession::HandleCommand(const FMtoUCacheCommand& Command)
 {
+    using EKind = FMtoUCacheTransition::EKind;
+    FMtoUCacheTransition Result;
+    Result.Revision = NegotiatedRevision;
     ErrorDetails.Reset();
     bool bAccepted = false;
     switch (Command.Kind)
     {
         case FMtoUCacheCommand::EKind::Enter:
-            bAccepted = HandleEnter(Command, OutErrorCode, OutDetails);
+            bAccepted = HandleEnter(Command, Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Entered;
+            Result.RealtimeOverride = false;
             break;
         case FMtoUCacheCommand::EKind::Begin:
-            bAccepted = HandleBegin(Command, OutErrorCode, OutDetails);
+            Result.UploadId = Command.Begin.UploadId;
+            bAccepted = HandleBegin(Command, Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Receiving;
+            Result.FrameCount = Begin.FrameCount;
             break;
         case FMtoUCacheCommand::EKind::Reject:
-            OutErrorCode = Command.ErrorCode;
-            OutDetails = Command.ErrorDetails;
+            Result.UploadId = Command.UploadId;
+            Result.ErrorCode = Command.ErrorCode;
+            Result.Details = Command.ErrorDetails;
             ResetToIdle();
             break;
         case FMtoUCacheCommand::EKind::Frame:
-            bAccepted = HandleFrame(Command, OutErrorCode, OutDetails);
+            Result.UploadId = ActiveUploadId;
+            bAccepted = HandleFrame(Command, Result.ErrorCode, Result.Details);
             break;
         case FMtoUCacheCommand::EKind::End:
-            bAccepted = HandleEnd(Command, OutErrorCode, OutDetails);
+            Result.UploadId = ActiveUploadId;
+            bAccepted = HandleEnd(Command, Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Ready;
+            Result.FrameCount = Frames.Num();
             break;
         case FMtoUCacheCommand::EKind::Play:
-            bAccepted = HandlePlay(Command, OutErrorCode, OutDetails);
+            Result.UploadId = ActiveUploadId;
+            Result.PlayId = Command.PlayId;
+            bAccepted = HandlePlay(Command, Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Playing;
+            if (bAccepted)
+            {
+                Result.RealtimeOverride = true;
+            }
             break;
         case FMtoUCacheCommand::EKind::Stop:
             if (State == EMtoUCacheState::Playing)
             {
-                // Manual stop holds the last accepted pose and keeps the
-                // completed cache available for replay-again.
                 State = EMtoUCacheState::Stopped;
             }
+            Result.Kind = EKind::Stopped;
+            Result.PlayId = ActivePlayId;
+            Result.RealtimeOverride = false;
             bAccepted = true;
             break;
         case FMtoUCacheCommand::EKind::Clear:
-            // Capture the ownership being dropped before it is reset so the
-            // cleared outcome can echo it.
-            LastClearedUploadId = ActiveUploadId;
-            LastClearedPlayId = ActivePlayId;
+            // The result owns the released identity; no caller has to read
+            // cache state before clear or keep a second last-cleared record.
+            Result.UploadId = ActiveUploadId;
+            Result.PlayId = ActivePlayId;
             ResetToIdle();
+            Result.Kind = EKind::Cleared;
+            Result.RealtimeOverride = true;
             bAccepted = true;
             break;
     }
+    Result.bAccepted = bAccepted;
     if (!bAccepted)
     {
-        if (OutErrorCode.IsEmpty())
+        Result.Kind = EKind::Rejected;
+        if (Result.ErrorCode.IsEmpty())
         {
-            OutErrorCode = TEXT("CACHE_INVALID_STATE");
-            OutDetails = TEXT("Unknown cache command failure.");
+            Result.ErrorCode = TEXT("CACHE_INVALID_STATE");
+            Result.Details = TEXT("Unknown cache command failure.");
         }
-        ErrorDetails = OutErrorCode + TEXT(": ") + OutDetails;
+        ErrorDetails = Result.ErrorCode + TEXT(": ") + Result.Details;
+        // Recoverable failures that release cached ownership restore live
+        // refresh. Rejections that retain ownership preserve its demand.
+        if (AcceptsLiveFrames())
+        {
+            Result.RealtimeOverride = true;
+        }
     }
-    // On success ErrorDetails keeps whatever FailPerformance wrote during
-    // this command (a play can fail immediately); it was cleared above.
-    return bAccepted;
+    return Result;
 }
 
 bool FMtoUCacheSession::HandleEnter(
@@ -465,12 +489,32 @@ void FMtoUCacheSession::ApplyNextPose()
     }
 }
 
-int32 FMtoUCacheSession::Tick()
+FMtoUCacheTransition FMtoUCacheSession::Tick()
 {
-    const int32 Before = AppliedCount;
-    if (State == EMtoUCacheState::Playing)
+    FMtoUCacheTransition Result;
+    if (State != EMtoUCacheState::Playing)
     {
-        ApplyNextPose();
+        return Result;
     }
-    return AppliedCount - Before;
+    const int32 Before = AppliedCount;
+    ApplyNextPose();
+    Result.AppliedFramesThisTick = AppliedCount - Before;
+    Result.UploadId = ActiveUploadId;
+    Result.PlayId = ActivePlayId;
+    Result.FrameCount = AppliedCount;
+    Result.ElapsedSeconds = ElapsedSeconds;
+    if (State == EMtoUCacheState::Completed)
+    {
+        Result.Kind = FMtoUCacheTransition::EKind::Completed;
+        // Preserve the existing realtime override to keep the final pose
+        // naturally evaluated. Completion never changes viewport policy.
+    }
+    else if (State == EMtoUCacheState::Failed)
+    {
+        Result.Kind = FMtoUCacheTransition::EKind::PerformanceFailed;
+        Result.ErrorCode = TEXT("CACHED_PLAYBACK_PERFORMANCE");
+        Result.Details = ErrorDetails;
+        Result.RealtimeOverride = false;
+    }
+    return Result;
 }
