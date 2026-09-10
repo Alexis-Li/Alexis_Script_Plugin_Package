@@ -105,6 +105,9 @@ Install the Maya and Unreal components from the same release.
    corpus, not a universal size or latency guarantee; see the
    [geometry-scale measurements](../../docs/project-history/mtou-livelink/preview-refresh-geometry-scale.md).
 6. Reconnect after changing the outfit, workflow, or **Transfer BS** setting.
+   Clicking **Refresh Preview** also ends any active Animation or Model session
+   before replacing the display. After a successful refresh, reconnect to
+   negotiate against the refreshed preview.
    Changing the Driver Skeletal Mesh or Preview Static Mesh (including a
    reimport), deleting the Binding Actor, or unloading its Editor world ends
    the active streaming session and invalidates the current Preview revision:

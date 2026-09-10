@@ -17,8 +17,11 @@ outfit curve names.
 
 Refresh is all-or-nothing across non-empty Driver Morph projections: one failed
 projection or generated Morph build puts the Preview status in `Error`, discards
-the partial Generated Preview Skeletal Mesh, and leaves the actor hidden. During
-connection, BS transmission with no accepted Preview Morph is blocking; a
+the partial Generated Preview Skeletal Mesh, and restores the bound Driver for
+inspection without making Model preview ready. During connection, a non-empty
+Maya BlendShape manifest with no accepted Preview Morph is blocking; an
+intentionally empty manifest is Ready with an empty accepted set, as defined in
+[the current-outfit decision](0011-activate-only-current-outfit-morphs.md). A
 partial name intersection is a visible quality warning. Users may explicitly
 disable BS transmission for a labelled bone-only comparison, but that state is
 excluded from Model preview acceptance.

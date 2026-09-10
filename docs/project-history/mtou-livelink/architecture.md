@@ -8,6 +8,11 @@ complete stock-engine gate passed 2026-09-02
 Post-merge C01 and Topia paths manually reverified 2026-09-03
 Last aligned with implementation: 2026-09-03
 
+This document records the completed 0.4.0 baseline. For subsequent 0.5.0
+development and its scoped acceptance evidence, use the
+[development-history index](README.md) and current project decisions under
+[`docs/adr`](../../../composite/MtoULiveLink/docs/adr/).
+
 ## Summary
 
 MtoU_LiveLink provides a local, real-time character animation preview from
@@ -515,6 +520,10 @@ Development-only automation tests cover:
 
 ### Build and repository verification
 
+Apply these checks to the changed host components. Cross-host behavior changes
+also require end-to-end acceptance; documentation-only edits require link and
+consistency checks. The root repository rules own the current acceptance scope.
+
 - Compile both Unreal modules against stock UE 5.7.4.
 - Compile and load both modules against Topia Engine 5.7.4 with
   `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
@@ -522,7 +531,9 @@ Development-only automation tests cover:
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
 - Run the plugin's Unreal Automation tests.
 - Run the Maya project tests with Maya 2022 `mayapy`.
-- Run root repository unit tests and `tools/validate_repository.py`.
+- Run root repository unit tests and `tools/validate_repository.py` only for
+  repository tooling, templates, shared rules/workflows, root metadata, or
+  project-layout changes, or when explicitly requested.
 - Preview the Maya and Unreal source packages with repository packaging tools.
 - Confirm no `Binaries`, `Intermediate`, caches, archives, or other generated
   files are visible to version control.

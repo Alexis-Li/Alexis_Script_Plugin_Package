@@ -4,6 +4,12 @@ MtoU_LiveLink 0.4.0 is the completed Maya 2022.4 and stock Unreal Editor 5.7.4
 baseline. It is merged to `main`, accepted, and closed without formal release
 packages; subsequent development uses version 0.5.0.
 
+The timeline records the status at each historical date; its earlier pending
+gates do not override later acceptance. For the 0.5.0 development follow-ups,
+use the scoped acceptance records below and the project's
+[Unreleased changelog](../../../composite/MtoULiveLink/CHANGELOG.md#unreleased).
+Those records do not establish a complete 0.5.0 production or release gate.
+
 ## Timeline
 
 - **2026-07-31:** Defined the one-character local Live Link architecture,
@@ -134,6 +140,7 @@ packages; subsequent development uses version 0.5.0.
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
 - [Cached Playback reconnect acceptance](cached-playback-reconnect-acceptance.md)
+- [Cached exit and explicit refresh review acceptance](cache-exit-and-refresh-review-acceptance.md)
 - [Topia-engine build and load acceptance](topia-engine-acceptance.md)
 - [Transient Skin Preview acceptance](transient-skin-preview-acceptance.md)
 - [Preview Morph Transfer acceptance](preview-morph-transfer-acceptance.md)

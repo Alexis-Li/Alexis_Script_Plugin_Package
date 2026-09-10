@@ -86,7 +86,9 @@ Maya 与 Unreal 组件必须来自同一版本。
    为 27,744 个三角形、完整 Driver 为 147,744 个三角形，4–64 个 Driver Morph
    的刷新约需 1.6–3.1 秒。这是已测语料范围，并非通用规模或延迟保证；详见
    [几何规模测量记录](../../docs/project-history/mtou-livelink/preview-refresh-geometry-scale.md)。
-6. 更换服装、工作流或“传递 BS”设置后，请重新连接。更改 Driver Skeletal
+6. 更换服装、工作流或“传递 BS”设置后，请重新连接。点击 **Refresh Preview**
+   也会在替换显示之前结束当前动画或模型会话；刷新成功后，请重新连接，
+   以便基于刷新后的预览重新协商。更改 Driver Skeletal
    Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
    所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：
    请重新点击 **Refresh Preview** 并重新连接。

@@ -24,6 +24,13 @@ poses. Stop retains the last pose and cache for replay-again; clear, incompatibl
 revision, disconnect, or teardown releases the transient cache, and no package
 or `.uasset` is created.
 
+Upload/play identity history belongs to one Streaming session: clearing a cache
+preserves that session's stale-ID rejection, while a new negotiated session
+starts fresh and accepts its own sequence from 1. Delayed commands and outcomes
+from an older session cannot advance the new one. See the
+[reconnect acceptance](../../../../docs/project-history/mtou-livelink/cached-playback-reconnect-acceptance.md)
+for the deterministic and real-host evidence.
+
 Protocol v5 introduced upload-then-play and remains frozen in
 `conformance-v5.json`; `conformance-v6.json` is the current contract and adds
 truthful identities, application evidence, resource accounting, and lossless
