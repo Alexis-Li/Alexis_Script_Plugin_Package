@@ -834,10 +834,12 @@ cache summary, a one-delivery diagnostic, and action capabilities. Controller
 does not inspect a Playback cache, internal phase, reply queue, timer, protocol
 identity, or Streaming session attachment identity.
 
-`_CachedPlayback` owns capture sequencing, temporary-cache handoff, bounded
-declaration and upload, identity-matched outcomes, replay control, ordered
-clear-before-resume, recovery, and cleanup. Unexpected recoverable transport
-loss may return an opaque `_CachedPlaybackRetention` containing only a complete
+`_CachedPlayback` owns capture sequencing, temporary-cache handoff, upload
+orchestration through an internal transfer that owns bounded declaration,
+chunk pumping, iterator lifetime, and the Ready deadline, identity-matched
+outcomes, replay control, ordered clear-before-resume, recovery, and cleanup.
+Unexpected recoverable transport loss may return an opaque `_CachedPlaybackRetention`
+containing only a complete
 compatible local cache; intentional lifecycle exits, partial capture,
 incompatible Character revisions, and corrupt cache data discard it. A future
 Ready attachment may consume that retention without exposing a cache path or

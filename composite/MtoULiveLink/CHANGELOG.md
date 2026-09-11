@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Encapsulate the Maya chunked upload in an internal transfer module (Issue #43):
+  one upload pass owns the exact byte declaration, the bounded chunk pump, the
+  frames-file iterator lifetime, the backpressure wait, and the post-drain
+  Ready deadline behind start/advance/close in the same directly runnable
+  module, returning upload progress, corruption, transport-failure, and
+  payload-limit outcomes for the owner to route. Cached Playback keeps cache
+  retention, upload/play ID allocation, Ready identity verification, and the
+  capture/replay/detach views; protocol v6 and the upload-then-replay order
+  are unchanged.
+
 - Consolidate Unreal Cached Playback transitions in the cache-session module:
   initialize negotiated counts and revision atomically, return identity-bearing
   outcomes and realtime-override demands, and emit completion/performance failure

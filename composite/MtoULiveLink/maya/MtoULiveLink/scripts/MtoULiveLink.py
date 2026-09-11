@@ -1837,8 +1837,248 @@ class _CachedPlaybackRetention(object):
                 if self.__cache is not None else None)
 
 
+class _CacheUploadResult(object):
+    """One bounded step of a single cache upload.
+
+    ``processed`` is True when this call moved or measured frames.
+    ``action`` is None for a plain step (optionally
+    carrying ``progress`` as a ``(current, total)`` pair for the owner's view)
+    or one of ``_CacheUpload.CORRUPT`` / ``TRANSPORT`` / ``FAILED`` carrying
+    the terminal ``detail`` for the owner to route.
+    """
+
+    __slots__ = ("processed", "action", "detail", "progress")
+
+    def __init__(self, processed, action=None, detail=None, progress=None):
+        self.processed = processed
+        self.action = action
+        self.detail = detail
+        self.progress = progress
+
+
+class _CacheUpload(object):
+    """Owns one upload pass inside the directly runnable Maya module.
+
+    Single owner of the exact byte declaration, the bounded chunk pump, the
+    frames-file iterator lifetime, the backpressure wait, and the
+    post-drain Ready deadline. The owning ``_CachedPlayback`` keeps cache
+    retention, upload/play ID allocation, Ready identity verification, and
+    the user-facing capture/replay/detach states; it only routes the
+    returned ``_CacheUploadResult`` to its existing terminal paths.
+    """
+
+    CORRUPT = "corrupt"
+    TRANSPORT = "transport"
+    FAILED = "failed"
+
+    def __init__(self, submit, is_drained):
+        self._submit = submit
+        self._is_drained = is_drained
+        self._cache = None
+        self._upload_id = None
+        self._revision = None
+        self._declared_bytes = 0
+        self._declaring = False
+        self._frame_iter = None
+        self._submitted = 0
+        self._end_sent = False
+        self._deadline = None
+
+    @property
+    def end_sent(self):
+        return self._end_sent
+
+    def start(self, cache, identity, declared_hint_bytes=0):
+        """Begin one upload: declare bytes, send cache_begin, open the pass."""
+        self._cache = cache
+        self._upload_id, self._revision = identity
+        declared = int(declared_hint_bytes or 0)
+        if declared <= 0 and cache.frame_count:
+            # Adopted cache from another session instance: derive the exact
+            # encoded total inside bounded poller chunks so the declaring
+            # pass never blocks Maya's thread on a whole-cache encode.
+            self._declaring = True
+            declared = 0
+        else:
+            self._declaring = False
+        self._declared_bytes = declared
+        self._submitted = 0
+        self._end_sent = False
+        self._deadline = None
+        if not self._declaring:
+            outcome = self._send_begin()
+            if outcome is not None:
+                return outcome
+        opened = self._open_iter()
+        if opened is not None:
+            return opened
+        return _CacheUploadResult(False)
+
+    def advance(self):
+        """Push at most one bounded chunk; Maya's thread never stalls."""
+        if (not self._declaring and self._end_sent
+                and self._is_drained() and self._deadline is None):
+            self._deadline = time.time() + UPLOAD_READY_TIMEOUT_SECONDS
+        if self._deadline is not None and time.time() > self._deadline:
+            return _CacheUploadResult(False, self.TRANSPORT, make_diagnostic(
+                "STREAM_INTERRUPTED",
+                "Timed out waiting for Unreal to accept the uploaded cache."))
+        if self._declaring:
+            return self._pump_declaration()
+        return self._pump_frames()
+
+    def close(self):
+        iterator, self._frame_iter = self._frame_iter, None
+        if iterator is None:
+            return
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            try:
+                close()
+            except (RuntimeError, TypeError):
+                pass
+
+    def _send_begin(self):
+        cache = self._cache
+        start_frame, end_frame = cache.capture_range
+        try:
+            begin_message = make_cache_begin_message(
+                self._revision, start_frame, end_frame,
+                cache.scene_fps, self._declared_bytes, self._upload_id)
+        except ValueError as exc:
+            return _CacheUploadResult(False, self.FAILED, make_diagnostic(
+                "CACHED_UPLOAD_FAILED",
+                "The captured cache exceeds the Unreal transient cache limit.",
+                details=str(exc)))
+        try:
+            self._submit(begin_message)
+        except (_CachedPlaybackError, _StreamingSessionError) as error:
+            return _CacheUploadResult(False, self.TRANSPORT, error)
+        return None
+
+    def _open_iter(self):
+        try:
+            self._frame_iter = self._cache.iter_frames()
+        except (_PlaybackCacheError, OSError) as error:
+            self.close()
+            return _CacheUploadResult(False, self.CORRUPT, error)
+        return None
+
+    def _pump_frames(self):
+        """Push at most one bounded chunk of cached frames per call."""
+        if self._frame_iter is None or not self._is_drained():
+            return _CacheUploadResult(False)  # previous chunk still draining
+        total_frames = self._cache.frame_count
+        submitted = 0
+        progress = None
+        while submitted < UPLOAD_CHUNK_FRAMES:
+            try:
+                frame = next(self._frame_iter)
+            except StopIteration:
+                # Release the frames-file handle before declaring wire done.
+                self.close()
+                if not self._end_sent:
+                    try:
+                        self._submit(make_cache_end_message())
+                    except (_CachedPlaybackError,
+                            _StreamingSessionError) as error:
+                        return _CacheUploadResult(False, self.TRANSPORT, error)
+                    self._end_sent = True
+                break
+            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
+                    TypeError, ValueError) as error:
+                # Any decode or iteration failure is deterministic cache
+                # corruption: invalidate the whole cache instead of
+                # masquerading as a transport failure.
+                self.close()
+                return _CacheUploadResult(submitted > 0, self.CORRUPT, error)
+            try:
+                message = make_cache_frame_message(
+                    self._submitted,
+                    frame["transforms"], frame["curves"])
+            except (TypeError, ValueError) as error:
+                # A cached frame that cannot be re-encoded is deterministic
+                # cache corruption, never a transport failure.
+                self.close()
+                return _CacheUploadResult(submitted > 0, self.CORRUPT, error)
+            try:
+                self._submit(message)
+            except (_CachedPlaybackError,
+                    _StreamingSessionError) as error:
+                return _CacheUploadResult(False, self.TRANSPORT, error)
+            self._submitted += 1
+            submitted += 1
+            if (self._submitted % UPLOAD_CHUNK_FRAMES == 0
+                    and self._submitted < total_frames):
+                progress = (self._submitted, total_frames)
+        return _CacheUploadResult(submitted > 0, progress=progress)
+
+    def _pump_declaration(self):
+        """Measure at most one bounded chunk of cached frames per call.
+
+        Adopted caches have no captured wire sizes, so the exact encoded
+        declaration is derived here — in bounded poller chunks instead of one
+        blocking whole-cache pass.
+        """
+        if self._frame_iter is None:
+            return _CacheUploadResult(False)
+        measured = 0
+        while measured < UPLOAD_CHUNK_FRAMES:
+            try:
+                frame = next(self._frame_iter)
+            except StopIteration:
+                self.close()
+                self._declaring = False
+                begin_outcome = self._send_begin()
+                if begin_outcome is not None:
+                    return _CacheUploadResult(
+                        measured > 0, begin_outcome.action, begin_outcome.detail)
+                # Reopen the frames file for the pipelined submission pass;
+                # indices and progress restart from zero for the transfer.
+                reopened = self._open_iter()
+                if reopened is not None:
+                    return _CacheUploadResult(
+                        measured > 0, reopened.action, reopened.detail)
+                self._end_sent = False
+                self._submitted = 0
+                break
+            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
+                    TypeError, ValueError) as error:
+                self.close()
+                return _CacheUploadResult(measured > 0, self.CORRUPT, error)
+            try:
+                frame_bytes = cache_frame_wire_size(
+                    self._submitted,
+                    frame["transforms"], frame["curves"])
+            except (TypeError, ValueError) as error:
+                self.close()
+                return _CacheUploadResult(measured > 0, self.CORRUPT, error)
+            # Overflow-safe accumulation against the frozen wire limit; an
+            # adopted cache larger than the limit fails fast, exactly like a
+            # captured one would at declaration time.
+            if (frame_bytes < 0
+                    or self._declared_bytes
+                    > MAX_CACHE_PAYLOAD_BYTES - frame_bytes):
+                self.close()
+                self._declaring = False
+                return _CacheUploadResult(measured > 0, self.FAILED,
+                    make_diagnostic(
+                        "CACHED_UPLOAD_FAILED",
+                        "The captured cache exceeds the Unreal transient cache"
+                        " limit.",
+                        details="declared {0} bytes plus frame {1} exceeds the"
+                                " limit of {2} bytes".format(
+                                    self._declared_bytes,
+                                    self._submitted,
+                                    MAX_CACHE_PAYLOAD_BYTES)))
+            self._declared_bytes += frame_bytes
+            self._submitted += 1
+            measured += 1
+        return _CacheUploadResult(measured > 0)
+
+
 class _CachedPlayback(object):
-    """Owns cached capture, upload to Unreal, and Unreal-driven replay control.
+    """Owns cached capture, upload orchestration, and Unreal-driven replay control.
 
     Capture stores every inclusive Playback Range display frame in the
     temporary disk cache. Completion uploads the whole cache without a
@@ -1896,12 +2136,7 @@ class _CachedPlayback(object):
         self._active_upload_id = None
         self._active_upload_revision = None
         self._active_play_id = None
-        self._upload_deadline = None
-        self._upload_frame_iter = None
-        self._declaring_upload = False
-        self._declared_payload_bytes = 0
-        self._upload_end_sent = False
-        self._upload_submitted = 0
+        self._upload = None
         self._closed = False
         self._progress_current = 0
         self._progress_total = 0
@@ -2180,9 +2415,7 @@ class _CachedPlayback(object):
         if self._phase == "uploading":
             # Abort the in-flight transfer; the fresh cache_begin below resets
             # Unreal's buffer coherently, so stale frames cannot mix.
-            self._close_upload_iter()
-            self._declaring_upload = False
-            self._upload_end_sent = True
+            self._discard_upload()
         if self._cache is not None:
             self._cache.delete()
             self._cache = None
@@ -2233,7 +2466,7 @@ class _CachedPlayback(object):
         """
         self._remove_capture_timer()
         self._remove_playback_poller()
-        self._close_upload_iter()
+        self._discard_upload()
         if send_clear:
             self._send_clear_best_effort()
         if resume_streaming:
@@ -2392,7 +2625,8 @@ class _CachedPlayback(object):
             return
         if _exact_int(reply.get("upload_id")) != self._active_upload_id:
             return  # stale outcome from an older upload
-        if not self._upload_end_sent or not self._delivery_drained():
+        upload = self._upload
+        if upload is None or not upload.end_sent or not self._delivery_drained():
             # Unreal cannot truthfully report Ready before cache_end was sent
             # and drained. Put it back and stop draining this round so the
             # same outcome is not re-consumed in a tight loop.
@@ -2515,12 +2749,18 @@ class _CachedPlayback(object):
     def _fail_upload(self, diagnostic):
         """Terminal path for an asynchronously rejected upload.
 
-        Removes the poller and upload iterator, drops Unreal's cache
+        Removes the poller and upload transfer, drops Unreal's cache
         ownership in order, and only then resumes the current live pose.
         """
         self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
         self._phase = "upload_failed"
         self._publish(current=0, total=0, diagnostic=diagnostic)
+
+    def _discard_upload(self):
+        """Close the in-flight upload transfer and drop its ownership."""
+        upload, self._upload = self._upload, None
+        if upload is not None:
+            upload.close()
 
     def _begin_upload(self):
         try:
@@ -2539,59 +2779,31 @@ class _CachedPlayback(object):
                     revision, cache.snapshot_revision)))
             return
         self._pause_streaming()
-        start_frame, end_frame = cache.capture_range
         total_frames = cache.frame_count
         self._upload_id += 1
         self._active_upload_id = self._upload_id
-        declared_bytes = self._capture_encoded_bytes
-        if declared_bytes <= 0 and total_frames:
-            # Adopted cache from another session instance: derive the exact
-            # encoded total inside bounded poller chunks so the declaring
-            # pass never blocks Maya's thread on a whole-cache encode.
-            self._declaring_upload = True
-            declared_bytes = 0
-        else:
-            self._declaring_upload = False
-        self._declared_payload_bytes = declared_bytes
         self._phase = "uploading"
         self._publish(current=0, total=total_frames)
-        if not self._declaring_upload:
-            if not self._send_cache_begin(revision):
-                return
-        try:
-            self._upload_frame_iter = cache.iter_frames()
-        except (_PlaybackCacheError, OSError) as error:
-            self._invalidate_corrupt_cache(error)
-            return
-        self._upload_end_sent = False
-        self._upload_submitted = 0
         # Ready arrives asynchronously: Unreal parses and buffers without any
         # real-time deadline while the poller drains the identity-matched
         # outcome, so Maya's thread never blocks on Unreal's cache parsing.
+        upload = _CacheUpload(
+            submit=self._submit_cached, is_drained=self._delivery_drained)
+        outcome = upload.start(
+            cache, (self._active_upload_id, revision),
+            self._capture_encoded_bytes)
+        if outcome.action == _CacheUpload.CORRUPT:
+            self._invalidate_corrupt_cache(outcome.detail)
+            return
+        if outcome.action == _CacheUpload.TRANSPORT:
+            self._handle_transport_failure(outcome.detail)
+            return
+        if outcome.action == _CacheUpload.FAILED:
+            self._fail_upload(outcome.detail)
+            return
+        self._upload = upload
         self._active_upload_revision = revision
-        self._upload_deadline = None
         self._add_playback_poller()
-
-    def _send_cache_begin(self, revision):
-        cache = self._cache
-        start_frame, end_frame = cache.capture_range
-        try:
-            begin_message = make_cache_begin_message(
-                revision, start_frame, end_frame,
-                cache.scene_fps, self._declared_payload_bytes,
-                self._active_upload_id)
-        except ValueError as exc:
-            self._fail_upload(make_diagnostic(
-                "CACHED_UPLOAD_FAILED",
-                "The captured cache exceeds the Unreal transient cache limit.",
-                details=str(exc)))
-            return False
-        try:
-            self._submit_cached(begin_message)
-        except (_CachedPlaybackError, _StreamingSessionError) as error:
-            self._handle_transport_failure(error)
-            return False
-        return True
 
     def _can_reuse_upload(self):
         return (
@@ -2637,7 +2849,6 @@ class _CachedPlayback(object):
 
     def _remove_playback_poller(self):
         self._poller_generation += 1
-        self._upload_deadline = None
         timer_id, self._poller_timer_id = self._poller_timer_id, None
         self._remove_timer_callback(timer_id)
 
@@ -2657,25 +2868,20 @@ class _CachedPlayback(object):
                     "STREAM_INTERRUPTED",
                     "The streaming connection ended during the cache upload."))
                 return processed
-            if (not self._declaring_upload and self._upload_end_sent
-                    and self._delivery_drained()
-                    and self._upload_deadline is None):
-                self._upload_deadline = (
-                    time.time() + UPLOAD_READY_TIMEOUT_SECONDS)
-            if (self._upload_deadline is not None
-                    and time.time() > self._upload_deadline):
-                self._handle_transport_failure(make_diagnostic(
-                    "STREAM_INTERRUPTED",
-                    "Timed out waiting for Unreal to accept the uploaded cache."))
-                return processed
-            try:
-                if self._declaring_upload:
-                    processed = self._drive_declaration_chunk() or processed
-                else:
-                    processed = self._drive_upload_chunk() or processed
-            except (_CachedPlaybackError, _StreamingSessionError) as error:
-                self._handle_transport_failure(error)
-                return processed
+            upload = self._upload
+            if upload is not None:
+                result = upload.advance()
+                if result.action == _CacheUpload.TRANSPORT:
+                    self._handle_transport_failure(result.detail)
+                    return processed
+                if result.action == _CacheUpload.CORRUPT:
+                    self._invalidate_corrupt_cache(result.detail)
+                elif result.action == _CacheUpload.FAILED:
+                    self._fail_upload(result.detail)
+                elif result.progress is not None:
+                    self._publish(current=result.progress[0],
+                                  total=result.progress[1])
+                processed = result.processed or processed
         while not self._stop_draining_this_round:
             try:
                 reply = self._replies.get_nowait()
@@ -2697,123 +2903,6 @@ class _CachedPlayback(object):
             return processed
         return processed
 
-    def _close_upload_iter(self):
-        iterator, self._upload_frame_iter = self._upload_frame_iter, None
-        if iterator is None:
-            return
-        close = getattr(iterator, "close", None)
-        if close is not None:
-            try:
-                close()
-            except (RuntimeError, TypeError):
-                pass
-
-    def _drive_upload_chunk(self):
-        """Push at most one bounded chunk of cached frames per call."""
-        if self._upload_frame_iter is None or not self._delivery_drained():
-            return False  # previous chunk still draining on the sender thread
-        total_frames = self._cache.frame_count
-        submitted = 0
-        while submitted < UPLOAD_CHUNK_FRAMES:
-            try:
-                frame = next(self._upload_frame_iter)
-            except StopIteration:
-                # Release the frames-file handle before declaring wire done.
-                self._close_upload_iter()
-                if not self._upload_end_sent:
-                    self._submit_cached(make_cache_end_message())
-                    self._upload_end_sent = True
-                break
-            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
-                    TypeError, ValueError) as error:
-                # Any decode or iteration failure is deterministic cache
-                # corruption: invalidate the whole cache instead of
-                # masquerading as a transport failure.
-                self._close_upload_iter()
-                self._invalidate_corrupt_cache(error)
-                return submitted > 0
-            try:
-                message = make_cache_frame_message(
-                    self._upload_submitted,
-                    frame["transforms"], frame["curves"])
-            except (TypeError, ValueError) as error:
-                # A cached frame that cannot be re-encoded is deterministic
-                # cache corruption, never a transport failure.
-                self._close_upload_iter()
-                self._invalidate_corrupt_cache(error)
-                return submitted > 0
-            self._submit_cached(message)
-            self._upload_submitted += 1
-            submitted += 1
-            if (self._upload_submitted % UPLOAD_CHUNK_FRAMES == 0
-                    and self._upload_submitted < total_frames):
-                self._publish(current=self._upload_submitted, total=total_frames)
-        return submitted > 0
-
-    def _drive_declaration_chunk(self):
-        """Measure at most one bounded chunk of cached frames per call.
-
-        Adopted caches have no captured wire sizes, so the exact encoded
-        declaration is derived here — in bounded poller chunks instead of one
-        blocking whole-cache pass.
-        """
-        if self._upload_frame_iter is None:
-            return False
-        measured = 0
-        while measured < UPLOAD_CHUNK_FRAMES:
-            try:
-                frame = next(self._upload_frame_iter)
-            except StopIteration:
-                self._close_upload_iter()
-                self._declaring_upload = False
-                if not self._send_cache_begin(self._active_upload_revision):
-                    return measured > 0
-                # Reopen the frames file for the pipelined submission pass;
-                # indices and progress restart from zero for the transfer.
-                try:
-                    self._upload_frame_iter = self._cache.iter_frames()
-                except (_PlaybackCacheError, OSError) as error:
-                    self._invalidate_corrupt_cache(error)
-                    return measured > 0
-                self._upload_end_sent = False
-                self._upload_submitted = 0
-                break
-            except (_PlaybackCacheError, UnicodeDecodeError, OSError,
-                    TypeError, ValueError) as error:
-                self._close_upload_iter()
-                self._invalidate_corrupt_cache(error)
-                return measured > 0
-            try:
-                frame_bytes = cache_frame_wire_size(
-                    self._upload_submitted,
-                    frame["transforms"], frame["curves"])
-            except (TypeError, ValueError) as error:
-                self._close_upload_iter()
-                self._invalidate_corrupt_cache(error)
-                return measured > 0
-            # Overflow-safe accumulation against the frozen wire limit; an
-            # adopted cache larger than the limit fails fast, exactly like a
-            # captured one would at declaration time.
-            if (frame_bytes < 0
-                    or self._declared_payload_bytes
-                    > MAX_CACHE_PAYLOAD_BYTES - frame_bytes):
-                self._close_upload_iter()
-                self._declaring_upload = False
-                self._fail_upload(make_diagnostic(
-                    "CACHED_UPLOAD_FAILED",
-                    "The captured cache exceeds the Unreal transient cache"
-                    " limit.",
-                    details="declared {0} bytes plus frame {1} exceeds the"
-                            " limit of {2} bytes".format(
-                                self._declared_payload_bytes,
-                                self._upload_submitted,
-                                MAX_CACHE_PAYLOAD_BYTES)))
-                return measured > 0
-            self._declared_payload_bytes += frame_bytes
-            self._upload_submitted += 1
-            measured += 1
-        return measured > 0
-
     def _send_clear_best_effort(self):
         session = self._streaming_session
         if session is None or not session.is_ready:
@@ -2826,7 +2915,7 @@ class _CachedPlayback(object):
 
     def _invalidate_incompatible_cache(self, error):
         self._remove_playback_poller()
-        self._close_upload_iter()
+        self._discard_upload()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
@@ -2842,7 +2931,7 @@ class _CachedPlayback(object):
 
     def _invalidate_corrupt_cache(self, error):
         self._remove_playback_poller()
-        self._close_upload_iter()
+        self._discard_upload()
         if self._cache is not None:
             self._cache.delete()
         self._cache = None
@@ -2873,7 +2962,7 @@ class _CachedPlayback(object):
                 transport_lost=True)
             return
         self._remove_playback_poller()
-        self._close_upload_iter()
+        self._discard_upload()
         self._phase = "transport_failed"
         diagnostic = error if isinstance(error, dict) else make_diagnostic(
             "STREAM_INTERRUPTED", str(getattr(error, "message", error)),
@@ -2930,7 +3019,7 @@ class _CachedPlayback(object):
             return self._issued_retention
         self._remove_capture_timer()
         self._remove_playback_poller()
-        self._close_upload_iter()
+        self._discard_upload()
         self._restore_capture_frame()
         if self._capture_cache is not None:
             self._capture_cache.delete()
@@ -2964,7 +3053,7 @@ class _CachedPlayback(object):
         if not self._closed:
             self._remove_capture_timer()
             self._remove_playback_poller()
-            self._close_upload_iter()
+            self._discard_upload()
             self._restore_capture_frame()
             self._send_clear_best_effort()
             self._resume_streaming()
