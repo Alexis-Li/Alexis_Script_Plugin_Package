@@ -3927,5 +3927,299 @@ class ProtocolTests(unittest.TestCase):
                     MODULE.make_frame_message([[0, 0, 0, 0, 0, 0, 1, 1, 1, value]], [])
 
 
+class StructuralHierarchyTests(unittest.TestCase):
+    def _fake_cmds(self, children, types, joint_descendants=None,
+                   parents=None, connections=None):
+        joint_descendants = joint_descendants or {}
+        parents = parents or {}
+        connections = connections or {}
+        calls = {"list_connections": []}
+
+        def list_relatives(path, **kwargs):
+            if kwargs.get("parent"):
+                if path in parents:
+                    return [parents[path]]
+                if "|" in path:
+                    parent = path.rsplit("|", 1)[0]
+                    return [parent] if parent else []
+                return []
+            if kwargs.get("allDescendents") or kwargs.get("allDescendants") \
+                    or kwargs.get("ad"):
+                result = joint_descendants.get(path, None)
+                return list(result) if result else None
+            return list(children.get(path, []))
+
+        def node_type(path):
+            return types[path]
+
+        def list_connections(plug, **kwargs):
+            calls["list_connections"].append(plug)
+            return connections.get(plug, [])
+
+        fake = type("FakeCmds", (), {
+            "listRelatives": staticmethod(list_relatives),
+            "nodeType": staticmethod(node_type),
+            "listConnections": staticmethod(list_connections),
+        })
+        return fake, calls
+
+    def test_joint_transform_joint_is_published_in_order(self):
+        children = {
+            "|root": ["|root|spine_02"],
+            "|root|spine_02": [
+                "|root|spine_02|spine_03",
+                "|root|spine_02|joints_grp",
+            ],
+            "|root|spine_02|joints_grp": [
+                "|root|spine_02|joints_grp|MHHead:spine_04",
+            ],
+        }
+        types = {
+            "|root": "joint",
+            "|root|spine_02": "joint",
+            "|root|spine_02|spine_03": "joint",
+            "|root|spine_02|joints_grp": "transform",
+            "|root|spine_02|joints_grp|MHHead:spine_04": "joint",
+        }
+        joint_descendants = {
+            "|root|spine_02|joints_grp": [
+                "|root|spine_02|joints_grp|MHHead:spine_04",
+            ],
+        }
+        fake_cmds, _ = self._fake_cmds(children, types, joint_descendants)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            records = MODULE.build_hierarchy(
+                "|root", MODULE._maya_children, allow_duplicates=True)
+        self.assertEqual(
+            ["root", "spine_02", "spine_03", "joints_grp", "spine_04"],
+            [record["name"] for record in records])
+        self.assertEqual(
+            [-1, 0, 1, 1, 3],
+            [record["parent"] for record in records])
+        self.assertEqual(
+            "|root|spine_02|joints_grp|MHHead:spine_04",
+            records[4]["path"])
+
+    def test_multilevel_chain_kept_and_unrelated_branch_excluded(self):
+        children = {
+            "|root": ["|root|j1"],
+            "|root|j1": [
+                "|root|j1|T1",
+                "|root|j1|unrelated_grp",
+                "|root|j1|extraMesh",
+            ],
+            "|root|j1|T1": ["|root|j1|T1|T2"],
+            "|root|j1|T1|T2": ["|root|j1|T1|T2|j2"],
+            "|root|j1|unrelated_grp": ["|root|j1|unrelated_grp|geo"],
+        }
+        types = {
+            "|root": "joint",
+            "|root|j1": "joint",
+            "|root|j1|T1": "transform",
+            "|root|j1|T1|T2": "transform",
+            "|root|j1|T1|T2|j2": "joint",
+            "|root|j1|unrelated_grp": "transform",
+            "|root|j1|unrelated_grp|geo": "mesh",
+            "|root|j1|extraMesh": "mesh",
+        }
+        joint_descendants = {
+            "|root|j1|T1": ["|root|j1|T1|T2|j2"],
+            "|root|j1|T1|T2": ["|root|j1|T1|T2|j2"],
+            "|root|j1|unrelated_grp": None,
+        }
+        fake_cmds, _ = self._fake_cmds(children, types, joint_descendants)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            records = MODULE.build_hierarchy(
+                "|root", MODULE._maya_children, allow_duplicates=True)
+        paths = [record["path"] for record in records]
+        self.assertEqual(
+            ["|root", "|root|j1", "|root|j1|T1",
+             "|root|j1|T1|T2", "|root|j1|T1|T2|j2"],
+            paths)
+        self.assertNotIn("|root|j1|unrelated_grp", paths)
+        self.assertNotIn("|root|j1|extraMesh", paths)
+
+    def test_second_character_isolation_without_name_hardcoding(self):
+        children = {
+            "|Group|Hero:root": ["|Group|Hero:root|Hero:grp"],
+            "|Group|Hero:root|Hero:grp": ["|Group|Hero:root|Hero:grp|Hero:arm"],
+            "|Group|Villain:root": ["|Group|Villain:root|Villain:grp"],
+            "|Group|Villain:root|Villain:grp": [
+                "|Group|Villain:root|Villain:grp|Villain:arm",
+            ],
+        }
+        types = {
+            "|Group|Hero:root": "joint",
+            "|Group|Hero:root|Hero:grp": "transform",
+            "|Group|Hero:root|Hero:grp|Hero:arm": "joint",
+            "|Group|Villain:root": "joint",
+            "|Group|Villain:root|Villain:grp": "transform",
+            "|Group|Villain:root|Villain:grp|Villain:arm": "joint",
+        }
+        joint_descendants = {
+            "|Group|Hero:root|Hero:grp": [
+                "|Group|Hero:root|Hero:grp|Hero:arm",
+            ],
+            "|Group|Villain:root|Villain:grp": [
+                "|Group|Villain:root|Villain:grp|Villain:arm",
+            ],
+        }
+        fake_cmds, _ = self._fake_cmds(children, types, joint_descendants)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            hero = MODULE.build_hierarchy(
+                "|Group|Hero:root", MODULE._maya_children,
+                allow_duplicates=True)
+            villain = MODULE.build_hierarchy(
+                "|Group|Villain:root", MODULE._maya_children,
+                allow_duplicates=True)
+        self.assertEqual(
+            ["|Group|Hero:root", "|Group|Hero:root|Hero:grp",
+             "|Group|Hero:root|Hero:grp|Hero:arm"],
+            [record["path"] for record in hero])
+        self.assertEqual(
+            ["|Group|Villain:root", "|Group|Villain:root|Villain:grp",
+             "|Group|Villain:root|Villain:grp|Villain:arm"],
+            [record["path"] for record in villain])
+        self.assertEqual(["root", "grp", "arm"],
+                         [record["name"] for record in hero])
+
+    def test_pure_joint_hierarchy_keeps_order_and_parents(self):
+        children = {
+            "|root": ["|root|a", "|root|b"],
+            "|root|a": ["|root|a|tip"],
+        }
+        types = {
+            "|root": "joint",
+            "|root|a": "joint",
+            "|root|a|tip": "joint",
+            "|root|b": "joint",
+        }
+        fake_cmds, _ = self._fake_cmds(children, types, {})
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            records = MODULE.build_hierarchy(
+                "|root", MODULE._maya_children, allow_duplicates=True)
+        self.assertEqual(["root", "a", "tip", "b"],
+                         [record["name"] for record in records])
+        self.assertEqual([-1, 0, 1, 0],
+                         [record["parent"] for record in records])
+
+    def test_complete_capture_accepts_full_set(self):
+        bones = [{"path": "|root"}, {"path": "|root|a"}]
+        joint_descendants = {"|root": ["|root|a"]}
+        fake_cmds, _ = self._fake_cmds({}, {"|root": "joint"}, joint_descendants)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            MODULE._ensure_complete_capture("|root", bones)
+
+    def test_complete_capture_reports_first_missing_path(self):
+        bones = [{"path": "|root"}, {"path": "|root|a"}]
+        joint_descendants = {"|root": ["|root|a", "|root|a|tip"]}
+        parents = {"|root|a|tip": "|root|a", "|root|a": "|root"}
+        types = {"|root|a|tip": "joint", "|root|a": "joint", "|root": "joint"}
+        fake_cmds, _ = self._fake_cmds(
+            {}, types, joint_descendants, parents)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            with self.assertRaises(MODULE._CharacterSceneError) as caught:
+                MODULE._ensure_complete_capture("|root", bones)
+        self.assertEqual("INCOMPLETE_SKELETON", caught.exception.code)
+        self.assertIn("|root|a|tip", caught.exception.details)
+        self.assertIn("|root|a", caught.exception.details)
+        self.assertEqual("|root|a|tip",
+                         caught.exception.context["missing_joint"])
+
+    def test_complete_capture_names_non_transform_intermediate(self):
+        bones = [{"path": "|root"}]
+        joint_descendants = {"|root": ["|root|meshGrp|tip"]}
+        parents = {"|root|meshGrp|tip": "|root|meshGrp",
+                   "|root|meshGrp": "|root"}
+        types = {"|root|meshGrp|tip": "joint",
+                 "|root|meshGrp": "mesh",
+                 "|root": "joint"}
+        fake_cmds, _ = self._fake_cmds(
+            {}, types, joint_descendants, parents)
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            with self.assertRaises(MODULE._CharacterSceneError) as caught:
+                MODULE._ensure_complete_capture("|root", bones)
+        self.assertEqual("INCOMPLETE_SKELETON", caught.exception.code)
+        self.assertIn("|root|meshGrp|tip", caught.exception.details)
+        self.assertIn("|root|meshGrp", caught.exception.details)
+        self.assertIn("mesh", caught.exception.details)
+
+    def test_bind_candidates_skip_structural_transforms(self):
+        subject = {
+            "bones": [
+                {"path": "|root"},
+                {"path": "|root|grp"},
+                {"path": "|root|grp|tip"},
+            ],
+            "meshes": [],
+        }
+        types = {"|root": "joint", "|root|grp": "transform",
+                 "|root|grp|tip": "joint"}
+        fake_cmds, calls = self._fake_cmds({}, types, {}, {}, {})
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+             mock.patch.object(MODULE, "_skin_clusters_for_meshes",
+                               return_value=[]):
+            candidates = MODULE._bind_world_candidates(subject)
+        self.assertEqual(set(["|root", "|root|grp", "|root|grp|tip"]),
+                         set(candidates))
+        self.assertEqual([], candidates["|root|grp"])
+        self.assertEqual(["|root.bindPose", "|root|grp|tip.bindPose"],
+                         calls["list_connections"])
+
+    def test_mh_duplicate_fragment_preserves_parents(self):
+        children = {
+            "|Group|root": ["|Group|root|pelvis"],
+            "|Group|root|pelvis": ["|Group|root|pelvis|spine_01"],
+            "|Group|root|pelvis|spine_01": ["|Group|root|pelvis|spine_01|spine_02"],
+            "|Group|root|pelvis|spine_01|spine_02": [
+                "|Group|root|pelvis|spine_01|spine_02|spine_03",
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp",
+            ],
+            "|Group|root|pelvis|spine_01|spine_02|spine_03": [
+                "|Group|root|pelvis|spine_01|spine_02|spine_03|spine_04",
+            ],
+            "|Group|root|pelvis|spine_01|spine_02|joints_grp": [
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04",
+            ],
+            "|Group|root|pelvis|spine_01|spine_02|spine_03|spine_04": [
+                "|Group|root|pelvis|spine_01|spine_02|spine_03|spine_04|clavicle_l",
+            ],
+            "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04": [
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04|MHHead:spine_05",
+            ],
+            "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04|MHHead:spine_05": [
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04|MHHead:spine_05|MHHead:clavicle_l",
+            ],
+        }
+        records = MODULE.build_hierarchy(
+            "|Group|root", lambda path: children.get(path, []),
+            allow_duplicates=True)
+        by_name = {}
+        for record in records:
+            by_name.setdefault(record["name"], []).append(record["path"])
+        self.assertEqual(
+            sorted([
+                "|Group|root|pelvis|spine_01|spine_02|spine_03|spine_04",
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04",
+            ]),
+            sorted(by_name["spine_04"]))
+        self.assertEqual(
+            sorted([
+                "|Group|root|pelvis|spine_01|spine_02|spine_03|spine_04|clavicle_l",
+                "|Group|root|pelvis|spine_01|spine_02|joints_grp|MHHead:spine_04|MHHead:spine_05|MHHead:clavicle_l",
+            ]),
+            sorted(by_name["clavicle_l"]))
+        duplicates = MODULE.duplicate_bone_paths(records)
+        self.assertIn("spine_04", duplicates)
+        self.assertIn("clavicle_l", duplicates)
+        joints_grp = [record for record in records
+                      if record["path"].endswith("|joints_grp")][0]
+        mh_spine = [record for record in records
+                    if record["path"].endswith("MHHead:spine_04")][0]
+        self.assertEqual(joints_grp["name"], "joints_grp")
+        self.assertEqual(mh_spine["parent"],
+                         records.index(joints_grp))
+
+
 if __name__ == "__main__":
     unittest.main()

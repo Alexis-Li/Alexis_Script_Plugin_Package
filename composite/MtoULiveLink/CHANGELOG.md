@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Preserve joint-to-joint structural transforms in the Maya capture (Issue #44):
+  the publish traversal keeps every joint under the selected root plus the
+  intermediate `transform` nodes that connect them, preserving real DAG paths
+  and parent-before-child order while excluding branches without joints. Realtime
+  and bind-local transforms are rebuilt over the same published parents, with
+  joint-only bind queries guarded so plain transforms fall back to the existing
+  capture-time re-anchoring rule. Role setup verifies that every related joint
+  entered the description and reports the first missing path with its parent and
+  reason (`INCOMPLETE_SKELETON`) instead of failing later with a generic
+  handshake error. Strict one-to-one negotiation, namespace normalization, and
+  the parent-scoped numeric-suffix rule are unchanged; the MetaHuman sample now
+  publishes 1471 joints plus `joints_grp` (1472 nodes) and maps its 5 duplicate
+  short names without UE or protocol changes.
+
 - Encapsulate the Maya chunked upload in an internal transfer module (Issue #43):
   one upload pass owns the exact byte declaration, the bounded chunk pump, the
   frames-file iterator lifetime, the backpressure wait, and the post-drain

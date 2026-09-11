@@ -20,6 +20,19 @@ model preview without creating animation or preview assets.
 
 Compatibility with other third-party Unreal Engine 5.7 builds is not guaranteed.
 
+## Skeleton compatibility
+
+The Maya capture publishes every joint under the selected root plus the
+intermediate `transform` nodes that connect them (for example a grouping
+transform between two joints), preserving real DAG paths and parent-before-child
+order. Branches without joints (meshes, controllers, unrelated groups) are
+excluded. Connection still requires a strict one-to-one match with the Unreal
+reference skeleton, including parents; duplicate short names are resolved only
+by the existing parent-scoped numeric-suffix rule. Supporting a new skeleton
+structure is not auto-retargeting: adding or removing Maya bones still requires
+updating the Unreal target assets, and selecting the wrong root or an old mesh
+fails with the missing bone and parent paths instead of a generic mismatch.
+
 ## Installation
 
 1. Copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts directory,

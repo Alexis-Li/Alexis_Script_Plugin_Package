@@ -553,5 +553,93 @@ class MayaHostTests(unittest.TestCase):
             self.assertTrue(module._maya_is_playing())
         play.assert_called_once_with(query=True, state=True)
         self.assertEqual(current_time, cmds.currentTime(query=True))
+
+    def test_structural_chain_preserves_trs_in_realtime_and_bind(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mid = cmds.createNode("transform", name="mid_grp", parent=root)
+        cmds.setAttr(mid + ".translate", 1.0, 2.0, 3.0)
+        cmds.setAttr(mid + ".rotate", 10.0, 20.0, 30.0)
+        cmds.setAttr(mid + ".scale", 1.5, 2.0, 0.5)
+        mid2 = cmds.createNode("transform", name="mid2_grp", parent=mid)
+        cmds.setAttr(mid2 + ".translate", -2.0, 0.5, 4.0)
+        cmds.setAttr(mid2 + ".rotate", -15.0, 45.0, 5.0)
+        cmds.setAttr(mid2 + ".scale", 0.8, 1.2, 1.0)
+        cmds.select(mid2, replace=True)
+        tip = cmds.joint(name="tip", position=(4.0, 5.0, 6.0))
+        unrelated = cmds.createNode("transform", name="unrelated_grp", parent=root)
+        cmds.createNode("transform", name="geo_grp", parent=unrelated)
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, tip, mesh, name="bodySkin")
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        frame = scene.sample()
+
+        self.assertEqual(
+            (("root", -1), ("mid_grp", 0), ("mid2_grp", 1), ("tip", 2)),
+            snapshot.bones)
+        self.assertEqual(4, len(frame.transforms))
+        self.assertEqual(4, len(snapshot.bind_local_transforms))
+        # Structural transforms fall back to the capture-time local frame,
+        # so a static scene must agree between realtime and bind.
+        for index in (1, 2, 3):
+            for actual, expected in zip(
+                    snapshot.bind_local_transforms[index], frame.transforms[index]):
+                self.assertAlmostEqual(expected, actual, places=4)
+        # The tip local must be relative to its structural parent, not the
+        # nearest joint ancestor. Recompute both candidates from Maya world
+        # matrices and compare in the transmitted UE basis.
+        worlds = [bone["dag_path"].inclusiveMatrix()
+                  for bone in scene._subject["bones"]]
+        unit_scale = scene._subject["unit_scale"]
+        correct = worlds[3] * worlds[2].inverse()
+        wrong = worlds[3] * worlds[0].inverse()
+        expected = module._sample_matrix(correct, unit_scale)
+        skipped = module._sample_matrix(wrong, unit_scale)
+        for actual, wanted in zip(frame.transforms[3], expected):
+            self.assertAlmostEqual(wanted, actual, places=4)
+        self.assertTrue(
+            any(abs(actual - bad) > 1.0e-3
+                for actual, bad in zip(frame.transforms[3], skipped)))
+
+    def test_capture_subject_isolates_second_character(self):
+        first_group = cmds.createNode("transform", name="CharA")
+        cmds.select(clear=True)
+        first_root = cmds.joint(name="rootA", position=(0, 0, 0))
+        cmds.parent(first_root, first_group)
+        first_root = cmds.ls(first_root, long=True)[0]
+        first_mid = cmds.createNode(
+            "transform", name="grpA", parent=first_root)
+        first_mid = cmds.ls(first_mid, long=True)[0]
+        cmds.select(first_mid, replace=True)
+        first_tip = cmds.joint(name="tipA", position=(0, 5, 0))
+        first_tip = cmds.ls(first_tip, long=True)[0]
+        first_mesh = cmds.polyCube(name="bodyA")[0]
+        cmds.skinCluster(first_root, first_tip, first_mesh, name="skinA")
+        second_group = cmds.createNode("transform", name="CharB")
+        cmds.select(clear=True)
+        second_root = cmds.joint(name="rootB", position=(10, 0, 0))
+        cmds.parent(second_root, second_group)
+        second_root = cmds.ls(second_root, long=True)[0]
+        second_mid = cmds.createNode(
+            "transform", name="grpB", parent=second_root)
+        second_mid = cmds.ls(second_mid, long=True)[0]
+        cmds.select(second_mid, replace=True)
+        second_tip = cmds.joint(name="tipB", position=(10, 5, 0))
+        second_tip = cmds.ls(second_tip, long=True)[0]
+        second_mesh = cmds.polyCube(name="bodyB")[0]
+        cmds.skinCluster(second_root, second_tip, second_mesh, name="skinB")
+
+        first = module._capture_subject(first_root)
+        second = module._capture_subject(second_root)
+
+        self.assertEqual(
+            [first_root, first_mid, first_tip],
+            [bone["path"] for bone in first["bones"]])
+        self.assertEqual(
+            [second_root, second_mid, second_tip],
+            [bone["path"] for bone in second["bones"]])
 if __name__ == "__main__":
     unittest.main()

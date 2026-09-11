@@ -18,6 +18,15 @@ MtoU_LiveLink 是一个 Maya 与 Unreal 复合插件，可通过本机 Live Link
 
 不保证兼容其他第三方修改版 Unreal Engine 5.7。
 
+## 骨架兼容性
+
+Maya 采集会发布所选根下全部 joint，以及连接这些 joint 所需的中间 `transform`
+节点（例如夹在两个关节之间的分组），保留真实 DAG 路径与父先子后顺序；不通向
+关节的网格、控制器或无关分支不会进入发布描述。连接仍要求与 Unreal 参考骨架
+严格一对一匹配（含父关系），重名短名仅沿用既有的按父分支数字后缀规则。支持
+新的骨架结构不等于自动重定向：Maya 增删骨骼后仍需更新 UE 目标资产，选错根或
+绑定旧网格会直接报出缺失骨骼及父路径，而非笼统的不匹配错误。
+
 ## 安装方式
 
 1. 将 `maya/MtoULiveLink/scripts/MtoULiveLink.py` 复制到 Maya 脚本目录，

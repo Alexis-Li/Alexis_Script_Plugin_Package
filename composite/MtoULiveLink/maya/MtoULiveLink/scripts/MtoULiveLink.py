@@ -110,6 +110,9 @@ DIAGNOSTICS = {
     "BIND_POSE_INVALID": (
         "无法读取可靠的 Maya 绑定姿势",
         "请检查绑定矩阵是否包含非有限值、不可逆矩阵，或存在无法可靠决胜的冲突。"),
+    "INCOMPLETE_SKELETON": (
+        "角色骨架存在未能发布的关节分支",
+        "请检查详情中的首个缺失关节路径及原因；只有 joint 与通向关节的 transform 才能发布，中间出现其他类型节点时请整理绑定后重试。"),
     "INTERNAL_ERROR": (
         "MtoU_LiveLink 发生内部错误",
         "请复制诊断详情并重新启动连接。"),
@@ -557,8 +560,66 @@ def _dag_path(path):
     return selection.getDagPath(0)
 
 
+def _transform_leads_to_joint(path):
+    return bool(cmds.listRelatives(
+        path, allDescendents=True, fullPath=True, type="joint"))
+
+
 def _maya_children(path):
-    return cmds.listRelatives(path, children=True, fullPath=True, type="joint") or []
+    children = cmds.listRelatives(path, children=True, fullPath=True) or []
+    result = []
+    for child in children:
+        try:
+            node_type = cmds.nodeType(child)
+        except (RuntimeError, ValueError):
+            continue
+        if node_type == "joint":
+            result.append(child)
+        elif node_type == "transform":
+            if _transform_leads_to_joint(child):
+                result.append(child)
+        # Other DAG types (mesh shapes, constraints, controllers) never
+        # publish; joints beneath them are reported by
+        # _ensure_complete_capture instead of being silently pruned.
+    return result
+
+
+def _describe_incomplete_joint(root, joint_path, published):
+    current = joint_path
+    while current != root:
+        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+        if not parents:
+            return ("joint {0} has no parent chain reaching selected root {1}".format(
+                joint_path, root))
+        parent = parents[0]
+        if parent not in published:
+            try:
+                parent_type = cmds.nodeType(parent)
+            except (RuntimeError, ValueError):
+                parent_type = "unknown"
+            if parent_type not in ("joint", "transform"):
+                return ("joint {0} passes through {1} ({2}); "
+                        "only joint/transform intermediates can be published".format(
+                    joint_path, parent, parent_type))
+            return ("joint {0} via unpublished {1} ({2}) was not captured".format(
+                joint_path, parent, parent_type))
+        current = parent
+    return "joint {0} was not captured".format(joint_path)
+
+
+def _ensure_complete_capture(root, bones):
+    published = set(bone["path"] for bone in bones)
+    joints = cmds.listRelatives(
+        root, allDescendents=True, fullPath=True, type="joint") or []
+    for joint_path in sorted([root] + list(joints)):
+        if joint_path in published:
+            continue
+        reason = _describe_incomplete_joint(root, joint_path, published)
+        message = "skeleton under {0} is missing joint {1}".format(root, joint_path)
+        details = "{0}; {1}".format(message, reason)
+        raise _CharacterSceneError(
+            "INCOMPLETE_SKELETON", message, details=details,
+            context={"root": root, "missing_joint": joint_path})
 
 
 def _selected_root():
@@ -790,6 +851,12 @@ def _bind_world_candidates(subject):
                 influence_count=len(influences)))
 
     for bone in subject["bones"]:
+        if cmds.nodeType(bone["path"]) != "joint":
+            # Structural transforms have no joint bindPose/dagPose; when they
+            # are not skin influences they fall back to the capture-time
+            # local re-anchored to the parent bind frame in
+            # _capture_bind_local_transforms.
+            continue
         plug = bone["path"] + ".bindPose"
         for pose_plug in cmds.listConnections(
                 plug, source=False, destination=True, plugs=True) or []:
@@ -876,6 +943,7 @@ def _capture_subject(root=None):
     _require_maya()
     root = root or _selected_root()
     bones = build_hierarchy(root, _maya_children, allow_duplicates=True)
+    _ensure_complete_capture(root, bones)
     for bone in bones:
         bone["dag_path"] = _dag_path(bone["path"])
     mesh_paths = _visible_skinned_meshes([bone["path"] for bone in bones])
