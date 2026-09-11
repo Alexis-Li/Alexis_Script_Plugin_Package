@@ -3069,8 +3069,8 @@ class ControllerLifecycleTests(unittest.TestCase):
             can_leave=True)
         controller._update_mode_selection = mock.Mock()
         MODULE._Controller._update_mode_controls(controller)
-        enabled = {call.args[0]: call.args[1]
-                   for call in controller._set_enabled.call_args_list}
+        enabled = {recorded_call[0][0]: recorded_call[0][1]
+                   for recorded_call in controller._set_enabled.call_args_list}
         self.assertTrue(enabled["capture"])
         self.assertFalse(enabled["replay"])
         self.assertTrue(enabled["stop"])
