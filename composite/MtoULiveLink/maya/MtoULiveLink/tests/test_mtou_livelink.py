@@ -2525,6 +2525,288 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertFalse(hasattr(MODULE, "_CachedPlaybackEvent"))
         self.assertFalse(hasattr(MODULE, "_CachedPlaybackSession"))
 
+class CacheUploadTests(unittest.TestCase):
+    """Focused start/advance/close coverage for the internal upload module."""
+    UPLOAD_ID = 9
+    REVISION = 7
+
+    class _TrackingIterator(object):
+        def __init__(self, frames):
+            self._it = iter(frames)
+            self.closed = False
+
+        def __next__(self):
+            return next(self._it)
+
+        def next(self):
+            return self.__next__()
+
+        def close(self):
+            self.closed = True
+
+    class _FakeCache(object):
+        def __init__(self, frames, fps=24.0):
+            self._frames = list(frames)
+            self.scene_fps = fps
+            self.frame_count = len(frames)
+            self.capture_range = (0, len(frames) - 1)
+            self.opens = 0
+            self.iters = []
+
+        def iter_frames(self):
+            self.opens += 1
+            iterator = CacheUploadTests._TrackingIterator(self._frames)
+            self.iters.append(iterator)
+            return iterator
+
+    @staticmethod
+    def _frame(value):
+        return {"transforms": [[float(value)] * 10], "curves": []}
+
+    def _expected_bytes(self, frames):
+        return sum(
+            MODULE.cache_frame_wire_size(
+                index, frame["transforms"], frame["curves"])
+            for index, frame in enumerate(frames))
+
+    def _upload(self, submitted, drained):
+        return MODULE._CacheUpload(
+            submit=submitted.append, is_drained=lambda: drained[0])
+
+    def test_declaration_reopens_cache_and_declares_exact_bytes_in_chunks(self):
+        frames = [self._frame(value) for value in range(5)]
+        cache = self._FakeCache(frames)
+        submitted = []
+        upload = self._upload(submitted, [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 2):
+            outcome = upload.start(cache, (self.UPLOAD_ID, self.REVISION))
+            self.assertIsNone(outcome.action)
+            self.assertEqual([], submitted)
+            self.assertEqual(1, cache.opens)
+            declaration_steps = 0
+            while not any(
+                    message["type"] == "cache_begin" for message in submitted):
+                before = len(submitted)
+                outcome = upload.advance()
+                declaration_steps += 1
+                self.assertIsNone(outcome.action)
+                self.assertTrue(outcome.processed)
+                self.assertLessEqual(len(submitted) - before, 1)
+                self.assertLessEqual(declaration_steps, 3)
+            self.assertEqual(3, declaration_steps)
+            begin = [message for message in submitted
+                     if message["type"] == "cache_begin"][-1]
+            self.assertEqual(
+                self._expected_bytes(frames), begin["payload_size"])
+            self.assertEqual(2, cache.opens)
+            self.assertTrue(cache.iters[0].closed)
+            send_steps = 0
+            while not any(
+                    message["type"] == "cache_end" for message in submitted):
+                before = [message for message in submitted
+                          if message["type"] == "cache_frame"]
+                outcome = upload.advance()
+                send_steps += 1
+                self.assertIsNone(outcome.action)
+                sent = [message for message in submitted
+                        if message["type"] == "cache_frame"][len(before):]
+                self.assertLessEqual(len(sent), 2)
+                self.assertLessEqual(send_steps, 3)
+            sent_frames = [message for message in submitted
+                           if message["type"] == "cache_frame"]
+            self.assertEqual(
+                [0, 1, 2, 3, 4],
+                [message["index"] for message in sent_frames])
+            self.assertEqual(
+                [0.0, 1.0, 2.0, 3.0, 4.0],
+                [message["transforms"][0][0] for message in sent_frames])
+            self.assertTrue(upload.end_sent)
+            self.assertTrue(cache.iters[1].closed)
+
+    def test_send_waits_for_drain_and_arms_deadline_only_after_drain(self):
+        frames = [self._frame(value) for value in range(2)]
+        cache = self._FakeCache(frames)
+        submitted = []
+        drained = [True]
+        now = [1000.0]
+        upload = self._upload(submitted, drained)
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 8), \
+                mock.patch.object(MODULE.time, "time", lambda: now[0]):
+            outcome = upload.start(
+                cache, (self.UPLOAD_ID, self.REVISION),
+                self._expected_bytes(frames))
+            self.assertIsNone(outcome.action)
+            self.assertEqual(["cache_begin"],
+                             [message["type"] for message in submitted])
+            drained[0] = False
+            outcome = upload.advance()
+            self.assertFalse(outcome.processed)
+            self.assertIsNone(outcome.action)
+            self.assertEqual(["cache_begin"],
+                             [message["type"] for message in submitted])
+            drained[0] = True
+            outcome = upload.advance()
+            self.assertTrue(outcome.processed)
+            self.assertIsNone(outcome.action)
+            self.assertTrue(upload.end_sent)
+            drained[0] = False
+            now[0] += MODULE.UPLOAD_READY_TIMEOUT_SECONDS + 10.0
+            outcome = upload.advance()
+            self.assertFalse(outcome.processed)
+            self.assertIsNone(outcome.action)
+            drained[0] = True
+            outcome = upload.advance()
+            self.assertIsNone(outcome.action)
+            armed = upload._deadline
+            self.assertIsNotNone(armed)
+            now[0] = armed - 0.5
+            outcome = upload.advance()
+            self.assertIsNone(outcome.action)
+            now[0] = armed + 0.5
+            outcome = upload.advance()
+            self.assertFalse(outcome.processed)
+            self.assertEqual(MODULE._CacheUpload.TRANSPORT, outcome.action)
+            self.assertEqual("STREAM_INTERRUPTED", outcome.detail["code"])
+
+    def test_open_failure_is_corrupt(self):
+        class BadCache(self._FakeCache):
+            def iter_frames(self):
+                raise MODULE._PlaybackCacheError("corrupt frame file")
+
+        upload = self._upload([], [True])
+        outcome = upload.start(
+            BadCache([self._frame(0.0)]), (self.UPLOAD_ID, self.REVISION), 8)
+        self.assertEqual(MODULE._CacheUpload.CORRUPT, outcome.action)
+        upload.close()
+
+    def test_iteration_failure_is_corrupt_and_closes_the_file(self):
+        frames = [self._frame(0.0), self._frame(1.0)]
+        cache = self._FakeCache(frames)
+
+        class FailingIterator(CacheUploadTests._TrackingIterator):
+            def __init__(self, frames):
+                super(FailingIterator, self).__init__(frames)
+                self.calls = 0
+
+            def __next__(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise MODULE._PlaybackCacheError("torn frame row")
+                return super(FailingIterator, self).__next__()
+
+        def failing_iter():
+            iterator = FailingIterator(cache._frames)
+            cache.iters.append(iterator)
+            cache.opens += 1
+            return iterator
+        cache.iter_frames = failing_iter
+        submitted = []
+        upload = self._upload(submitted, [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 8):
+            outcome = upload.start(
+                cache, (self.UPLOAD_ID, self.REVISION),
+                self._expected_bytes(frames))
+            self.assertIsNone(outcome.action)
+            outcome = upload.advance()
+            self.assertEqual(MODULE._CacheUpload.CORRUPT, outcome.action)
+            self.assertTrue(cache.iters[0].closed)
+
+    def test_unencodable_frame_is_corrupt_and_closes_the_file(self):
+        frames = [self._frame(0.0),
+                  {"transforms": [[float("nan")] * 10], "curves": []}]
+        cache = self._FakeCache(frames)
+        submitted = []
+        upload = self._upload(submitted, [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 8):
+            outcome = upload.start(
+                cache, (self.UPLOAD_ID, self.REVISION),
+                self._expected_bytes([frames[0]]) + 8)
+            self.assertIsNone(outcome.action)
+            outcome = upload.advance()
+            self.assertTrue(outcome.processed)
+            self.assertEqual(MODULE._CacheUpload.CORRUPT, outcome.action)
+            self.assertTrue(cache.iters[0].closed)
+
+    def test_submit_failures_are_transport(self):
+        frames = [self._frame(0.0)]
+
+        def failing_submit(unused_message):
+            raise MODULE._StreamingSessionError("connection lost")
+
+        upload = MODULE._CacheUpload(
+            submit=failing_submit, is_drained=lambda: True)
+        outcome = upload.start(
+            self._FakeCache(frames), (self.UPLOAD_ID, self.REVISION),
+            self._expected_bytes(frames))
+        self.assertEqual(MODULE._CacheUpload.TRANSPORT, outcome.action)
+        submitted = []
+        cache = self._FakeCache(frames)
+        calls = {"count": 0}
+
+        def fail_on_frame(message):
+            calls["count"] += 1
+            if message["type"] == "cache_frame":
+                raise MODULE._StreamingSessionError("connection lost")
+            submitted.append(message)
+        upload = MODULE._CacheUpload(
+            submit=fail_on_frame, is_drained=lambda: True)
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 8):
+            outcome = upload.start(
+                cache, (self.UPLOAD_ID, self.REVISION),
+                self._expected_bytes(frames))
+            self.assertIsNone(outcome.action)
+            outcome = upload.advance()
+            self.assertEqual(MODULE._CacheUpload.TRANSPORT, outcome.action)
+
+    def test_declared_overflow_is_failed(self):
+        frames = [self._frame(value) for value in range(2)]
+        first_bytes = MODULE.cache_frame_wire_size(
+            0, frames[0]["transforms"], frames[0]["curves"])
+        cache = self._FakeCache(frames)
+        upload = self._upload([], [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 8), \
+                mock.patch.object(
+                    MODULE, "MAX_CACHE_PAYLOAD_BYTES", first_bytes):
+            outcome = upload.start(cache, (self.UPLOAD_ID, self.REVISION))
+            self.assertIsNone(outcome.action)
+            outcome = upload.advance()
+            self.assertTrue(outcome.processed)
+            self.assertEqual(MODULE._CacheUpload.FAILED, outcome.action)
+            self.assertEqual("CACHED_UPLOAD_FAILED", outcome.detail["code"])
+            upload.close()
+
+    def test_close_during_declaration_and_send_closes_file_and_is_idempotent(self):
+        frames = [self._frame(value) for value in range(4)]
+        cache = self._FakeCache(frames)
+        upload = self._upload([], [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 2):
+            outcome = upload.start(cache, (self.UPLOAD_ID, self.REVISION))
+            self.assertIsNone(outcome.action)
+            outcome = upload.advance()
+            self.assertTrue(outcome.processed)
+            self.assertFalse(cache.iters[0].closed)
+            upload.close()
+            self.assertTrue(cache.iters[0].closed)
+            upload.close()
+            outcome = upload.advance()
+            self.assertFalse(outcome.processed)
+            self.assertIsNone(outcome.action)
+        send_cache = self._FakeCache(frames)
+        send_upload = self._upload([], [True])
+        with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 2):
+            outcome = send_upload.start(
+                send_cache, (self.UPLOAD_ID, self.REVISION),
+                self._expected_bytes(frames))
+            self.assertIsNone(outcome.action)
+            outcome = send_upload.advance()
+            self.assertTrue(outcome.processed)
+            send_upload.close()
+            self.assertTrue(send_cache.iters[0].closed)
+            send_upload.close()
+            outcome = send_upload.advance()
+            self.assertFalse(outcome.processed)
+            self.assertIsNone(outcome.action)
+
 
 class ControllerLifecycleTests(unittest.TestCase):
     def test_main_window_always_fits_its_controls(self):
