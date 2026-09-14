@@ -33,6 +33,10 @@ structure is not auto-retargeting: adding or removing Maya bones still requires
 updating the Unreal target assets, and selecting the wrong root or an old mesh
 fails with the missing bone and parent paths instead of a generic mismatch.
 
+Finite non-zero small scales (including `1e-12` pupil joints) are supported.
+Truly singular transforms or non-finite matrix inverses stop streaming with a
+bone-index diagnostic; small scale alone is not treated as singular.
+
 ## Installation
 
 1. Copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts directory,

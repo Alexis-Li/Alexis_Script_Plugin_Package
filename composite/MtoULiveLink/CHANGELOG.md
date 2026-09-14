@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fix Issue #44 connection rejection for non-zero tiny pupil scales: UE now uses
+  checked finite matrix inversion instead of an absolute determinant tolerance,
+  bypasses the engine's tiny-axis identity fallback, and preserves tiny scales
+  during output TRS decomposition. Zero scales remain rejected. Regression tests
+  cover tiny current/bind scales, mirrored scales and tiny parents with children;
+  Maya host coverage independently reconstructs bind and animated world matrices
+  through multi-level non-unit TRS chains (Maya centimeters, tolerance `1e-6`).
+  Add opt-in real-character Maya/UE rendered acceptance for strict remaps,
+  Animation/Model poses, geometric Refresh and explicit reconnect; isolate the
+  SocketFlow fixture from pending worlds left by preceding tests. See the
+  complete-skeleton acceptance record for results and the retained weight warning.
+
 - Preserve joint-to-joint structural transforms in the Maya capture (Issue #44):
   the publish traversal keeps every joint under the selected root plus the
   intermediate `transform` nodes that connect them, preserving real DAG paths

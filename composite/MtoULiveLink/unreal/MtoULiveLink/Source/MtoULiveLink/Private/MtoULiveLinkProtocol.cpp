@@ -12,6 +12,15 @@
 
 namespace
 {
+// Absolute determinant tolerances reject valid small-scale rigs (for example
+// pupil joints at 1e-12). Use the engine's checked inverse, bypassing Inverse()'s
+// nearly-zero-axis identity fallback, and reject non-finite results explicitly.
+bool TryInverse(const FMatrix& Matrix, FMatrix& Inverse)
+{
+    return !Matrix.ContainsNaN() && VectorMatrixInverse(&Inverse, &Matrix)
+        && !Inverse.ContainsNaN();
+}
+
 bool ParseObject(const TArray<uint8>& Payload, TSharedPtr<FJsonObject>& OutObject, FString& OutError)
 {
     if (Payload.IsEmpty())
@@ -466,7 +475,8 @@ bool FMtoUProtocol::ParseInit(
             Rotation,
             FVector(Numbers[0], Numbers[1], Numbers[2]),
             FVector(Numbers[7], Numbers[8], Numbers[9]));
-        if (FMath::IsNearlyZero(BindTransform.ToMatrixWithScale().Determinant()))
+        FMatrix BindInverse;
+        if (!TryInverse(BindTransform.ToMatrixWithScale(), BindInverse))
         {
             OutError = FString::Printf(
                 TEXT("Bone %d bind local transform must be invertible."), Index);
@@ -1123,19 +1133,20 @@ bool FMtoUProtocol::MakeRetargetedFrameData(
         // non-singular matrix. Inverse() silently substitutes identity for
         // singular input, so one zero-scale bone would corrupt every descendant
         // without a trace; fail closed before publishing anything.
-        if (FMath::IsNearlyZero(SourceCurrentLocal.Determinant()))
+        FMatrix CheckedInverse;
+        if (!TryInverse(SourceCurrentLocal, CheckedInverse))
         {
             OutError = FString::Printf(
                 TEXT("Bone %d source current transform is not invertible."), Index);
             return false;
         }
-        if (FMath::IsNearlyZero(SourceBindLocal.Determinant()))
+        if (!TryInverse(SourceBindLocal, CheckedInverse))
         {
             OutError = FString::Printf(
                 TEXT("Bone %d source bind transform is not invertible."), Index);
             return false;
         }
-        if (FMath::IsNearlyZero(TargetRefLocal.Determinant()))
+        if (!TryInverse(TargetRefLocal, CheckedInverse))
         {
             OutError = FString::Printf(
                 TEXT("Bone %d target reference transform is not invertible."), Index);
@@ -1161,9 +1172,15 @@ bool FMtoUProtocol::MakeRetargetedFrameData(
         // Unreal matrices use row-vector composition. This maps the saved source
         // bind component transform onto the target reference component transform,
         // then applies the evaluated source component motion.
+        FMatrix SourceBindInverse;
+        if (!TryInverse(SourceBindComponentPose[Index], SourceBindInverse))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d source bind component transform is not invertible."), Index);
+            return false;
+        }
         TargetCurrentComponentPose[Index] = TargetRefComponentPose[Index]
-            * SourceBindComponentPose[Index].Inverse()
-            * SourceCurrentComponentPose[Index];
+            * SourceBindInverse * SourceCurrentComponentPose[Index];
     }
 
     FMtoUFrameMessage RetargetedFrame;
@@ -1172,12 +1189,34 @@ bool FMtoUProtocol::MakeRetargetedFrameData(
     for (int32 Index = 0; Index < BoneCount; ++Index)
     {
         const int32 ParentIndex = BoneParents[Index];
-        const FMatrix TargetCurrentLocal = ParentIndex == INDEX_NONE
-            ? TargetCurrentComponentPose[Index]
-            : TargetCurrentComponentPose[Index]
-                * TargetCurrentComponentPose[ParentIndex].Inverse();
-        FTransform Transform(TargetCurrentLocal);
-        Transform.NormalizeRotation();
+        FMatrix ParentInverse = FMatrix::Identity;
+        if (ParentIndex != INDEX_NONE
+            && !TryInverse(TargetCurrentComponentPose[ParentIndex], ParentInverse))
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d target current parent %d is not invertible."), Index, ParentIndex);
+            return false;
+        }
+        const FMatrix TargetCurrentLocal = TargetCurrentComponentPose[Index] * ParentInverse;
+        FMatrix RotationMatrix = TargetCurrentLocal;
+        FVector Scale = RotationMatrix.ExtractScaling(0.0);
+        if (TargetCurrentLocal.ContainsNaN() || Scale.ContainsNaN()
+            || Scale.X == 0.0 || Scale.Y == 0.0 || Scale.Z == 0.0)
+        {
+            OutError = FString::Printf(
+                TEXT("Bone %d target current local transform cannot be decomposed."), Index);
+            return false;
+        }
+        if (TargetCurrentLocal.Determinant() < 0.0)
+        {
+            Scale.X *= -1.0;
+            RotationMatrix.SetAxis(0, -RotationMatrix.GetScaledAxis(EAxis::X));
+        }
+        // FTransform(Matrix) uses an absolute scale threshold and collapses
+        // valid tiny axes to zero. Normalize axes before constructing rotation.
+        FQuat Rotation(RotationMatrix);
+        Rotation.Normalize();
+        const FTransform Transform(Rotation, TargetCurrentLocal.GetOrigin(), Scale);
         RetargetedFrame.Transforms.Add({
             Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
     }

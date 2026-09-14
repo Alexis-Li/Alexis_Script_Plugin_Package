@@ -604,6 +604,56 @@ class MayaHostTests(unittest.TestCase):
             any(abs(actual - bad) > 1.0e-3
                 for actual, bad in zip(frame.transforms[3], skipped)))
 
+    def test_published_trs_reconstructs_bind_and_animated_worlds(self):
+        # Independent reconstruction: convert wire UE (X,Z,Y) back to Maya,
+        # build S*R*T from the transmitted quaternion, then multiply parents.
+        # Do not call _sample_matrix or convert_transform in the oracle.
+        om = module.om
+        def reconstruct(transforms, bones):
+            worlds = []
+            for values, (_, parent) in zip(transforms, bones):
+                tx, tz, ty, nx, nz, ny, qw, sx, sz, sy = values
+                scale = om.MMatrix([sx, 0, 0, 0, 0, sy, 0, 0,
+                                    0, 0, sz, 0, 0, 0, 0, 1])
+                rotation = om.MQuaternion(-nx, -ny, -nz, qw).asMatrix()
+                translation = om.MMatrix([1, 0, 0, 0, 0, 1, 0, 0,
+                                          0, 0, 1, 0, tx, ty, tz, 1])
+                local = scale * rotation * translation
+                worlds.append(local if parent < 0 else local * worlds[parent])
+            return worlds
+
+        group, root, unused = self._create_character_group()
+        mid = cmds.createNode("transform", name="offset", parent=root)
+        inner = cmds.createNode("transform", name="inner", parent=mid)
+        cmds.select(inner)
+        tip = cmds.joint(name="tip")
+        cmds.setAttr(tip + ".segmentScaleCompensate", False)
+        for node, t, r, scale in (
+                (root, (2, 3, 4), (10, -20, 15), (1.1, 1.2, 0.9)),
+                (mid, (1, 2, 3), (15, 25, 35), (1.5, 2, 0.5)),
+                (inner, (-2, 1, 4), (-20, 10, 5), (0.8, 1.2, 1.1)),
+                (tip, (4, 5, 6), (8, 12, -15), (1, 1, 1))):
+            cmds.setAttr(node + ".translate", *t)
+            cmds.setAttr(node + ".rotate", *r)
+            cmds.setAttr(node + ".scale", *scale)
+        mesh = cmds.polyCube()[0]
+        cmds.skinCluster(root, tip, mesh)
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        paths = [bone["path"] for bone in scene._subject["bones"]]
+        bind_worlds = [cmds.xform(path, q=True, ws=True, matrix=True) for path in paths]
+        cmds.setAttr(mid + ".rotate", -35, 12, 21)
+        cmds.setAttr(inner + ".translate", 3, -1, 8)
+        cmds.setAttr(tip + ".rotate", 30, -10, 45)
+        current_worlds = [cmds.xform(path, q=True, ws=True, matrix=True) for path in paths]
+        for label, transforms, expected in (
+                ("bind", snapshot.bind_local_transforms, bind_worlds),
+                ("animated", scene.sample().transforms, current_worlds)):
+            for path, actual, wanted in zip(paths, reconstruct(transforms, snapshot.bones), expected):
+                with self.subTest(pose=label, path=path):
+                    self.assertLess(max(abs(a - b) for a, b in zip(actual, wanted)), 1.e-6)
+
     def test_capture_subject_isolates_second_character(self):
         first_group = cmds.createNode("transform", name="CharA")
         cmds.select(clear=True)

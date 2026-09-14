@@ -1537,6 +1537,9 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
         TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
+    TestTrue(TEXT("tiny non-zero bind scale is accepted"), FMtoUProtocol::ParseInit(Utf8(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
+
     const FString MarkerJson =
         TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
@@ -1955,6 +1958,39 @@ bool FMtoUUnitScaleRetargetingTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUTinyScaleRetargetingTest,
+    "MtoULiveLink.PoseRetargeting.TinyScale",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUTinyScaleRetargetingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    for (double Size : {1.e-3, 1.e-12, -1.e-12})
+    {
+        const FTransform Tiny(FRotator(12.0, 25.0, -8.0), FVector(2.0, 3.0, 4.0), FVector(Size));
+        const FTransform Child(FQuat::Identity, FVector(1.0, 0.0, 0.0));
+        const TArray<FTransform> Bind = {FTransform::Identity, Child};
+        const TArray<int32> Parents = {INDEX_NONE, 0};
+        const TArray<FTransform> Output = RetargetPose({Tiny, Child}, Bind, Bind, Parents);
+        TestEqual(TEXT("tiny-scale parent and child are published"), Output.Num(), 2);
+        if (Output.Num() != 2) { continue; }
+        // Relative errors matter: an ordinary absolute tolerance would accept zero.
+        for (int32 Axis = 0; Axis < 3; ++Axis)
+        {
+            TestTrue(TEXT("tiny scale survives matrix decomposition"),
+                FMath::Abs(FMath::Abs(Output[0].GetScale3D()[Axis] / Size) - 1.0) < 1.e-6);
+        }
+        TestTrue(TEXT("tiny parent rotation and translation survive"),
+            Output[0].ToMatrixWithScale().Equals(Tiny.ToMatrixWithScale(), 1.e-15));
+        TestTrue(TEXT("child scale remains one"), Output[1].GetScale3D().Equals(FVector::OneVector, 1.e-3));
+        const TArray<FTransform> BindOutput = RetargetPose({Tiny, Child}, {Tiny, Child}, Bind, Parents);
+        TestTrue(TEXT("tiny bind component inverse restores reference"), BindOutput.Num() == 2
+            && BindOutput[0].Equals(FTransform::Identity, 1.e-3)
+            && BindOutput[1].GetScale3D().Equals(FVector::OneVector, 1.e-3));
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSingularRetargetTransformTest,
     "MtoULiveLink.PoseRetargeting.SingularTransformRejected",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -2288,6 +2324,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceSocketFlowTest,
 bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Other socket tests leave destroyed editor worlds pending collection.
+    // Start this zero/one/two-actor fixture without their global iterator entries.
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -2390,6 +2430,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     Payload.Reset();
     TestTrue(TEXT("partial init produces ready response"), Primary && ReceivePacket(
         *Primary, Payload, [&]() { Source->Update(); }));
+    AddInfo(TEXT("SocketFlow initial reply: ") + FromUtf8(Payload));
     TestTrue(TEXT("ready response reports the omitted morph curve"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
         && FromUtf8(Payload).Contains(TEXT("Missing")));
@@ -4849,7 +4890,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && Actor->GetModelDiagnostics().Contains(TEXT("Bone-driven outfit"))
         && Actor->GetModelDiagnosticLevel() == EMtoUModelDiagnosticLevel::Full);
     const TArray<uint8> BoneDrivenFrame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]],\"curves\":[]}"));
     TestTrue(TEXT("bone-driven frame is sent"), BoneDrivenClient
         && SendBytes(*BoneDrivenClient, BoneDrivenFrame.GetData(), BoneDrivenFrame.Num()));
     FLiveLinkSubjectFrameData BoneDrivenEvaluatedFrame;
@@ -4875,6 +4916,9 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         && BoneDrivenAnimation->Transforms.Num() == 2
         && !BoneDrivenAnimation->Transforms[0].ContainsNaN()
         && BoneDrivenAnimation->PropertyValues.IsEmpty());
+    TestTrue(TEXT("tiny pupil scale survives socket publication"), BoneDrivenAnimation
+        && BoneDrivenAnimation->Transforms.Num() == 2
+        && FMath::Abs(BoneDrivenAnimation->Transforms[1].GetScale3D().X / 1.e-12 - 1.0) < 1.e-6);
     const TArray<uint8> SingularFrame = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[[1,2,3,0,0,0,1,0,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}"));
     TestTrue(TEXT("singular-parent frame is sent"), BoneDrivenClient
