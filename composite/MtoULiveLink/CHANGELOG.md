@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the superseded v5 conformance corpus from the source tree. Keep v6 as
+  the active contract and consolidate corpus ownership and historical lookup
+  guidance in the architecture record and ADR 0013.
+
 - Add a Windows double-click Chinese wizard for the Topia build helper, with
   project/engine file pickers, a validated installation preview, and result dialogs.
   Use the built-in Windows PowerShell runtime without requiring PowerShell 7.

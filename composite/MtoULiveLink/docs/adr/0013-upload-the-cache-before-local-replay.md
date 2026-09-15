@@ -31,7 +31,9 @@ from an older session cannot advance the new one. See the
 [reconnect acceptance](../../../../docs/project-history/mtou-livelink/cached-playback-reconnect-acceptance.md)
 for the deterministic and real-host evidence.
 
-Protocol v5 introduced upload-then-play and remains frozen in
-`conformance-v5.json`; `conformance-v6.json` is the current contract and adds
-truthful identities, application evidence, resource accounting, and lossless
-mode transitions without reopening the upload-before-local-replay decision.
+Both adapters require protocol v6. Its executable contract is
+[`conformance-v6.json`](../../protocol/conformance-v6.json), covering message
+identities, application evidence, resource accounting, and mode transitions.
+The source tree retains protocol corpora only for versions with active
+consumers and corresponding tests. Superseded contracts are preserved in Git;
+their historical limits do not govern the current adapters.
