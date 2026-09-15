@@ -143,7 +143,7 @@ It owns:
 
 - the small native Maya UI;
 - a character-scene module that owns deformation-root and Display validation,
-  joint hierarchy and BlendShape discovery, namespace normalization,
+  complete skeleton and BlendShape discovery, namespace normalization,
   Maya-to-Unreal transform conversion, pose sampling, and its Maya callbacks;
 - a streaming-session module that owns one connection attempt, its sender
   worker, sampling timer, connection-lifetime callbacks, fixed character
@@ -386,17 +386,22 @@ eligible for display.
 ## Unreal Skeleton Validation
 
 During `init`, Unreal requires exactly one placed binding actor and compares
-the static Maya skeleton with its Skeletal Mesh. It compares normalized bone
-name to parent bone name, not array position. A link succeeds when every bone
-and parent can be mapped uniquely and completely. Unreal importer-added numeric
-suffixes may map duplicate Maya short names only below an already mapped
-parent.
+the static Maya skeleton with its Skeletal Mesh. Maya publishes every joint
+under the selected root plus the intermediate `transform` nodes required to
+preserve joint parentage; branches without joints are excluded. Unreal compares
+normalized node name to parent name, not array position. A link succeeds when
+every published node and parent can be mapped uniquely and completely. Unreal
+importer-added numeric suffixes may map duplicate Maya short names only below
+an already mapped parent.
 
 The validation response lists missing bones, extra bones, and parent mismatches.
 It also reports successful bone-name mappings and both directions of Morph
 difference as warnings. No pose is applied to an unusable target. For a usable
 target, source component-space motion relative to Maya's saved bind pose is
 mapped onto the Skeletal Mesh reference pose before Live Link publication.
+Finite non-zero tiny scales remain valid through checked matrix inversion and
+TRS decomposition; zero-scale or non-finite transforms fail closed with the
+affected node index.
 Permissive skeleton subsets and fuzzy name matching remain outside scope.
 
 ## UI
@@ -502,7 +507,8 @@ Development-only automation tests cover:
 - connection negotiation, including parent-scoped importer suffix mappings and
   bidirectional Morph differences;
 - bind-pose invariance and reference-pose mapping across different local axes,
-  parent-child motion, translation, and unit scale;
+  parent-child motion, translation, unit scale, finite tiny scale, and singular
+  transform rejection;
 - preservation of actor world transform while root-bone motion changes;
 - end-to-end loopback socket flow, second-client rejection, bind failure, and
   clean idempotent source shutdown;

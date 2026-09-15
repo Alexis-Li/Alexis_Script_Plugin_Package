@@ -134,6 +134,14 @@ Those records do not establish a complete 0.5.0 production or release gate.
   The project owner then manually reverified the complete C01 and Topia paths,
   closing 0.4.0 without producing formal release packages; subsequent
   development advances to 0.5.0.
+- **2026-09-15:** Accepted and closed Issue #44 on `main`: Maya now publishes
+  every joint plus the intermediate transforms needed to preserve the real DAG
+  hierarchy; Unreal preserves finite non-zero tiny scales such as the sample's
+  `1e-12` pupil joints. Independent Maya world-matrix reconstruction, strict
+  1472-node character negotiation, rendered Animation/Model poses, two Preview
+  refreshes, and Animation reconnect completed successfully. The retained
+  Preview weight-transfer warning remains a visual review boundary rather than
+  a skeleton-connection failure.
 
 ## Stable Records
 
@@ -148,6 +156,7 @@ Those records do not establish a complete 0.5.0 production or release gate.
 - [Model Preview full-character recalibration](model-preview-full-character-recalibration.md)
 - [Preview Refresh optimization](preview-refresh-optimization.md)
 - [Preview Refresh geometry-scale measurements](preview-refresh-geometry-scale.md)
+- [Complete-skeleton connection and preview acceptance](complete-skeleton-acceptance.md)
 
 ## Current Project
 

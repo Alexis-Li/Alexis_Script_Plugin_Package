@@ -1,5 +1,10 @@
 # Complete-skeleton connection and preview acceptance (Issue #44)
 
+Status: accepted and closed on 2026-09-15. Commits `d03fc31` and
+`d7b9c01` are on local and remote `main`; the owner separately confirmed the
+visual acceptance. This record is the durable technical evidence behind the
+[final Issue #44 verdict](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/44#issuecomment-5673515143).
+
 Date: 2026-09-14. Follow-up to the review of `d03fc31` and the reported
 `BIND_POSE_INVALID` at bone 587.
 

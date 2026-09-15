@@ -12,7 +12,10 @@ _Avoid_: Role, Maya selection, character cache
 
 **Character snapshot**:
 A stable description of one character scene revision, including its outfit,
-ordered skeleton, bind-local pose, and streamable curve names. Connection
+ordered skeleton, bind-local pose, and streamable curve names. The skeleton
+contains every joint below the selected root and the intermediate transform
+nodes needed to preserve their real DAG parentage; branches without joints are
+excluded. Connection
 negotiation uses one snapshot and does not silently adopt topology changes
 during streaming.
 _Avoid_: Scene state, init payload, role data
