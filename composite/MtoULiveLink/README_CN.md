@@ -2,105 +2,105 @@
 
 [English](README.md)
 
-## 项目简介
+MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 Maya 中制作时，
+直接在 Unreal 中查看角色动画、BlendShape 和服装修改效果。支持实时预览与动画
+缓存播放，不会创建动画或预览资产。
 
-MtoU_LiveLink 是一个 Maya 与 Unreal 复合插件，可通过本机 Live Link 连接，
-在 Unreal Editor 中预览 Maya 已求值的骨骼动画和 BlendShape。插件支持实时动画
-预览、缓存播放和服装模型预览，不会创建动画或预览资产。
-
-## 支持版本
+## 兼容性
 
 - 64 位 Windows
 - Autodesk Maya 2022.4
 - 官方原版 Unreal Editor 5.7.4
-- Topia Engine 5.7.4（已验证 Win64 插件编译和编辑器加载）
-- 仅限 Unreal 编辑器。不支持 PIE（Play In Editor）：PIE 世界不会参与流送目标发现。
+- Topia Engine 5.7.4（已验证插件编译与编辑器加载）
+- 仅用于编辑器，不支持 PIE（Play In Editor）。
 
-不保证兼容其他第三方修改版 Unreal Engine 5.7。
+不保证兼容其他第三方修改版 Unreal Engine 5.7。Maya 与 Unreal 组件应使用同一版本。
 
-## 骨架兼容性
+## 安装
 
-Maya 采集会发布所选根下全部 joint，以及连接这些 joint 所需的中间 `transform`
-节点（例如夹在两个关节之间的分组），保留真实 DAG 路径与父先子后顺序；不通向
-关节的网格、控制器或无关分支不会进入发布描述。连接仍要求与 Unreal 参考骨架
-严格一对一匹配（含父关系），重名短名仅沿用既有的按父分支数字后缀规则。支持
-新的骨架结构不等于自动重定向：Maya 增删骨骼后仍需更新 UE 目标资产，选错根或
-绑定旧网格会直接报出缺失骨骼及父路径，而非笼统的不匹配错误。
-
-支持有限且非零的极小缩放（包括缩放为 `1e-12` 的瞳孔关节）。真正奇异的变换
-或产生非有限值的矩阵求逆会停止流送并报告骨骼索引；不会仅因缩放很小而判定不可逆。
-
-## 安装方式
+以下组件路径均相对于本产品目录。
 
 1. 将 `maya/MtoULiveLink/scripts/MtoULiveLink.py` 复制到 Maya 脚本目录，
-   或直接在 Maya Python 脚本编辑器中执行。
+   或直接在 Maya 的 Python 脚本编辑器中执行该文件。
 2. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
-3. 官方原版 Unreal 按正常方式编译项目。使用 Topia Engine 5.7.4 时，先关闭
-   Unreal Editor，将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，将
-   `ATHENA_UPROJECT` 设为目标 `.uproject`，再从仓库根目录运行：
-
-   ```powershell
-   pwsh ./tools/build_mtou_topia.ps1 `
-     -EngineRoot $env:TOPIA_ENGINE_ROOT `
-     -ProjectFile $env:ATHENA_UPROJECT `
-     -Apply
-   ```
-
-   不带 `-Apply` 时只校验路径并预览将生成的五个文件；需要机器可读结果时添加
-   `-Json`。Topia 构建会把所有可写中间状态放入临时目录，只向已复制的
-   MtoULiveLink 插件写入 `Binaries/Win64`，不会修改引擎文件或项目源码、配置。
+3. 编译 Unreal 项目。Topia Engine 用户请按下方说明操作。
 4. 启用 **Live Link** 和 **MtoU_LiveLink**，然后重启 Unreal Editor。
 
-Maya 与 Unreal 组件必须来自同一版本。
+### Topia Engine 5.7.4
 
-## 使用方法
+关闭 Unreal Editor。将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，
+将 `ATHENA_UPROJECT` 设为目标 `.uproject`，然后在仓库根目录运行以下命令
+（需要 PowerShell 7）：
 
-1. 在 Unreal 中创建 **MtoU_LiveLink Binding**，指定 **Driver Skeletal Mesh**，
-   然后将该 Binding 资产从内容浏览器拖入关卡。此操作会自动创建
-   MtoU_LiveLink Binding Actor 并指定该 Binding；Actor 的 Binding 引用不是
-   可编辑的设置字段。
-   该 Actor 所属的插件显示组件在显示 Maya 已求值数据时会绕过 Driver Skeletal
-   Mesh 的 Post Process Anim Blueprint；Driver 资产和其他生产组件仍保持各自行为。
-   可通过细节面板顶部的 **MtoU** 分类仅查看插件控件。刷新后，**Modified parts**
-   会逐行列出替换 Driver 几何体的 Preview 材质槽；三角形数量、耗时和质量阈值等
-   内部指标不会显示在面向美术人员的面板中。点击 **Delete Preview** 会释放生成的
-   预览网格体并立即恢复显示 Driver Skeletal Mesh。
-   渲染设置只需在 **SkeletalMeshComponent** 上配置一次。内部 Driver 显示组件不会
-   再出现在细节面板中；模型预览需要同时显示两个网格体时，它会继承光照通道和
-   动态内嵌阴影设置。
-2. 在 Maya 中运行 `MtoULiveLink.py`，选择一个变形根骨骼，点击“设置角色”，
-   并确认检测到的 Display 控制器、服装、场景帧率和传输上限。
-3. 选择“动画”或“模型”，然后点击“连接”。
-4. 在“动画”模式中，可通过 Maya 摆姿、拖动时间轴或播放动画进行实时预览；
-   如需复查一段动画，选择“缓存播放”并点击“捕获并回放”。捕获或上传失败时会
-   自动恢复实时预览并显示原因；回放运行失败会保留缓存，可重试或退出缓存模式。
-   捕获一超过固定的 20,000 帧或 1 GiB 上限就会立即停止。
-5. 在“模型”模式中，还需在 Unreal 指定服装 **Preview Static Mesh**，连接前点击
-   **Refresh Preview**；开启“传递 BS”可传输名称匹配的 BlendShape。关闭
-   “传递 BS”时，连接会标注为不可用于模型验收的 bone-only 诊断；开启
-   “传递 BS”但服装未声明 BlendShape 时，属于有意的仅骨骼驱动，会以空接受集
-   正常进入 Ready。两种情况下服装预览都仅由骨骼驱动，不驱动任何 Morph Target。
-   使用整角色 Driver 时，模型预览会保留显示身体、脸、头发及其他非服装
-   材质槽，并用生成的 Preview 替换解析出的原服装材质槽；Driver 独有的脸部、
-   头发 Morph Target 也会继续接收 Maya 中的同名曲线。服装与非服装几何体应使用
-   不同的导入材质槽；若二者共用一个槽，Refresh 会报告问题，而不会隐藏角色的
-   其他部分。Refresh 失败时会保持 Error 状态且无可用预览，但会恢复显示已绑定的
-   Driver 以便检查；在下一次 Refresh 成功之前，模型连接仍会被阻止。
-   Auto 使用保守的拓扑密度限制：Driver 有多个连通区域且 Preview 至少有 8 个
-   三角形时，选中的 Driver 三角形数不能超过 Preview 的 1.70 倍。
-   即使对齐且表面完全相同，减面也可能超限；该诊断不能证明存在重复或身体几何。
-   请检查源模型，删除实际存在的重复副本，并拆分服装与身体混用的材质槽。
-   对于有意减面的 Preview，在 Binding 的 **Driver Garment Slot Override** 中
-   仅指定服装独立的材质槽，再点击 **Refresh Preview**。手动选择仍会检查几何、
-   整个 Preview 的覆盖率、对齐、共用槽和传递质量。可用的黄色 Warning 仍需检查
-   后才能验收。
-   Refresh 同步执行，可能阻塞 Editor 数秒：在记录的测试主机上，合成夹具的服装
-   为 27,744 个三角形、完整 Driver 为 147,744 个三角形，4–64 个 Driver Morph
-   的刷新约需 1.6–3.1 秒。这是已测语料范围，并非通用规模或延迟保证；详见
-   [几何规模测量记录](../../docs/project-history/mtou-livelink/preview-refresh-geometry-scale.md)。
-6. 更换服装、工作流或“传递 BS”设置后，请重新连接。点击 **Refresh Preview**
-   也会在替换显示之前结束当前动画或模型会话；刷新成功后，请重新连接，
-   以便基于刷新后的预览重新协商。更改 Driver Skeletal
-   Mesh 或 Preview Static Mesh（包括重新导入）、删除 Binding Actor、或卸载其
-   所在的 Editor 关卡时，当前 Streaming 会话会立即结束且当前 Preview 版本失效：
-   请重新点击 **Refresh Preview** 并重新连接。
+```powershell
+pwsh ./tools/build_mtou_topia.ps1 `
+  -EngineRoot $env:TOPIA_ENGINE_ROOT `
+  -ProjectFile $env:ATHENA_UPROJECT `
+  -Apply
+```
+
+去掉 `-Apply` 可先检查路径并预览安装内容。
+
+## 准备角色
+
+- Maya 的变形骨架应与 Unreal 的 **Driver Skeletal Mesh** 匹配，包括骨骼名称和
+  父子关系；骨骼之间的中间分组也会参与匹配。插件不提供自动重定向，Maya 增删
+  骨骼后需同步更新 Unreal 资产。
+- 预览服装时，准备与 Driver 服装位置对齐的 **Preview Static Mesh**。
+  服装与身体等非服装几何体应使用不同的导入材质槽。
+- 预览 BlendShape 时，Maya BlendShape 与 Unreal Morph Target 需要名称匹配，
+  并在 Maya 中开启“传递 BS”。
+
+## 首次连接
+
+1. 在 Unreal 中创建 **MtoU_LiveLink Binding** 资产，指定
+   **Driver Skeletal Mesh**。
+2. 将 Binding 资产从内容浏览器拖入关卡，创建对应的 Binding Actor。
+   在细节面板的 **MtoU** 分类中操作插件控件。
+3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击“设置角色”。
+   检查检测到的 Display 控制器、服装、场景帧率和传输上限。
+4. 选择“动画”，点击“连接”。在 Maya 中摆姿、拖动时间轴或播放动画，
+   即可在 Unreal 中查看效果。
+
+## 动画预览
+
+使用“动画”模式实时预览角色。需要查看一段缓存动画时，先设置 Maya 时间轴的
+播放范围，再选择“缓存播放”并点击“捕获并回放”。捕获和上传完成后开始播放。
+
+单次捕获上限为 20,000 帧或 1 GiB，达到上限时请缩短范围。捕获或上传失败会
+返回实时预览并显示原因；回放失败时可以重试保留的缓存，或退出缓存模式。
+
+## 服装模型预览
+
+1. 在 Unreal Binding 中指定服装 **Preview Static Mesh**。
+2. 在 Binding Actor 上点击 **Refresh Preview**，检查刷新结果。
+   **Modified parts** 会列出预览替换的材质槽，Driver 角色的其他部分仍会显示。
+3. 在 Maya 中选择“模型”，确认服装和“传递 BS”设置，再点击“连接”。
+4. 在 Maya 中给角色摆姿，检查 Unreal 中的服装变形。
+
+评估模型效果时保持“传递 BS”开启。关闭后仅用于骨骼驱动诊断，不能验证
+BlendShape 变形。没有 BlendShape 的服装可正常使用骨骼驱动预览。
+
+出现黄色 **Warning** 时，请检查效果后再确认结果；出现 **Error** 时，需要
+**Refresh Preview** 成功后才能连接模型模式。较大的网格刷新可能需要数秒，
+请等待完成。
+
+点击 **Delete Preview** 可移除生成的预览，恢复 Driver 网格显示。
+光照和阴影设置统一在 **SkeletalMeshComponent** 上配置。
+
+## 常见问题
+
+| 问题 | 处理方法 |
+| --- | --- |
+| 骨架不匹配 | 检查 Maya 选择的根骨骼、提示中的骨骼与父路径，以及 Unreal Driver 网格是否为最新版本。 |
+| 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
+| 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |
+| BlendShape 未生效 | 检查“传递 BS”、名称匹配、当前服装及连接诊断。模型预览的源资产变更后需重新刷新。 |
+| 修改后连接断开 | 更换服装、模式或“传递 BS”后需重连；刷新也会断开当前连接。修改或重新导入任一网格后，刷新模型预览并重连。 |
+
+预览时请保留 Binding Actor 并保持其关卡加载；删除 Actor 或卸载关卡会结束连接。
+
+## 更多信息
+
+- [版本记录](CHANGELOG.md)
+- [开发与验收记录](../../docs/project-history/mtou-livelink/README.md)

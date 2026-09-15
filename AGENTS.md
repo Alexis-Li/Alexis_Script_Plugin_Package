@@ -44,10 +44,25 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - Update affected documentation when installation, public contracts, supported
   versions, or user-visible behavior changes. Keep English `README.md` and
   Chinese `README_CN.md` aligned.
-- Project READMEs focus on introduction, compatibility, installation, and usage;
-  include troubleshooting or limitations when useful. Put internal development
-  detail in AGENTS.md or docs. The root README also owns the tool index and
-  development setup.
+- Project READMEs are current user manuals: introduction, compatibility,
+  installation, common workflows, and actionable troubleshooting or limitations.
+  Include a detail only when it helps users choose, install, operate, or recover
+  the product. The root README also owns the tool index and development setup.
+- Update the relevant README section in place when behavior changes; consolidate
+  overlapping guidance and remove obsolete text. Do not append a feature or fix
+  narrative for each development task. Internal-only changes need no README edit.
+- Put version-by-version changes in CHANGELOG.md, implementation rationale and
+  acceptance evidence in existing docs/domain/history records, and reusable agent
+  instructions in AGENTS.md. Keep issue timelines, test counts, benchmark corpora,
+  internal algorithms, and debugging narratives out of READMEs. Retain concise
+  user-facing limits and recovery steps; link to deeper records when useful
+  instead of copying them. Small fixes do not require new documents.
+- Before delivering a README change, review the affected section as a complete
+  user workflow, not just the added lines: keep required steps easy to find,
+  remove duplication and development residue, and align both language versions.
+  Split genuinely needed advanced usage into a linked user guide when it obscures
+  the common workflow; do not use an arbitrary line limit or move the same bloat
+  into another document.
 - Keep reusable architecture and acceptance conclusions in existing domain or
   history records; use `docs/project-history/<project-name>/` for substantial
   completed work. Small fixes do not need new documents. Replace completed plans
