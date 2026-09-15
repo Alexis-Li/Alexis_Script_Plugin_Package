@@ -50,7 +50,11 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   the product. The root README also owns the tool index and development setup.
 - Update the relevant README section in place when behavior changes; consolidate
   overlapping guidance and remove obsolete text. Do not append a feature or fix
-  narrative for each development task. Internal-only changes need no README edit.
+  narrative for each development task. Write for a first-time user who has not
+  seen the development conversation. When a requirement is removed, delete the
+  obsolete instruction rather than adding reassurance about its removal (for
+  example, "no need to install X") unless existing users need a migration step.
+  Internal-only changes need no README edit.
 - Put version-by-version changes in CHANGELOG.md, implementation rationale and
   acceptance evidence in existing docs/domain/history records, and reusable agent
   instructions in AGENTS.md. Keep issue timelines, test counts, benchmark corpora,
@@ -60,6 +64,10 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - Before delivering a README change, review the affected section as a complete
   user workflow, not just the added lines: keep required steps easy to find,
   remove duplication and development residue, and align both language versions.
+  For each added or revised statement, identify the user decision, action, or
+  recovery it supports. If removing it leaves those unchanged and it only
+  explains a past fix or an implementation choice, omit it. Apply this check to
+  user-facing UI text and usage guides as well.
   Split genuinely needed advanced usage into a linked user guide when it obscures
   the common workflow; do not use an arbitrary line limit or move the same bloat
   into another document.

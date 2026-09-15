@@ -30,12 +30,26 @@ The component paths below are relative to this product directory.
 
 ### Topia Engine 5.7.4
 
-Close Unreal Editor. Set `TOPIA_ENGINE_ROOT` to the directory containing
+**Recommended: double-click wizard (Windows, Chinese UI)**
+
+Close Unreal Editor and ensure the source plugin is installed at the project's
+`Plugins/MtoULiveLink` directory.
+Double-click `tools/build_mtou_topia_gui.cmd`, select the project `.uproject`, then
+the company engine's `Engine/Binaries/Win64/UnrealEditor.exe`. Check the displayed
+paths and click OK. Wait for the success message before opening the project.
+On failure, share the console error and `Build log` path with a technical teammate.
+If a compiler or SDK is missing, ask a technical teammate to configure
+it or supply a plugin already compiled for the same company engine version.
+After compilation, the tool replaces the target plugin's build outputs.
+To copy the wizard separately, keep `build_mtou_topia_gui.cmd`,
+`build_mtou_topia_gui.ps1`, and `build_mtou_topia.ps1` in the same folder.
+
+**Command-line alternative**: Close Unreal Editor. Set `TOPIA_ENGINE_ROOT` to the directory containing
 `Engine` and `ATHENA_UPROJECT` to your target `.uproject`, then run this command
-from the repository root (requires PowerShell 7):
+from the repository root:
 
 ```powershell
-pwsh ./tools/build_mtou_topia.ps1 `
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia.ps1 `
   -EngineRoot $env:TOPIA_ENGINE_ROOT `
   -ProjectFile $env:ATHENA_UPROJECT `
   -Apply

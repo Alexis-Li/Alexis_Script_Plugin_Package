@@ -12,6 +12,13 @@ SCRIPT = ROOT / "tools" / "build_mtou_topia.ps1"
 class BuildMtoUTopiaScriptTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required")
     def test_json_dry_run_validates_without_writing_binaries(self):
+        self.check_dry_run("pwsh")
+
+    @unittest.skipUnless(shutil.which("powershell.exe"), "Windows PowerShell is required")
+    def test_windows_powershell_dry_run_without_powershell_7(self):
+        self.check_dry_run("powershell.exe")
+
+    def check_dry_run(self, executable):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             engine_root = root / "engine-root"
@@ -35,8 +42,10 @@ class BuildMtoUTopiaScriptTests(unittest.TestCase):
 
             completed = subprocess.run(
                 [
-                    "pwsh",
+                    executable,
                     "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
                     "-File",
                     str(SCRIPT),
                     "-EngineRoot",

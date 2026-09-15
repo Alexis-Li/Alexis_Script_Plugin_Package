@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a Windows double-click Chinese wizard for the Topia build helper, with
+  project/engine file pickers, a validated installation preview, and result dialogs.
+  Use the built-in Windows PowerShell runtime without requiring PowerShell 7.
+
 - Fix Issue #44 connection rejection for non-zero tiny pupil scales: UE now uses
   checked finite matrix inversion instead of an absolute determinant tolerance,
   bypasses the engine's tiny-axis identity fallback, and preserves tiny scales

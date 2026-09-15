@@ -28,12 +28,23 @@ MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 May
 
 ### Topia Engine 5.7.4
 
-关闭 Unreal Editor。将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，
-将 `ATHENA_UPROJECT` 设为目标 `.uproject`，然后在仓库根目录运行以下命令
-（需要 PowerShell 7）：
+**推荐：双击向导（Windows）**
+
+关闭 Unreal Editor，确认项目 `Plugins/MtoULiveLink` 已放入源码插件。
+双击仓库中的 `tools/build_mtou_topia_gui.cmd`，选择项目 `.uproject`，再选择公司引擎的
+`Engine/Binaries/Win64/UnrealEditor.exe`。核对显示的路径后点击“确定”，等待成功提示再打开项目。
+失败时将控制台中的错误及 `Build log` 路径交给技术同事。
+若提示缺少编译器或 SDK，请由技术同事配置，
+或提供与同一公司引擎版本匹配的已编译插件。
+编译完成后会替换目标插件的编译产物。
+如需单独复制向导，请将 `build_mtou_topia_gui.cmd`、`build_mtou_topia_gui.ps1` 和
+`build_mtou_topia.ps1` 放在同一文件夹中。
+
+**命令行方式**：关闭 Unreal Editor。将 `TOPIA_ENGINE_ROOT` 设为包含 `Engine` 的目录，
+将 `ATHENA_UPROJECT` 设为目标 `.uproject`，然后在仓库根目录运行以下命令：
 
 ```powershell
-pwsh ./tools/build_mtou_topia.ps1 `
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia.ps1 `
   -EngineRoot $env:TOPIA_ENGINE_ROOT `
   -ProjectFile $env:ATHENA_UPROJECT `
   -Apply
