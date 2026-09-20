@@ -527,9 +527,9 @@ bool FMtoUPreviewPreparationSuccessTest::RunTest(const FString& Parameters)
         UMtoULiveLinkBinding::StaticClass(),
         GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, PreviewStaticMesh));
     TestNotNull(TEXT("legacy serialized SkeletalMesh field remains present"), LegacyProperty);
-    TestEqual(TEXT("legacy field is displayed as Driver Skeletal Mesh"),
+    TestEqual(TEXT("legacy field is labelled as the Primary Driver Skeletal Mesh"),
         LegacyProperty ? LegacyProperty->GetDisplayNameText().ToString() : FString(),
-        FString(TEXT("Driver Skeletal Mesh")));
+        FString(TEXT("Primary Driver Skeletal Mesh")));
     TestNotNull(TEXT("optional Preview Static Mesh field is present"), PreviewProperty);
 
     USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
@@ -4456,6 +4456,150 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
             && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
     DestroySocket(ReconnectClient);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsPreviewTest,
+    "MtoULiveLink.Editor.Preview.CharacterParts",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartsPreviewTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUCharacterPartsWorld"));
+    FMtoUFullCharacterFixtures Fixtures;
+    TestTrue(TEXT("full-character fixtures are created"),
+        MakeFullCharacterFixtures(*WorldPackage, *this, Fixtures));
+    if (!Fixtures.IsValid())
+    {
+        AddError(TEXT("full-character fixtures were not created"));
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUCharacterPartsWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+    TestTrue(TEXT("character part world and binding are created"), Actor && Binding);
+    if (!Actor || !Binding)
+    {
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+
+    // The Head is a separate mesh of the same character: it shares the Primary
+    // Driver's Skeleton and reference pose and owns a Morph the Driver has not.
+    USkeletalMesh* Head = DuplicateObject<USkeletalMesh>(Fixtures.FullDriver, WorldPackage);
+    TestNotNull(TEXT("separated Head mesh is created"), Head);
+    if (!Head)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+    Head->ClearFlags(RF_Public | RF_Standalone);
+    Head->SetSkeleton(Fixtures.FullDriver->GetSkeleton());
+    Head->SetRefSkeleton(Fixtures.FullDriver->GetRefSkeleton());
+    TestTrue(TEXT("the Head owns a part-only Morph"),
+        AddUniformMorph(*Head, FName(TEXT("HeadSway")), FVector3f(0.0f, 0.0f, 1.5f)));
+
+    Binding->SkeletalMesh = Fixtures.FullDriver;
+    Binding->PreviewStaticMesh = Fixtures.Preview;
+    FMtoUCharacterPart& HeadPart = Binding->AdditionalParts.AddDefaulted_GetRef();
+    HeadPart.PartId = FGuid::NewGuid();
+    HeadPart.PartName = TEXT("Head");
+    HeadPart.SkeletalMesh = Head;
+    HeadPart.bEnabled = true;
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+
+    const TArray<TObjectPtr<UMtoUCharacterPartComponent>>& PartComponents =
+        Actor->GetCharacterPartComponents();
+    TestTrue(TEXT("the Head joins the displayed character before any Refresh"),
+        PartComponents.Num() == 1
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head
+        && Actor->GetCharacterPartDiagnostics().IsEmpty());
+
+    const FMtoUPreviewReadiness Refresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    TestTrue(TEXT("Model preview readies the garment with a separated part present"),
+        Refresh.IsUsable() && Actor->GetPreviewReadiness().IsUsable());
+    TestNotNull(TEXT("the garment Preview is generated"), Refresh.GeneratedPreview);
+    const USkeletalMesh* Generated = Refresh.GeneratedPreview;
+    if (!Generated)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    // Garment identification, weight transfer, and Preview Morph transfer stay
+    // Primary-only: the part's geometry and Morph library never enter the
+    // Generated Preview.
+    const auto GeneratedMorph = [Generated](const TCHAR* Name)
+    {
+        return Generated ? Generated->FindMorphTarget(FName(Name)) : nullptr;
+    };
+    TestNotNull(TEXT("the garment Morph still reaches the Generated Preview"),
+        GeneratedMorph(TEXT("GarmentFlare")));
+    TestNull(TEXT("the part-only Morph never enters the Generated Preview"),
+        GeneratedMorph(TEXT("HeadSway")));
+    TestNull(TEXT("a non-garment Driver Morph stays out of the Generated Preview"),
+        GeneratedMorph(TEXT("FaceBlink")));
+
+    TestTrue(TEXT("Model preview shows the garment, the Primary, and the part together"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Generated
+        && PartComponents.Num() == 1
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head
+        && PartComponents[0]->GetSkeletalMeshAsset()->GetSkeleton()
+            == Fixtures.FullDriver->GetSkeleton());
+
+    // A composition change is not a Preview revision change: the generated
+    // garment survives while the character composition resynchronizes.
+    Binding->AdditionalParts[0].bEnabled = false;
+    Actor->NotifyCharacterPartsChanged();
+    const FMtoUPreviewReadiness AfterDisable = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("disabling a part keeps the current garment Preview ready"),
+        AfterDisable.IsUsable()
+        && AfterDisable.GeneratedPreview == Generated
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview);
+    TestTrue(TEXT("a disabled part leaves the character display"),
+        Actor->GetCharacterPartComponents().IsEmpty());
+    TestTrue(TEXT("the disabled part stays visible in the Binding configuration"),
+        Actor->GetCharacterPartSummary().Contains(TEXT("Head (disabled)")));
+
+    // A reimported part is not a Preview revision change either: the session
+    // must end for the next negotiation, while the generated garment and its
+    // readiness survive and the part keeps its display component.
+    Binding->AdditionalParts[0].bEnabled = true;
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("re-enabling the part restores its display component"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Head);
+    if (GEditor)
+    {
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Head);
+    }
+    const FMtoUPreviewReadiness AfterPartReimport = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("a part reimport keeps the current garment Preview ready"),
+        AfterPartReimport.IsUsable()
+        && AfterPartReimport.GeneratedPreview == Generated
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Head);
+
+    // The Preview revision boundary is unchanged: a Primary Driver reimport
+    // still invalidates the garment Preview.
+    if (GEditor)
+    {
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(Fixtures.FullDriver);
+    }
+    TestTrue(TEXT("a Primary Driver reimport still invalidates the Preview"),
+        !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+
+    World->DestroyWorld(false);
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "MtoULiveLinkSource.h"
 
 #include "MtoULiveLinkActor.h"
+#include "MtoUCharacterComposition.h"
 #include "MtoULiveLinkBinding.h"
 #include "MtoUConnectionNegotiator.h"
 
@@ -1017,6 +1018,9 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     }
 
     AMtoULiveLinkActor* Actor = Actors[0];
+    // One user-facing text for every invalid-Binding refusal.
+    const TCHAR* const InvalidBindingMessage =
+        TEXT("The MtoU_LiveLink binding is invalid.");
     UMtoULiveLinkBinding* Binding = Actor->GetBinding();
     if (!Binding)
     {
@@ -1024,23 +1028,31 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             TEXT("%s has no MtoU_LiveLink Binding."), *Actor->GetName());
         Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
         EnqueueErrorOnGameThread(
-            TEXT("INVALID_BINDING"),
-            TEXT("The MtoU_LiveLink binding is invalid."),
+            FMtoUCompositionFailures::InvalidBinding,
+            InvalidBindingMessage,
             Details);
         return;
     }
-    USkeletalMesh* DriverMesh = Binding->SkeletalMesh;
-    if (!DriverMesh)
+    // The composed character is resolved once per connection: the Primary
+    // Driver defines the skeleton baseline, and every enabled Additional Part
+    // must map onto it before any pose can be published.
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    if (!Composition.IsUsable())
     {
         const FString Details = FString::Printf(
-            TEXT("%s binding has no Skeletal Mesh."), *Actor->GetName());
+            TEXT("%s character composition is not usable:\n%s"),
+            *Actor->GetName(),
+            *Composition.Diagnostics);
         Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
         EnqueueErrorOnGameThread(
-            TEXT("INVALID_BINDING"),
-            TEXT("The MtoU_LiveLink binding is invalid."),
+            Composition.FailureCategory,
+            Composition.FailureCategory == FMtoUCompositionFailures::SkeletonMismatch
+                ? TEXT("An enabled Additional Part does not match the Primary Driver Skeletal Mesh.")
+                : InvalidBindingMessage,
             Details);
         return;
     }
+    USkeletalMesh* DriverMesh = Composition.Parts[0].Mesh;
 
     const bool bModelWorkflow = Message.Workflow == FMtoUWorkflows::Model;
     const FMtoUPreviewReadiness Readiness = Actor->GetPreviewReadiness();
@@ -1060,21 +1072,13 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         return;
     }
 
-    // Animation drives the bound Driver Skeletal Mesh. Model drives the
-    // Generated garment and the original Driver follower, so its accepted
-    // curve set is the union of both displayed Morph libraries.
+    // Animation drives the bound Primary Driver Skeletal Mesh; Model drives the
+    // Generated garment, the original Driver follower, and every enabled part.
+    // Either way the streamed library is the composed character's Morph Targets,
+    // so a name that only some meshes own still reaches the meshes that have it.
     USkeletalMesh* Mesh = bModelWorkflow ? Readiness.GeneratedPreview : DriverMesh;
     FMtoUTargetDescription Target = DescribeTarget(*Mesh);
-    if (bModelWorkflow)
-    {
-        for (const TObjectPtr<UMorphTarget>& MorphTarget : DriverMesh->GetMorphTargets())
-        {
-            if (MorphTarget)
-            {
-                Target.MorphTargetNames.AddUnique(MorphTarget->GetFName());
-            }
-        }
-    }
+    Composition.AppendMorphNames(Target.MorphTargetNames);
     const int32 TargetMorphCount = Target.MorphTargetNames.Num();
 
     FMtoUCharacterDescription Character;

@@ -143,6 +143,24 @@ Those records do not establish a complete 0.5.0 production or release gate.
   Preview weight-transfer warning remains a visual review boundary rather than
   a skeleton-connection failure.
 
+- **2026-09-20:** Completed Issue #45 on `main`: one Binding now describes a
+  character delivered as several Skeletal Meshes, with the existing
+  `SkeletalMesh` field kept as the Primary Driver and a labelled Additional
+  Parts list beside it. One shared resolution validates every enabled part
+  against the Primary - same Skeleton asset, bones mapped by name and parent
+  path, compatible reference pose and import space, no bone the Primary lacks -
+  and names the offending part, bone, or pose delta when it refuses. Enabled
+  parts pose from the one `MtoU_Character` subject under the Actor transform,
+  the streamed Morph library became the deduplicated union of the Primary and
+  the enabled parts, and Model preview displays the Generated garment, the
+  hidden-slot Driver, and every part while garment resolution stays
+  Primary-only. Composition changes end the session without invalidating an
+  already generated garment Preview, and unclaimed components never survive a
+  resynchronization. Stock UE 5.7.4 build, all 65 `MtoULiveLink` Automation
+  tests, Maya pure 140/140, Maya 2022.4 host 23/23, repository validation, and
+  the Unreal packaging dry-run pass. The real split-asset visual acceptance
+  remains the owner's gate and is recorded as not performed.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -157,6 +175,7 @@ Those records do not establish a complete 0.5.0 production or release gate.
 - [Preview Refresh optimization](preview-refresh-optimization.md)
 - [Preview Refresh geometry-scale measurements](preview-refresh-geometry-scale.md)
 - [Complete-skeleton connection and preview acceptance](complete-skeleton-acceptance.md)
+- [Character-part composition acceptance](character-parts-acceptance.md)
 
 ## Current Project
 

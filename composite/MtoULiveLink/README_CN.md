@@ -54,20 +54,40 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 
 ## 准备角色
 
-- Maya 的变形骨架应与 Unreal 的 **Driver Skeletal Mesh** 匹配，包括骨骼名称和
-  父子关系；骨骼之间的中间分组也会参与匹配。插件不提供自动重定向，Maya 增删
-  骨骼后需同步更新 Unreal 资产。
-- 预览服装时，准备与 Driver 服装位置对齐的 **Preview Static Mesh**。
+- Maya 的变形骨架应与 Unreal 的 **Primary Driver Skeletal Mesh** 匹配，包括骨骼
+  名称和父子关系；骨骼之间的中间分组也会参与匹配。插件不提供自动重定向，
+  Maya 增删骨骼后需同步更新 Unreal 资产。
+- 预览服装时，准备与 Primary Driver 服装位置对齐的 **Preview Static Mesh**。
   服装与身体等非服装几何体应使用不同的导入材质槽。
 - 预览 BlendShape 时，Maya BlendShape 与 Unreal Morph Target 需要名称匹配，
   并在 Maya 中开启“传递 BS”。
 
+### 拆分角色部件
+
+当同一个角色由多个 Skeletal Mesh 组成时，将保留完整变形层级的网格指定为
+Primary Driver，其余网格添加到 Binding 的 **Additional Parts**。所有启用部件
+会在同一个连接下作为同一个角色摆姿和显示：
+
+- 只有 Primary Driver 定义骨架基准，并提供服装识别、权重转移和
+  **Preview Morph transfer**；身体、面部和 BlendShape 预览仍通过它生效。
+- 每个部件包含名称、Skeletal Mesh 和 **Enabled** 开关。部件必须与 Primary
+  Driver 共用同一个 **Skeleton** 资产，其骨骼需按名称与父路径映射到 Primary，
+  并匹配 Primary 对应骨骼的参考姿势。部件可以使用更少的骨骼和不同的几何体；
+  Primary 中不存在的骨骼会被拒绝，并提示部件与骨骼名称。
+- 只有某个部件拥有的 Morph Target 也会传输；多个部件同名的 Morph 会接收到
+  相同数值。
+- 新增、删除、启用、停用或替换部件都会结束当前连接，之后需在 Maya 中重连。
+  已生成的服装预览会保留，只有在 Primary Driver、Preview Static Mesh 或其导入
+  数据变更后才需要 **Refresh Preview**。
+- 重命名部件或调整列表顺序无需重连。
+
 ## 首次连接
 
 1. 在 Unreal 中创建 **MtoU_LiveLink Binding** 资产，指定
-   **Driver Skeletal Mesh**。
+   **Primary Driver Skeletal Mesh**，并按需添加 **Additional Parts**。
 2. 将 Binding 资产从内容浏览器拖入关卡，创建对应的 Binding Actor。
-   在细节面板的 **MtoU** 分类中操作插件控件。
+   在细节面板的 **MtoU** 分类中操作插件控件；其中的 **Character parts** 行会
+   列出解析后的角色组成，并提示无法加入角色的部件。
 3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击“设置角色”。
    检查检测到的 Display 控制器、服装、场景帧率和传输上限。
 4. 选择“动画”，点击“连接”。在 Maya 中摆姿、拖动时间轴或播放动画，
@@ -104,10 +124,11 @@ BlendShape 变形。没有 BlendShape 的服装可正常使用骨骼驱动预览
 | 问题 | 处理方法 |
 | --- | --- |
 | 骨架不匹配 | 检查 Maya 选择的根骨骼、提示中的骨骼与父路径，以及 Unreal Driver 网格是否为最新版本。 |
+| 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查该部件是否与 Primary Driver 共用同一个 **Skeleton** 资产、提示的骨骼是否在 Primary 中以相同的父骨骼存在，以及参考姿势是否匹配。 |
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |
 | BlendShape 未生效 | 检查“传递 BS”、名称匹配、当前服装及连接诊断。模型预览的源资产变更后需重新刷新。 |
-| 修改后连接断开 | 更换服装、模式或“传递 BS”后需重连；刷新也会断开当前连接。修改或重新导入任一网格后，刷新模型预览并重连。 |
+| 修改后连接断开 | 更换服装、模式、“传递 BS”或角色部件后需重连；刷新也会断开当前连接。修改或重新导入 Primary Driver 或 Preview Static Mesh 后，刷新模型预览并重连。 |
 
 预览时请保留 Binding Actor 并保持其关卡加载；删除 Actor 或卸载关卡会结束连接。
 

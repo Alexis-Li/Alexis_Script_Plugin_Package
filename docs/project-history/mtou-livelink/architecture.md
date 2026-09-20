@@ -996,6 +996,52 @@ overflow-wrapping range, and the extreme-integer cases; a documented 701-bone
 production Character remains supported within the fixed parsed-memory budget
 at the maximum frame count.
 
+## Character Composition and Additional Parts
+
+Date: 2026-09-20
+
+Issue #45 makes one Binding describe a character that is delivered as several
+Skeletal Meshes. The existing `SkeletalMesh` field keeps its serialized name and
+meaning and is presented as the Primary Driver Skeletal Mesh; a new labelled
+Additional Parts list holds a display name, a Skeletal Mesh, an enabled flag, and
+an internal stable identity that is assigned and repaired automatically, so
+renaming or reordering a part is never a change of identity.
+
+One private resolution owns every composition rule for placement, connection,
+and diagnostics. It reports the Primary Driver and each Additional Part with the
+named reason a part cannot join the character: an enabled part without a mesh, a
+part that repeats the Primary Driver, a different Skeleton asset, bones that are
+absent from the Primary or hang under a different parent, and shared bones whose
+component-space reference pose differs beyond a scale-relative tolerance that
+also covers a different import space. Disabled parts are neither validated nor
+displayed. Placement refuses only a missing Primary Driver, connection refuses
+any unusable composition with the part-named diagnostics behind
+`SKELETON_MISMATCH` or `INVALID_BINDING`, and the Binding Actor publishes the same
+resolution to the Details panel.
+
+A composed character keeps one streaming session and one `MtoU_Character`
+subject. Each enabled part owns a transient display component created, reused,
+or destroyed by identity; every one of them evaluates that single subject, so
+body, head, and face bones move the whole character under the Actor transform,
+and the streamed Morph library is the deduplicated union of the Primary Driver
+and the enabled parts, which is why a part-only Morph is no longer filtered and a
+shared name reaches every mesh that owns it. Model preview displays the Generated
+garment, the hidden-slot Driver, and the enabled parts together, while garment
+resolution, weight transfer, Preview Morph transfer, and the Frozen Driver
+garment surface remain Primary-only.
+
+Composition changes are classified separately from Preview revision changes.
+Adding, removing, enabling, disabling, or replacing a part ends the active
+session at the existing idempotent boundary and resynchronizes the display
+components, while an already generated garment Preview and its readiness survive
+because the Primary Driver and the imported Preview Static Mesh still describe
+the same revision. A component the current composition does not claim is
+destroyed with its Morph state, so Actor duplication, level reload, reimport, and
+undo leave no ghost or duplicate part. Protocol v6 is unchanged: Maya already
+publishes every visible skinned mesh of the character with one alias per
+BlendShape name, so a separated Head contributes its own aliases through the
+existing discovery rule.
+
 ## Documentation and Packaging
 
 The composite project includes matching English and Chinese README content

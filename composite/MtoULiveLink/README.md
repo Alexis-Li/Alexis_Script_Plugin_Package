@@ -59,22 +59,47 @@ Omit `-Apply` to check the paths and preview the installation first.
 
 ## Prepare your character
 
-- Use a Maya deformation skeleton that matches the Unreal **Driver Skeletal
-  Mesh**, including bone names and parent relationships. Intermediate groups
-  between joints also participate in matching. The plugin does not retarget;
-  update the Unreal asset after adding or removing bones in Maya.
+- Use a Maya deformation skeleton that matches the Unreal **Primary Driver
+  Skeletal Mesh**, including bone names and parent relationships. Intermediate
+  groups between joints also participate in matching. The plugin does not
+  retarget; update the Unreal asset after adding or removing bones in Maya.
 - For garment preview, prepare a **Preview Static Mesh** aligned with the
-  Driver garment. Keep garment and non-garment geometry in separate imported
-  material slots.
+  Primary Driver garment. Keep garment and non-garment geometry in separate
+  imported material slots.
 - To preview BlendShapes, use matching Maya BlendShape and Unreal Morph Target
   names and enable **Transfer BS** (传递 BS) in Maya.
 
+### Separate character parts
+
+When one character is delivered as several Skeletal Meshes, assign the mesh with
+the complete deformation hierarchy as the Primary Driver and add the others
+under **Additional Parts** on the Binding. All enabled parts then pose and
+display as one character under one connection:
+
+- The Primary Driver alone defines the skeleton baseline and supplies garment
+  resolution, weight transfer, and **Preview Morph transfer**. Body, face, and
+  BlendShape preview keep working through it.
+- Give each part a name, its Skeletal Mesh, and an **Enabled** flag. A part must
+  share the Primary Driver's **Skeleton** asset, map its bones by name and
+  parent path onto the Primary, and match the Primary's reference pose for those
+  bones. A part may use fewer bones and different geometry; a bone the Primary
+  does not have is rejected with the part and bone name.
+- A Morph Target that only a part owns still streams, and a name owned by
+  several parts receives the same value on each of them.
+- Adding, removing, enabling, disabling, or replacing a part ends the current
+  connection, so reconnect in Maya afterwards. A generated garment preview
+  survives, so **Refresh Preview** is only needed after changing the Primary
+  Driver, the Preview Static Mesh, or their imported data.
+- Renaming a part or reordering the list needs no reconnect.
+
 ## First connection
 
-1. In Unreal, create an **MtoU_LiveLink Binding** asset and assign its
-   **Driver Skeletal Mesh**.
+1. In Unreal, create an **MtoU_LiveLink Binding** asset, assign its
+   **Primary Driver Skeletal Mesh**, and add any **Additional Parts**.
 2. Drag the Binding asset from the Content Browser into the level to create
    its Binding Actor. Use the **MtoU** section in Details for plugin controls.
+   Its **Character parts** row lists the resolved composition and reports any
+   part that cannot join the character.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Check the detected Display controller, outfit,
    scene frame rate, and transmission cap.
@@ -117,10 +142,11 @@ mesh display. Configure lighting and shadow settings on **SkeletalMeshComponent*
 | Problem | What to do |
 | --- | --- |
 | Skeleton mismatch | Check the selected Maya root, reported bone and parent paths, and whether the Unreal Driver mesh is up to date. |
+| An Additional Part is rejected | The diagnostics name the part and the reason. Check that it shares the Primary Driver **Skeleton** asset, that its reported bones exist in the Primary under the same parent, and that its reference pose matches. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |
 | BlendShapes do not appear | Check **Transfer BS**, matching names, the selected outfit, and the connection diagnostics. Refresh the Model preview after changing its source assets. |
-| Connection ends after a change | Reconnect after changing the outfit, mode, or **Transfer BS**. Refreshing also disconnects the session. After changing or reimporting either mesh, refresh the Model preview and reconnect. |
+| Connection ends after a change | Reconnect after changing the outfit, mode, **Transfer BS**, or the character parts. Refreshing also disconnects the session. After changing or reimporting the Primary Driver or the Preview Static Mesh, refresh the Model preview and reconnect. |
 
 Keep the Binding Actor and its level loaded while previewing; deleting the actor
 or unloading its level ends the connection.

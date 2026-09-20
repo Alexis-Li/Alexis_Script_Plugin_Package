@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- Support a Primary Driver plus enabled Additional Parts in one Binding
+  (Issue #45): the Binding keeps its existing `SkeletalMesh` field as the
+  Primary Driver and adds a labelled list of parts with a stable internal
+  identity. One shared resolution validates each enabled part against the
+  Primary - same Skeleton asset, bones mapped by name and parent path,
+  compatible reference pose and import space, no bone the Primary lacks - and
+  reports the offending part, bone, or pose delta before any frame is
+  published. Placement, connection, and the Details panel consume that one
+  resolution instead of restating its rules.
+
+- Pose, Morph, and Preview behavior for a composed character (Issue #45): every
+  enabled part owns a transient display component that evaluates the one
+  `MtoU_Character` subject, so body, head, and face bones move all parts
+  together under the Actor transform. The streamed Morph library becomes the
+  deduplicated union of the Primary and the enabled parts, so a part-only Morph
+  is no longer filtered out and a shared name receives the same value on each
+  mesh that owns it. Model preview shows the Generated garment, the hidden-slot
+  Driver, and every part, while garment identification, weight transfer, and
+  Preview Morph transfer stay Primary-only.
+
+- Separate character-composition changes from Preview revision changes (Issue
+  #45, extends ADR-0002): adding, removing, enabling, disabling, or replacing a
+  part ends the active session at the existing idempotent boundary and rebuilds
+  only the affected display components, while an already generated garment
+  Preview and its readiness survive. Renaming a part or reordering the list
+  changes neither the session nor the Preview. Disabled or replaced components
+  are destroyed with their Morph state, and components the current composition
+  does not claim never survive a resynchronization, so duplication, reload, and
+  reimport leave no ghost or duplicate part.
+
+- Maya publishes an independent part's BlendShapes through the existing
+  discovery rule (Issue #45): a separately named Head mesh skinned to the same
+  joints is already a visible skinned mesh, so its aliases join one manifest,
+  a shared alias is transmitted once for every mesh that owns it, and
+  disagreeing values for one alias stay a hard sampling error. Protocol v6 is
+  unchanged.
+
 - Remove the superseded v5 conformance corpus from the source tree. Keep v6 as
   the active contract and consolidate corpus ownership and historical lookup
   guidance in the architecture record and ADR 0013.

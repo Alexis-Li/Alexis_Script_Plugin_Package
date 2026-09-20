@@ -1,5 +1,6 @@
 #include "MtoULiveLinkActor.h"
 
+#include "MtoUCharacterComposition.h"
 #include "MtoULiveLinkBinding.h"
 #include "MtoULiveLinkSource.h"
 
@@ -300,10 +301,22 @@ void AMtoULiveLinkActor::SetModelDiagnostics(
 
 void AMtoULiveLinkActor::NotifyBindingInputsChanged()
 {
+    // Primary Driver and Preview inputs are the Preview revision, but they are
+    // also the composition baseline every Additional Part is validated
+    // against, so the resolved composition is republished here too.
+    SyncCharacterComposition();
     MtoURequestStreamingSessionEnd();
     RebindInputNotifications();
     InvalidateGeneratedPreview(TEXT("Binding inputs changed. Run Refresh Preview."));
     ReapplyDisplayTarget();
+}
+
+void AMtoULiveLinkActor::NotifyCharacterPartsChanged()
+{
+    // One composition boundary: it resolves the new parts, ends an outdated
+    // session, and resynchronizes the components, their sources, and their
+    // display.
+    SyncCharacterComposition();
 }
 
 void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FString& Reason)
@@ -319,10 +332,14 @@ void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FS
     MtoURequestStreamingSessionEnd();
     InvalidateGeneratedPreview(FString::Printf(
         TEXT("%s changed (%s). Run Refresh Preview."), *Asset->GetName(), *Reason));
+    // A rebuilt Primary Driver can also change whether an Additional Part is
+    // still compatible, so the composition diagnostics are re-resolved here.
+    SyncCharacterComposition();
 }
 
 void AMtoULiveLinkActor::RefreshBinding()
 {
+    SyncCharacterComposition();
     RebindInputNotifications();
     ReapplyDisplayTarget();
 }
@@ -338,11 +355,7 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
     DriverMeshComponent->SetForcedLOD(0);
     DriverMeshComponent->ShowAllMaterialSections(0);
     DriverMeshComponent->SetSkeletalMeshAsset(nullptr);
-    DriverMeshComponent->SetLightingChannels(
-        SkeletalMeshComponent->LightingChannels.bChannel0,
-        SkeletalMeshComponent->LightingChannels.bChannel1,
-        SkeletalMeshComponent->LightingChannels.bChannel2);
-    DriverMeshComponent->SetCastInsetShadow(SkeletalMeshComponent->bCastInsetShadow);
+    InheritPrimaryDisplaySettings(*DriverMeshComponent);
 
     switch (DisplayTarget)
     {
@@ -368,16 +381,159 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         SkeletalMeshComponent->SetSkeletalMeshAsset(nullptr);
         break;
     }
-    SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
-    SkeletalMeshComponent->SetUpdateAnimationInEditor(true);
-    SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-    SkeletalMeshComponent->SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
-    if (ULiveLinkInstance* Instance =
-            Cast<ULiveLinkInstance>(SkeletalMeshComponent->GetAnimInstance()))
+    ConfigureLiveLinkInstance(*SkeletalMeshComponent);
+    ApplyCharacterPartDisplay();
+}
+
+void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Component)
+{
+    Component.SetDisablePostProcessBlueprint(true);
+    Component.SetUpdateAnimationInEditor(true);
+    Component.SetAnimationMode(EAnimationMode::AnimationBlueprint);
+    Component.SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
+    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component.GetAnimInstance()))
     {
+        // Every part evaluates the one character subject, so the whole composed
+        // character poses from the single streaming session.
         Instance->SetSubject(
             FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
         Instance->EnableLiveLinkEvaluation(true);
+    }
+}
+
+void AMtoULiveLinkActor::InheritPrimaryDisplaySettings(USkeletalMeshComponent& Component)
+{
+    // A secondary display component shows the same character, so it follows
+    // the primary's lighting and shadow settings instead of owning its own.
+    Component.SetLightingChannels(
+        SkeletalMeshComponent->LightingChannels.bChannel0,
+        SkeletalMeshComponent->LightingChannels.bChannel1,
+        SkeletalMeshComponent->LightingChannels.bChannel2);
+    Component.SetCastInsetShadow(SkeletalMeshComponent->bCastInsetShadow);
+}
+
+void AMtoULiveLinkActor::SyncCharacterComposition()
+{
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    CharacterPartDiagnostics = Composition.Diagnostics;
+    CharacterPartSummary = Composition.Summary;
+
+    if (CharacterPartsMatch(Composition))
+    {
+        // Renaming a part or reordering the list changes neither a session nor
+        // a display component; only the enabled composition is observable.
+        return;
+    }
+    // Adding, removing, enabling, disabling, or replacing a part invalidates
+    // the negotiated composition: the running session must end before its
+    // frames and cached commands can reach the new component set. Removing the
+    // Primary Driver removes the whole character, parts included.
+    MtoURequestStreamingSessionEnd();
+    ReconcileCharacterPartComponents(Composition);
+    // The component set changed, so its source observations and its display
+    // follow here instead of in every caller.
+    RebindInputNotifications();
+    ApplyCharacterPartDisplay();
+}
+
+bool AMtoULiveLinkActor::CharacterPartsMatch(const FMtoUCharacterComposition& Composition) const
+{
+    const TArray<FMtoUCharacterPartIdentity>& Targets = Composition.GetEnabledIdentity();
+    if (CharacterPartComponents.Num() != Targets.Num())
+    {
+        return false;
+    }
+    for (int32 Index = 0; Index < Targets.Num(); ++Index)
+    {
+        const UMtoUCharacterPartComponent* Component = CharacterPartComponents[Index];
+        if (!Component || !Component->MatchesPart(Targets[Index].PartId, Targets[Index].Mesh))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void AMtoULiveLinkActor::ReconcileCharacterPartComponents(
+    const FMtoUCharacterComposition& Composition)
+{
+    // Adopt every part component the actor still owns. A component the current
+    // composition does not claim is a leftover, for example one the engine
+    // duplicated together with the actor; it is destroyed instead of reused.
+    TArray<UMtoUCharacterPartComponent*> Previous;
+    GetComponents(Previous);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Component : CharacterPartComponents)
+    {
+        if (Component && !Previous.Contains(Component))
+        {
+            Previous.Add(Component);
+        }
+    }
+
+    const TArray<FMtoUCharacterPartIdentity>& Targets = Composition.GetEnabledIdentity();
+    CharacterPartComponents.Reset(Targets.Num());
+    for (const FMtoUCharacterPartIdentity& Target : Targets)
+    {
+        UMtoUCharacterPartComponent* Component = nullptr;
+        for (int32 Index = Previous.Num() - 1; Index >= 0; --Index)
+        {
+            UMtoUCharacterPartComponent* Candidate = Previous[Index];
+            if (Candidate && Candidate->MatchesPart(Target.PartId, Target.Mesh))
+            {
+                Component = Candidate;
+                Previous.RemoveAt(Index, EAllowShrinking::No);
+                break;
+            }
+        }
+        if (!Component)
+        {
+            Component = NewObject<UMtoUCharacterPartComponent>(this);
+            Component->PartId = Target.PartId;
+            Component->PartMesh = Target.Mesh;
+            Component->SetupAttachment(SkeletalMeshComponent);
+            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Component->SetGenerateOverlapEvents(false);
+            Component->RegisterComponent();
+        }
+        CharacterPartComponents.Add(Component);
+    }
+
+    for (UMtoUCharacterPartComponent* Stale : Previous)
+    {
+        if (Stale)
+        {
+            DestroyCharacterPartComponent(*Stale);
+        }
+    }
+}
+
+void AMtoULiveLinkActor::DestroyCharacterPartComponent(UMtoUCharacterPartComponent& Component)
+{
+    // Drop the display and the animation state before unregistering, so a
+    // disabled or replaced part can never leave a visible or morph-carrying
+    // component behind.
+    Component.ClearMorphTargets();
+    Component.SetSkeletalMeshAsset(nullptr);
+    Component.SetAnimInstanceClass(nullptr);
+    Component.PartMesh = nullptr;
+    Component.DestroyComponent();
+}
+
+void AMtoULiveLinkActor::ApplyCharacterPartDisplay()
+{
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Component : CharacterPartComponents)
+    {
+        if (!Component)
+        {
+            continue;
+        }
+        // Parts follow the character display selection: the Driver and the
+        // Generated Preview both show the whole composed character, while the
+        // hidden state leaves no visible attachment behind.
+        InheritPrimaryDisplaySettings(*Component);
+        Component->SetSkeletalMeshAsset(
+            DisplayTarget == EMtoUDisplayTarget::Hidden ? nullptr : Component->PartMesh);
+        ConfigureLiveLinkInstance(*Component);
     }
 }
 
@@ -429,6 +585,17 @@ void AMtoULiveLinkActor::RebindInputNotifications()
         PreviewMeshBuiltHandle = Binding->PreviewStaticMesh->OnPostMeshBuild().AddUObject(
             this, &AMtoULiveLinkActor::HandlePreviewMeshBuilt);
     }
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Component : CharacterPartComponents)
+    {
+        if (!Component || !Component->PartMesh)
+        {
+            continue;
+        }
+        FMtoUObservedPartMesh& Observed = ObservedPartMeshes.AddDefaulted_GetRef();
+        Observed.Mesh = Component->PartMesh;
+        Observed.ChangedHandle = Component->PartMesh->GetOnMeshChanged().AddUObject(
+            this, &AMtoULiveLinkActor::HandleCharacterPartMeshChanged);
+    }
 }
 
 void AMtoULiveLinkActor::UnbindInputNotifications()
@@ -442,11 +609,37 @@ void AMtoULiveLinkActor::UnbindInputNotifications()
         ObservedPreviewMesh->GetOnMeshChanged().Remove(PreviewMeshChangedHandle);
         ObservedPreviewMesh->OnPostMeshBuild().Remove(PreviewMeshBuiltHandle);
     }
+    for (const FMtoUObservedPartMesh& Observed : ObservedPartMeshes)
+    {
+        if (Observed.Mesh.IsValid())
+        {
+            Observed.Mesh->GetOnMeshChanged().Remove(Observed.ChangedHandle);
+        }
+    }
+    ObservedPartMeshes.Reset();
     ObservedDriverMesh.Reset();
     ObservedPreviewMesh.Reset();
     DriverMeshChangedHandle.Reset();
     PreviewMeshChangedHandle.Reset();
     PreviewMeshBuiltHandle.Reset();
+}
+
+void AMtoULiveLinkActor::HandleCharacterPartMeshChanged()
+{
+    // Refresh runs synchronously on the Game Thread, so the only source
+    // rebuild events that can arrive while Building are produced by this
+    // build's own read of the source meshes; they must not self-invalidate.
+    if (PreviewState == EMtoUPreviewState::Building)
+    {
+        return;
+    }
+    // A rebuilt part can change its Skeleton, bones, Morph library, or
+    // reference pose, so the negotiated composition is stale: end the session
+    // and let the components and sources resynchronize. The garment Preview
+    // revision depends on the Primary Driver and the imported Preview, never
+    // on a part, so readiness survives.
+    MtoURequestStreamingSessionEnd();
+    SyncCharacterComposition();
 }
 
 void AMtoULiveLinkActor::HandleDriverMeshChanged()

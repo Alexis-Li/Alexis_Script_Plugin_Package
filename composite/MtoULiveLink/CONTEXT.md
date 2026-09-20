@@ -58,8 +58,28 @@ The formally bound Skeletal Mesh that supplies its reference skeleton, source
 skin weights, and Morph Target library. It is either the production
 full-character mesh containing body, face, hair, and exactly one current
 outfit, or a garment-only mesh; it never aggregates several outfit variants.
-Every Driver retains the same complete deformation hierarchy.
+Every Driver retains the same complete deformation hierarchy. Within a
+character composition it is the Primary Driver: the single skeleton baseline
+and the only source of garment Preview data.
 _Avoid_: Source mesh, final mesh, binding mesh
+
+**Character composition**:
+The one character a Binding describes: its Primary Driver together with the
+enabled Additional Parts. The composition owns which meshes pose and display
+together under one streaming session and one Live Link subject; it never
+introduces a second character, a second subject, or per-part connections.
+_Avoid_: Multi-character setup, mesh list, attachment list
+
+**Additional Part**:
+One Skeletal Mesh of the character composition beside the Primary Driver, with
+a display name, a Skeletal Mesh, and an enabled state. An enabled part shares
+the Primary Driver's Skeleton asset, maps every bone it contains onto the
+Primary by name and parent path, and matches the Primary's reference pose for
+those bones; it may use fewer bones and different geometry, and a bone the
+Primary does not have is a blocking incompatibility. A disabled part takes part
+in neither negotiation nor display, and parts never contribute to garment
+resolution, weight transfer, or Preview Morph transfer.
+_Avoid_: Sub-mesh, attachment, extra mesh, garment part
 
 **Driver garment surface**:
 The transient set of Driver LOD0 triangles selected as corresponding to the
@@ -94,7 +114,10 @@ _Avoid_: Preview asset, temporary asset, generated asset
 
 **Animation preview workflow**:
 The animator-facing workflow that displays evaluated Maya animation and
-matching BlendShapes on the formal Driver Skeletal Mesh.
+matching BlendShapes on the formal Driver Skeletal Mesh together with every
+enabled Additional Part. Its target Morph library is the deduplicated union of
+the Primary Driver and the enabled parts, so a name only some meshes own still
+streams and simply drives the meshes that have it.
 _Avoid_: Animation mode, Driver mode, legacy mode
 
 **Model preview workflow**:
@@ -102,8 +125,10 @@ The modeler-facing workflow that uses the selected Maya outfit as deformation
 context and displays its modified surface through a Generated Preview Skeletal
 Mesh under the current pose. With a full-character Driver, the original Driver
 also remains visible behind it with the resolved garment material slots hidden,
-preserving body, face, hair, and other non-garment parts without extra inputs.
-Matching live curves drive Morph Targets on either displayed mesh.
+preserving body, face, hair, and other non-garment parts without extra inputs;
+enabled Additional Parts stay displayed beside them. Matching live curves drive
+Morph Targets on the Generated Preview, the hidden Driver, and every part that
+owns the name.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:
@@ -146,8 +171,9 @@ _Avoid_: BS build, Morph transfer button, live Morph generation
 
 **Accepted Preview Morph set**:
 The name intersection between the selected Maya outfit's BlendShapes and the
-Generated Preview Skeletal Mesh Morph Targets negotiated for one Model preview
-streaming session. Only this set receives streamed values. An outfit that
+Morph Targets the Model preview displays: the Generated Preview Skeletal Mesh,
+the Primary Driver, and the enabled Additional Parts. Only this set receives
+streamed values, and each name drives the meshes that own it. An outfit that
 declares no BlendShape names has a valid empty accepted set; only a non-empty
 manifest with an empty intersection is a failed pairing.
 _Avoid_: Full Morph stream, active Morph library, transferred BS list

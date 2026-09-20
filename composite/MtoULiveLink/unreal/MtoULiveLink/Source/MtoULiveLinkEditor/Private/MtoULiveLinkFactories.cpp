@@ -1,5 +1,6 @@
 #include "MtoULiveLinkFactories.h"
 
+#include "MtoUCharacterComposition.h"
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
 
@@ -40,7 +41,9 @@ bool UMtoULiveLinkActorFactory::CanCreateActorFrom(
     }
 
     const UMtoULiveLinkBinding* Binding = Cast<UMtoULiveLinkBinding>(AssetData.GetAsset());
-    if (!Binding || !Binding->SkeletalMesh)
+    // Only the Primary Driver is a placement requirement: an Additional Part
+    // may stay incomplete while the user keeps configuring the Binding.
+    if (!FMtoUCharacterComposition::HasPrimaryDriver(Binding))
     {
         OutErrorMsg = LOCTEXT("MissingSkeletalMesh",
             "Select a Skeletal Mesh on the binding before placing it.");

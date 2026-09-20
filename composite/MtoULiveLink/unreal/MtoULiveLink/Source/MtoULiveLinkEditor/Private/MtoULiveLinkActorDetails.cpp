@@ -116,6 +116,41 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
             })
         ];
+
+    PreviewCategory.AddCustomRow(LOCTEXT("CharacterPartsFilter", "Character parts"))
+        .NameContent()
+        [
+            SNew(STextBlock)
+            .Text(LOCTEXT("CharacterParts", "Character parts"))
+        ]
+        .ValueContent()
+        .MinDesiredWidth(400.0f)
+        [
+            SNew(STextBlock)
+            .AutoWrapText(false)
+            .ColorAndOpacity_Lambda([Actor]()
+            {
+                return Actor.IsValid() && !Actor->GetCharacterPartDiagnostics().IsEmpty()
+                    ? FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f))
+                    : FSlateColor::UseForeground();
+            })
+            .Text_Lambda([Actor]()
+            {
+                if (!Actor.IsValid())
+                {
+                    return FText::GetEmpty();
+                }
+                const FString& Diagnostics = Actor->GetCharacterPartDiagnostics();
+                if (!Diagnostics.IsEmpty())
+                {
+                    return FText::FromString(FString::Printf(
+                        TEXT("%s\n%s"), *Actor->GetCharacterPartSummary(), *Diagnostics));
+                }
+                return Actor->GetCharacterPartSummary().IsEmpty()
+                    ? LOCTEXT("NoCharacterParts", "No Primary Driver Skeletal Mesh")
+                    : FText::FromString(Actor->GetCharacterPartSummary());
+            })
+        ];
 }
 
 FReply FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(TWeakObjectPtr<AMtoULiveLinkActor> Actor)

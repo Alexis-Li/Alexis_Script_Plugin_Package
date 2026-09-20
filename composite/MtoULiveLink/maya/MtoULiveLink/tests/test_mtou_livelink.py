@@ -3927,6 +3927,119 @@ class ProtocolTests(unittest.TestCase):
                     MODULE.make_frame_message([[0, 0, 0, 0, 0, 0, 1, 1, 1, value]], [])
 
 
+class CharacterPartDiscoveryTests(unittest.TestCase):
+    """A separated Head mesh publishes its BlendShapes like the Body's."""
+
+    BONES = ("|Group|root", "|Group|root|head")
+    MESHES = ("|Group|geometry|body", "|Group|geometry|head")
+    SHAPES = {
+        "|Group|geometry|body": "bodyShape",
+        "|Group|geometry|head": "headShape",
+    }
+    CLUSTERS = {
+        "|Group|root": ("bodyCluster",),
+        "|Group|root|head": ("bodyCluster", "headCluster"),
+    }
+    GEOMETRY = {
+        "bodyCluster": ("|Group|geometry|body",),
+        "headCluster": ("|Group|geometry|head",),
+    }
+    DEFORMERS = {
+        "|Group|geometry|body": ("bodyBlendShape", "bodyCluster"),
+        "|Group|geometry|head": ("headBlendShape", "headCluster"),
+    }
+    ALIASES = {
+        "bodyBlendShape": ("Smile", "weight[0]", "Blink", "weight[1]"),
+        "headBlendShape": ("Jaw", "weight[0]", "Smile", "weight[1]"),
+    }
+
+    def _fake_cmds(self):
+        shapes = self.SHAPES
+        parents = {}
+        for path in self.MESHES:
+            current = path
+            while "|" in current:
+                parent = current.rsplit("|", 1)[0]
+                parents[current] = [parent] if parent else []
+                current = parent
+        parents["|Group"] = []
+
+        def list_relatives(path, **kwargs):
+            if kwargs.get("parent"):
+                return list(parents.get(path, []))
+            if kwargs.get("shapes"):
+                return [shapes[path]]
+            return []
+
+        def list_connections(plug, **kwargs):
+            if kwargs.get("type") == "skinCluster":
+                return list(self.CLUSTERS.get(plug, ()))
+            return []
+
+        def list_history(node, **kwargs):
+            return list(self.DEFORMERS.get(node, ()))
+
+        def skin_cluster(cluster, **kwargs):
+            if kwargs.get("query") and kwargs.get("geometry"):
+                return list(self.GEOMETRY.get(cluster, ()))
+            return []
+
+        def node_type(path):
+            if path in shapes.values():
+                return "mesh"
+            if path in self.ALIASES:
+                return "blendShape"
+            if path in self.GEOMETRY:
+                return "skinCluster"
+            return "transform"
+
+        def get_attr(plug, **kwargs):
+            if plug.endswith(".intermediateObject"):
+                return False
+            return True
+
+        def alias_attr(node, **kwargs):
+            return list(self.ALIASES.get(node, ()))
+
+        def ls(*names, **kwargs):
+            known = set(shapes.values()) | set(self.MESHES)
+            return [name for name in names if name in known]
+
+        fake = type("FakeCmds", (), {
+            "listRelatives": staticmethod(list_relatives),
+            "listConnections": staticmethod(list_connections),
+            "listHistory": staticmethod(list_history),
+            "skinCluster": staticmethod(skin_cluster),
+            "nodeType": staticmethod(node_type),
+            "getAttr": staticmethod(get_attr),
+            "aliasAttr": staticmethod(alias_attr),
+            "ls": staticmethod(ls),
+            "attributeQuery": staticmethod(lambda attribute, **kwargs: False),
+        })
+        return fake
+
+    def test_head_mesh_is_a_visible_skinned_mesh_of_the_same_character(self):
+        fake_cmds = self._fake_cmds()
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            meshes = MODULE._visible_skinned_meshes(list(self.BONES))
+        self.assertEqual(list(self.MESHES), meshes)
+
+    def test_separated_head_blendshapes_join_one_manifest(self):
+        fake_cmds = self._fake_cmds()
+        with mock.patch.object(MODULE, "cmds", fake_cmds):
+            curves = MODULE._discover_curve_plugs(
+                list(self.BONES), list(self.MESHES))
+        self.assertEqual(["Smile", "Blink", "Jaw"],
+                         [curve["name"] for curve in curves])
+        by_name = {curve["name"]: curve["plugs"] for curve in curves}
+        # A name owned by both meshes becomes one curve with both plugs; the
+        # sampler then requires every plug to agree on one value.
+        self.assertEqual(["bodyBlendShape.weight[0]", "headBlendShape.weight[1]"],
+                         by_name["Smile"])
+        self.assertEqual(["bodyBlendShape.weight[1]"], by_name["Blink"])
+        self.assertEqual(["headBlendShape.weight[0]"], by_name["Jaw"])
+
+
 class StructuralHierarchyTests(unittest.TestCase):
     def _fake_cmds(self, children, types, joint_descendants=None,
                    parents=None, connections=None):

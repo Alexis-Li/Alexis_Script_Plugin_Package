@@ -378,6 +378,41 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(("Smile",), snapshot.curve_names)
         self.assertEqual((0.25,), frame.curves)
 
+    def test_separately_named_head_part_publishes_its_own_blendshape(self):
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        # A separated Head is its own visible skinned mesh of the same
+        # character, so its BlendShapes join the one published manifest.
+        body = cmds.polyCube(name="bodyMesh")[0]
+        body_target = cmds.duplicate(body, name="smileBody")[0]
+        body_blendshape = cmds.blendShape(
+            body_target, body, name="blendShapeBody")[0]
+        cmds.aliasAttr("Smile", body_blendshape + ".weight[0]")
+        cmds.skinCluster(root, body, name="skinBody")
+        cmds.setAttr(body_blendshape + ".Smile", 0.25)
+
+        head = cmds.polyCube(name="headMesh")[0]
+        cmds.setAttr(head + ".translateY", 12.0)
+        head_target = cmds.duplicate(head, name="jawHead")[0]
+        head_blendshape = cmds.blendShape(
+            head_target, head, name="blendShapeHead")[0]
+        cmds.aliasAttr("Jaw", head_blendshape + ".weight[0]")
+        cmds.aliasAttr("Smile", head_blendshape + ".weight[1]")
+        cmds.skinCluster(root, head, name="skinHead")
+        cmds.setAttr(head_blendshape + ".Jaw", 0.75)
+        cmds.setAttr(head_blendshape + ".Smile", 0.25)
+        cmds.select(root, replace=True)
+
+        scene = module._CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        snapshot = scene.snapshot()
+        frame = scene.sample()
+
+        # The Head's own name is transmitted once, and the name both meshes
+        # own is transmitted once for every mesh that owns it.
+        self.assertEqual(("Smile", "Jaw"), snapshot.curve_names)
+        self.assertEqual((0.25, 0.75), frame.curves)
+
     def test_same_alias_with_conflicting_values_is_rejected(self):
         group, root, unused_display = self._create_character_group()
         del group, unused_display

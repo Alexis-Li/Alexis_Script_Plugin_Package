@@ -6013,4 +6013,710 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
     return true;
 }
 
+namespace
+{
+/**
+ * A transient actor-owned Skeletal Mesh that shares the shared test mesh's
+ * Skeleton and reference pose, so it is a compatible character part until the
+ * test deliberately changes one of those.
+ */
+USkeletalMesh* MakeCharacterPartMesh(USkeletalMesh* Template, AActor& Owner)
+{
+    USkeletalMesh* Mesh = Template
+        ? DuplicateObject<USkeletalMesh>(Template, &Owner)
+        : nullptr;
+    if (Mesh)
+    {
+        Mesh->ClearFlags(RF_Public | RF_Standalone);
+        Mesh->SetFlags(RF_Transient);
+        Mesh->SetSkeleton(Template->GetSkeleton());
+        Mesh->SetRefSkeleton(Template->GetRefSkeleton());
+    }
+    return Mesh;
+}
+
+/** Adds one enabled part entry with a stable identity to a test Binding. */
+void AddCharacterPart(
+    UMtoULiveLinkBinding& Binding,
+    const FString& Name,
+    USkeletalMesh* Mesh,
+    const bool bEnabled = true)
+{
+    FMtoUCharacterPart& Part = Binding.AdditionalParts.AddDefaulted_GetRef();
+    Part.PartId = FGuid::NewGuid();
+    Part.PartName = Name;
+    Part.SkeletalMesh = Mesh;
+    Part.bEnabled = bEnabled;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsWorkflowTest,
+    "MtoULiveLink.Workflow.CharacterParts",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    TestTrue(TEXT("Live Link client feature is available"),
+        Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName));
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Actor->GetBinding())
+    {
+        return false;
+    }
+
+    // Body (Primary) and Head (Additional Part) are separate meshes of one
+    // character: they share the Skeleton and reference pose, while the Head
+    // owns one Morph the Body does not have and repeats one that it does.
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    USkeletalMesh* Primary = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    USkeletalMesh* Head = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    TestTrue(TEXT("test characters own their meshes"), Primary && Head);
+    if (!Primary || !Head)
+    {
+        return false;
+    }
+    TestTrue(TEXT("the Primary Driver owns a shared Morph"),
+        AddUniformMorph(*Primary, FName(TEXT("Shared")), FVector3f(1.0f, 0.0f, 0.0f)));
+    TestTrue(TEXT("the Head owns a Head-only Morph and repeats the shared Morph"),
+        AddUniformMorph(*Head, FName(TEXT("HeadOnly")), FVector3f(0.0f, 1.0f, 0.0f))
+        && AddUniformMorph(*Head, FName(TEXT("Shared")), FVector3f(1.0f, 0.0f, 0.0f)));
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    AddCharacterPart(*Binding, TEXT("Head"), Head);
+    Actor->NotifyCharacterPartsChanged();
+
+    USkeletalMeshComponent* SkeletalMeshComponent = Actor->GetSkeletalMeshComponent();
+    const TArray<TObjectPtr<UMtoUCharacterPartComponent>>& PartComponents =
+        Actor->GetCharacterPartComponents();
+    TestTrue(TEXT("the enabled part owns one display component"),
+        PartComponents.Num() == 1 && PartComponents[0] && PartComponents[0]->PartMesh == Head);
+    TestTrue(TEXT("the composed character reports no part diagnostics"),
+        Actor->GetCharacterPartDiagnostics().IsEmpty()
+        && Actor->GetCharacterPartSummary().Contains(TEXT("Head")));
+    TestTrue(TEXT("Animation display shows the Primary and the part together"),
+        Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == Primary
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head);
+    TestTrue(TEXT("the part evaluates the one character subject"),
+        Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance()) != nullptr
+        && Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())
+            ->GetEnableLiveLinkEvaluation()
+        && PartComponents[0]->GetUpdateAnimationInEditor()
+        && PartComponents[0]->GetDisablePostProcessBlueprint());
+
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("character part client connects"), Client);
+    const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
+    const FString Init = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
+        *Bones);
+    const TArray<uint8> InitPacket = Packet(Init);
+    TestTrue(TEXT("character part init is sent"), Client
+        && SendBytes(*Client, InitPacket.GetData(), InitPacket.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("composed character negotiates ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString Reply = FromUtf8(Payload);
+    TestTrue(TEXT("the accepted library is the composed Primary and part Morph set"),
+        Reply.Contains(TEXT("\"type\":\"ready\""))
+        && Reply.Contains(TEXT("\"target_morph_count\":2"))
+        && Reply.Contains(TEXT("\"accepted_morph_count\":2")));
+    TestTrue(TEXT("a Head-only Morph is not reported as missing in Unreal"),
+        Reply.Contains(TEXT("\"missing_in_unreal\":[\"Missing\"]")));
+
+    // A frame carries one value per manifest name, in manifest order; only the
+    // accepted names are published to the subject.
+    const TArray<uint8> Frame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+    TestTrue(TEXT("composed character frame is sent"), Client
+        && SendBytes(*Client, Frame.GetData(), Frame.Num()));
+
+    const FReferenceSkeleton& Skeleton = Primary->GetRefSkeleton();
+    const FName RootBoneName = Skeleton.GetBoneName(0);
+    const FName ChildBoneName = Skeleton.GetNum() > 1
+        ? Skeleton.GetBoneName(1)
+        : RootBoneName;
+    const bool bPartFollowsTheStreamedPose = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        USkeletalMeshComponent* Part = PartComponents[0];
+        if (!Part || !Part->IsRegistered())
+        {
+            return false;
+        }
+        // The transient test world tick does not drive skeletal animation; the
+        // explicit component animation tick is the per-frame editor path that
+        // evaluates the part's own Live Link instance into bone transforms.
+        Part->TickAnimation(1.0f / 60.0f, false);
+        Part->RefreshBoneTransforms();
+        SkeletalMeshComponent->TickAnimation(1.0f / 60.0f, false);
+        SkeletalMeshComponent->RefreshBoneTransforms();
+        const FVector PartRoot =
+            Part->GetBoneTransform(RootBoneName, RTS_World).GetLocation();
+        const FVector PrimaryRoot =
+            SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World).GetLocation();
+        const FVector PartChild =
+            Part->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
+        const FVector PrimaryChild =
+            SkeletalMeshComponent->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
+        return PartRoot.Equals(PrimaryRoot, 0.1) && PartChild.Equals(PrimaryChild, 0.1);
+    });
+    TestTrue(TEXT("body, head, and face bones move the part with the Primary"), bPartFollowsTheStreamedPose);
+
+    // The transient test world tick does not drive skeletal animation, so each
+    // component is animated explicitly. Live Link curves are the observable
+    // Morph value a mesh drives its Morph Targets from, so a part must reach
+    // the same accepted value through its own evaluation of the subject.
+    auto PumpCharacter = [&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        for (USkeletalMeshComponent* Component : { SkeletalMeshComponent,
+                 static_cast<USkeletalMeshComponent*>(PartComponents.IsEmpty()
+                     ? nullptr : PartComponents[0].Get()) })
+        {
+            if (Component && Component->IsRegistered())
+            {
+                Component->TickAnimation(1.0f / 60.0f, false);
+                Component->RefreshBoneTransforms();
+            }
+        }
+    };
+    float PartOnlyValue = 0.0f;
+    const bool bPartOwnMorphApplied = PollUntil([&]()
+    {
+        PumpCharacter();
+        USkeletalMeshComponent* Part = PartComponents.IsEmpty() ? nullptr : PartComponents[0];
+        return Part
+            && Part->GetCurveValue(FName(TEXT("HeadOnly")), 0.0f, PartOnlyValue)
+            && FMath::IsNearlyEqual(PartOnlyValue, 0.25f);
+    });
+    TestTrue(TEXT("a part-only Morph reaches the part that owns it"), bPartOwnMorphApplied);
+    float PartSharedValue = 0.0f;
+    float PrimarySharedValue = 0.0f;
+    const bool bSharedMorphApplied = PollUntil([&]()
+    {
+        PumpCharacter();
+        USkeletalMeshComponent* Part = PartComponents.IsEmpty() ? nullptr : PartComponents[0];
+        return Part
+            && Part->GetCurveValue(FName(TEXT("Shared")), 0.0f, PartSharedValue)
+            && FMath::IsNearlyEqual(PartSharedValue, 0.5f)
+            && SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("Shared")), 0.0f, PrimarySharedValue)
+            && FMath::IsNearlyEqual(PrimarySharedValue, 0.5f);
+    });
+    TestTrue(TEXT("the same Morph value reaches every part that owns the name"),
+        bSharedMorphApplied);
+    float PrimaryPartOnlyValue = 0.0f;
+    TestTrue(TEXT("a Morph the Primary does not own is not driven on it"),
+        !SkeletalMeshComponent->FindMorphTarget(FName(TEXT("HeadOnly")))
+        && (!SkeletalMeshComponent->GetCurveValue(
+                FName(TEXT("HeadOnly")), 0.0f, PrimaryPartOnlyValue)
+            || FMath::IsNearlyEqual(PrimaryPartOnlyValue, 0.25f)));
+
+    FLiveLinkSubjectFrameData EvaluatedFrame;
+    const FLiveLinkSkeletonStaticData* StaticData = nullptr;
+    const bool bSubjectPublished = PollUntil([&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), EvaluatedFrame))
+        {
+            return false;
+        }
+        StaticData = EvaluatedFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
+        return StaticData != nullptr;
+    });
+    if (bSubjectPublished && StaticData
+        && StaticData->PropertyNames != TArray<FName>({
+            FName(TEXT("HeadOnly")), FName(TEXT("Shared"))}))
+    {
+        AddError(FString::Printf(TEXT("published curve set is '%s'"),
+            *FString::JoinBy(StaticData->PropertyNames, TEXT(", "),
+                [](const FName& Name) { return Name.ToString(); })));
+    }
+    TestTrue(TEXT("one subject carries the composed curve set"),
+        bSubjectPublished
+        && StaticData
+        && StaticData->PropertyNames == TArray<FName>({
+            FName(TEXT("HeadOnly")), FName(TEXT("Shared"))}));
+
+    // Cached Playback publishes through the same subject, so a captured frame
+    // and the return to live preview must drive every part as well.
+    auto SendText = [&](const TCHAR* Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return Client && SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    TestTrue(TEXT("cached playback entry, upload, and end are sent"),
+        SendText(TEXT("{\"type\":\"cache_enter\"}"))
+        && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":11,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
+        && SendText(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.5,0.25,0.0]}"))
+        && SendText(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("cached upload reaches ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("the cached outcome belongs to this upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":1")));
+    TestTrue(TEXT("cached playback starts"), SendText(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    const bool bPartsFollowCachedPlayback = PollUntil([&]()
+    {
+        PumpCharacter();
+        USkeletalMeshComponent* Part = PartComponents.IsEmpty() ? nullptr : PartComponents[0];
+        const FVector CachedRoot(7.0, 0.0, 0.0);
+        return Part
+            && Part->GetBoneTransform(RootBoneName, RTS_World).GetLocation().Equals(CachedRoot, 0.1)
+            && SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World)
+                .GetLocation().Equals(CachedRoot, 0.1);
+    });
+    TestTrue(TEXT("a captured frame drives the Primary and its parts together"),
+        bPartsFollowCachedPlayback);
+    // Playback must finish before the session accepts a clear.
+    FString PlaybackOutcome;
+    const bool bPlaybackCompleted = PollUntil([&]()
+    {
+        PumpCharacter();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        while (Client && Client->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+        {
+            PlaybackOutcome.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+        }
+        return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
+    });
+    TestTrue(TEXT("cached playback completes"), bPlaybackCompleted);
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    const TArray<uint8> ResumedFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[13,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+    TestTrue(TEXT("resumed live frame is sent"), Client
+        && SendBytes(*Client, ResumedFrame.GetData(), ResumedFrame.Num()));
+    const bool bPartFollowsLivePreviewAgain = PollUntil([&]()
+    {
+        PumpCharacter();
+        USkeletalMeshComponent* Part = PartComponents.IsEmpty() ? nullptr : PartComponents[0];
+        return Part
+            && Part->GetBoneTransform(RootBoneName, RTS_World)
+                .GetLocation().Equals(FVector(13.0, 0.0, 0.0), 0.1);
+    });
+    TestTrue(TEXT("returning to live preview drives the part again"),
+        bPartFollowsLivePreviewAgain);
+
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("source returns to listening after the composed disconnect"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartLifecycleTest,
+    "MtoULiveLink.Actor.CharacterPartLifecycle",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartLifecycleTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    TestNotNull(TEXT("preview world is created"), World);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>();
+    TestTrue(TEXT("binding actor and binding are created"), Actor && Binding);
+    if (!Actor || !Binding)
+    {
+        return false;
+    }
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+
+    USkeletalMesh* Primary = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    USkeletalMesh* Head = MakeCharacterPartMesh(Primary, *Actor);
+    USkeletalMesh* Hair = MakeCharacterPartMesh(Primary, *Actor);
+    USkeletalMesh* Replacement = MakeCharacterPartMesh(Primary, *Actor);
+    TestTrue(TEXT("test meshes are created"), Primary && Head && Hair && Replacement);
+    if (!Primary || !Head || !Hair || !Replacement)
+    {
+        return false;
+    }
+    AddUniformMorph(*Head, FName(TEXT("HeadOnly")), FVector3f(0.0f, 1.0f, 0.0f));
+    Binding->SkeletalMesh = Primary;
+    AddCharacterPart(*Binding, TEXT("Head"), Head);
+    AddCharacterPart(*Binding, TEXT("Hair"), Hair, false);
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+
+    TestTrue(TEXT("only the enabled part receives a display component"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->PartMesh == Head);
+    TestTrue(TEXT("the disabled part stays listed without a component"),
+        Actor->GetCharacterPartSummary().Contains(TEXT("Hair (disabled)")));
+    UMtoUCharacterPartComponent* FirstComponent = Actor->GetCharacterPartComponents()[0];
+
+    // Display names and list position are pure presentation: neither a session
+    // nor a display component may be rebuilt for them.
+    const uint64 EndsBeforeRename = MtoUGetStreamingSessionEndCount();
+    Binding->AdditionalParts[0].PartName = TEXT("HeadMesh");
+    Binding->AdditionalParts.Swap(0, 1);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("renaming and reordering a part keeps its display component"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0] == FirstComponent
+        && FirstComponent->GetSkeletalMeshAsset() == Head);
+    TestTrue(TEXT("renaming and reordering a part keeps the streaming session"),
+        MtoUGetStreamingSessionEndCount() == EndsBeforeRename);
+
+    // Enabling the parked part and disabling the displayed one swaps the
+    // component set, and the old session can no longer reach the new one.
+    Binding->AdditionalParts[0].bEnabled = true;
+    Binding->AdditionalParts[1].bEnabled = false;
+    const uint64 EndsBeforeSwap = MtoUGetStreamingSessionEndCount();
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("enabling a part adds its component and drops the disabled one"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->PartMesh == Hair);
+    TestTrue(TEXT("a composition change ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsBeforeSwap);
+    TestTrue(TEXT("a replaced part is unregistered and left with no display"),
+        !FirstComponent->IsRegistered()
+        && FirstComponent->GetSkeletalMeshAsset() == nullptr);
+
+    // Replacing a part's mesh must not carry the previous mesh's Morph values
+    // into the new display component.
+    FirstComponent = Actor->GetCharacterPartComponents()[0];
+    FirstComponent->SetMorphTarget(FName(TEXT("HeadOnly")), 0.75f);
+    Binding->AdditionalParts[0].SkeletalMesh = Replacement;
+    Actor->NotifyCharacterPartsChanged();
+    UMtoUCharacterPartComponent* ReplacedComponent = Actor->GetCharacterPartComponents()[0];
+    TestTrue(TEXT("a replaced mesh gets a fresh display component"),
+        ReplacedComponent
+        && ReplacedComponent != FirstComponent
+        && ReplacedComponent->GetSkeletalMeshAsset() == Replacement
+        && FirstComponent->GetSkeletalMeshAsset() == nullptr);
+    TestTrue(TEXT("the replaced part carries no stale Morph value"),
+        ReplacedComponent->GetMorphTarget(FName(TEXT("HeadOnly"))) == 0.0f);
+
+    // Removing the Primary Driver removes the whole character, parts included.
+    Binding->SkeletalMesh = nullptr;
+    Actor->NotifyBindingInputsChanged();
+    TestTrue(TEXT("a Binding without a Primary Driver shows no part"),
+        Actor->GetCharacterPartComponents().IsEmpty()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+        && Actor->GetCharacterPartDiagnostics().Contains(TEXT("Primary Driver")));
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    TestTrue(TEXT("restoring the Primary Driver restores the part display"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Replacement);
+
+    // A duplicate or reloaded actor adopts its own components and never a
+    // second copy of one part.
+    AMtoULiveLinkActor* Clone = World->SpawnActor<AMtoULiveLinkActor>();
+    TestNotNull(TEXT("duplicate test actor is spawned"), Clone);
+    if (Clone)
+    {
+        Clone->SetBinding(Binding);
+        Clone->PostDuplicate(false);
+        Clone->PostLoad();
+        Clone->PostRegisterAllComponents();
+        TestTrue(TEXT("a duplicated actor owns exactly one component per enabled part"),
+            Clone->GetCharacterPartComponents().Num() == 1
+            && Clone->GetCharacterPartComponents()[0]->GetOuter() == Clone
+            && Clone->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Replacement
+            && Actor->GetCharacterPartComponents().Num() == 1);
+    }
+
+    // A component the enabled composition does not claim never survives a
+    // resynchronization, so a stale or duplicated one cannot linger visibly.
+    UMtoUCharacterPartComponent* Ghost = NewObject<UMtoUCharacterPartComponent>(Actor);
+    Ghost->SetupAttachment(Actor->GetSkeletalMeshComponent());
+    Ghost->RegisterComponent();
+    Binding->AdditionalParts[0].bEnabled = false;
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("an unclaimed part component is destroyed on resynchronization"),
+        Actor->GetCharacterPartComponents().IsEmpty() && !Ghost->IsRegistered()
+        && Ghost->GetSkeletalMeshAsset() == nullptr);
+    Binding->AdditionalParts[0].bEnabled = true;
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("re-enabling the part restores exactly one component"),
+        Actor->GetCharacterPartComponents().Num() == 1);
+
+    // A rebuilt part source can change its Skeleton, bones, Morph library, or
+    // reference pose, so the negotiated composition is stale and the session
+    // must end; the display component stays usable for the next connection.
+    const uint64 EndsBeforeRebuild = MtoUGetStreamingSessionEndCount();
+    Replacement->GetOnMeshChanged().Broadcast();
+    TestTrue(TEXT("a part source rebuild ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsBeforeRebuild);
+    TestTrue(TEXT("a part source rebuild keeps the same display component"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->MatchesPart(
+            Binding->AdditionalParts[0].PartId, Replacement)
+        && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Replacement
+        && Actor->GetCharacterPartDiagnostics().IsEmpty());
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartCompatibilityTest,
+    "MtoULiveLink.Negotiation.CharacterPartCompatibility",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        TestTrue(TEXT("Live Link client feature is available"), false);
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Actor->GetBinding())
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    USkeletalMesh* Primary = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    TestNotNull(TEXT("test Primary Driver is created"), Primary);
+    if (!Primary)
+    {
+        return false;
+    }
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    // The Maya description always matches the Primary Driver, so every failure
+    // below can only come from the Additional Parts of the composition.
+    const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
+    const FString Init = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *Bones);
+    auto NegotiateCurrentBinding = [&](FString& OutReply)
+    {
+        FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+        if (!Client)
+        {
+            return false;
+        }
+        const TArray<uint8> InitPacket = Packet(Init);
+        bool bOk = SendBytes(*Client, InitPacket.GetData(), InitPacket.Num());
+        TArray<uint8> Payload;
+        bOk = bOk && ReceivePacket(*Client, Payload, [&]() { Source->Update(); });
+        if (bOk)
+        {
+            OutReply = FromUtf8(Payload);
+        }
+        DestroySocket(*SocketSubsystem, Client);
+        return bOk && WaitForStatus(Source, TEXT("Listening on"));
+    };
+
+    FString Reply;
+    Binding->AdditionalParts.Reset();
+    AddCharacterPart(*Binding, TEXT("Head"), nullptr);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("an enabled part without a mesh is refused by name"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("\"type\":\"error\""))
+        && Reply.Contains(TEXT("INVALID_BINDING"))
+        && Reply.Contains(TEXT("'Head'"))
+        && Reply.Contains(TEXT("no Skeletal Mesh")));
+
+    USkeletalMesh* PartMesh = MakeCharacterPartMesh(Primary, *Actor);
+    TestNotNull(TEXT("test part mesh is created"), PartMesh);
+    if (!PartMesh)
+    {
+        return false;
+    }
+    AddUniformMorph(*PartMesh, FName(TEXT("HeadOnly")), FVector3f(0.0f, 1.0f, 0.0f));
+    Binding->AdditionalParts.Reset();
+    AddCharacterPart(*Binding, TEXT("Head"), PartMesh, false);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("a disabled part never blocks the connection"),
+        NegotiateCurrentBinding(Reply) && Reply.Contains(TEXT("\"type\":\"ready\"")));
+
+    USkeleton* OtherSkeleton = NewObject<USkeleton>(GetTransientPackage());
+    PartMesh->SetSkeleton(OtherSkeleton);
+    Binding->AdditionalParts[0].bEnabled = true;
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("a part with another Skeleton asset is refused by name and asset"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("SKELETON_MISMATCH"))
+        && Reply.Contains(TEXT("'Head'"))
+        && Reply.Contains(TEXT("Skeleton asset"))
+        && Reply.Contains(OtherSkeleton->GetName()));
+    PartMesh->SetSkeleton(Primary->GetSkeleton());
+
+    // An extra bone the Primary Driver does not have can never be driven, so it
+    // is a hard incompatibility naming the offending bone.
+    const FReferenceSkeleton OriginalPartSkeleton = PartMesh->GetRefSkeleton();
+    FReferenceSkeleton ExtraBoneSkeleton = OriginalPartSkeleton;
+    {
+        FMeshBoneInfo ExtraBone;
+        ExtraBone.Name = FName(TEXT("ExtraHeadBone"));
+        ExtraBone.ParentIndex = 0;
+        FReferenceSkeletonModifier Modifier(ExtraBoneSkeleton, PartMesh->GetSkeleton());
+        Modifier.Add(ExtraBone, FTransform::Identity);
+    }
+    PartMesh->SetRefSkeleton(ExtraBoneSkeleton);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("a bone absent from the Primary Driver is refused by bone name"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("SKELETON_MISMATCH"))
+        && Reply.Contains(TEXT("ExtraHeadBone")));
+    PartMesh->SetRefSkeleton(OriginalPartSkeleton);
+
+    // Shared bones must agree in reference pose, because the streamed pose is
+    // computed against the Primary Driver's reference pose.
+    FReferenceSkeleton ShiftedSkeleton = OriginalPartSkeleton;
+    const int32 ShiftedBoneIndex = ShiftedSkeleton.GetRawRefBonePose().Num() - 1;
+    const FTransform ShiftedOriginal =
+        ShiftedSkeleton.GetRawRefBonePose()[ShiftedBoneIndex];
+    {
+        FReferenceSkeletonModifier Modifier(ShiftedSkeleton, PartMesh->GetSkeleton());
+        Modifier.UpdateRefPoseTransform(
+            ShiftedBoneIndex,
+            FTransform(
+                ShiftedOriginal.GetRotation(),
+                ShiftedOriginal.GetTranslation() + FVector(25.0, 0.0, 0.0),
+                ShiftedOriginal.GetScale3D()));
+    }
+    PartMesh->SetRefSkeleton(ShiftedSkeleton);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("a reference pose conflict is refused by bone name"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("SKELETON_MISMATCH"))
+        && Reply.Contains(TEXT("'Head'"))
+        && Reply.Contains(TEXT("reference pose"))
+        && Reply.Contains(OriginalPartSkeleton.GetBoneName(ShiftedBoneIndex).ToString()));
+
+    // The repaired composition connects again with the part in the character.
+    PartMesh->SetRefSkeleton(OriginalPartSkeleton);
+    Actor->NotifyCharacterPartsChanged();
+    TestTrue(TEXT("the repaired part connects as one character"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("\"type\":\"ready\""))
+        && Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == PartMesh);
+
+    // A Binding without a Primary Driver has no character at all.
+    Binding->AdditionalParts.Reset();
+    Binding->SkeletalMesh = nullptr;
+    Actor->NotifyBindingInputsChanged();
+    TestTrue(TEXT("a missing Primary Driver is refused as an invalid Binding"),
+        NegotiateCurrentBinding(Reply)
+        && Reply.Contains(TEXT("INVALID_BINDING"))
+        && Reply.Contains(TEXT("Primary Driver")));
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
 #endif
