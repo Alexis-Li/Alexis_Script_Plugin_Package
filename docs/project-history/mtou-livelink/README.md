@@ -177,6 +177,14 @@ Those records do not establish a complete 0.5.0 production or release gate.
   5.7.4 build, all 67 `MtoULiveLink` Automation tests, Maya pure 140/140,
   repository validation, and repository tests pass; evidence in the
   [hash-suffix mapping acceptance](hash-suffix-mapping-acceptance.md).
+- **2026-09-20:** Closed the Issue #46 review finding: the extra-versus-unreached
+  classification had asked whether an unmatched Unreal bone's parent was
+  accounted instead of successfully mapped, so children of a parent reported
+  only as a mismatch or an ambiguity were claimed as extra bones. The parent
+  test now uses the mapped set, and the negotiation test covers a mismatching
+  parent with a blocked descendant and several same-named parents; restoring the
+  previous condition fails those assertions. The rebuilt plugin passed all 67
+  `MtoULiveLink` Automation tests again.
 
 ## Stable Records
 

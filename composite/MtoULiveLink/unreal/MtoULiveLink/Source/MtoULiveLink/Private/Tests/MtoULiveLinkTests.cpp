@@ -2434,6 +2434,84 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
             {TEXT("extra"), TEXT("wrong_left"), TEXT("wrong_right_child")}));
     TestTrue(TEXT("target bones behind an unmatched parent are unreached, not extra"),
         BrokenBranches.UnreachedUnrealBones == TArray<FString>({TEXT("left_child")}));
+
+    // A parent that was only reported as a parent mismatch is not a mapped
+    // parent, so the branch below it stays unreached instead of being reported
+    // as extra bones Maya never had.
+    const FMtoUCharacterDescription MismatchedParentCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("arm")), 1},
+            {FName(TEXT("hand")), 2},
+            {FName(TEXT("right")), 0},
+        },
+        {},
+    };
+    const FMtoUTargetDescription MismatchedParentTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("arm")), 2},
+            {FName(TEXT("hand")), 3},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome MismatchedParent =
+        FMtoUConnectionNegotiator::Negotiate(MismatchedParentCharacter, MismatchedParentTarget);
+    TestFalse(TEXT("a parent mismatch below a mapped branch stays blocking"), MismatchedParent.bUsable);
+    TestTrue(TEXT("the mismatching parent is reported once against both parents"),
+        MismatchedParent.ParentMismatches.Num() == 1
+        && MismatchedParent.ParentMismatches[0].Contains(TEXT("arm"))
+        && MismatchedParent.ParentMismatches[0].Contains(TEXT("left"))
+        && MismatchedParent.ParentMismatches[0].Contains(TEXT("right")));
+    TestTrue(TEXT("the branch below a mismatching parent is blocked, not published"),
+        MismatchedParent.DescendantsBlockedByParent.Num() == 1
+        && MismatchedParent.DescendantsBlockedByParent[0].Contains(TEXT("hand")));
+    TestTrue(TEXT("a child of a mismatching parent is not a confirmed extra bone"),
+        MismatchedParent.ExtraBones.IsEmpty()
+        && MismatchedParent.UnreachedUnrealBones == TArray<FString>({TEXT("hand")}));
+    TestTrue(TEXT("the root cause keeps the mismatch as the first failure"),
+        MismatchedParent.FirstFailure.IsSet()
+        && MismatchedParent.FirstFailure->MayaPath == TEXT("root/left/arm")
+        && MismatchedParent.FirstFailure->ExpectedParent == TEXT("left")
+        && MismatchedParent.FirstFailure->Reason.Contains(TEXT("below right"))
+        && MismatchedParent.FirstFailure->BlockedDescendants == 1
+        && MismatchedParent.FirstFailure->UnreachedUnreal == 1);
+
+    // Several same-named Unreal bones under different parents are explained as
+    // one ambiguity and are just as unmapped, so their children stay unreached.
+    const FMtoUCharacterDescription AmbiguousParentCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("arm")), 1},
+            {FName(TEXT("hand")), 2},
+        },
+        {},
+    };
+    const FMtoUTargetDescription AmbiguousParentTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("first")), 0},
+            {FName(TEXT("second")), 0},
+            {FName(TEXT("arm")), 2},
+            {FName(TEXT("arm")), 3},
+            {FName(TEXT("hand")), 4},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome AmbiguousParent =
+        FMtoUConnectionNegotiator::Negotiate(AmbiguousParentCharacter, AmbiguousParentTarget);
+    TestFalse(TEXT("several mismatching parents stay blocking"), AmbiguousParent.bUsable);
+    TestTrue(TEXT("both mismatching parents are explained as one ambiguity"),
+        AmbiguousParent.MappingAmbiguities.Num() == 1
+        && AmbiguousParent.MappingAmbiguities[0].Contains(TEXT("arm")));
+    TestTrue(TEXT("the branch below them is unreached while the plain extras stay listed"),
+        AmbiguousParent.UnreachedUnrealBones == TArray<FString>({TEXT("hand")})
+        && AmbiguousParent.ExtraBones == TArray<FString>({TEXT("first"), TEXT("second")}));
     TestTrue(TEXT("the root cause reports the first unmapped path and its impact"),
         BrokenBranches.FirstFailure.IsSet()
         && BrokenBranches.FirstFailure->MayaPath == TEXT("root/left")

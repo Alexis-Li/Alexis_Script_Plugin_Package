@@ -40,9 +40,10 @@ The validation response leads with the root cause of the first unmapped bone:
 its complete Maya path, the mapped Unreal parent it had to match, the blocked
 Maya descendant and unreached Unreal counts, and every import-rename shaped
 candidate with the reason the strict rules did not apply it. Unmatched Unreal
-bones behind an unmatched ancestor are listed as `Unreached in Unreal` instead
-of `Extra in Unreal`, so one broken ancestor no longer claims that Maya lacks
-its descendants, while confirmed extra bones stay listed. The Maya
+bones behind an ancestor that was never successfully mapped are listed as
+`Unreached in Unreal` instead of `Extra in Unreal`, so one broken ancestor no
+longer claims that Maya lacks its descendants, while confirmed extra bones stay
+listed. The Maya
 `SKELETON_MISMATCH` advice now points at those details and asks for a
 re-export or re-import only after the assets are confirmed inconsistent.
 
@@ -54,7 +55,8 @@ completely and reports one mapping, and with a 31-digit hash the ancestor is the
 only confirmed extra bone while its descendants are unreached and the root
 cause names `root/spine_02/joints_grp/spine_04` below `joints_grp`. The same
 test covers both rename forms, same-parent ambiguity for hash/hash and
-numeric/hash candidates, wrong parents, unique Maya names, invalid or
+numeric/hash candidates, wrong parents, a mismatching parent with its blocked
+descendant, several same-named parents, unique Maya names, invalid or
 wrong-length hashes, prefix-similar names, target reuse, and real missing or
 extra bones.
 
@@ -62,6 +64,28 @@ extra bones.
 - All 67 `MtoULiveLink` Automation tests passed on the rebuilt plugin, including
   the character-part composition and Preview suites that share the negotiator.
 - Maya pure tests 140/140, repository validator, and repository tests passed.
+
+## Review follow-up
+
+Independent review of `1f4cc60` found that the extra-versus-unreached
+classification asked whether an unmatched Unreal bone's parent was *accounted*
+instead of *mapped*. A parent explained only as a parent mismatch or an
+ambiguity is accounted but never mapped, so its children were reported as
+confirmed extra bones while the Maya side reported the same branch as blocked.
+
+The parent test now uses the successfully mapped set. In the reviewer's
+counterexample - Maya `root -> left -> arm -> hand` against Unreal `root`,
+`left`, `right`, `arm` below `right`, and `hand` below `arm` - `arm` stays a
+parent mismatch, `hand` is blocked on the Maya side and unreached on the Unreal
+side, and `Extra in Unreal` stays empty. The same test covers several same-named
+parents under different Unreal parents: the ambiguity is still reported, the
+children stay unreached, and unrelated extra bones stay listed. Reverting only
+that one condition makes the new assertions fail, so the regression defends the
+fix.
+
+- Stock Unreal Editor 5.7.4 rebuild and all 67 `MtoULiveLink` Automation tests
+  passed again after the fix, with the negotiation test failing only while the
+  previous condition was restored.
 
 ## Offline cross-check
 

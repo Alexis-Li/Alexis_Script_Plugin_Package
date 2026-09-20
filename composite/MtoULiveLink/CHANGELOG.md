@@ -15,11 +15,11 @@
 - Lead the skeleton diagnostics with the mapping root cause (Issue #46): the
   first unmapped Maya path, its parent, the blocked Maya descendant and
   unreached Unreal counts, and import-rename shaped candidates with the reason
-  each was not applied. Unmatched Unreal bones below an unmatched ancestor are
-  reported as unreached instead of extra, so one broken ancestor no longer
-  claims that Maya lacks its descendants, while confirmed extra bones remain
-  listed. The Maya `SKELETON_MISMATCH` advice now points at those details
-  instead of asking for a different asset.
+  each was not applied. Unmatched Unreal bones behind an ancestor that was never
+  successfully mapped are reported as unreached instead of extra, so one broken
+  ancestor no longer claims that Maya lacks its descendants, while confirmed
+  extra bones remain listed. The Maya `SKELETON_MISMATCH` advice now points at
+  those details instead of asking for a different asset.
 
 - Fix opening saved levels containing Additional Parts with asset Post Process
   animation blueprints: defer display/component restoration until registration

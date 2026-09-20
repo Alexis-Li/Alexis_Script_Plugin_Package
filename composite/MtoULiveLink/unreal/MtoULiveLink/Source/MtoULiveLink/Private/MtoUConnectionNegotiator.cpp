@@ -272,9 +272,12 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     }
 
     // A bone is only ever considered while its parent is already mapped, so an
-    // unmatched bone with an unmatched parent was never examined. Reporting it
-    // as extra would claim Maya lacks a bone that only sits behind the first
-    // failure; only an unmatched bone below a mapped parent is confirmed extra.
+    // unmatched bone whose parent was never mapped was never examined. Reporting
+    // it as extra would claim Maya lacks a bone that only sits behind the first
+    // failure; only an unmatched bone below a successfully mapped parent is
+    // confirmed extra. A parent that is accounted but unmapped - a parent
+    // mismatch or an ambiguity - does not make its children extra either, so
+    // this test uses the mapped set rather than every explained Unreal bone.
     for (int32 UnrealIndex = 0; UnrealIndex < Target.Bones.Num(); ++UnrealIndex)
     {
         if (AccountedUnreal.Contains(UnrealIndex))
@@ -282,7 +285,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
             continue;
         }
         const int32 ParentIndex = Target.Bones[UnrealIndex].ParentIndex;
-        if (ParentIndex != INDEX_NONE && !AccountedUnreal.Contains(ParentIndex))
+        if (ParentIndex != INDEX_NONE && !UsedUnreal.Contains(ParentIndex))
         {
             Outcome.UnreachedUnrealBones.Add(Target.Bones[UnrealIndex].Name.ToString());
         }
