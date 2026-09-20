@@ -5,6 +5,7 @@
 #include "Animation/MorphTarget.h"
 #include "Engine/SkeletalMesh.h"
 #include "ReferenceSkeleton.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 
 namespace
 {
@@ -57,6 +58,38 @@ FString ResolvePartLabel(const FMtoUCharacterPartResolution& Part, int32 PartNum
         : FString::Printf(TEXT("Additional Part %d"), PartNumber);
 }
 
+TSet<int32> DeformationBones(const USkeletalMesh& Mesh)
+{
+    const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
+    TSet<int32> Bones;
+    const FSkeletalMeshRenderData* Data = Mesh.GetResourceForRendering();
+    if (Data)
+    {
+        // Section palettes cover skinning influences, including all LODs.
+        // Ancestors matter even when they carry no vertex weights themselves.
+        for (const FSkeletalMeshLODRenderData& LOD : Data->LODRenderData)
+        {
+            for (const FSkelMeshRenderSection& Section : LOD.RenderSections)
+            {
+                for (const FBoneIndexType Bone : Section.BoneMap)
+                {
+                    for (int32 Index = Bone; Index != INDEX_NONE
+                         && Index < Skeleton.GetNum(); Index = Skeleton.GetParentIndex(Index))
+                    {
+                        Bones.Add(Index);
+                    }
+                }
+            }
+        }
+    }
+    // Without usable skinning evidence, retain the conservative old check.
+    if (Bones.IsEmpty())
+    {
+        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index) { Bones.Add(Index); }
+    }
+    return Bones;
+}
+
 /**
  * The one compatibility rule for an enabled Additional Part. Returns true when
  * the part may join the character; otherwise OutProblem names the offending
@@ -105,6 +138,7 @@ bool ValidatePartAgainstPrimary(
     TArray<FString> ExtraBones;
     TArray<FString> ParentMismatches;
     TArray<FString> PoseConflicts;
+    const TSet<int32> PartDeformationBones = DeformationBones(Part);
     for (int32 Index = 0; Index < PartSkeleton.GetNum(); ++Index)
     {
         const FName BoneName = PartSkeleton.GetBoneName(Index);
@@ -116,7 +150,7 @@ bool ValidatePartAgainstPrimary(
         }
         const int32 PartParent = PartSkeleton.GetParentIndex(Index);
         const int32 PrimaryParent = PrimarySkeleton.GetParentIndex(PrimaryIndex);
-        const bool bSameParent = PartParent == PrimaryParent
+        const bool bSameParent = (PartParent == INDEX_NONE && PrimaryParent == INDEX_NONE)
             || (PartParent != INDEX_NONE && PrimaryParent != INDEX_NONE
                 && PartSkeleton.GetBoneName(PartParent) == PrimarySkeleton.GetBoneName(PrimaryParent));
         if (!bSameParent)
@@ -128,6 +162,10 @@ bool ValidatePartAgainstPrimary(
             continue;
         }
 
+        // Exported complete hierarchies also carry unrelated garment/hair
+        // branches. Their bind poses cannot deform this part and must not
+        // prevent its display. Name/parent validation above remains strict.
+        if (!PartDeformationBones.Contains(Index)) { continue; }
         const FTransform& PartPose = PartComponentPose[Index];
         const FTransform& PrimaryPose = PrimaryComponentPose[PrimaryIndex];
         const double TranslationDelta =

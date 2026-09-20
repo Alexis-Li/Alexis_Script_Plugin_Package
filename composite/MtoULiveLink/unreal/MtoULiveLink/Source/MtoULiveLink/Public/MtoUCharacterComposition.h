@@ -61,7 +61,8 @@ struct MTOULIVELINK_API FMtoUCompositionFailures
  * The Primary Driver defines the skeleton baseline. Every enabled Additional
  * Part must share the Primary's Skeleton asset, map every bone it contains onto
  * the Primary by name and parent path, and match the Primary's reference pose
- * for those bones; a part may use fewer bones and different geometry.
+ * for its skinning bones across all LODs and their ancestors; unrelated branches
+ * may differ in reference pose. A part may use fewer bones and different geometry.
  */
 struct MTOULIVELINK_API FMtoUCharacterComposition
 {

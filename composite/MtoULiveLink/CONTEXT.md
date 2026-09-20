@@ -75,7 +75,8 @@ One Skeletal Mesh of the character composition beside the Primary Driver, with
 a display name, a Skeletal Mesh, and an enabled state. An enabled part shares
 the Primary Driver's Skeleton asset, maps every bone it contains onto the
 Primary by name and parent path, and matches the Primary's reference pose for
-those bones; it may use fewer bones and different geometry, and a bone the
+the bones in its skinning palettes across all LODs and their ancestors; it may
+use fewer bones and different geometry, and a bone the
 Primary does not have is a blocking incompatibility. A disabled part takes part
 in neither negotiation nor display, and parts never contribute to garment
 resolution, weight transfer, or Preview Morph transfer.

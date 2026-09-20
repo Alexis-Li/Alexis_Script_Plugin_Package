@@ -1011,8 +1011,9 @@ One private resolution owns every composition rule for placement, connection,
 and diagnostics. It reports the Primary Driver and each Additional Part with the
 named reason a part cannot join the character: an enabled part without a mesh, a
 part that repeats the Primary Driver, a different Skeleton asset, bones that are
-absent from the Primary or hang under a different parent, and shared bones whose
-component-space reference pose differs beyond a scale-relative tolerance that
+absent from the Primary or hang under a different parent, and skinning bones
+from any LOD (including their ancestors) whose component-space reference pose
+differs beyond a scale-relative tolerance that
 also covers a different import space. Disabled parts are neither validated nor
 displayed. Placement refuses only a missing Primary Driver, connection refuses
 any unusable composition with the part-named diagnostics behind

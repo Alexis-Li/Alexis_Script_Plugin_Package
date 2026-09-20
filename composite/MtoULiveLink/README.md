@@ -10,7 +10,7 @@ without creating animation or preview assets.
 ## Compatibility
 
 - Windows 64-bit
-- Autodesk Maya 2022.4
+- Autodesk Maya 2024 (current workflow); Maya 2022.4 remains supported
 - Stock Unreal Editor 5.7.4
 - Topia Engine 5.7.4 (plugin build and editor loading verified)
 - Editor use only; Play In Editor (PIE) is not supported.
@@ -81,8 +81,9 @@ display as one character under one connection:
   BlendShape preview keep working through it.
 - Give each part a name, its Skeletal Mesh, and an **Enabled** flag. A part must
   share the Primary Driver's **Skeleton** asset, map its bones by name and
-  parent path onto the Primary, and match the Primary's reference pose for those
-  bones. A part may use fewer bones and different geometry; a bone the Primary
+  parent path onto the Primary, and match its reference pose for the bones that
+  deform the part and their ancestors across all LODs. A part may use fewer
+  bones and different geometry; a bone the Primary
   does not have is rejected with the part and bone name.
 - A Morph Target that only a part owns still streams, and a name owned by
   several parts receives the same value on each of them.

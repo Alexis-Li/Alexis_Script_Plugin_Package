@@ -9,7 +9,7 @@ MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 May
 ## 兼容性
 
 - 64 位 Windows
-- Autodesk Maya 2022.4
+- Autodesk Maya 2024（当前工作流程）；继续支持 Maya 2022.4
 - 官方原版 Unreal Editor 5.7.4
 - Topia Engine 5.7.4（已验证插件编译与编辑器加载）
 - 仅用于编辑器，不支持 PIE（Play In Editor）。
@@ -72,7 +72,8 @@ Primary Driver，其余网格添加到 Binding 的 **Additional Parts**。所有
   **Preview Morph transfer**；身体、面部和 BlendShape 预览仍通过它生效。
 - 每个部件包含名称、Skeletal Mesh 和 **Enabled** 开关。部件必须与 Primary
   Driver 共用同一个 **Skeleton** 资产，其骨骼需按名称与父路径映射到 Primary，
-  并匹配 Primary 对应骨骼的参考姿势。部件可以使用更少的骨骼和不同的几何体；
+  各 LOD 中影响部件蒙皮的骨骼及其父链需匹配 Primary 的参考姿势。
+  部件可以使用更少的骨骼和不同的几何体；
   Primary 中不存在的骨骼会被拒绝，并提示部件与骨骼名称。
 - 只有某个部件拥有的 Morph Target 也会传输；多个部件同名的 Morph 会接收到
   相同数值。

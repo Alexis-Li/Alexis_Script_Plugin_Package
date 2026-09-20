@@ -8,6 +8,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "LiveLinkInstance.h"
+#include "UObject/UObjectThreadContext.h"
 
 AMtoULiveLinkActor::AMtoULiveLinkActor()
 {
@@ -39,8 +40,10 @@ void AMtoULiveLinkActor::PostLoad()
     Super::PostLoad();
     GeneratedPreviewMesh = nullptr;
     EnterUnrefreshedReadiness(TEXT("Level loaded. Run Refresh Preview."));
-    ShowDriverMesh();
-    RefreshBinding();
+    // PostLoad may not initialize animation or register dynamic components:
+    // assigning a mesh can execute its Post Process Blueprint immediately.
+    // PostRegisterAllComponents restores the display once loading has finished.
+    DisplayTarget = EMtoUDisplayTarget::Driver;
 }
 
 void AMtoULiveLinkActor::PostDuplicate(bool bDuplicateForPIE)
@@ -339,6 +342,7 @@ void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FS
 
 void AMtoULiveLinkActor::RefreshBinding()
 {
+    if (FUObjectThreadContext::Get().IsRoutingPostLoad) { return; }
     SyncCharacterComposition();
     RebindInputNotifications();
     ReapplyDisplayTarget();
@@ -346,6 +350,7 @@ void AMtoULiveLinkActor::RefreshBinding()
 
 void AMtoULiveLinkActor::ReapplyDisplayTarget()
 {
+    if (FUObjectThreadContext::Get().IsRoutingPostLoad) { return; }
     if (!SkeletalMeshComponent || !DriverMeshComponent)
     {
         return;
@@ -414,6 +419,7 @@ void AMtoULiveLinkActor::InheritPrimaryDisplaySettings(USkeletalMeshComponent& C
 
 void AMtoULiveLinkActor::SyncCharacterComposition()
 {
+    if (FUObjectThreadContext::Get().IsRoutingPostLoad) { return; }
     const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
     CharacterPartDiagnostics = Composition.Diagnostics;
     CharacterPartSummary = Composition.Summary;
@@ -493,6 +499,7 @@ void AMtoULiveLinkActor::ReconcileCharacterPartComponents(
             Component->SetupAttachment(SkeletalMeshComponent);
             Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
             Component->SetGenerateOverlapEvents(false);
+            Component->SetDisablePostProcessBlueprint(true);
             Component->RegisterComponent();
         }
         CharacterPartComponents.Add(Component);
@@ -531,6 +538,9 @@ void AMtoULiveLinkActor::ApplyCharacterPartDisplay()
         // Generated Preview both show the whole composed character, while the
         // hidden state leaves no visible attachment behind.
         InheritPrimaryDisplaySettings(*Component);
+        // Disable Post Process evaluation before assigning the mesh. UE may
+        // still initialize its instance; this runs only after PostLoad.
+        Component->SetDisablePostProcessBlueprint(true);
         Component->SetSkeletalMeshAsset(
             DisplayTarget == EMtoUDisplayTarget::Hidden ? nullptr : Component->PartMesh);
         ConfigureLiveLinkInstance(*Component);

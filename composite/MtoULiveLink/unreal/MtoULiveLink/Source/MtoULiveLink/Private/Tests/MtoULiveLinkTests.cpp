@@ -4,6 +4,8 @@
 #include "MtoULiveLinkBinding.h"
 #include "MtoUCacheCommandQueue.h"
 #include "MtoUConnectionNegotiator.h"
+#include "MtoUCharacterComposition.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 #include "MtoULiveLinkTestAnimInstance.h"
@@ -34,6 +36,7 @@
 #include "Tests/EnsureScope.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/UObjectThreadContext.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -46,6 +49,13 @@
 namespace
 {
 FThreadSafeCounter GMtoUConflictingPostProcessEvaluations;
+FThreadSafeCounter GMtoUConflictingPostProcessInitializations;
+}
+
+void UMtoULiveLinkConflictingPostProcess::NativeInitializeAnimation()
+{
+    GMtoUConflictingPostProcessInitializations.Increment();
+    Super::NativeInitializeAnimation();
 }
 
 void UMtoULiveLinkConflictingPostProcess::NativeUpdateAnimation(float DeltaSeconds)
@@ -4523,6 +4533,30 @@ bool FMtoUPostProcessIsolationTest::RunTest(const FString& Parameters)
     }
     if (Actor && Binding)
     {
+        USkeletalMesh* PartMesh = DuplicateObject<USkeletalMesh>(Driver, Package, TEXT("Hair"));
+        FMtoUCharacterPart& Part = Binding->AdditionalParts.AddDefaulted_GetRef();
+        Part.PartId = FGuid::NewGuid();
+        Part.SkeletalMesh = PartMesh;
+        const int32 InitializationsBefore = GMtoUConflictingPostProcessInitializations.GetValue();
+        {
+            TGuardValue<bool> RoutingPostLoad(FUObjectThreadContext::Get().IsRoutingPostLoad, true);
+            Actor->SetBinding(Binding);
+            Actor->PostLoad();
+            TestEqual(TEXT("PostLoad does not create or register part components"),
+                Actor->GetCharacterPartComponents().Num(), 0);
+            TestNull(TEXT("PostLoad does not assign meshes or initialize animation"),
+                Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset());
+            TestEqual(TEXT("asset Post Process does not initialize while routing PostLoad"),
+                GMtoUConflictingPostProcessInitializations.GetValue(), InitializationsBefore);
+        }
+        Actor->PostRegisterAllComponents();
+        TestEqual(TEXT("registration restores the enabled part after PostLoad"),
+            Actor->GetCharacterPartComponents().Num(), 1);
+        for (const auto& PartComponent : Actor->GetCharacterPartComponents())
+        {
+            TestTrue(TEXT("restored part disables asset Post Process evaluation"),
+                PartComponent->GetDisablePostProcessBlueprint());
+        }
         Actor->SetBinding(Binding);
     }
 
@@ -6697,6 +6731,71 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
         && Actor->GetCharacterPartComponents().Num() == 1
         && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == PartMesh);
 
+    // A complete exported hierarchy can contain an unrelated outfit branch.
+    // Only its skinning palette (across every LOD) and ancestors constrain pose.
+    const FReferenceSkeleton OriginalPrimarySkeleton = Primary->GetRefSkeleton();
+    FReferenceSkeleton ExtendedPrimary = OriginalPrimarySkeleton;
+    const int32 UnusedIndex = ExtendedPrimary.GetNum();
+    {
+        FReferenceSkeletonModifier Modifier(ExtendedPrimary, nullptr);
+        Modifier.Add(FMeshBoneInfo(TEXT("UnweightedOutfit"), TEXT("UnweightedOutfit"), 0), FTransform::Identity);
+    }
+    Primary->SetRefSkeleton(ExtendedPrimary);
+    FReferenceSkeleton ExtendedPart = ExtendedPrimary;
+    {
+        FReferenceSkeletonModifier Modifier(ExtendedPart, nullptr);
+        Modifier.UpdateRefPoseTransform(UnusedIndex, FTransform(FVector(25.0, 0.0, 0.0)));
+    }
+    PartMesh->SetRefSkeleton(ExtendedPart);
+    TestTrue(TEXT("unweighted unrelated branch pose does not reject a character part"),
+        FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    FSkeletalMeshRenderData* PartRenderData = PartMesh->GetResourceForRendering();
+    if (TestTrue(TEXT("part has skinning evidence"), PartRenderData && !PartRenderData->LODRenderData.IsEmpty()
+        && !PartRenderData->LODRenderData.Last().RenderSections.IsEmpty()))
+    {
+        auto& Palette = PartRenderData->LODRenderData.Last().RenderSections[0].BoneMap;
+        Palette.Add(static_cast<FBoneIndexType>(UnusedIndex));
+        TestFalse(TEXT("a conflicting influence in the last LOD still rejects the part"),
+            FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Palette.Pop();
+        // A non-weighted parent is relevant when one of its descendants skins.
+        FReferenceSkeleton WithChild = ExtendedPart;
+        {
+            FReferenceSkeletonModifier Modifier(WithChild, nullptr);
+            Modifier.Add(FMeshBoneInfo(TEXT("WeightedChild"), TEXT("WeightedChild"), UnusedIndex), FTransform::Identity);
+        }
+        FReferenceSkeleton PrimaryWithChild = ExtendedPrimary;
+        {
+            FReferenceSkeletonModifier Modifier(PrimaryWithChild, nullptr);
+            Modifier.Add(FMeshBoneInfo(TEXT("WeightedChild"), TEXT("WeightedChild"), UnusedIndex), FTransform::Identity);
+        }
+        Primary->SetRefSkeleton(PrimaryWithChild);
+        PartMesh->SetRefSkeleton(WithChild);
+        Palette.Add(static_cast<FBoneIndexType>(UnusedIndex + 1));
+        TestFalse(TEXT("unweighted ancestor of a skinning bone remains checked"),
+            FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Palette.Pop();
+    }
+    FReferenceSkeleton ParentOrderPrimary;
+    FReferenceSkeleton ParentOrderPart;
+    {
+        FReferenceSkeletonModifier Left(ParentOrderPrimary, nullptr);
+        FReferenceSkeletonModifier Right(ParentOrderPart, nullptr);
+        Left.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+        Right.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+        Left.Add(FMeshBoneInfo(TEXT("a"), TEXT("a"), 0), FTransform::Identity);
+        Left.Add(FMeshBoneInfo(TEXT("b"), TEXT("b"), 0), FTransform::Identity);
+        Right.Add(FMeshBoneInfo(TEXT("b"), TEXT("b"), 0), FTransform::Identity);
+        Right.Add(FMeshBoneInfo(TEXT("a"), TEXT("a"), 0), FTransform::Identity);
+        Left.Add(FMeshBoneInfo(TEXT("child"), TEXT("child"), 1), FTransform::Identity);
+        Right.Add(FMeshBoneInfo(TEXT("child"), TEXT("child"), 1), FTransform::Identity);
+    }
+    Primary->SetRefSkeleton(ParentOrderPrimary);
+    PartMesh->SetRefSkeleton(ParentOrderPart);
+    TestFalse(TEXT("equal parent indices cannot conceal different parent names"),
+        FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    Primary->SetRefSkeleton(OriginalPrimarySkeleton);
+    PartMesh->SetRefSkeleton(OriginalPartSkeleton);
     // A Binding without a Primary Driver has no character at all.
     Binding->AdditionalParts.Reset();
     Binding->SkeletalMesh = nullptr;
@@ -6716,6 +6815,108 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
             GEngine->DestroyWorldContext(World);
         }
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsAssetTest,
+    "MtoULiveLink.Actor.CharacterPartsAsset",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
+{
+    FString BindingPath;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
+    {
+        AddInfo(TEXT("External split-character acceptance requires -MtoUCharacterPartsBinding=<asset path>."));
+        return true;
+    }
+    UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
+    if (!TestNotNull(TEXT("production Binding loads"), Binding)) { return false; }
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    AddInfo(Composition.Summary);
+    for (const auto& Part : Binding->AdditionalParts)
+    {
+        if (!Part.bEnabled || !Part.SkeletalMesh) { continue; }
+        const FReferenceSkeleton& Skeleton = Part.SkeletalMesh->GetRefSkeleton();
+        TSet<int32> InfluencingBones;
+        if (const FSkeletalMeshRenderData* Data = Part.SkeletalMesh->GetResourceForRendering())
+        {
+            for (const auto& LOD : Data->LODRenderData)
+            {
+                for (const auto& Section : LOD.RenderSections)
+                {
+                    for (const auto Bone : Section.BoneMap)
+                    {
+                        for (int32 Index = Bone; Index != INDEX_NONE; Index = Skeleton.GetParentIndex(Index))
+                        {
+                            InfluencingBones.Add(Index);
+                        }
+                    }
+                }
+            }
+        }
+
+        AddInfo(FString::Printf(TEXT("%s: %d reference bones, %d skinning/ancestor bones"),
+            *Part.SkeletalMesh->GetName(), Skeleton.GetNum(), InfluencingBones.Num()));
+    }
+    TestTrue(FString::Printf(TEXT("production composition is usable: %s"), *Composition.Diagnostics), Composition.IsUsable());
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    Actor->SetBinding(Binding);
+    Actor->ShowDriverMesh();
+    int32 EnabledCount = 0;
+    for (const auto& Part : Binding->AdditionalParts) { EnabledCount += Part.bEnabled ? 1 : 0; }
+    TestTrue(TEXT("fixture exercises multiple additional parts"), EnabledCount >= 2);
+    TestEqual(TEXT("all enabled parts have display components"), Actor->GetCharacterPartComponents().Num(), EnabledCount);
+    for (const auto& Component : Actor->GetCharacterPartComponents())
+    {
+        TestTrue(TEXT("part is registered and visible with its mesh"),
+            Component && Component->IsRegistered() && Component->IsVisible() && Component->GetSkeletalMeshAsset());
+    }
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartsTest,
+    "MtoULiveLink.Actor.LoadedCharacterParts",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
+{
+    FString MapPath;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath))
+    {
+        AddInfo(TEXT("Load a saved character map and supply -MtoULoadedCharacterMap=<package path>."));
+        return true;
+    }
+    int32 ActorsChecked = 0;
+    for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+    {
+        AMtoULiveLinkActor* Actor = *It;
+        if (!Actor->GetWorld() || Actor->GetWorld()->GetPackage()->GetName() != MapPath
+            || !Actor->GetBinding()) { continue; }
+        ++ActorsChecked;
+        int32 EnabledCount = 0;
+        for (const auto& Part : Actor->GetBinding()->AdditionalParts)
+        {
+            EnabledCount += Part.bEnabled ? 1 : 0;
+        }
+        TestTrue(TEXT("saved map contains a split character"), EnabledCount >= 2);
+        TestEqual(TEXT("loaded actor restores all enabled parts"),
+            Actor->GetCharacterPartComponents().Num(), EnabledCount);
+        for (const auto& Part : Actor->GetCharacterPartComponents())
+        {
+            TestTrue(TEXT("loaded part is registered with its visible mesh"),
+                Part && Part->IsRegistered() && Part->IsVisible() && Part->GetSkeletalMeshAsset());
+            if (Part)
+            {
+                TestNotNull(TEXT("loaded part evaluates native Live Link"), Cast<ULiveLinkInstance>(Part->GetAnimInstance()));
+                TestTrue(TEXT("asset Post Process evaluation is disabled on loaded parts"),
+                    Part->GetDisablePostProcessBlueprint());
+            }
+        }
+    }
+    TestTrue(TEXT("saved map actor was actually inspected"), ActorsChecked > 0);
     return true;
 }
 

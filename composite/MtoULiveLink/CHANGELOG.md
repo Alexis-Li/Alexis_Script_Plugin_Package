@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fix opening saved levels containing Additional Parts with asset Post Process
+  animation blueprints: defer display/component restoration until registration
+  after PostLoad, and disable Post Process evaluation before assigning part
+  meshes. Saved C02 level loading is now covered independently from placement.
+
+- Fix split Head/Hair rejection when an unrelated, unweighted branch of the
+  complete exported skeleton has a different reference pose. Pose checks cover
+  skinning palettes from every LOD and their ancestors; bone-name and parent
+  compatibility remain mandatory. Parent matching uses names rather than
+  coincident numeric indices.
+- Add Maya 2024 as the current supported workflow while retaining Maya 2022.4.
+
 - Support a Primary Driver plus enabled Additional Parts in one Binding
   (Issue #45): the Binding keeps its existing `SkeletalMesh` field as the
   Primary Driver and adds a labelled list of parts with a stable internal
