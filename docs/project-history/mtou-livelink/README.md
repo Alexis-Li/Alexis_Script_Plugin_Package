@@ -161,6 +161,23 @@ Those records do not establish a complete 0.5.0 production or release gate.
   the Unreal packaging dry-run pass. The real split-asset visual acceptance
   remains the owner's gate and is recorded as not performed.
 
+- **2026-09-20:** Completed Issue #46 on `main`: connection negotiation accepts
+  the hash-suffixed import rename (`<complete short name>_<32 hexadecimal
+  digits>`) for a duplicated Maya short name beside the numeric suffix, keeping
+  exact-name precedence, the already-mapped-parent rule, candidate uniqueness,
+  target reuse rejection, and complete one-to-one coverage. Diagnostics now lead
+  with the first unmapped Maya path, its parent, the blocked Maya and unreached
+  Unreal counts, and import-rename hints, and they separate confirmed extra
+  Unreal bones from unreached ones. The supplied C02 character negotiates
+  1502/1502 nodes with exactly its 19 hash renames, four body, head, garment, and
+  face poses, and an explicit reconnect on stock Unreal Editor 5.7.4 with Maya
+  2024, all within `2.1e-13 cm`. The Model workflow with a Generated Preview was
+  not run: the C02 Binding has no Preview Static Mesh and no C02 garment Static
+  Mesh exists, so Model coverage stays with the owning Automation tests. Stock UE
+  5.7.4 build, all 67 `MtoULiveLink` Automation tests, Maya pure 140/140,
+  repository validation, and repository tests pass; evidence in the
+  [hash-suffix mapping acceptance](hash-suffix-mapping-acceptance.md).
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -175,6 +192,7 @@ Those records do not establish a complete 0.5.0 production or release gate.
 - [Preview Refresh optimization](preview-refresh-optimization.md)
 - [Preview Refresh geometry-scale measurements](preview-refresh-geometry-scale.md)
 - [Complete-skeleton connection and preview acceptance](complete-skeleton-acceptance.md)
+- [Hash-suffix skeleton mapping acceptance](hash-suffix-mapping-acceptance.md)
 - [Character-part composition acceptance](character-parts-acceptance.md)
 
 ## Current Project

@@ -38,8 +38,12 @@ The complete result of connection negotiation: whether streaming may begin, the 
 _Avoid_: Ready reply, validation result
 
 **Bone-name mapping**:
-The unique correspondence from a duplicated Maya short bone name to the numeric-suffixed name created for the same bone by Unreal import. It is valid only within an already matched parent branch.
+The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch.
 _Avoid_: Bone rename, fuzzy match
+
+**Unreached bone**:
+An Unreal bone below an unmatched ancestor, which negotiation never examined because its parent could not be mapped. It is reported separately from a confirmed extra bone and never claims that Maya lacks that bone.
+_Avoid_: Missing bone, extra bone
 
 **Morph difference**:
 A Morph Target name present only in the Maya character description or only in

@@ -145,8 +145,18 @@ public:
             else
             {
                 // Give the screenshot a frame before the synchronous Refresh.
-                Stage = 3; Settled = FPlatformTime::Seconds();
+                Stage = bPreviewStages ? 3 : 9; Settled = FPlatformTime::Seconds();
             }
+        }
+        else if (Stage == 9)
+        {
+            // A Binding without a Preview Static Mesh cannot build a Generated
+            // Preview, so this character verifies the Animation session across
+            // an explicit Maya disconnect and reconnect instead of a Model run.
+            if (FPlatformTime::Seconds() - Settled < 1.0) { return false; }
+            Test->AddInfo(TEXT("Binding has no Preview Static Mesh: verifying the Animation reconnect instead of the Model workflow."));
+            Workflow = TEXT("reconnected-animation");
+            Send(TEXT("reconnect"), 0, TEXT("animation")); Stage = 6;
         }
         else if (Stage == 3)
         {
@@ -217,8 +227,11 @@ private:
         Fixture = ReadCharacterJson(FixturePath);
         if (!Fixture) { Test->AddError(TEXT("Invalid character fixture")); return false; }
         auto* Original = LoadObject<UMtoULiveLinkBinding>(nullptr, *Fixture->GetStringField(TEXT("binding")));
-        if (!Original || !Original->SkeletalMesh || !Original->PreviewStaticMesh)
-        { Test->AddError(TEXT("Fixture requires an existing complete Binding")); return false; }
+        if (!Original || !Original->SkeletalMesh)
+        { Test->AddError(TEXT("Fixture requires an existing Binding with a Primary Driver")); return false; }
+        // The Model phases need a Preview Static Mesh on the Binding; without
+        // one the run stays on the Animation phases and reconnects instead.
+        bPreviewStages = Original->PreviewStaticMesh != nullptr;
         Binding.Reset(DuplicateObject<UMtoULiveLinkBinding>(Original, GetTransientPackage()));
         UWorld* World = GEditor->GetEditorWorldContext().World();
         if (!World->GetOutermost()->GetName().StartsWith(TEXT("/Engine/")))
@@ -350,6 +363,7 @@ private:
     FProcHandle Process;
     int32 Stage = -1, CommandId = 0, Pose = 0;
     double Deadline = 0, Settled = 0;
+    bool bPreviewStages = true;
 };
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterAcceptanceTest,

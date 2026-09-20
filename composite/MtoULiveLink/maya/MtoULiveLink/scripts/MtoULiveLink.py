@@ -88,7 +88,8 @@ DIAGNOSTICS = {
         "请确认 Binding 已指定有效的 Skeletal Mesh。"),
     "SKELETON_MISMATCH": (
         "骨架与 Unreal Skeletal Mesh 不匹配",
-        "请在 UE 中改用与当前 Maya 角色完全对应的 Skeletal Mesh。"),
+        "请按 UE 详情检查首个未映射路径、父级与导入改名候选；"
+        "确认资产确实不一致后再重新导出或导入。"),
     "BLENDSHAPE_MISMATCH": (
         "BlendShape 不完全匹配，连接可用但表情可能不完整",
         "请查看详情中 Maya 和 UE 各自缺少的名称，并确认 UE 服装是否正确。"),

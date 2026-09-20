@@ -400,13 +400,24 @@ the static Maya skeleton with its Skeletal Mesh. Maya publishes every joint
 under the selected root plus the intermediate `transform` nodes required to
 preserve joint parentage; branches without joints are excluded. Unreal compares
 normalized node name to parent name, not array position. A link succeeds when
-every published node and parent can be mapped uniquely and completely. Unreal
-importer-added numeric suffixes may map duplicate Maya short names only below
-an already mapped parent.
+every published node and parent can be mapped uniquely and completely. An
+Unreal importer rename may map a duplicate Maya short name only below an
+already mapped parent: either the numeric suffix the engine appends, or the
+complete short name followed by `_` and exactly 32 hexadecimal digits. A
+partial original name, another separator, a different hash length, an
+unduplicated Maya name, a different parent, and several candidates stay
+blocking rather than selecting one.
 
-The validation response lists missing bones, extra bones, and parent mismatches.
-It also reports successful bone-name mappings and both directions of Morph
-difference as warnings. No pose is applied to an unusable target. For a usable
+The validation response leads with the root cause of the first unmapped bone:
+its complete Maya path, the mapped Unreal parent it had to match, the blocked
+Maya descendant and unreached Unreal counts, and every import-rename shaped
+candidate with the reason the strict rules did not apply it. It then lists
+missing bones, extra bones, unreached bones, parent mismatches, and mapping
+ambiguities. Only an unmatched Unreal bone below a mapped parent is a confirmed
+extra bone; bones behind an unmatched ancestor are reported as unreached
+because negotiation never examined them. It also reports successful bone-name
+mappings and both directions of Morph difference as warnings. No pose is
+applied to an unusable target. For a usable
 target, source component-space motion relative to Maya's saved bind pose is
 mapped onto the Skeletal Mesh reference pose before Live Link publication.
 Finite non-zero tiny scales remain valid through checked matrix inversion and
@@ -514,8 +525,9 @@ Development-only automation tests cover:
 - dynamically sized skeleton and frame parsing;
 - transform- and curve-count mismatch;
 - `NaN` and infinity rejection;
-- connection negotiation, including parent-scoped importer suffix mappings and
-  bidirectional Morph differences;
+- connection negotiation, including parent-scoped importer numeric and hash
+  renames, their rejection boundaries, the extra-versus-unreached
+  classification, and bidirectional Morph differences;
 - bind-pose invariance and reference-pose mapping across different local axes,
   parent-child motion, translation, unit scale, finite tiny scale, and singular
   transform rejection;

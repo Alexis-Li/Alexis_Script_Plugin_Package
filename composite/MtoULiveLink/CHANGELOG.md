@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Accept the hash-suffixed import rename for duplicated Maya short names
+  (Issue #46): a target bone named `<complete short name>_<exactly 32
+  hexadecimal digits>` below the already mapped parent now maps like the
+  numeric suffix, so a hash-renamed head or shoulder branch no longer fails
+  while its whole subtree is skipped. Partial names, other separators, other
+  hash lengths, non-hexadecimal digits, an unduplicated Maya name, a different
+  parent, and several candidates stay blocking, and Unreal keeps owning the
+  published bone name. Numeric suffixes and every other mapping rule are
+  unchanged.
+
+- Lead the skeleton diagnostics with the mapping root cause (Issue #46): the
+  first unmapped Maya path, its parent, the blocked Maya descendant and
+  unreached Unreal counts, and import-rename shaped candidates with the reason
+  each was not applied. Unmatched Unreal bones below an unmatched ancestor are
+  reported as unreached instead of extra, so one broken ancestor no longer
+  claims that Maya lacks its descendants, while confirmed extra bones remain
+  listed. The Maya `SKELETON_MISMATCH` advice now points at those details
+  instead of asking for a different asset.
+
 - Fix opening saved levels containing Additional Parts with asset Post Process
   animation blueprints: defer display/component restoration until registration
   after PostLoad, and disable Post Process evaluation before assigning part

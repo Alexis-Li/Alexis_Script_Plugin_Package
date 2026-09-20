@@ -55,8 +55,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 ## 准备角色
 
 - Maya 的变形骨架应与 Unreal 的 **Primary Driver Skeletal Mesh** 匹配，包括骨骼
-  名称和父子关系；骨骼之间的中间分组也会参与匹配。插件不提供自动重定向，
-  Maya 增删骨骼后需同步更新 Unreal 资产。
+  名称和父子关系；骨骼之间的中间分组也会参与匹配。同一短名出现在多个 Maya 分支
+  时，只要 Unreal 导入在相同父级下为该重名骨骼添加了数字后缀或 32 位 hash 后缀
+  即可连接，连接会报告每一处改名映射。插件不提供自动重定向，Maya 增删骨骼后需
+  同步更新 Unreal 资产。
 - 预览服装时，准备与 Primary Driver 服装位置对齐的 **Preview Static Mesh**。
   服装与身体等非服装几何体应使用不同的导入材质槽。
 - 预览 BlendShape 时，Maya BlendShape 与 Unreal Morph Target 需要名称匹配，
@@ -124,7 +126,7 @@ BlendShape 变形。没有 BlendShape 的服装可正常使用骨骼驱动预览
 
 | 问题 | 处理方法 |
 | --- | --- |
-| 骨架不匹配 | 检查 Maya 选择的根骨骼、提示中的骨骼与父路径，以及 Unreal Driver 网格是否为最新版本。 |
+| 骨架不匹配 | 先按详情中的根因排查：首个未映射骨骼的完整路径与父级、受阻的 Maya 后代与未访问的 Unreal 骨骼数量，以及提示的导入改名候选；再检查 Maya 选择的根骨骼、层级，以及 Unreal Driver 网格是否为最新版本。 |
 | 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查该部件是否与 Primary Driver 共用同一个 **Skeleton** 资产、提示的骨骼是否在 Primary 中以相同的父骨骼存在，以及参考姿势是否匹配。 |
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |

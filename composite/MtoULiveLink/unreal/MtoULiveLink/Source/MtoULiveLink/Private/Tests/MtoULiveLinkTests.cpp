@@ -2149,6 +2149,256 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
         Ambiguous.DescendantsBlockedByParent.Num() == 1
         && Ambiguous.DescendantsBlockedByParent[0].Contains(TEXT("tip_3")));
 
+    // Hash-suffixed import renames: an Unreal import may rename a duplicated
+    // short name with the complete short name plus a generated 32-digit hash.
+    // The head branch below keeps every descendant reachable even though the
+    // body branch owns the plain name.
+    const FString HeadHash = TEXT("5d859dce24654c43b1b653def8d6278f");
+    const FString LeafHash = TEXT("d334a92079e82c0021e10535bf76649b");
+    const auto HashRename = [](const FString& Name, const FString& Hash)
+    {
+        return FName(*(Name + TEXT("_") + Hash));
+    };
+    const FMtoUCharacterDescription SplitSpineCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("spine_02")), 0},
+            {FName(TEXT("spine_03")), 1},
+            {FName(TEXT("spine_04")), 2},
+            {FName(TEXT("joints_grp")), 1},
+            {FName(TEXT("spine_04")), 4},
+            {FName(TEXT("neck_01")), 5},
+            {FName(TEXT("FACIAL_C_12IPV_NeckB2")), 6},
+        },
+        {},
+    };
+    const FMtoUTargetDescription SplitSpineTarget = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("spine_02")), 0},
+            {FName(TEXT("spine_03")), 1},
+            {FName(TEXT("spine_04")), 2},
+            {FName(TEXT("joints_grp")), 1},
+            {HashRename(TEXT("spine_04"), HeadHash), 4},
+            {FName(TEXT("neck_01")), 5},
+            {FName(TEXT("FACIAL_C_12IPV_NeckB2")), 6},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome SplitSpine =
+        FMtoUConnectionNegotiator::Negotiate(SplitSpineCharacter, SplitSpineTarget);
+    TestTrue(TEXT("a hash-renamed ancestor maps its whole branch"), SplitSpine.bUsable);
+    TestTrue(TEXT("the renamed bone publishes the Unreal hash name"),
+        SplitSpine.PublishBoneNames[5] == HashRename(TEXT("spine_04"), HeadHash)
+        && SplitSpine.PublishBoneNames[3] == FName(TEXT("spine_04")));
+    TestTrue(TEXT("the hash rename is reported exactly once"),
+        SplitSpine.BoneNameMappings.Num() == 1
+        && SplitSpine.BoneNameMappings[0].Contains(HeadHash));
+    TestTrue(TEXT("a mapped hash rename leaves no extra or unreached bone"),
+        SplitSpine.ExtraBones.IsEmpty() && SplitSpine.UnreachedUnrealBones.IsEmpty());
+    TestFalse(TEXT("a fully mapped hash rename has no root cause"),
+        SplitSpine.FirstFailure.IsSet());
+
+    // The same branch with a hash Unreal never generated for this bone: only
+    // the unmatched ancestor is a confirmed extra bone, and its descendants are
+    // reported as unreached instead of claiming Maya lacks them.
+    FMtoUTargetDescription UnmatchedHashTarget = SplitSpineTarget;
+    UnmatchedHashTarget.Bones[5].Name = FName(TEXT("spine_04_5d859dce24654c43b1b653def8d6278"));
+    const FMtoUNegotiationOutcome UnmatchedHash =
+        FMtoUConnectionNegotiator::Negotiate(SplitSpineCharacter, UnmatchedHashTarget);
+    TestFalse(TEXT("a 31-digit hash stays unmapped"), UnmatchedHash.bUsable);
+    TestTrue(TEXT("the unmapped renamed ancestor is the only confirmed extra bone"),
+        UnmatchedHash.ExtraBones == TArray<FString>({TEXT("spine_04_5d859dce24654c43b1b653def8d6278")}));
+    TestTrue(TEXT("the branch below it is unreached rather than extra"),
+        UnmatchedHash.UnreachedUnrealBones == TArray<FString>(
+            {TEXT("FACIAL_C_12IPV_NeckB2"), TEXT("neck_01")}));
+    TestTrue(TEXT("the root cause leads with the complete Maya path and parent"),
+        UnmatchedHash.FirstFailure.IsSet()
+        && UnmatchedHash.FirstFailure->MayaPath == TEXT("root/spine_02/joints_grp/spine_04")
+        && UnmatchedHash.FirstFailure->ExpectedParent == TEXT("joints_grp"));
+    TestTrue(TEXT("the root cause counts its blocked and unreached nodes"),
+        UnmatchedHash.FirstFailure->BlockedDescendants == 2
+        && UnmatchedHash.FirstFailure->UnreachedUnreal == 2);
+    TestTrue(TEXT("the root cause renders before the descendant lists"),
+        UnmatchedHash.TechnicalDetails().Find(TEXT("Root cause")) != INDEX_NONE
+        && UnmatchedHash.TechnicalDetails().Find(TEXT("Root cause"))
+            < UnmatchedHash.TechnicalDetails().Find(TEXT("Descendants blocked by parent")));
+
+    const FMtoUCharacterDescription DuplicateLeafCharacter = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("tip")), 1},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("tip")), 3},
+        },
+        {},
+    };
+    const auto DuplicateLeafTarget = [](FName LeftTip, FName RightTip)
+    {
+        return FMtoUTargetDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("left")), 0},
+                {LeftTip, 1},
+                {FName(TEXT("right")), 0},
+                {RightTip, 3},
+            },
+            {},
+        };
+    };
+    const FMtoUNegotiationOutcome UpperHash = FMtoUConnectionNegotiator::Negotiate(
+        DuplicateLeafCharacter,
+        DuplicateLeafTarget(HashRename(TEXT("tip"), LeafHash.ToUpper()),
+            HashRename(TEXT("tip"), HeadHash)));
+    TestTrue(TEXT("hexadecimal hash digits match in either case"), UpperHash.bUsable);
+    TestTrue(TEXT("both hash renames are reported"),
+        UpperHash.BoneNameMappings.Num() == 2);
+
+    // One valid candidate per parent maps, but two candidates below the same
+    // parent stay ambiguous for the hash form, the numeric form, and their mix:
+    // both must sit with the same Maya bone to compete.
+    const auto TwoCandidateTarget = [](FName LeftFirst, FName LeftSecond)
+    {
+        return FMtoUTargetDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("left")), 0},
+                {LeftFirst, 1},
+                {LeftSecond, 1},
+                {FName(TEXT("right")), 0},
+                {FName(TEXT("tip")), 4},
+            },
+            {},
+        };
+    };
+    const FMtoUNegotiationOutcome TwoHashCandidates = FMtoUConnectionNegotiator::Negotiate(
+        DuplicateLeafCharacter,
+        TwoCandidateTarget(HashRename(TEXT("tip"), LeafHash), HashRename(TEXT("tip"), HeadHash)));
+    TestFalse(TEXT("two hash candidates below the same parent are blocking"),
+        TwoHashCandidates.bUsable);
+    TestTrue(TEXT("the competing hash candidates are reported once"),
+        TwoHashCandidates.MappingAmbiguities.Num() == 1
+        && TwoHashCandidates.MappingAmbiguities[0].Contains(TEXT("tip")));
+    TestTrue(TEXT("the sibling branch still maps"),
+        TwoHashCandidates.MissingBones.IsEmpty() && TwoHashCandidates.ExtraBones.Num() == 2);
+    TestTrue(TEXT("ambiguity hints list both competing candidates"),
+        TwoHashCandidates.FirstFailure.IsSet()
+        && TwoHashCandidates.FirstFailure->RenameHints == TArray<FString>(
+            {HashRename(TEXT("tip"), HeadHash).ToString(),
+                HashRename(TEXT("tip"), LeafHash).ToString()}));
+
+    const FMtoUNegotiationOutcome MixedCandidates = FMtoUConnectionNegotiator::Negotiate(
+        DuplicateLeafCharacter,
+        TwoCandidateTarget(FName(TEXT("tip2")), HashRename(TEXT("tip"), LeafHash)));
+    TestFalse(TEXT("a numeric and a hash candidate are not silently chosen"),
+        MixedCandidates.bUsable);
+    TestTrue(TEXT("the mixed candidate set is reported as one ambiguity"),
+        MixedCandidates.MappingAmbiguities.Num() == 1);
+
+    // The complete original name is required: a partial name, a missing
+    // separator, and wrong-length or non-hexadecimal hashes never match.
+    const TArray<FString> RejectedLeafNames = {
+        TEXT("tip_l_") + LeafHash,
+        TEXT("tip") + LeafHash,
+        TEXT("tip_") + LeafHash.LeftChop(1),
+        TEXT("tip_") + LeafHash + TEXT("0"),
+        TEXT("tip_") + LeafHash.LeftChop(1) + TEXT("z"),
+        TEXT("tip_x"),
+    };
+    for (const FString& RejectedName : RejectedLeafNames)
+    {
+        const FMtoUNegotiationOutcome Rejected = FMtoUConnectionNegotiator::Negotiate(
+            DuplicateLeafCharacter, DuplicateLeafTarget(FName(*RejectedName), FName(TEXT("tip2"))));
+        TestFalse(FString::Printf(TEXT("'%s' is not accepted as an import rename"), *RejectedName),
+            Rejected.bUsable);
+        TestTrue(FString::Printf(TEXT("'%s' leaves the Maya name missing"), *RejectedName),
+            Rejected.MissingBones.Contains(TEXT("tip")));
+    }
+
+    // A rename never crosses parents: the hash-shaped Unreal bone stays below
+    // its own branch while the Maya bone below another parent finds nothing.
+    const FMtoUNegotiationOutcome WrongParentRename = FMtoUConnectionNegotiator::Negotiate(
+        FMtoUCharacterDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("left")), 0},
+                {FName(TEXT("tip")), 1},
+                {FName(TEXT("right")), 0},
+            },
+            {},
+        },
+        FMtoUTargetDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("left")), 0},
+                {FName(TEXT("right")), 0},
+                {HashRename(TEXT("tip"), LeafHash), 2},
+            },
+            {},
+        });
+    TestFalse(TEXT("a hash rename below another parent stays unusable"), WrongParentRename.bUsable);
+    TestTrue(TEXT("the Maya branch finds no candidate below its own parent"),
+        WrongParentRename.MissingBones == TArray<FString>({TEXT("tip")}));
+    TestTrue(TEXT("the hint names the mismatching parent"),
+        WrongParentRename.FirstFailure.IsSet()
+        && WrongParentRename.FirstFailure->RenameHints.Num() == 1
+        && WrongParentRename.FirstFailure->RenameHints[0].Contains(TEXT("does not match")));
+    TestTrue(TEXT("the unmapped rename stays a confirmed extra bone"),
+        WrongParentRename.ExtraBones == TArray<FString>(
+            {HashRename(TEXT("tip"), LeafHash).ToString()}));
+
+    const FMtoUNegotiationOutcome ReusedTarget = FMtoUConnectionNegotiator::Negotiate(
+        FMtoUCharacterDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("tip")), 0},
+                {FName(TEXT("tip")), 0},
+            },
+            {},
+        },
+        FMtoUTargetDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {HashRename(TEXT("tip"), LeafHash), 0},
+            },
+            {},
+        });
+    TestFalse(TEXT("one Unreal bone cannot satisfy two Maya bones"), ReusedTarget.bUsable);
+    TestTrue(TEXT("the second Maya bone stays missing after the first mapping"),
+        ReusedTarget.MissingBones == TArray<FString>({TEXT("tip")}));
+    TestTrue(TEXT("the mapped Unreal bone is not reported as extra or unreached"),
+        ReusedTarget.ExtraBones.IsEmpty() && ReusedTarget.UnreachedUnrealBones.IsEmpty());
+
+    // A hash-shaped name for an unduplicated Maya name is a hint, never a
+    // mapping: the strict candidate rules still decide.
+    const FMtoUNegotiationOutcome UniqueHashOnly = FMtoUConnectionNegotiator::Negotiate(
+        FMtoUCharacterDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {FName(TEXT("arm")), 0},
+            },
+            {},
+        },
+        FMtoUTargetDescription{
+            {
+                {FName(TEXT("root")), INDEX_NONE},
+                {HashRename(TEXT("arm"), LeafHash), 0},
+            },
+            {},
+        });
+    TestFalse(TEXT("a hash rename never replaces an exact unique Maya name"), UniqueHashOnly.bUsable);
+    TestTrue(TEXT("the unique Maya name stays missing"),
+        UniqueHashOnly.MissingBones == TArray<FString>({TEXT("arm")}));
+    TestTrue(TEXT("the hash-shaped Unreal bone is a confirmed extra"),
+        UniqueHashOnly.ExtraBones == TArray<FString>({HashRename(TEXT("arm"), LeafHash).ToString()}));
+    TestTrue(TEXT("the hint explains why the candidate was not applied"),
+        UniqueHashOnly.FirstFailure.IsSet()
+        && UniqueHashOnly.FirstFailure->RenameHints.Num() == 1
+        && UniqueHashOnly.FirstFailure->RenameHints[0].Contains(TEXT("not duplicated")));
+    TestTrue(TEXT("hints are rendered behind the root cause"),
+        UniqueHashOnly.TechnicalDetails().Contains(TEXT("Possible import rename")));
+
     const FMtoUCharacterDescription BranchCharacter = {
         {
             {FName(TEXT("root")), INDEX_NONE},
@@ -2179,8 +2429,18 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("a failed parent records its blocked descendant"),
         BrokenBranches.DescendantsBlockedByParent.Num() == 1
         && BrokenBranches.DescendantsBlockedByParent[0].Contains(TEXT("left_child")));
-    TestTrue(TEXT("unmatched target bones are reported as extra"),
-        BrokenBranches.ExtraBones.Contains(TEXT("extra")));
+    TestTrue(TEXT("unmatched target bones below a mapped parent are confirmed extra"),
+        BrokenBranches.ExtraBones == TArray<FString>(
+            {TEXT("extra"), TEXT("wrong_left"), TEXT("wrong_right_child")}));
+    TestTrue(TEXT("target bones behind an unmatched parent are unreached, not extra"),
+        BrokenBranches.UnreachedUnrealBones == TArray<FString>({TEXT("left_child")}));
+    TestTrue(TEXT("the root cause reports the first unmapped path and its impact"),
+        BrokenBranches.FirstFailure.IsSet()
+        && BrokenBranches.FirstFailure->MayaPath == TEXT("root/left")
+        && BrokenBranches.FirstFailure->ExpectedParent == TEXT("root")
+        && BrokenBranches.FirstFailure->Reason.Contains(TEXT("no Unreal bone"))
+        && BrokenBranches.FirstFailure->BlockedDescendants == 1
+        && BrokenBranches.FirstFailure->UnreachedUnreal == 1);
     TestTrue(TEXT("Morph comparison does not run for a blocking skeleton"),
         BrokenBranches.AcceptedCurveIndices.IsEmpty()
         && BrokenBranches.MayaOnlyMorphNames.IsEmpty()

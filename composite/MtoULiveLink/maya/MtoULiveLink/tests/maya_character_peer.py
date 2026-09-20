@@ -115,6 +115,17 @@ def main():
                         cmds.dgdirty(allPlugs=True)
                         result["pose"] = command["pose"]
                         result["phase"] = "posed"
+                    elif action == "reconnect":
+                        controller.disconnect()
+                        until(lambda: controller._session is None, "reconnect disconnect")
+                        controller.connect()
+                        until(
+                            lambda: controller._session is not None
+                            and controller._session._phase == "ready",
+                            "reconnect ready",
+                        )
+                        result["warning"] = controller._last_warning
+                        result["phase"] = "connected"
                     elif action == "disconnected":
                         until(lambda: controller._session is None, "refresh disconnect")
                         until(lambda: True, "pump")

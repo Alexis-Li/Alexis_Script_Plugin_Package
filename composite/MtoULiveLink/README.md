@@ -61,8 +61,11 @@ Omit `-Apply` to check the paths and preview the installation first.
 
 - Use a Maya deformation skeleton that matches the Unreal **Primary Driver
   Skeletal Mesh**, including bone names and parent relationships. Intermediate
-  groups between joints also participate in matching. The plugin does not
-  retarget; update the Unreal asset after adding or removing bones in Maya.
+  groups between joints also participate in matching. A short name that exists
+  in several Maya branches may still connect when the Unreal import renamed the
+  duplicate with a numeric or 32-digit hash suffix below the same parent; the
+  connection reports every such mapping. The plugin does not retarget; update
+  the Unreal asset after adding or removing bones in Maya.
 - For garment preview, prepare a **Preview Static Mesh** aligned with the
   Primary Driver garment. Keep garment and non-garment geometry in separate
   imported material slots.
@@ -142,7 +145,7 @@ mesh display. Configure lighting and shadow settings on **SkeletalMeshComponent*
 
 | Problem | What to do |
 | --- | --- |
-| Skeleton mismatch | Check the selected Maya root, reported bone and parent paths, and whether the Unreal Driver mesh is up to date. |
+| Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
 | An Additional Part is rejected | The diagnostics name the part and the reason. Check that it shares the Primary Driver **Skeleton** asset, that its reported bones exist in the Primary under the same parent, and that its reference pose matches. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |
