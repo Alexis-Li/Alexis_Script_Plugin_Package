@@ -186,6 +186,21 @@ Those records do not establish a complete 0.5.0 production or release gate.
   previous condition fails those assertions. The rebuilt plugin passed all 67
   `MtoULiveLink` Automation tests again.
 
+- **2026-09-21:** Responded to the Issue #45 review: the Binding now handles
+  the unnamed property change a transaction restore produces (undo and redo
+  reach their objects through an empty `FPropertyChangedEvent`), classifying
+  the restored state against what each actor already applied so a parts
+  restore ends the session without discarding a ready garment Preview, a
+  Primary or Preview restore still invalidates the Preview revision, and
+  renaming or reordering stays inert. The regression drives real editor
+  transactions through undo and redo, and fails pre-fix on an actor no
+  construction rerun can reach. The real C02 character (Primary plus Head and
+  Hair parts, 1,502 nodes, Maya 2024) then completed cross-host real-time and
+  Cached Playback acceptance: parts matched the streamed pose to `1.13e-13 cm`
+  in every stage, a Head-only BlendShape reached its owning mesh, and the same
+  capture range measured 0.390 ms against 1.241 ms of Game Thread frame cost
+  for the Primary alone versus the composed character.
+
 ## Stable Records
 
 - [Architecture](architecture.md)

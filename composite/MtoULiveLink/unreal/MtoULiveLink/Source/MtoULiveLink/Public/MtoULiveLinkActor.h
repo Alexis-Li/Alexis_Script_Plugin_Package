@@ -174,6 +174,14 @@ public:
      * garment Preview survives while the display components resynchronize.
      */
     void NotifyCharacterPartsChanged();
+    /**
+     * The Binding changed without naming a property, which is how a transaction
+     * restore (undo or redo) reaches its actors. The actor compares the current
+     * Binding inputs against what it has already applied, so a Primary Driver or
+     * Preview Static Mesh restore invalidates the Preview revision while a parts
+     * restore stays confined to the character composition.
+     */
+    void NotifyBindingStateChanged();
 
 private:
     friend class FMtoULiveLinkSource;

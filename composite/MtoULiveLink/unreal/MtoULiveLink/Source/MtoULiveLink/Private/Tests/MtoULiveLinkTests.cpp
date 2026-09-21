@@ -44,6 +44,7 @@
 #if WITH_EDITOR
 #include "Editor.h"
 #include "LevelEditorViewport.h"
+#include "Editor/Transactor.h"
 #endif
 
 namespace
@@ -314,9 +315,9 @@ void DestroySocket(ISocketSubsystem& SocketSubsystem, FSocket*& Socket)
     }
 }
 
-bool PollUntil(TFunctionRef<bool()> Predicate)
+bool PollUntil(TFunctionRef<bool()> Predicate, double TimeoutSeconds = 1.0)
 {
-    const double Deadline = FPlatformTime::Seconds() + 1.0;
+    const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds;
     do
     {
         if (Predicate())
@@ -6422,6 +6423,52 @@ void AddCharacterPart(
 }
 }
 
+namespace
+{
+/**
+ * Runs one editor transaction that edits one Binding property through the same
+ * entries the asset editor uses: the transaction records the object, the
+ * mutation happens inside it, and the resulting property change reaches the
+ * Binding. Undo and Redo then run the real PostEditUndo path.
+ */
+template <typename Mutate>
+void RunBindingEditTransaction(
+    UMtoULiveLinkBinding& Binding, FProperty& ChangedProperty, Mutate&& Change)
+{
+    GEditor->BeginTransaction(FText::FromString(TEXT("Edit MtoU character parts")));
+    Binding.Modify();
+    Change();
+    FPropertyChangedEvent Event(&ChangedProperty, EPropertyChangeType::ValueSet);
+    Binding.PostEditChangeProperty(Event);
+    GEditor->EndTransaction();
+}
+
+/**
+ * Discards the edit history a transaction test created. A transaction records
+ * the level it edited, and its buffer would otherwise keep that level's actors
+ * discoverable for the socket fixtures that run next.
+ */
+void ResetMtoUEditHistory()
+{
+    if (GEditor && GEditor->Trans)
+    {
+        GEditor->Trans->Reset(FText::FromString(TEXT("MtoU character part acceptance")));
+    }
+}
+
+/** The part meshes the actor currently displays, in canonical component order. */
+TArray<USkeletalMesh*> CharacterPartMeshes(const AMtoULiveLinkActor& Actor)
+{
+    TArray<USkeletalMesh*> Meshes;
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Component :
+            Actor.GetCharacterPartComponents())
+    {
+        Meshes.Add(Component ? Component->PartMesh.Get() : nullptr);
+    }
+    return Meshes;
+}
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsWorkflowTest,
     "MtoULiveLink.Workflow.CharacterParts",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -6726,6 +6773,39 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("returning to live preview drives the part again"),
         bPartFollowsLivePreviewAgain);
 
+    // A part edit made through a real editor transaction must terminate the
+    // running session before the new composition can be displayed, so frames
+    // and cached commands negotiated for the previous composition cannot reach
+    // the new component set.
+    FProperty* PartsProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, AdditionalParts));
+    TestNotNull(TEXT("the Additional Parts property is reflected"), PartsProperty);
+    if (PartsProperty)
+    {
+        // A Binding asset is transactional; the shared socket fixture creates
+        // its Binding in memory, so it adopts the same flag before an editor
+        // transaction can record it.
+        Binding->SetFlags(RF_Transactional);
+        RunBindingEditTransaction(*Binding, *PartsProperty, [&]()
+        {
+            Binding->AdditionalParts[0].bEnabled = false;
+        });
+        TestTrue(TEXT("a transaction part edit ends the live session on the wire"),
+            Client && WaitForClose(*Client));
+        TestTrue(TEXT("the disabled part leaves the character display"),
+            Actor->GetCharacterPartComponents().IsEmpty());
+        GEditor->UndoTransaction();
+        TestTrue(TEXT("undoing the part edit restores the part display"),
+            Actor->GetCharacterPartComponents().Num() == 1
+            && Actor->GetCharacterPartComponents()[0]->GetSkeletalMeshAsset() == Head);
+        TestTrue(TEXT("the source returns to listening after the part edit"),
+            WaitForStatus(Source, TEXT("Listening on")));
+        // The transaction buffer records the edited level; discard it so the
+        // next socket fixture still discovers exactly one placed actor.
+        ResetMtoUEditHistory();
+    }
+
     DestroySocket(*SocketSubsystem, Client);
     TestTrue(TEXT("source returns to listening after the composed disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
@@ -6893,10 +6973,218 @@ bool FMtoUCharacterPartLifecycleTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartTransactionsTest,
+    "MtoULiveLink.Actor.CharacterPartTransactions",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartTransactionsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UPackage* Package = CreatePackage(TEXT("/Temp/MtoUCharacterPartTransactions"));
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUCharacterPartTransactions"), Package, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(
+        Package, NAME_None, RF_Transactional | RF_Public);
+    TestTrue(TEXT("transaction world, actor, and Binding are created"),
+        World && Actor && Binding);
+    if (!World || !Actor || !Binding)
+    {
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard(Binding);
+
+    USkeletalMesh* Primary = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    USkeletalMesh* Head = MakeCharacterPartMesh(Primary, *Actor);
+    USkeletalMesh* Hair = MakeCharacterPartMesh(Primary, *Actor);
+    USkeletalMesh* OtherPrimary = MakeCharacterPartMesh(Primary, *Actor);
+    TestTrue(TEXT("transaction fixtures are created"),
+        Primary && Head && Hair && OtherPrimary);
+    if (!Primary || !Head || !Hair || !OtherPrimary)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+    Binding->SkeletalMesh = Primary;
+    AddCharacterPart(*Binding, TEXT("Head"), Head);
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+
+    // A second actor that no construction rerun can reach: it has no world, so
+    // only the Binding's own restore notification can resynchronize it. The
+    // undo assertions below therefore cannot pass through an incidental
+    // editor path.
+    AMtoULiveLinkActor* Detached = NewObject<AMtoULiveLinkActor>(World->GetCurrentLevel());
+    TestNotNull(TEXT("detached transaction actor is created"), Detached);
+    if (!Detached)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+    Detached->SetBinding(Binding);
+
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Primary, *Actor);
+    TestNotNull(TEXT("transaction fixture owns a Generated Preview"), Generated);
+    if (!Generated)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(
+        *Actor, Generated, false, TEXT("transaction fixture preview"));
+    Actor->ShowGeneratedPreview(false);
+    TestTrue(TEXT("the fixture starts with one part and a ready Generated Preview"),
+        Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetCharacterPartComponents().Num() == 1);
+
+    FProperty* PartsProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, AdditionalParts));
+    FProperty* PrimaryProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, SkeletalMesh));
+    FProperty* EnabledProperty = FindFProperty<FProperty>(
+        FMtoUCharacterPart::StaticStruct(),
+        GET_MEMBER_NAME_CHECKED(FMtoUCharacterPart, bEnabled));
+    TestTrue(TEXT("Binding and part properties are reflected"),
+        PartsProperty && PrimaryProperty && EnabledProperty);
+    if (!PartsProperty || !PrimaryProperty || !EnabledProperty)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    // Adding a part through the asset editor: a composition change that ends
+    // the session while the garment Preview revision survives.
+    const uint64 EndsBeforeAdd = MtoUGetStreamingSessionEndCount();
+    RunBindingEditTransaction(*Binding, *PartsProperty, [&]()
+    {
+        AddCharacterPart(*Binding, TEXT("Hair"), Hair);
+    });
+    TestEqual(TEXT("a part edit adds its display component"),
+        Actor->GetCharacterPartComponents().Num(), 2);
+    TestTrue(TEXT("a part edit ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsBeforeAdd);
+    TestEqual(TEXT("a part edit reaches an actor with no construction rerun"),
+        Detached->GetCharacterPartComponents().Num(), 2);
+    TestTrue(TEXT("a part edit keeps the generated garment Preview ready"),
+        Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == Generated);
+    const uint64 EndsAfterAdd = MtoUGetStreamingSessionEndCount();
+
+    // Undo of that addition is the transaction entry under test: the actors
+    // must learn about the restored list rather than keeping the added part.
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undo removes the added component and keeps the original part"),
+        Actor->GetCharacterPartComponents().Num() == 1
+        && Actor->GetCharacterPartComponents()[0]->PartMesh == Head);
+    TestTrue(TEXT("undo reaches an actor with no construction rerun"),
+        Detached->GetCharacterPartComponents().Num() == 1
+        && Detached->GetCharacterPartComponents()[0]->PartMesh == Head);
+    TestTrue(TEXT("undo of a part edit ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsAfterAdd);
+    TestTrue(TEXT("undo of a part edit keeps the Generated Preview ready"),
+        Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == Generated);
+    const uint64 EndsAfterUndo = MtoUGetStreamingSessionEndCount();
+    TestTrue(TEXT("undo reaches the detached actor for the removal case"),
+        Detached->GetCharacterPartComponents().Num() == 1);
+
+    GEditor->RedoTransaction();
+    TestTrue(TEXT("redo reaches an actor with no construction rerun"),
+        CharacterPartMeshes(*Detached).Num() == 2
+        && CharacterPartMeshes(*Detached).Contains(Head)
+        && CharacterPartMeshes(*Detached).Contains(Hair));
+    TestTrue(TEXT("redo restores both part components"),
+        CharacterPartMeshes(*Actor).Num() == 2
+        && CharacterPartMeshes(*Actor).Contains(Head)
+        && CharacterPartMeshes(*Actor).Contains(Hair));
+    TestTrue(TEXT("redo of a part edit ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsAfterUndo);
+    TestTrue(TEXT("redo of a part edit keeps the Generated Preview ready"),
+        Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == Generated);
+
+    // Undo of a removal restores the removed part and its component.
+    RunBindingEditTransaction(*Binding, *PartsProperty, [&]()
+    {
+        Binding->AdditionalParts.RemoveAt(1);
+    });
+    TestEqual(TEXT("a removal edit drops the part component"),
+        Actor->GetCharacterPartComponents().Num(), 1);
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undo of a removal restores the part and its component"),
+        Actor->GetCharacterPartComponents().Num() == 2
+        && CharacterPartMeshes(*Actor).Contains(Head)
+        && CharacterPartMeshes(*Actor).Contains(Hair));
+
+    // Enabling and disabling a part inside the list is a composition change
+    // too, and its undo must restore the component.
+    RunBindingEditTransaction(*Binding, *EnabledProperty, [&]()
+    {
+        Binding->AdditionalParts[0].bEnabled = false;
+    });
+    TestEqual(TEXT("disabling a part through its list entry drops the component"),
+        Actor->GetCharacterPartComponents().Num(), 1);
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undo of a disable restores the disabled part"),
+        Actor->GetCharacterPartComponents().Num() == 2
+        && CharacterPartMeshes(*Actor).Contains(Head)
+        && CharacterPartMeshes(*Actor).Contains(Hair));
+
+    // Renaming and reordering are presentation only: no component rebuild and
+    // no session termination, before or after their undo.
+    const uint64 EndsBeforeRename = MtoUGetStreamingSessionEndCount();
+    const TArray<TObjectPtr<UMtoUCharacterPartComponent>> ComponentsBeforeRename =
+        Actor->GetCharacterPartComponents();
+    RunBindingEditTransaction(*Binding, *PartsProperty, [&]()
+    {
+        Binding->AdditionalParts.Swap(0, 1);
+        Binding->AdditionalParts[0].PartName = TEXT("HeadRenamed");
+    });
+    TestTrue(TEXT("renaming and reordering a part rebuilds nothing"),
+        Actor->GetCharacterPartComponents() == ComponentsBeforeRename
+        && MtoUGetStreamingSessionEndCount() == EndsBeforeRename);
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undo of a rename and reorder rebuilds nothing"),
+        Actor->GetCharacterPartComponents() == ComponentsBeforeRename
+        && MtoUGetStreamingSessionEndCount() == EndsBeforeRename);
+
+    // A Primary Driver restore is a Preview revision change, not a composition
+    // change: the actors must invalidate readiness for it.
+    RunBindingEditTransaction(*Binding, *PrimaryProperty, [&]()
+    {
+        Binding->SkeletalMesh = OtherPrimary;
+    });
+    TestTrue(TEXT("a Primary Driver edit invalidates the Preview revision"),
+        !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("the restored Primary Driver is the applied input"),
+        Binding->SkeletalMesh == Primary);
+    TestTrue(TEXT("an undone Primary Driver edit keeps the revision invalidated"),
+        !Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("the composing parts survive a Primary Driver restore"),
+        Actor->GetCharacterPartComponents().Num() == 2);
+
+    // The socket fixtures discover exactly one placed editor actor, so this
+    // test leaves no actor, world, or transaction behind for them to find.
+    Detached->Destroy();
+    World->DestroyWorld(false);
+    ResetMtoUEditHistory();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartCompatibilityTest,
     "MtoULiveLink.Negotiation.CharacterPartCompatibility",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
 bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -7215,6 +7503,98 @@ bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartTransactionsTest,
+    "MtoULiveLink.Actor.LoadedCharacterPartTransactions",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString MapPath, BindingPath;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
+    {
+        AddInfo(TEXT("Load a saved split-character map and supply -MtoULoadedCharacterMap=<package> "));
+        AddInfo(TEXT("and -MtoUCharacterPartsBinding=<asset path> to check its transactions."));
+        return true;
+    }
+    UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
+    if (!TestNotNull(TEXT("production Binding loads"), Binding))
+    {
+        return false;
+    }
+    AMtoULiveLinkActor* Actor = nullptr;
+    for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+    {
+        if (It->GetWorld() && It->GetWorld()->GetPackage()->GetName() == MapPath
+            && It->GetBinding() == Binding)
+        {
+            Actor = *It;
+            break;
+        }
+    }
+    if (!TestNotNull(TEXT("the loaded map places an actor that uses the Binding"), Actor))
+    {
+        return false;
+    }
+    FProperty* PartsProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, AdditionalParts));
+    TestNotNull(TEXT("the Additional Parts property is reflected"), PartsProperty);
+    if (!PartsProperty)
+    {
+        return false;
+    }
+
+    const int32 LoadedParts = Actor->GetCharacterPartComponents().Num();
+    const TArray<USkeletalMesh*> LoadedMeshes = CharacterPartMeshes(*Actor);
+    TestTrue(TEXT("the loaded actor displays the enabled parts"), LoadedParts >= 2);
+    // The transaction must reach the placed actor only through the Binding's
+    // own undo notification; a construction rerun is not available here because
+    // the level is not part of the asset transaction.
+    Binding->SetFlags(RF_Transactional);
+    const uint64 EndsBeforeEdit = MtoUGetStreamingSessionEndCount();
+    RunBindingEditTransaction(*Binding, *PartsProperty, [&]()
+    {
+        for (FMtoUCharacterPart& Part : Binding->AdditionalParts)
+        {
+            if (Part.bEnabled)
+            {
+                Part.bEnabled = false;
+                return;
+            }
+        }
+    });
+    TestEqual(TEXT("an asset transaction disables the part on the placed actor"),
+        Actor->GetCharacterPartComponents().Num(), LoadedParts - 1);
+    TestTrue(TEXT("an asset transaction ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsBeforeEdit);
+    const uint64 EndsAfterEdit = MtoUGetStreamingSessionEndCount();
+
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undo restores the disabled part on the placed actor"),
+        Actor->GetCharacterPartComponents().Num() == LoadedParts
+        && CharacterPartMeshes(*Actor) == LoadedMeshes);
+    TestTrue(TEXT("undo of an asset transaction ends the streaming session"),
+        MtoUGetStreamingSessionEndCount() > EndsAfterEdit);
+    GEditor->RedoTransaction();
+    TestEqual(TEXT("redo disables the part again on the placed actor"),
+        Actor->GetCharacterPartComponents().Num(), LoadedParts - 1);
+    GEditor->UndoTransaction();
+
+    // Only the in-memory asset is edited; the level and the asset are never
+    // saved, and the restored configuration must match what was loaded.
+    TestTrue(TEXT("the Configuration is back to the loaded state"),
+        Actor->GetCharacterPartComponents().Num() == LoadedParts);
+    int32 EnabledParts = 0;
+    for (const FMtoUCharacterPart& Part : Binding->AdditionalParts)
+    {
+        EnabledParts += Part.bEnabled ? 1 : 0;
+    }
+    TestEqual(TEXT("the restored Binding enables every part it loaded"), EnabledParts, LoadedParts);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartsTest,
     "MtoULiveLink.Actor.LoadedCharacterParts",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -7255,6 +7635,738 @@ bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
         }
     }
     TestTrue(TEXT("saved map actor was actually inspected"), ActorsChecked > 0);
+    return true;
+}
+
+namespace
+{
+/** Mean, median and p95 of one measurement series in milliseconds. */
+struct FMtoUTimingSummary
+{
+    TArray<double> Samples;
+    double MeanMilliseconds = 0.0;
+    double MedianMilliseconds = 0.0;
+    double P95Milliseconds = 0.0;
+    double Fps = 0.0;
+
+    void Finalize()
+    {
+        if (Samples.IsEmpty())
+        {
+            return;
+        }
+        TArray<double> Sorted = Samples;
+        Sorted.Sort();
+        double Total = 0.0;
+        for (const double Sample : Sorted)
+        {
+            Total += Sample;
+        }
+        MeanMilliseconds = Total * 1000.0 / Sorted.Num();
+        MedianMilliseconds = Sorted[Sorted.Num() / 2] * 1000.0;
+        P95Milliseconds =
+            Sorted[FMath::Clamp(FMath::CeilToInt32(Sorted.Num() * 0.95) - 1, 0, Sorted.Num() - 1)]
+            * 1000.0;
+        Fps = Total > 0.0 ? Sorted.Num() / Total : 0.0;
+    }
+};
+
+/** Writes one JSON evidence file next to the peer's result. */
+void WriteMtoUEvidence(const FString& Path, const TSharedRef<FJsonObject>& Value)
+{
+    FString Text;
+    FJsonSerializer::Serialize(Value, TJsonWriterFactory<>::Create(&Text));
+    FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCharacterPartsHostTest,
+    "MtoULiveLink.Source.MayaCharacterPartsHost",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Fixture, Mayapy, Peer, Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsFixture="), Fixture))
+    {
+        AddInfo(TEXT("Cross-host character-parts acceptance not requested; supply"));
+        AddInfo(TEXT("-MtoUCharacterPartsFixture=<json> with binding/scene/root/poses,"));
+        AddInfo(TEXT("-MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=."));
+        return true;
+    }
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer)
+        || !FPaths::FileExists(Fixture))
+    {
+        AddError(TEXT("Host acceptance requires existing fixture, mayapy and peer paths plus an evidence directory."));
+        return false;
+    }
+    const bool bPartsDisabled = FParse::Param(FCommandLine::Get(), TEXT("MtoUCharacterPartsDisabled"));
+    int32 RealtimeFrames = 30;
+    FParse::Value(FCommandLine::Get(), TEXT("MtoURealtimeFrames="), RealtimeFrames);
+    RealtimeFrames = FMath::Clamp(RealtimeFrames, 5, 600);
+
+    FString FixtureText;
+    TSharedPtr<FJsonObject> FixtureObject;
+    TestTrue(TEXT("character fixture loads"),
+        FFileHelper::LoadFileToString(FixtureText, *Fixture)
+        && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(FixtureText), FixtureObject)
+        && FixtureObject.IsValid());
+    if (!FixtureObject.IsValid())
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Original = LoadObject<UMtoULiveLinkBinding>(
+        nullptr, *FixtureObject->GetStringField(TEXT("binding")));
+    TestNotNull(TEXT("production Binding loads"), Original);
+    if (!Original || !Original->SkeletalMesh)
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = DuplicateObject<UMtoULiveLinkBinding>(
+        Original, GetTransientPackage());
+    int32 EnabledParts = 0;
+    for (FMtoUCharacterPart& Part : Binding->AdditionalParts)
+    {
+        if (bPartsDisabled)
+        {
+            Part.bEnabled = false;
+        }
+        EnabledParts += Part.bEnabled ? 1 : 0;
+    }
+    AddInfo(FString::Printf(TEXT("Measured configuration: primary + %d enabled part(s)"),
+        EnabledParts));
+    TestTrue(TEXT("the fixture exercises a split character"), Original->AdditionalParts.Num() >= 2);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    TestNotNull(TEXT("character parts binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestEqual(TEXT("every enabled part has a display component"),
+        Actor->GetCharacterPartComponents().Num(), EnabledParts);
+
+    ILiveLinkClient& LiveLinkClient = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+        ILiveLinkClient::ModularFeatureName);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    TestTrue(TEXT("source reaches listening state"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    IFileManager::Get().MakeDirectory(*Evidence, true);
+    const FString ResultPath = FPaths::Combine(Evidence, TEXT("character-parts-peer.json"));
+    const FString CommandPath = FPaths::Combine(Evidence, TEXT("character-parts-command.json"));
+    FixtureObject->SetNumberField(TEXT("port"), Port);
+    FixtureObject->SetStringField(TEXT("command"), CommandPath);
+    const FString RuntimeFixture = FPaths::Combine(Evidence, TEXT("character-parts-fixture.json"));
+    WriteMtoUEvidence(RuntimeFixture, FixtureObject.ToSharedRef());
+    FFileHelper::SaveStringToFile(TEXT("{}"), *CommandPath);
+    FFileHelper::SaveStringToFile(TEXT("{\"phase\":\"starting\"}"), *ResultPath);
+    const FString PeerArgs = FString::Printf(
+        TEXT("\"%s\" --fixture \"%s\" --result \"%s\""), *Peer, *RuntimeFixture, *ResultPath);
+    FProcHandle Process = FPlatformProcess::CreateProc(
+        *Mayapy, *PeerArgs, false, true, true, nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+    if (!Process.IsValid())
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    int32 CommandId = 0;
+    FString CachedPhase;
+    const auto ReadResult = [&ResultPath]()
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Value;
+        if (FFileHelper::LoadFileToString(Text, *ResultPath))
+        {
+            FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Value);
+        }
+        return Value;
+    };
+    const auto SendCommand = [&](const TCHAR* Action, int32 Pose = 0, const TCHAR* Workflow = TEXT(""))
+    {
+        TSharedPtr<FJsonObject> Command = MakeShared<FJsonObject>();
+        Command->SetNumberField(TEXT("id"), ++CommandId);
+        Command->SetStringField(TEXT("action"), Action);
+        Command->SetNumberField(TEXT("pose"), Pose);
+        Command->SetStringField(TEXT("workflow"), Workflow);
+        WriteMtoUEvidence(CommandPath, Command.ToSharedRef());
+    };
+    const auto PeerResult = [&](int32 ExpectedId)
+    {
+        const TSharedPtr<FJsonObject> Result = ReadResult();
+        int32 Id = INDEX_NONE;
+        return Result.IsValid() && Result->TryGetNumberField(TEXT("id"), Id) && Id == ExpectedId
+            ? Result
+            : TSharedPtr<FJsonObject>();
+    };
+
+    /** Advances the peer, the source and the displayed character together. */
+    const auto PumpAll = [&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
+        {
+            if (Part && Part->IsRegistered() && Part->GetSkeletalMeshAsset())
+            {
+                Part->TickAnimation(1.0f / 60.0f, false);
+                Part->RefreshBoneTransforms();
+            }
+        }
+        USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent();
+        Primary->TickAnimation(1.0f / 60.0f, false);
+        Primary->RefreshBoneTransforms();
+    };
+
+    const bool bPeerLoaded = PollUntil([&]()
+    {
+        const TSharedPtr<FJsonObject> Result = ReadResult();
+        FString Phase;
+        return Result.IsValid() && Result->TryGetStringField(TEXT("phase"), Phase)
+            && (Phase == TEXT("loaded") || Phase == TEXT("failed"));
+    }, 600.0);
+    TestTrue(TEXT("Maya peer loads the production scene"), bPeerLoaded);
+    if (!bPeerLoaded)
+    {
+        FPlatformProcess::TerminateProc(Process, true);
+        FPlatformProcess::CloseProc(Process);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    SendCommand(TEXT("connect"), 0, TEXT("animation"));
+    const bool bConnected = PollUntil([&]()
+    {
+        // The Game Thread owns negotiation: keep pumping while Maya connects.
+        PumpAll();
+        return PeerResult(CommandId).IsValid();
+    }, 300.0);
+    TestTrue(TEXT("Maya connects the composed character"), bConnected);
+    const TSharedPtr<FJsonObject> ConnectResult = PeerResult(CommandId);
+    const int32 PublishedBones = ConnectResult.IsValid()
+        && ConnectResult->HasField(TEXT("bones"))
+        ? ConnectResult->GetArrayField(TEXT("bones")).Num()
+        : 0;
+    AddInfo(FString::Printf(TEXT("Maya published %d nodes for %d displayed parts"),
+        PublishedBones, EnabledParts));
+    TestTrue(TEXT("Maya publishes the complete production hierarchy"),
+        PublishedBones >= Binding->SkeletalMesh->GetRefSkeleton().GetNum());
+
+    // One pose drives bones and BlendShapes; the whole composed character must
+    // follow it, and every part must agree with the Primary bone for bone.
+    TSet<FName> DrivenMorphs;
+    bool DrivingDisabled = true;
+    const auto VerifyComposedPose = [&](const TCHAR* Stage)
+    {
+        PumpAll();
+        FLiveLinkSubjectFrameData Frame;
+        if (!TestTrue(FString::Printf(TEXT("%s: streamed frame is evaluable"), Stage),
+                LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                    SubjectKey, ULiveLinkAnimationRole::StaticClass(), Frame)))
+        {
+            return false;
+        }
+        const FLiveLinkSkeletonStaticData* Static = Frame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
+        const FLiveLinkAnimationFrameData* Animation = Frame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        if (!Static || !Animation)
+        {
+            AddError(FString::Printf(TEXT("%s: streamed frame is incomplete"), Stage));
+            return false;
+        }
+        // Published component-space pose, accumulated exactly like the target.
+        TArray<FTransform> Published;
+        Published.SetNum(Animation->Transforms.Num());
+        for (int32 Index = 0; Index < Animation->Transforms.Num(); ++Index)
+        {
+            const int32 Parent = Static->BoneParents.IsValidIndex(Index)
+                ? Static->BoneParents[Index] : INDEX_NONE;
+            Published[Index] = Parent == INDEX_NONE
+                ? Animation->Transforms[Index]
+                : Animation->Transforms[Index] * Published[Parent];
+        }
+        USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent();
+        const TArray<FTransform>& PrimaryPose = Primary->GetComponentSpaceTransforms();
+        double MaxPrimaryError = 0.0;
+        double MaxPartError = 0.0;
+        FString WorstPrimaryBone;
+        FString WorstPartBone;
+        int32 ComparedBones = 0;
+        int32 PartComparisons = 0;
+        for (int32 Index = 0; Index < Animation->Transforms.Num(); ++Index)
+        {
+            const FName BoneName = Static->BoneNames[Index];
+            const int32 PrimaryIndex = Primary->GetBoneIndex(BoneName);
+            if (PrimaryIndex == INDEX_NONE || !PrimaryPose.IsValidIndex(PrimaryIndex))
+            {
+                continue;
+            }
+            ++ComparedBones;
+            const double PrimaryError = FVector::Distance(
+                Published[Index].GetTranslation(), PrimaryPose[PrimaryIndex].GetTranslation());
+            if (PrimaryError > MaxPrimaryError)
+            {
+                MaxPrimaryError = PrimaryError;
+                WorstPrimaryBone = BoneName.ToString();
+            }
+        }
+        // A part may keep its own reference pose and its own extra bones, so
+        // the displayed part is compared against what the stream dictates for
+        // the part's own hierarchy: the published local transform for a name
+        // the stream carries, and the part's own reference pose for every other
+        // bone, accumulated exactly like the Live Link pose node does.
+        TMap<FName, FTransform> PublishedLocals;
+        for (int32 Index = 0; Index < Animation->Transforms.Num(); ++Index)
+        {
+            PublishedLocals.Add(Static->BoneNames[Index], Animation->Transforms[Index]);
+        }
+        for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
+        {
+            if (!Part || !Part->GetSkeletalMeshAsset())
+            {
+                continue;
+            }
+            const FReferenceSkeleton& PartSkeleton = Part->GetSkeletalMeshAsset()->GetRefSkeleton();
+            const TArray<FTransform>& PartPose = Part->GetComponentSpaceTransforms();
+            // Only bones the part actually deforms with, plus their ancestors,
+            // are evaluated by the animation system; a production mesh keeps
+            // the rest of its reference skeleton unevaluated.
+            TSet<int32> DeformingBones;
+            if (const FSkeletalMeshRenderData* Data =
+                    Part->GetSkeletalMeshAsset()->GetResourceForRendering())
+            {
+                for (const FSkeletalMeshLODRenderData& LOD : Data->LODRenderData)
+                {
+                    for (const FSkelMeshRenderSection& Section : LOD.RenderSections)
+                    {
+                        for (const uint16 Bone : Section.BoneMap)
+                        {
+                            const int32 SkeletonBone = LOD.RequiredBones.IsValidIndex(Bone)
+                                ? static_cast<int32>(LOD.RequiredBones[Bone])
+                                : INDEX_NONE;
+                            for (int32 Index = SkeletonBone; Index != INDEX_NONE;
+                                 Index = PartSkeleton.GetParentIndex(Index))
+                            {
+                                DeformingBones.Add(Index);
+                            }
+                        }
+                    }
+                }
+            }
+            TArray<FTransform> Expected;
+            Expected.SetNum(PartSkeleton.GetNum());
+            for (int32 BoneIndex = 0; BoneIndex < PartSkeleton.GetNum(); ++BoneIndex)
+            {
+                const FName Name = PartSkeleton.GetBoneName(BoneIndex);
+                const FTransform* Streamed = PublishedLocals.Find(Name);
+                const FTransform Local = Streamed
+                    ? *Streamed
+                    : PartSkeleton.GetRefBonePose()[BoneIndex];
+                const int32 Parent = PartSkeleton.GetParentIndex(BoneIndex);
+                Expected[BoneIndex] = Parent == INDEX_NONE ? Local : Local * Expected[Parent];
+                if (!DeformingBones.Contains(BoneIndex) || !PartPose.IsValidIndex(BoneIndex))
+                {
+                    continue;
+                }
+                ++PartComparisons;
+                const double PartError = FVector::Distance(
+                    Expected[BoneIndex].GetTranslation(), PartPose[BoneIndex].GetTranslation());
+                if (PartError > MaxPartError)
+                {
+                    MaxPartError = PartError;
+                    WorstPartBone = Name.ToString();
+                }
+            }
+        }
+        // Every driven Morph must reach each displayed mesh that owns the name,
+        // including a name only a part owns, and reach it with one value.
+        int32 OwningMeshes = 0;
+        int32 DrivenNames = 0;
+        int32 DrivenNamesWithValue = 0;
+        double MaxMorphError = 0.0;
+        for (const FName Driven : DrivenMorphs)
+        {
+            const int32 PublishedIndex = Static->PropertyNames.IndexOfByKey(Driven);
+            const float PublishedValue = PublishedIndex != INDEX_NONE
+                && Animation->PropertyValues.IsValidIndex(PublishedIndex)
+                ? Animation->PropertyValues[PublishedIndex]
+                : 0.0f;
+            ++DrivenNames;
+            DrivenNamesWithValue += FMath::IsNearlyZero(PublishedValue) ? 0 : 1;
+            TArray<USkeletalMeshComponent*> Owners;
+            if (Primary->GetSkeletalMeshAsset()
+                && Primary->GetSkeletalMeshAsset()->FindMorphTarget(Driven))
+            {
+                Owners.Add(Primary);
+            }
+            for (const TObjectPtr<UMtoUCharacterPartComponent>& Part :
+                    Actor->GetCharacterPartComponents())
+            {
+                if (Part && Part->GetSkeletalMeshAsset()
+                    && Part->GetSkeletalMeshAsset()->FindMorphTarget(Driven))
+                {
+                    Owners.Add(Part);
+                }
+            }
+            TestTrue(FString::Printf(TEXT("%s: '%s' has an owning mesh"),
+                    Stage, *Driven.ToString()), !Owners.IsEmpty());
+            for (USkeletalMeshComponent* Owner : Owners)
+            {
+                float Value = 0.0f;
+                const bool bOwned = Owner->GetCurveValue(Driven, 0.0f, Value);
+                AddInfo(FString::Printf(
+                    TEXT("%s: morph '%s' on %s: published %.3f, evaluated %s %.3f"),
+                    Stage, *Driven.ToString(), *Owner->GetName(), PublishedValue,
+                    bOwned ? TEXT("yes") : TEXT("no"), Value));
+                if (bOwned)
+                {
+                    MaxMorphError = FMath::Max(
+                        MaxMorphError, FMath::Abs(double(Value) - PublishedValue));
+                }
+                ++OwningMeshes;
+            }
+        }
+        AddInfo(FString::Printf(
+            TEXT("%s: %d bones compared, primary error %.6g cm ('%s'), part error %.6g cm ('%s'), ")
+            TEXT("%d owning meshes over %d driven morphs (%d carrying a value), morph error %.6g"),
+            Stage, ComparedBones, MaxPrimaryError, *WorstPrimaryBone, MaxPartError,
+            *WorstPartBone, OwningMeshes, DrivenNames, DrivenNamesWithValue, MaxMorphError));
+        TestTrue(FString::Printf(TEXT("%s: displayed Primary follows the published pose"), Stage),
+            ComparedBones > 0 && MaxPrimaryError < 0.1);
+        TestTrue(FString::Printf(TEXT("%s: every displayed part follows the Primary"), Stage),
+            EnabledParts == 0 || (PartComparisons > 0 && MaxPartError < 0.1));
+        TestTrue(FString::Printf(TEXT("%s: every driven Morph reaches its owning meshes"), Stage),
+            DrivingDisabled || (DrivenNamesWithValue == DrivenNames && MaxMorphError < 1.e-3));
+        return ComparedBones > 0 && MaxPrimaryError < 0.1 && MaxPartError < 0.1
+            && MaxMorphError < 1.e-3;
+    };
+
+    // Drive one Morph that only a part owns and one that several displayed
+    // meshes own, chosen from the accepted set so nothing is hardcoded.
+    USkeletalMeshComponent* const PrimaryComponent = Actor->GetSkeletalMeshComponent();
+    TMap<FName, float> Candidates;
+    {
+        FLiveLinkSubjectFrameData PreFrame;
+        LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+            SubjectKey, ULiveLinkAnimationRole::StaticClass(), PreFrame);
+        const FLiveLinkSkeletonStaticData* PreStatic =
+            PreFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
+        FName PartOnly;
+        FName Shared;
+        if (PreStatic)
+        {
+            for (const FName Name : PreStatic->PropertyNames)
+            {
+                const bool bPrimaryOwns = PrimaryComponent->GetSkeletalMeshAsset()
+                    && PrimaryComponent->GetSkeletalMeshAsset()->FindMorphTarget(Name);
+                bool bPartOwns = false;
+                for (const TObjectPtr<UMtoUCharacterPartComponent>& Part :
+                        Actor->GetCharacterPartComponents())
+                {
+                    bPartOwns = bPartOwns || (Part && Part->GetSkeletalMeshAsset()
+                        && Part->GetSkeletalMeshAsset()->FindMorphTarget(Name));
+                }
+                if (bPartOwns && !bPrimaryOwns && PartOnly.IsNone())
+                {
+                    PartOnly = Name;
+                }
+                if (bPartOwns && bPrimaryOwns && Shared.IsNone())
+                {
+                    Shared = Name;
+                }
+            }
+        }
+        if (!PartOnly.IsNone())
+        {
+            Candidates.Add(PartOnly, 0.55f);
+        }
+        if (!Shared.IsNone())
+        {
+            Candidates.Add(Shared, 0.35f);
+        }
+        AddInfo(FString::Printf(
+            TEXT("accepted Morphs: %d; part-only candidate '%s'; shared candidate '%s'"),
+            PreStatic ? PreStatic->PropertyNames.Num() : 0,
+            PartOnly.IsNone() ? TEXT("<none>") : *PartOnly.ToString(),
+            Shared.IsNone() ? TEXT("<none>") : *Shared.ToString()));
+    }
+    DrivingDisabled = Candidates.IsEmpty();
+    for (const TPair<FName, float>& Candidate : Candidates)
+    {
+        TSharedPtr<FJsonObject> Command = MakeShared<FJsonObject>();
+        Command->SetNumberField(TEXT("id"), ++CommandId);
+        Command->SetStringField(TEXT("action"), TEXT("alias"));
+        Command->SetStringField(TEXT("alias"), Candidate.Key.ToString());
+        Command->SetNumberField(TEXT("value"), Candidate.Value);
+        WriteMtoUEvidence(CommandPath, Command.ToSharedRef());
+        const bool bDriven = PollUntil([&]()
+        {
+            PumpAll();
+            return PeerResult(CommandId).IsValid();
+        }, 120.0);
+        TestTrue(FString::Printf(TEXT("Maya drives accepted Morph '%s'"),
+            *Candidate.Key.ToString()), bDriven);
+        if (bDriven)
+        {
+            DrivenMorphs.Add(Candidate.Key);
+        }
+    }
+
+    SendCommand(TEXT("pose"), 0);
+    const bool bPosed = PollUntil([&]()
+    {
+        PumpAll();
+        return PeerResult(CommandId).IsValid();
+    }, 300.0);
+    TestTrue(TEXT("Maya applies the composed pose"), bPosed);
+    // The driven BlendShapes travel with the next streamed frames; wait until
+    // the subject carries them before judging the composed character.
+    if (!DrivenMorphs.IsEmpty())
+    {
+        const bool bDriven = PollUntil([&]()
+        {
+            PumpAll();
+            FLiveLinkSubjectFrameData DrivenFrame;
+            if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                    SubjectKey, ULiveLinkAnimationRole::StaticClass(), DrivenFrame))
+            {
+                return false;
+            }
+            const FLiveLinkSkeletonStaticData* DrivenStatic =
+                DrivenFrame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
+            const FLiveLinkAnimationFrameData* DrivenAnimation =
+                DrivenFrame.FrameData.Cast<FLiveLinkAnimationFrameData>();
+            if (!DrivenStatic || !DrivenAnimation)
+            {
+                return false;
+            }
+            for (const FName Driven : DrivenMorphs)
+            {
+                const int32 Index = DrivenStatic->PropertyNames.IndexOfByKey(Driven);
+                if (Index == INDEX_NONE || !DrivenAnimation->PropertyValues.IsValidIndex(Index)
+                    || FMath::IsNearlyZero(DrivenAnimation->PropertyValues[Index]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }, 60.0);
+        TestTrue(TEXT("Maya streams the driven BlendShape values"), bDriven);
+    }
+    const bool bRealtimeComposed = VerifyComposedPose(TEXT("realtime"));
+
+    // Real-time cost of the composed character on the Game Thread: retarget,
+    // Live Link publication and the animation evaluation of every displayed
+    // mesh, measured over the same scene and frame range for both configurations.
+    FMtoUTimingSummary Realtime;
+    for (int32 Frame = 0; Frame < RealtimeFrames; ++Frame)
+    {
+        const double Start = FPlatformTime::Seconds();
+        PumpAll();
+        Realtime.Samples.Add(FPlatformTime::Seconds() - Start);
+    }
+    Realtime.Finalize();
+    AddInfo(FString::Printf(
+        TEXT("realtime Game Thread frame cost: mean %.3f ms, median %.3f ms, p95 %.3f ms (%.1f fps)"),
+        Realtime.MeanMilliseconds, Realtime.MedianMilliseconds, Realtime.P95Milliseconds,
+        Realtime.Fps));
+
+    // Cached Playback through the production Maya controller: capture, upload,
+    // local replay, stop, replay again, clear and the return to live preview.
+    // Applied cached frames are observed on the Game Thread so the local
+    // replay rate is measured here, not only reported by Maya.
+    TArray<double> CachedFrameSeconds;
+    TArray<FVector> CachedRoots;
+    FMtoUSessionIsolationTestAccess::ObserveApplied(*Source,
+        [&](uint64, const FMtoUFrameMessage& Frame)
+        {
+            CachedFrameSeconds.Add(FPlatformTime::Seconds());
+            if (!Frame.Transforms.IsEmpty())
+            {
+                CachedRoots.Add(Frame.Transforms[0].Translation);
+            }
+        });
+    SendCommand(TEXT("cache_play"));
+    const bool bCachePlayed = PollUntil([&]()
+    {
+        PumpAll();
+        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
+        if (!Result.IsValid() || !Result->TryGetStringField(TEXT("phase"), CachedPhase))
+        {
+            return false;
+        }
+        return CachedPhase == TEXT("cached");
+    }, 600.0);
+    TestTrue(TEXT("Maya captures, uploads and replays the animation cache"), bCachePlayed);
+    const TSharedPtr<FJsonObject> CacheResult = PeerResult(CommandId);
+    int32 CachedFrames = 0;
+    if (CacheResult.IsValid() && CacheResult->HasField(TEXT("cache_summary")))
+    {
+        // The Maya cache summary is (capture_start, capture_end, frame_count,
+        // scene_fps, capture_time).
+        const TArray<TSharedPtr<FJsonValue>>& Summary =
+            CacheResult->GetArrayField(TEXT("cache_summary"));
+        double SceneFps = 0.0;
+        if (Summary.Num() >= 4)
+        {
+            CachedFrames = FMath::RoundToInt32(Summary[2]->AsNumber());
+            SceneFps = Summary[3]->AsNumber();
+        }
+        AddInfo(FString::Printf(TEXT("Maya cache: %d frames at %.3f fps"), CachedFrames, SceneFps));
+    }
+    // One frame is held on entry, so the captured frames plus that hold are
+    // what a correct local replay applies.
+    TestTrue(TEXT("Unreal applies the captured frames locally"),
+        CachedFrames > 0 && CachedFrameSeconds.Num() >= CachedFrames);
+    const int32 PlayFrames = CachedFrameSeconds.Num();
+    double PlaySeconds = 0.0;
+    if (CachedFrameSeconds.Num() >= 2)
+    {
+        PlaySeconds = CachedFrameSeconds.Last() - CachedFrameSeconds[0];
+    }
+    AddInfo(FString::Printf(
+        TEXT("cached playback: %d applied frames in %.3f s (%.1f fps)"),
+        PlayFrames, PlaySeconds,
+        PlaySeconds > 0.0 ? (PlayFrames - 1) / PlaySeconds : 0.0));
+    const int32 CachedRootCount = CachedRoots.Num();
+    VerifyComposedPose(TEXT("cached playback"));
+
+    SendCommand(TEXT("cache_replay"));
+    const bool bCacheReplayed = PollUntil([&]()
+    {
+        PumpAll();
+        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
+        return Result.IsValid() && Result->GetStringField(TEXT("phase")) == TEXT("replayed");
+    }, 300.0);
+    TestTrue(TEXT("Maya replays the retained cache"), bCacheReplayed);
+    TestTrue(TEXT("replaying the cache applies further frames"),
+        CachedRoots.Num() > CachedRootCount);
+    VerifyComposedPose(TEXT("cached replay"));
+
+    const int32 ReplayFrames = CachedFrameSeconds.Num() - PlayFrames;
+    double ReplaySeconds = 0.0;
+    if (CachedFrameSeconds.Num() - PlayFrames >= 2)
+    {
+        ReplaySeconds = CachedFrameSeconds.Last()
+            - CachedFrameSeconds[PlayFrames];
+    }
+    AddInfo(FString::Printf(
+        TEXT("cached replay: %d applied frames in %.3f s (%.1f fps)"),
+        ReplayFrames, ReplaySeconds,
+        ReplaySeconds > 0.0 ? (ReplayFrames - 1) / ReplaySeconds : 0.0));
+
+    SendCommand(TEXT("cache_stop"));
+    const bool bCacheStopped = PollUntil([&]()
+    {
+        PumpAll();
+        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
+        return Result.IsValid() && Result->GetStringField(TEXT("phase")) == TEXT("stopped");
+    }, 300.0);
+    TestTrue(TEXT("Maya stops the local replay"), bCacheStopped);
+    VerifyComposedPose(TEXT("cached stop"));
+
+    SendCommand(TEXT("cache_live"));
+    const bool bBackToLive = PollUntil([&]()
+    {
+        PumpAll();
+        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
+        return Result.IsValid() && Result->GetStringField(TEXT("phase")) == TEXT("realtime");
+    }, 300.0);
+    TestTrue(TEXT("Maya clears the cache and returns to live preview"), bBackToLive);
+    const int32 FramesBeforeLivePose = CachedFrameSeconds.Num();
+    SendCommand(TEXT("pose"), 0);
+    TestTrue(TEXT("Maya re-applies a live pose"),
+        PollUntil([&]()
+        {
+            PumpAll();
+            return PeerResult(CommandId).IsValid();
+        }, 300.0));
+    const bool bLiveComposed = VerifyComposedPose(TEXT("returned live"));
+    TestTrue(TEXT("live preview resumes with the composed character"),
+        bLiveComposed && bRealtimeComposed);
+
+    SendCommand(TEXT("stop"));
+    const bool bStopped = PollUntil([&]()
+    {
+        PumpAll();
+        return PeerResult(CommandId).IsValid();
+    }, 300.0);
+    TestTrue(TEXT("Maya peer stops the acceptance session"), bStopped);
+    if (FPlatformProcess::IsProcRunning(Process))
+    {
+        FPlatformProcess::TerminateProc(Process, true);
+    }
+    FPlatformProcess::CloseProc(Process);
+
+    TSharedPtr<FJsonObject> Report = MakeShared<FJsonObject>();
+    Report->SetStringField(TEXT("binding"), FixtureObject->GetStringField(TEXT("binding")));
+    Report->SetBoolField(TEXT("parts_disabled"), bPartsDisabled);
+    Report->SetNumberField(TEXT("enabled_parts"), EnabledParts);
+    Report->SetNumberField(TEXT("published_nodes"), PublishedBones);
+    Report->SetNumberField(TEXT("realtime_frames"), Realtime.Samples.Num());
+    Report->SetNumberField(TEXT("realtime_mean_ms"), Realtime.MeanMilliseconds);
+    Report->SetNumberField(TEXT("realtime_median_ms"), Realtime.MedianMilliseconds);
+    Report->SetNumberField(TEXT("realtime_p95_ms"), Realtime.P95Milliseconds);
+    Report->SetNumberField(TEXT("realtime_fps"), Realtime.Fps);
+    Report->SetNumberField(TEXT("cache_frames"), CachedFrames);
+    Report->SetNumberField(TEXT("cache_play_frames"), PlayFrames);
+    Report->SetNumberField(TEXT("cache_play_seconds"), PlaySeconds);
+    Report->SetNumberField(TEXT("cache_play_fps"),
+        PlaySeconds > 0.0 ? (PlayFrames - 1) / PlaySeconds : 0.0);
+    Report->SetNumberField(TEXT("cache_replay_frames"), ReplayFrames);
+    Report->SetNumberField(TEXT("cache_replay_seconds"), ReplaySeconds);
+    Report->SetNumberField(TEXT("cache_replay_fps"),
+        ReplaySeconds > 0.0 ? (ReplayFrames - 1) / ReplaySeconds : 0.0);
+    WriteMtoUEvidence(FPaths::Combine(Evidence, TEXT("parts-host-report.json")),
+        Report.ToSharedRef());
+    AddInfo(TEXT("Cross-host character-parts acceptance complete: ")
+        + FPaths::Combine(Evidence, TEXT("parts-host-report.json")));
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
     return true;
 }
 

@@ -66,20 +66,53 @@ def main():
                       bones=list(snapshot.bones),
                       paths=[b["path"] for b in scene._subject["bones"]],
                       bind=list(snapshot.bind_local_transforms))
+        frame_range = fixture.get("frame_range")
+        if frame_range:
+            cmds.playbackOptions(minTime=float(frame_range[0]),
+                                 maxTime=float(frame_range[1]))
+            cmds.currentTime(float(frame_range[0]))
+        alias_plugs = {}
+        for mesh in scene._subject["meshes"]:
+            history = cmds.listHistory(mesh, pruneDagObjects=True) or []
+            for node in history:
+                if cmds.nodeType(node) != "blendShape":
+                    continue
+                pairs = cmds.aliasAttr(node, query=True) or []
+                for alias, attribute in zip(pairs[0::2], pairs[1::2]):
+                    alias_plugs.setdefault(alias, node + "." + attribute)
+
         base = {}
+
+        def detach(plug):
+            """Make one authored plug writable in this disposable process."""
+            if plug not in base:
+                base[plug] = cmds.getAttr(plug)
+            # Test controls and facial weights can be driven or locked. Detach
+            # only here; the supplied scene is never saved.
+            cmds.setAttr(plug, lock=False)
+            for source in cmds.listConnections(
+                    plug, source=True, destination=False, plugs=True) or []:
+                cmds.disconnectAttr(source, plug)
+
         for pose in fixture["poses"]:
             for plug in pose.get("edits", {}):
-                base[plug] = cmds.getAttr(plug)
-                # Test controls can be driven/locked. Detach only in this
-                # disposable process; the supplied scene is never saved.
-                cmds.setAttr(plug, lock=False)
-                for source in cmds.listConnections(plug, source=True, destination=False, plugs=True) or []:
-                    cmds.disconnectAttr(source, plug)
+                detach(plug)
 
         def pump():
-            if controller._session is not None:
-                controller._session._sample_and_submit(force=True)
-            time.sleep(0.02)
+            session = controller._session
+            cached = controller._cached_playback
+            # Live sampling belongs to real-time mode; cached mode is driven by
+            # the cache callbacks below.
+            if session is not None and controller._mode == module.REALTIME_MODE:
+                session._sample_and_submit(force=True)
+            cached = controller._cached_playback
+            if cached is not None:
+                # mayapy has no UI idle loop. Invoke the same bounded timer
+                # callbacks on Maya's main thread, with real Maya sampling.
+                if cached.view.state == cached.CAPTURING:
+                    cached._capture_step()
+                cached._poll()
+            time.sleep(0.002)
 
         def until(predicate, label, timeout=60):
             deadline = time.time() + timeout
@@ -108,13 +141,68 @@ def main():
                         result["warning"] = controller._last_warning
                         result["phase"] = "connected"
                     elif action == "pose":
+                        pose = fixture["poses"][command["pose"]]
+                        # Sample the composed character after the edit so the
+                        # next streamed frame carries the posed values.
                         for plug, value in base.items():
                             cmds.setAttr(plug, value)
-                        for plug, delta in fixture["poses"][command["pose"]].get("edits", {}).items():
+                        for plug, delta in pose.get("edits", {}).items():
                             cmds.setAttr(plug, base[plug] + delta)
-                        cmds.dgdirty(allPlugs=True)
+                        for alias, value in pose.get("alias_edits", {}).items():
+                            plug = alias_plugs[alias]
+                            detach(plug)
+                            cmds.setAttr(plug, base[plug] + value)
+                        # Only the edited plugs are dirtied: a production scene
+                        # re-evaluates the rest of the graph on read.
                         result["pose"] = command["pose"]
                         result["phase"] = "posed"
+                    elif action == "alias":
+                        # Drive one BlendShape alias that the Unreal side asked
+                        # for, resolved from the character's own libraries.
+                        name = command["alias"]
+                        plug = alias_plugs[name]
+                        detach(plug)
+                        cmds.setAttr(plug, base[plug] + float(command["value"]))
+                        result["alias"] = name
+                        result["alias_value"] = float(command["value"])
+                        result["phase"] = "alias"
+                    elif action == "cache_play":
+                        # Production path: enter cached mode, capture the
+                        # Playback Range, upload it, and replay locally.
+                        result.pop("cache_error", None)
+                        controller._on_mode_changed(module.CACHED_MODE)
+                        cached = controller._ensure_cached_playback()
+                        started = time.time()
+                        controller._capture_cached_playback()
+                        until(lambda: cached.view.state in (
+                            cached.COMPLETED, cached.FAILED, cached.REALTIME), "cache play")
+                        result["cache_capture_seconds"] = time.time() - started
+                        result["cache_summary"] = cached.view.cache_summary._values()
+                        result["cache_applied"] = cached.view.current
+                        result["cache_state"] = cached.view.state
+                        result["cache_upload_id"] = cached._upload_id
+                        result["cache_play_id"] = cached._play_id
+                        result["phase"] = "cached"
+                    elif action == "cache_replay":
+                        cached = controller._cached_playback
+                        started = time.time()
+                        controller._replay_cached_playback()
+                        until(lambda: cached.view.state in (
+                            cached.COMPLETED, cached.FAILED), "cache replay")
+                        result["cache_replay_seconds"] = time.time() - started
+                        result["cache_applied"] = cached.view.current
+                        result["cache_state"] = cached.view.state
+                        result["phase"] = "replayed"
+                    elif action == "cache_stop":
+                        controller._stop_cached_replay()
+                        result["cache_state"] = controller._cached_playback.view.state
+                        result["phase"] = "stopped"
+                    elif action == "cache_live":
+                        controller._on_mode_changed(module.REALTIME_MODE)
+                        until(lambda: controller._cached_playback is None
+                              or controller._cached_playback.view.state
+                              == controller._cached_playback.REALTIME, "cache live")
+                        result["phase"] = "realtime"
                     elif action == "reconnect":
                         controller.disconnect()
                         until(lambda: controller._session is None, "reconnect disconnect")
@@ -134,7 +222,8 @@ def main():
                         result.update(id=last_id, phase="stopped", ok=True)
                         write_json(args.result, result)
                         break
-                    result.update(id=last_id, warning=controller._last_warning, transforms=list(scene.sample().transforms), ok=True)
+                    result.update(id=last_id, warning=controller._last_warning,
+                                  transforms=list(scene.sample().transforms), ok=True)
                     write_json(args.result, result)
                 pump()
             else:

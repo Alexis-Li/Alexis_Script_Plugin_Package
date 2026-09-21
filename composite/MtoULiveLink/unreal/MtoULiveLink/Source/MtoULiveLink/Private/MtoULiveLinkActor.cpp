@@ -322,6 +322,21 @@ void AMtoULiveLinkActor::NotifyCharacterPartsChanged()
     SyncCharacterComposition();
 }
 
+void AMtoULiveLinkActor::NotifyBindingStateChanged()
+{
+    // The actor's observed Primary Driver and Preview Static Mesh are what it
+    // last applied; a different input means the Preview revision changed.
+    const bool bPreviewInputsChanged = !Binding
+        || Binding->SkeletalMesh != ObservedDriverMesh.Get()
+        || Binding->PreviewStaticMesh != ObservedPreviewMesh.Get();
+    if (bPreviewInputsChanged)
+    {
+        NotifyBindingInputsChanged();
+        return;
+    }
+    NotifyCharacterPartsChanged();
+}
+
 void AMtoULiveLinkActor::NotifySourceAssetChanged(const UObject* Asset, const FString& Reason)
 {
     if (!Binding || !Asset

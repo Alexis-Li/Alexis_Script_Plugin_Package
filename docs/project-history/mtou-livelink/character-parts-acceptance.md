@@ -22,7 +22,7 @@ and [ADR 0002](../../../composite/MtoULiveLink/docs/adr/0002-end-streaming-when-
 | Check | Result |
 | --- | --- |
 | Stock UE 5.7.4 `Build.bat UnrealEditor Win64 Development` on the deployment project | Succeeded; no compiler or linker warnings in the affected modules |
-| `Automation RunTests MtoULiveLink` (NullRHI) | 65/65 Success (61 existing + 4 new); 0 failed, 0 not run |
+| `Automation RunTests MtoULiveLink` (NullRHI) | 70/70 Success (61 existing + 9 parts-related); 0 failed, 0 not run |
 | New `MtoULiveLink.Workflow.CharacterParts` | Ready reply carries the composed library (`target_morph_count` 2, `accepted_morph_count` 2), a Head-only name is absent from `missing_in_unreal`, one subject publishes the composed curve set, the part's displayed bones match the Primary on the streamed pose, a shared Morph name reaches both meshes, and a captured frame plus the return to live preview drive the part after `cache_clear` |
 | New `MtoULiveLink.Negotiation.CharacterPartCompatibility` | Five refused configurations return `INVALID_BINDING`/`SKELETON_MISMATCH` with the part, bone, skeleton, or reference-pose reason in the details; a disabled part connects; the repaired part connects again |
 | New `MtoULiveLink.Actor.CharacterPartLifecycle` | Rename and reorder keep the same component and the same session; enable/disable/replace/remove rebuild exactly the affected components, destroy unclaimed ones, and end the session on a composition change; a part source rebuild ends the session while keeping its component; duplicate and reload leave exactly one component per enabled part |
@@ -157,3 +157,80 @@ load run (`-MtoULoadedCharacterMap=/Game/Untitled`). Package dry-run and diff
 whitespace checks pass. The default suite does not request the external loaded
 map case; the separate run supplies that evidence. Previous Maya 2024 results
 remain applicable because this follow-up changes only Unreal lifecycle code.
+
+## Review response: transaction restores and real C02 cross-host playback
+
+Date: 2026-09-21. Response to the review that kept Issue #45 open: the Binding
+ignored an unnamed property change, which is how `PostEditUndo` reaches its
+objects (`UObject::PostEditUndo` calls `PostEditChange`, which reports an empty
+`FPropertyChangedEvent`), and the real C02 real-time and Cached Playback flows
+with their measurements had not been recorded.
+
+### Transaction restores
+
+`UMtoULiveLinkBinding::PostEditChangeProperty` now treats an unnamed change as
+a restore: it repairs the internal part identities and asks every actor that
+uses the Binding to classify the current state against what that actor already
+applied. The classification reuses the existing entry points, so a restored
+Additional Parts list ends the running session and resynchronizes the display
+components while a generated garment Preview stays ready, a restored Primary
+Driver or Preview Static Mesh still invalidates the Preview revision, and a
+renamed or reordered list still changes nothing. Part edits are recognized both
+as the list property and as one field of one list entry, because the Details
+panel can report either spelling.
+
+Regression evidence, all through real editor transactions (`BeginTransaction`,
+`Modify`, the property-change event, `EndTransaction`, `UndoTransaction`,
+`RedoTransaction`) with no manual notification:
+
+| Check | Result |
+| --- | --- |
+| New `MtoULiveLink.Actor.CharacterPartTransactions` | Add, remove, disable, rename, reorder, and Primary Driver edits each run through undo and redo; component counts and meshes, the session-termination counter, Preview readiness, and the Primary-invalidation rule are asserted after every step |
+| Pre-fix sensitivity | With the unnamed-change handling disabled, the same test fails on the restored-part and session-termination assertions of an actor that no construction rerun can reach, proving the regression detects the reported defect |
+| `MtoULiveLink.Workflow.CharacterParts` | A transaction part edit closes the live session on the wire, the disabled part leaves the display, and undoing it restores the display component |
+| New `MtoULiveLink.Actor.LoadedCharacterPartTransactions` (opt-in) | The same transaction/undo/redo sequence against the placed actor of the saved `/Game/Untitled` map and `DA_C02_MtoUBinding`; the loaded configuration is identical after the run and nothing is saved |
+
+### Real C02 cross-host real-time and Cached Playback
+
+Hardware and host: Windows 11, Maya 2024 (`mayapy` 20240200) opening
+`SK_C02_05MH.ma` from the character root `|Group|root`, and stock Unreal Editor
+5.7.4 with NullRHI on the owner's Backups project with
+`/Game/Character/C02_112/DA_C02_MtoUBinding` (Primary
+`SK_C02_CombineBody_Clothes_05`, enabled parts `SK_C02_Head` and
+`SK_C02_Hair_01`). Maya publishes 1,502 nodes. Both runs use the same scene and
+the same capture range (frames 1-12 at 30 fps) and differ only in whether the
+two parts are enabled.
+
+Method: `MtoULiveLink.Source.MayaCharacterPartsHost` drives a real Maya peer
+through the production controller. Real-time cost is the Game Thread work for
+one frame - source update, Live Link publication, and the animation evaluation
+of every displayed mesh - sampled 20 times. Cached cost is the local replay
+measured where Unreal applies the captured frames. Rendered image quality and
+frame rate with a viewport are not part of this measurement.
+
+| Measurement | Primary only | Primary + 2 parts |
+| --- | --- | --- |
+| Real-time Game Thread frame cost (mean / median / p95) | 0.398 / 0.389 / 0.440 ms | 1.165 / 1.121 / 1.314 ms |
+| Derived real-time frame rate | 2,510 fps | 859 fps |
+| Cached playback of the same 12-frame capture | 12 frames in 0.368 s (29.9 fps) | 12 frames in 0.380 s (28.9 fps) |
+| Replay-again of the retained cache | 12 frames in 0.389 s (28.3 fps) | 12 frames in 0.376 s (29.3 fps) |
+| Accepted Morph library | 32 names | 200 names |
+
+Composed-character checks in every stage - real-time, cached playback, cached
+replay, cached stop, and the return to live preview - report a maximum
+displaced-bone error of `1.13e-13 cm` between the displayed parts and what the
+stream dictates for each part's own hierarchy, and the part-only BlendShape
+`Braise_Eblink_INL` (absent from the Primary Driver) is published as 0.65 and
+evaluated as 0.65 on the Head part that owns it. Cached Playback completed the
+full capture, upload, local replay, stop, replay-again, clear and
+return-to-live sequence with the peer reporting an intact 12-frame cache.
+
+The C02 Primary Driver and its parts share no Morph name, so the real-asset run
+exercises the part-only case; the shared-name case is covered by the synthetic
+`MtoULiveLink.Workflow.CharacterParts` test, where one name reaches both meshes
+with the same value.
+
+Rendered facial-controller quality, seam placement, and deformation quality
+remain the owner's visual gate; the owner reports no visual problem at this
+time, and this record does not turn the measurements above into a visual
+verdict.

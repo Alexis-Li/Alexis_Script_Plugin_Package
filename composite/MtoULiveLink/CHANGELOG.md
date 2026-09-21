@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Keep every actor that uses a Binding in step with the Binding's undo and redo
+  (Issue #45 review): an unnamed property change - which is how a transaction
+  restore reaches its objects, because `PostEditUndo` reports an empty
+  `FPropertyChangedEvent` - is now classified against what each actor has
+  already applied instead of being ignored. A restored Additional Parts list
+  ends the running session and resynchronizes the display components while a
+  generated garment Preview stays ready, a restored Primary Driver or Preview
+  Static Mesh still invalidates the Preview revision, and renaming or reordering
+  a part still changes nothing. Part edits are also recognized when they arrive
+  as one field of one list entry, and the regression drives real editor
+  transactions through undo and redo rather than calling the notification by
+  hand.
+
 - Accept the hash-suffixed import rename for duplicated Maya short names
   (Issue #46): a target bone named `<complete short name>_<exactly 32
   hexadecimal digits>` below the already mapped parent now maps like the
