@@ -7182,6 +7182,185 @@ bool FMtoUCharacterPartTransactionsTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewInputRestoreTest,
+    "MtoULiveLink.Actor.PreviewInputRestore",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        TestTrue(TEXT("Live Link client feature is available"), false);
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(
+        GetTransientPackage(), NAME_None, RF_Transactional | RF_Public);
+    TestTrue(TEXT("restore fixture actor and Binding are created"), Actor && Binding);
+    if (!Actor || !Binding)
+    {
+        return false;
+    }
+    USkeletalMesh* Primary = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    TestNotNull(TEXT("restore fixture Driver loads"), Primary);
+    if (!Primary)
+    {
+        return false;
+    }
+    Binding->SkeletalMesh = Primary;
+    // A configured Binding keeps its unrefreshed readiness actionable, which is
+    // what makes "Run Refresh Preview" observable after a restore.
+    Binding->PreviewStaticMesh = NewObject<UStaticMesh>(GetTransientPackage());
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("source reaches listening state"),
+        WaitForStatus(Source, TEXT("Listening on")));
+    const FString Init = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *ReferenceSkeletonBonesJson(Primary->GetRefSkeleton()));
+    const auto ConnectAndNegotiate = [&](FSocket*& OutClient)
+    {
+        OutClient = ConnectLoopback(*SocketSubsystem, Port);
+        if (!OutClient)
+        {
+            return false;
+        }
+        const TArray<uint8> InitPacket = Packet(Init);
+        TArray<uint8> Payload;
+        const bool bSent = SendBytes(*OutClient, InitPacket.GetData(), InitPacket.Num())
+            && ReceivePacket(*OutClient, Payload, [&]() { Source->Update(); });
+        return bSent && FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""));
+    };
+
+    FProperty* OverrideProperty = FindFProperty<FProperty>(
+        UMtoULiveLinkBinding::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UMtoULiveLinkBinding, DriverGarmentSlotOverride));
+    TestNotNull(TEXT("the Garment Slot Override property is reflected"), OverrideProperty);
+    if (!OverrideProperty)
+    {
+        return false;
+    }
+
+    // A live session plus a ready Preview are the state a restore must not
+    // leave behind, so the fixture establishes both before editing.
+    FSocket* Client = nullptr;
+    TestTrue(TEXT("the fixture connects a live session"), ConnectAndNegotiate(Client));
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Primary, *Actor);
+    TestNotNull(TEXT("the fixture owns a Generated Preview"), Generated);
+    if (!Generated)
+    {
+        return false;
+    }
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(
+        *Actor, Generated, false, TEXT("restore fixture preview"));
+    TestTrue(TEXT("the fixture starts ready with a live session"),
+        Actor->GetPreviewReadiness().IsUsable() && Client);
+
+    // Editing the override is a Preview revision change: it invalidates the
+    // preview and ends the session of the previous revision.
+    RunBindingEditTransaction(*Binding, *OverrideProperty, [&]()
+    {
+        Binding->DriverGarmentSlotOverride = {FName(TEXT("Clothes09_Top_1"))};
+    });
+    TestTrue(TEXT("an override edit invalidates the Preview revision"),
+        !Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == nullptr);
+    TestTrue(TEXT("an override edit ends the live session"),
+        Client && WaitForClose(*Client));
+    DestroySocket(*SocketSubsystem, Client);
+
+    // Rebuild the state the restore must invalidate: a ready Preview built for
+    // the edited override and a session negotiated for it.
+    USkeletalMesh* EditedOverridePreview = MakeTransientGeneratedPreview(Primary, *Actor);
+    TestNotNull(TEXT("the edited override owns a Generated Preview"), EditedOverridePreview);
+    if (!EditedOverridePreview)
+    {
+        return false;
+    }
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(
+        *Actor, EditedOverridePreview, false, TEXT("edited override preview"));
+    TestTrue(TEXT("the edited override is ready and session-capable"),
+        ConnectAndNegotiate(Client) && Actor->GetPreviewReadiness().IsUsable()
+        && Actor->GetPreviewReadiness().GeneratedPreview == EditedOverridePreview);
+
+    const uint64 EndsBeforeUndo = MtoUGetStreamingSessionEndCount();
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("undoing the override edit ends the session of the edited revision"),
+        Client && WaitForClose(*Client) && MtoUGetStreamingSessionEndCount() > EndsBeforeUndo);
+    DestroySocket(*SocketSubsystem, Client);
+    const FMtoUPreviewReadiness AfterUndo = Actor->GetPreviewReadiness();
+    TestTrue(TEXT("undoing the override edit invalidates its Generated Preview"),
+        !AfterUndo.IsUsable() && AfterUndo.GeneratedPreview == nullptr
+        && AfterUndo.State == EMtoUPreviewState::Dirty);
+    TestTrue(TEXT("undoing the override edit asks for an explicit Refresh"),
+        AfterUndo.Diagnostics.Contains(TEXT("Refresh")));
+    TestTrue(TEXT("the stale garment leaves the display"),
+        Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() != EditedOverridePreview
+        && Actor->GetDisplayTarget() != EMtoUDisplayTarget::GeneratedPreview);
+
+    // Redo restores the edited override and must invalidate again, so the
+    // revision is never reused from the other override state.
+    FMtoUPreviewReadinessTestAccess::Begin(*Actor);
+    FMtoUPreviewReadinessTestAccess::Commit(
+        *Actor, EditedOverridePreview, false, TEXT("redo fixture preview"));
+    TestTrue(TEXT("the redo fixture is ready again"),
+        ConnectAndNegotiate(Client) && Actor->GetPreviewReadiness().IsUsable());
+    const uint64 EndsBeforeRedo = MtoUGetStreamingSessionEndCount();
+    GEditor->RedoTransaction();
+    TestTrue(TEXT("redoing the override edit ends that session and invalidates the Preview"),
+        Client && WaitForClose(*Client) && MtoUGetStreamingSessionEndCount() > EndsBeforeRedo
+        && !Actor->GetPreviewReadiness().IsUsable());
+    DestroySocket(*SocketSubsystem, Client);
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    // The editor world context must go too: a registered context would keep
+    // this test's world as the editor world for the next socket fixture.
+    GEngine->DestroyWorldContext(World);
+    ResetMtoUEditHistory();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartCompatibilityTest,
     "MtoULiveLink.Negotiation.CharacterPartCompatibility",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -292,6 +292,8 @@ private:
 
     TWeakObjectPtr<USkeletalMesh> ObservedDriverMesh;
     TWeakObjectPtr<UStaticMesh> ObservedPreviewMesh;
+    /** Garment Slot Override this actor last applied; part of the Preview inputs. */
+    TArray<FName> ObservedGarmentSlotOverride;
     FDelegateHandle DriverMeshChangedHandle;
     FDelegateHandle PreviewMeshChangedHandle;
     FDelegateHandle PreviewMeshBuiltHandle;

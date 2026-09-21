@@ -324,11 +324,13 @@ void AMtoULiveLinkActor::NotifyCharacterPartsChanged()
 
 void AMtoULiveLinkActor::NotifyBindingStateChanged()
 {
-    // The actor's observed Primary Driver and Preview Static Mesh are what it
-    // last applied; a different input means the Preview revision changed.
+    // The actor's observed Primary Driver, Preview Static Mesh, and Garment
+    // Slot Override are what it last applied; a different input means the
+    // Preview revision changed.
     const bool bPreviewInputsChanged = !Binding
         || Binding->SkeletalMesh != ObservedDriverMesh.Get()
-        || Binding->PreviewStaticMesh != ObservedPreviewMesh.Get();
+        || Binding->PreviewStaticMesh != ObservedPreviewMesh.Get()
+        || Binding->DriverGarmentSlotOverride != ObservedGarmentSlotOverride;
     if (bPreviewInputsChanged)
     {
         NotifyBindingInputsChanged();
@@ -596,6 +598,8 @@ void AMtoULiveLinkActor::RebindInputNotifications()
     {
         return;
     }
+    // The actor now observes, and has applied, these Preview inputs.
+    ObservedGarmentSlotOverride = Binding->DriverGarmentSlotOverride;
     if (Binding->SkeletalMesh)
     {
         ObservedDriverMesh = Binding->SkeletalMesh;
@@ -644,6 +648,7 @@ void AMtoULiveLinkActor::UnbindInputNotifications()
     ObservedPartMeshes.Reset();
     ObservedDriverMesh.Reset();
     ObservedPreviewMesh.Reset();
+    ObservedGarmentSlotOverride.Reset();
     DriverMeshChangedHandle.Reset();
     PreviewMeshChangedHandle.Reset();
     PreviewMeshBuiltHandle.Reset();

@@ -185,10 +185,34 @@ Regression evidence, all through real editor transactions (`BeginTransaction`,
 
 | Check | Result |
 | --- | --- |
+| New `MtoULiveLink.Actor.PreviewInputRestore` | A ready Generated Preview plus a negotiated live session are established, the Garment Slot Override is edited, readiness and a session are rebuilt for the edited override, and undo then ends that session, releases the Generated Preview with `Dirty` readiness and a Refresh request, and redo invalidates again; removing the override from the compared inputs fails exactly these assertions |
 | New `MtoULiveLink.Actor.CharacterPartTransactions` | Add, remove, disable, rename, reorder, and Primary Driver edits each run through undo and redo; component counts and meshes, the session-termination counter, Preview readiness, and the Primary-invalidation rule are asserted after every step |
 | Pre-fix sensitivity | With the unnamed-change handling disabled, the same test fails on the restored-part and session-termination assertions of an actor that no construction rerun can reach, proving the regression detects the reported defect |
 | `MtoULiveLink.Workflow.CharacterParts` | A transaction part edit closes the live session on the wire, the disabled part leaves the display, and undoing it restores the display component |
 | New `MtoULiveLink.Actor.LoadedCharacterPartTransactions` (opt-in) | The same transaction/undo/redo sequence against the placed actor of the saved `/Game/Untitled` map and `DA_C02_MtoUBinding`; the loaded configuration is identical after the run and nothing is saved |
+
+### Restored preview inputs
+
+The same review found the restore classification incomplete: it compared the
+Primary Driver and the Preview Static Mesh with what the actor had applied but
+not the Garment Slot Override, which Issue #45 and ADR-0002 both list as a
+Preview revision input. A named override edit reached `NotifyBindingInputsChanged`
+while its restore fell through to the composition path, where an unchanged part
+list returns immediately - so the Generated Preview built for the other
+override, its hidden material slots, its readiness, and its streaming session
+all survived the undo.
+
+The actor now records the Garment Slot Override it applied together with the two
+meshes and compares it in the restore classification, so a restored override
+takes the Preview revision path. The regression
+`MtoULiveLink.Actor.PreviewInputRestore` establishes a ready Generated Preview
+and a negotiated live session, edits the override, rebuilds readiness and a
+session for the edited override, and then undoes: it asserts the session ends,
+the Generated Preview is released with `Dirty` readiness and a Refresh request,
+the stale garment leaves the display, and redo invalidates again instead of
+reusing the other override's revision. With the override removed from the
+comparison the test fails on exactly those assertions, which is the reported
+defect.
 
 ### Real C02 cross-host real-time and Cached Playback
 
@@ -218,10 +242,12 @@ frame rate with a viewport are not part of this measurement.
 
 Composed-character checks in every stage - real-time, cached playback, cached
 replay, cached stop, and the return to live preview - report a maximum
-displaced-bone error of `1.13e-13 cm` between the displayed parts and what the
-stream dictates for each part's own hierarchy, and the part-only BlendShape
-`Braise_Eblink_INL` (absent from the Primary Driver) is published as 0.65 and
-evaluated as 0.65 on the Head part that owns it. Cached Playback completed the
+displaced-bone error between the displayed parts and what the stream dictates
+for each part's own hierarchy: about `1.30e-13 cm` in the real-time stage and
+`1.13e-13 cm` in the cached and returned-live stages. The part-only BlendShape
+`Braise_Eblink_INL`, absent from the Primary Driver, was evaluated as `0.55` in
+the real-time stage and `0.65` in the cached and returned-live stages, matching
+the published value in each case. Cached Playback completed the
 full capture, upload, local replay, stop, replay-again, clear and
 return-to-live sequence with the peer reporting an intact 12-frame cache.
 

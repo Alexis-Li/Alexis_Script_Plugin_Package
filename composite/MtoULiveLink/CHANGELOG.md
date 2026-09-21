@@ -8,12 +8,12 @@
   `FPropertyChangedEvent` - is now classified against what each actor has
   already applied instead of being ignored. A restored Additional Parts list
   ends the running session and resynchronizes the display components while a
-  generated garment Preview stays ready, a restored Primary Driver or Preview
-  Static Mesh still invalidates the Preview revision, and renaming or reordering
-  a part still changes nothing. Part edits are also recognized when they arrive
-  as one field of one list entry, and the regression drives real editor
-  transactions through undo and redo rather than calling the notification by
-  hand.
+  generated garment Preview stays ready, a restored Primary Driver, Preview
+  Static Mesh, or Garment Slot Override still invalidates the Preview revision,
+  and renaming or reordering a part still changes nothing. Part edits are also
+  recognized when they arrive as one field of one list entry, and the regression
+  drives real editor transactions through undo and redo rather than calling the
+  notification by hand.
 
 - Accept the hash-suffixed import rename for duplicated Maya short names
   (Issue #46): a target bone named `<complete short name>_<exactly 32
