@@ -143,23 +143,11 @@ Those records do not establish a complete 0.5.0 production or release gate.
   Preview weight-transfer warning remains a visual review boundary rather than
   a skeleton-connection failure.
 
-- **2026-09-20:** Completed Issue #45 on `main`: one Binding now describes a
-  character delivered as several Skeletal Meshes, with the existing
-  `SkeletalMesh` field kept as the Primary Driver and a labelled Additional
-  Parts list beside it. One shared resolution validates every enabled part
-  against the Primary - same Skeleton asset, bones mapped by name and parent
-  path, compatible reference pose and import space, no bone the Primary lacks -
-  and names the offending part, bone, or pose delta when it refuses. Enabled
-  parts pose from the one `MtoU_Character` subject under the Actor transform,
-  the streamed Morph library became the deduplicated union of the Primary and
-  the enabled parts, and Model preview displays the Generated garment, the
-  hidden-slot Driver, and every part while garment resolution stays
-  Primary-only. Composition changes end the session without invalidating an
-  already generated garment Preview, and unclaimed components never survive a
-  resynchronization. Stock UE 5.7.4 build, all 65 `MtoULiveLink` Automation
-  tests, Maya pure 140/140, Maya 2022.4 host 23/23, repository validation, and
-  the Unreal packaging dry-run pass. The real split-asset visual acceptance
-  remains the owner's gate and is recorded as not performed.
+- **2026-09-20:** Implemented Issue #45 character composition: Primary Driver
+  plus Additional Parts share one connection and subject, with combined Morph
+  routing and Primary-only garment preparation. Asset compatibility and saved
+  level loading fixes are captured in the
+  [character-part acceptance record](character-parts-acceptance.md).
 
 - **2026-09-20:** Completed Issue #46 on `main`: connection negotiation accepts
   the hash-suffixed import rename (`<complete short name>_<32 hexadecimal
@@ -186,20 +174,12 @@ Those records do not establish a complete 0.5.0 production or release gate.
   previous condition fails those assertions. The rebuilt plugin passed all 67
   `MtoULiveLink` Automation tests again.
 
-- **2026-09-21:** Responded to the Issue #45 review: the Binding now handles
-  the unnamed property change a transaction restore produces (undo and redo
-  reach their objects through an empty `FPropertyChangedEvent`), classifying
-  the restored state against what each actor already applied so a parts
-  restore ends the session without discarding a ready garment Preview, a
-  Primary or Preview restore still invalidates the Preview revision, and
-  renaming or reordering stays inert. The regression drives real editor
-  transactions through undo and redo, and fails pre-fix on an actor no
-  construction rerun can reach. The real C02 character (Primary plus Head and
-  Hair parts, 1,502 nodes, Maya 2024) then completed cross-host real-time and
-  Cached Playback acceptance: parts matched the streamed pose to `1.13e-13 cm`
-  in every stage, a Head-only BlendShape reached its owning mesh, and the same
-  capture range measured 0.390 ms against 1.241 ms of Game Thread frame cost
-  for the Primary alone versus the composed character.
+- **2026-09-21:** Accepted and closed Issue #45 after real C02 cross-host
+  playback measurements, owner visual feedback, and fixes for Binding Undo/Redo,
+  including Garment Slot Override revision invalidation. Final owning Automation
+  passed 71/71. The [acceptance record](character-parts-acceptance.md) owns the
+  measured results, remaining limits, and delivery state; closure is not a
+  formal 0.5.0 release.
 
 ## Stable Records
 

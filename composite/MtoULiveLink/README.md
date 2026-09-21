@@ -92,8 +92,9 @@ display as one character under one connection:
   several parts receives the same value on each of them.
 - Adding, removing, enabling, disabling, or replacing a part ends the current
   connection, so reconnect in Maya afterwards. A generated garment preview
-  survives, so **Refresh Preview** is only needed after changing the Primary
-  Driver, the Preview Static Mesh, or their imported data.
+  survives. Run **Refresh Preview** after changing the Primary
+  Driver, the Preview Static Mesh, the **Driver Garment Slot Override**, or
+  relevant imported data.
 - Renaming a part or reordering the list needs no reconnect.
 
 ## First connection
@@ -150,7 +151,7 @@ mesh display. Configure lighting and shadow settings on **SkeletalMeshComponent*
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |
 | BlendShapes do not appear | Check **Transfer BS**, matching names, the selected outfit, and the connection diagnostics. Refresh the Model preview after changing its source assets. |
-| Connection ends after a change | Reconnect after changing the outfit, mode, **Transfer BS**, or the character parts. Refreshing also disconnects the session. After changing or reimporting the Primary Driver or the Preview Static Mesh, refresh the Model preview and reconnect. |
+| Connection ends after a change | Reconnect after changing the outfit, mode, **Transfer BS**, or the character parts. Refreshing also disconnects the session. After changing or reimporting the Primary Driver or the Preview Static Mesh, or changing **Driver Garment Slot Override**, refresh the Model preview and reconnect. Undo/Redo of these changes follows the same rule. |
 
 Keep the Binding Actor and its level loaded while previewing; deleting the actor
 or unloading its level ends the connection.

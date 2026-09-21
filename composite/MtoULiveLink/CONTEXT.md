@@ -137,9 +137,11 @@ owns the name.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:
-One coherent pairing of a Driver Skeletal Mesh and one imported state of its
-Preview Static Mesh. A relevant change to either garment representation creates
-a different revision.
+One coherent combination of the Primary Driver Skeletal Mesh, the imported
+Preview Static Mesh, and the Driver Garment Slot Override. A relevant change to
+these inputs or their imported data creates a different revision, including
+when Undo or Redo restores a different input state. Additional Parts belong to
+the character composition and do not independently change the Preview revision.
 _Avoid_: Cache version, dirty state, preview snapshot
 
 **Preview quality warning**:

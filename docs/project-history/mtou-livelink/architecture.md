@@ -1047,10 +1047,10 @@ A transaction restore reaches its objects through an unnamed property change:
 `PostEditUndo` reports an empty `FPropertyChangedEvent`, so the Binding cannot
 tell which field moved. It therefore repairs part identities and asks every
 actor that uses it to classify the current state against what the actor has
-already applied - a changed Primary Driver or Preview Static Mesh is a Preview
-revision change, anything else stays inside the composition - instead of
-silently ignoring the restore. Part edits are recognized both as the list
-property and as one field of one list entry.
+already applied - a changed Primary Driver, Preview Static Mesh, or Garment
+Slot Override is a Preview revision change; other changes stay inside the
+composition - instead of silently ignoring the restore. Part edits are
+recognized both as the list property and as one field of one list entry.
 
 Composition changes are classified separately from Preview revision changes.
 Adding, removing, enabling, disabling, or replacing a part ends the active

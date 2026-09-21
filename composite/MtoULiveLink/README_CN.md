@@ -80,8 +80,8 @@ Primary Driver，其余网格添加到 Binding 的 **Additional Parts**。所有
 - 只有某个部件拥有的 Morph Target 也会传输；多个部件同名的 Morph 会接收到
   相同数值。
 - 新增、删除、启用、停用或替换部件都会结束当前连接，之后需在 Maya 中重连。
-  已生成的服装预览会保留，只有在 Primary Driver、Preview Static Mesh 或其导入
-  数据变更后才需要 **Refresh Preview**。
+  已生成的服装预览会保留；Primary Driver、Preview Static Mesh、
+  **Driver Garment Slot Override** 或相关导入数据变更后需要 **Refresh Preview**。
 - 重命名部件或调整列表顺序无需重连。
 
 ## 首次连接
@@ -131,7 +131,7 @@ BlendShape 变形。没有 BlendShape 的服装可正常使用骨骼驱动预览
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |
 | BlendShape 未生效 | 检查“传递 BS”、名称匹配、当前服装及连接诊断。模型预览的源资产变更后需重新刷新。 |
-| 修改后连接断开 | 更换服装、模式、“传递 BS”或角色部件后需重连；刷新也会断开当前连接。修改或重新导入 Primary Driver 或 Preview Static Mesh 后，刷新模型预览并重连。 |
+| 修改后连接断开 | 更换服装、模式、“传递 BS”或角色部件后需重连；刷新也会断开当前连接。修改或重新导入 Primary Driver、Preview Static Mesh，或修改 **Driver Garment Slot Override** 后，刷新模型预览并重连；撤销／重做这些修改时也遵循同一规则。 |
 
 预览时请保留 Binding Actor 并保持其关卡加载；删除 Actor 或卸载关卡会结束连接。
 
