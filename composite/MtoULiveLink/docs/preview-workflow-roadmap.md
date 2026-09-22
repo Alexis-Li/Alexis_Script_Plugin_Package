@@ -4,6 +4,14 @@
 当前基线为 `composite-mtou-livelink-v0.5.0`；后续开发分支为
 `codex/mtou-preview-workflow`。下一版本号在实施时确定。
 
+## 执行跟踪
+
+[GitHub 规格 #47](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/47)
+及其子任务维护可执行验收条件、阻塞关系与进度。拆分为四个实现切片（双端界面、
+范围捕获与 UE 基础回放、交互回放、服装切换）和三个有界验证（相机与 Sequencer、
+场景参考几何、独立道具与多角色）。仅交互回放硬依赖基础回放；建议顺序不构成
+其他任务的阻塞。验证任务完成不代表完整产品功能已经实施。
+
 ## 目标与顺序
 
 MtoU 的目标是减少制作过程中在 Maya 与 UE 之间检查效果的阻力。
