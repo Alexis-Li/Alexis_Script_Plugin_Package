@@ -210,6 +210,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 ## Current Project
 
 - [Product documentation](../../../composite/MtoULiveLink/README.md)
+- [Next-stage preview workflow scope](../../../composite/MtoULiveLink/docs/preview-workflow-roadmap.md)
 - [Repository rules](../../../AGENTS.md)
 - [Composite project rules](../../../composite/AGENTS.md)
 
