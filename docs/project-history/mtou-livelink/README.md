@@ -1,14 +1,17 @@
 # MtoU_LiveLink Development History
 
-MtoU_LiveLink 0.4.0 is the completed Maya 2022.4 and stock Unreal Editor 5.7.4
-baseline. It is merged to `main`, accepted, and closed without formal release
-packages; subsequent development uses version 0.5.0.
+MtoU_LiveLink 0.5.0 is the owner-accepted milestone as of 2026-09-22, following
+practical use with no issues reported. The local Git tag
+`composite-mtou-livelink-v0.5.0` freezes this baseline; the implementation
+checkpoint before documentation closeout is
+`278e16a001037a08933e8f180c82899a2e567e8e`.
 
-The timeline records the status at each historical date; its earlier pending
-gates do not override later acceptance. For the 0.5.0 development follow-ups,
-use the scoped acceptance records below and the project's
-[Unreleased changelog](../../../composite/MtoULiveLink/CHANGELOG.md#unreleased).
-Those records do not establish a complete 0.5.0 production or release gate.
+This milestone does not produce installation packages, deploy new binaries, or
+add host-version certification. Existing scoped acceptance records retain their
+limits; owner acceptance is not a claim that every host combination was rerun.
+The timeline records the status at each historical date, so earlier development
+or pending-release wording does not override this milestone decision. Versioned
+changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELOG.md).
 
 ## Timeline
 
@@ -180,6 +183,12 @@ Those records do not establish a complete 0.5.0 production or release gate.
   passed 71/71. The [acceptance record](character-parts-acceptance.md) owns the
   measured results, remaining limits, and delivery state; closure is not a
   formal 0.5.0 release.
+
+- **2026-09-22:** The owner accepted the current implementation as the 0.5.0
+  milestone after practical use without reported problems. Documentation and a
+  project-prefixed local tag freeze the baseline without installation packages
+  or additional host-version validation. Subsequent work uses a separate
+  development branch.
 
 ## Stable Records
 

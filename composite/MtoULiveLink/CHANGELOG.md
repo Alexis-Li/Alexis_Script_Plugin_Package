@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-22
+
+Milestone accepted by the project owner after practical use with no issues
+reported. Frozen as `composite-mtou-livelink-v0.5.0`; no installation packages
+or new host-version certification are part of this milestone. Existing scoped
+acceptance records retain their validation limits.
+
 - Keep every actor that uses a Binding in step with the Binding's undo and redo
   (Issue #45 review): an unnamed property change - which is how a transaction
   restore reaches its objects, because `PostEditUndo` reports an empty
