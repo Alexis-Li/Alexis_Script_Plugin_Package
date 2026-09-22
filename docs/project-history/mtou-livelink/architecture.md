@@ -1022,11 +1022,16 @@ renaming or reordering a part is never a change of identity.
 One private resolution owns every composition rule for placement, connection,
 and diagnostics. It reports the Primary Driver and each Additional Part with the
 named reason a part cannot join the character: an enabled part without a mesh, a
-part that repeats the Primary Driver, a different Skeleton asset, bones that are
-absent from the Primary or hang under a different parent, and skinning bones
-from any LOD (including their ancestors) whose component-space reference pose
-differs beyond a scale-relative tolerance that
-also covers a different import space. Disabled parts are neither validated nor
+part that repeats the Primary Driver, a different Skeleton asset, conflicting
+parents for shared required names, or shared required component-space reference
+poses differing beyond the translation/scale-relative and rotation tolerances.
+Positive vertex influences (not palette membership alone) across all LODs and
+complete ancestors form a parent-first union; unreadable weights fail closed.
+Primary is processed first, then parts in stable identity order. Each union
+bone records its requiring parts for diagnostics. Unique secondary branches
+remain in the target even when absent from Primary. The frozen source-index
+projection feeds both real-time and cached bind/current conversion and one
+Live Link subject, while transport/cache validation keeps the full Maya snapshot. Disabled parts are neither validated nor
 displayed. Placement refuses only a missing Primary Driver, connection refuses
 any unusable composition with the part-named diagnostics behind
 `SKELETON_MISMATCH` or `INVALID_BINDING`, and the Binding Actor publishes the same

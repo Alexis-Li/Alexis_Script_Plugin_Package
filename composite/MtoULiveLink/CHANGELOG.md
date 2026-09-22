@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Negotiate the required skinning bones and ancestors of every enabled part
+  (Issue #55). Ignore unrelated exported branches and stream part-only secondary
+  bones through the same subject in real-time and Cached Playback. Shared
+  hierarchy/reference-pose conflicts and missing required Maya bones still
+  reject the connection with part diagnostics. Binding and protocol v6 remain
+  compatible; garment Preview data continues to come only from Primary.
+
 ## 0.5.0 - 2026-09-22
 
 Milestone accepted by the project owner after practical use with no issues

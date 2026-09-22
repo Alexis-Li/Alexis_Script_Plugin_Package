@@ -10,6 +10,7 @@
 #include "Serialization/JsonWriter.h"
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUCharacterComposition.h"
 #include "MtoULiveLinkPreview.h"
 #include "MtoULiveLinkSource.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -290,13 +291,104 @@ private:
             Client->EvaluateFrameFromSource_AnyThread(Key, ULiveLinkAnimationRole::StaticClass(), Frame))) { return false; }
         const auto* Static = Frame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
         const auto* Animation = Frame.FrameData.Cast<FLiveLinkAnimationFrameData>();
-        const auto& Ref = Binding->SkeletalMesh->GetRefSkeleton();
-        if (!Static || !Animation || !Test->TestEqual(TEXT("full evaluated hierarchy"), Animation->Transforms.Num(), Ref.GetNum())) { return false; }
-        TArray<FMatrix> BindWorld, CurrentWorld, RefWorld, PublishedWorld;
-        for (int32 I = 0; I < Ref.GetNum(); ++I)
+        if (!Static || !Animation) { Test->AddError(TEXT("Streamed frame is incomplete")); return false; }
+        // The subject publishes the character's required bones: the positive
+        // skin influences of every enabled mesh plus their ancestors, not one
+        // mesh's complete exported hierarchy.
+        const FMtoUCharacterComposition Composition =
+            FMtoUCharacterComposition::Resolve(Binding.Get());
+        if (!Test->TestTrue(TEXT("character composition resolves for pose comparison"), Composition.IsUsable()))
         {
-            const int32 P = Ref.GetParentIndex(I);
-            RefWorld.Add(Ref.GetRefBonePose()[I].ToMatrixWithScale() * (P < 0 ? FMatrix::Identity : RefWorld[P]));
+            Test->AddError(Composition.Diagnostics);
+            return false;
+        }
+        const FReferenceSkeleton& Required = Composition.RequiredSkeleton;
+        if (!Test->TestEqual(TEXT("published required hierarchy"), Animation->Transforms.Num(), Required.GetNum())
+            || !Test->TestEqual(TEXT("published required names"), Static->BoneNames.Num(), Required.GetNum())
+            || !Test->TestEqual(TEXT("published required parents"), Static->BoneParents.Num(), Required.GetNum())) { return false; }
+        // The Maya peer reports its complete snapshot in Maya order, so each
+        // published bone is resolved to its Maya source by parent-scoped short
+        // name, exactly like the negotiation; the ready reply's remap list
+        // bridges an Unreal import rename.
+        const TArray<TSharedPtr<FJsonValue>>& MayaBones = Result->GetArrayField(TEXT("bones"));
+        const TArray<TSharedPtr<FJsonValue>>& MayaBind = Result->GetArrayField(TEXT("bind"));
+        const TArray<TSharedPtr<FJsonValue>>& MayaCurrent = Result->GetArrayField(TEXT("transforms"));
+        TArray<FString> MayaNames;
+        TArray<int32> MayaParents;
+        for (const TSharedPtr<FJsonValue>& Value : MayaBones)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Entry = Value->AsArray();
+            MayaNames.Add(Entry.Num() > 0 ? Entry[0]->AsString() : FString());
+            MayaParents.Add(Entry.Num() > 1 ? static_cast<int32>(Entry[1]->AsNumber()) : INDEX_NONE);
+        }
+        if (!Test->TestEqual(TEXT("Maya snapshot carries its hierarchy"), MayaNames.Num(), MayaParents.Num())
+            || !Test->TestEqual(TEXT("Maya snapshot carries every bind transform"), MayaBind.Num(), MayaNames.Num())
+            || !Test->TestEqual(TEXT("Maya snapshot carries every current transform"), MayaCurrent.Num(), MayaNames.Num()))
+        { return false; }
+        TMap<FString, TSet<FString>> RenamedFrom;
+        if (Result->HasField(TEXT("warning")))
+        {
+            for (const TSharedPtr<FJsonValue>& Value
+                : Result->GetObjectField(TEXT("warning"))->GetArrayField(TEXT("bone_name_remaps")))
+            {
+                FString MayaPath, UnrealName;
+                if (Value->AsString().Split(TEXT(" -> "), &MayaPath, &UnrealName))
+                {
+                    FString MayaParent, MayaName;
+                    if (MayaPath.Split(TEXT("/"), &MayaParent, &MayaName))
+                    {
+                        RenamedFrom.FindOrAdd(UnrealName).Add(MayaName);
+                    }
+                }
+            }
+        }
+        TArray<int32> PublishedToMaya;
+        PublishedToMaya.Init(INDEX_NONE, Static->BoneNames.Num());
+        TSet<int32> ClaimedMaya;
+        bool bResolved = true;
+        for (int32 I = 0; I < Static->BoneNames.Num() && bResolved; ++I)
+        {
+            const int32 PublishedParent = Static->BoneParents[I];
+            const int32 MayaParent = PublishedParent == INDEX_NONE ? INDEX_NONE : PublishedToMaya[PublishedParent];
+            const FString PublishedName = Static->BoneNames[I].ToString();
+            TArray<int32> Candidates;
+            for (int32 Maya = 0; Maya < MayaNames.Num(); ++Maya)
+            {
+                if (MayaParents[Maya] != MayaParent || ClaimedMaya.Contains(Maya)) { continue; }
+                const TSet<FString>* Sources = RenamedFrom.Find(PublishedName);
+                if (MayaNames[Maya] == PublishedName || (Sources && Sources->Contains(MayaNames[Maya])))
+                {
+                    Candidates.Add(Maya);
+                }
+            }
+            bResolved = Test->TestTrue(FString::Printf(TEXT("published bone %s resolves to one Maya source"),
+                *PublishedName), Candidates.Num() == 1)
+                && Test->TestTrue(TEXT("published hierarchy keeps the required order and parents"),
+                    Static->BoneNames[I] == Required.GetBoneName(I)
+                    && PublishedParent == Required.GetParentIndex(I));
+            if (bResolved)
+            {
+                PublishedToMaya[I] = Candidates[0];
+                ClaimedMaya.Add(Candidates[0]);
+            }
+        }
+        if (!bResolved) { return false; }
+        TArray<FMatrix> BindWorld, CurrentWorld, RequiredWorld, PublishedWorld;
+        BindWorld.SetNum(MayaNames.Num());
+        CurrentWorld.SetNum(MayaNames.Num());
+        for (int32 Maya = 0; Maya < MayaNames.Num(); ++Maya)
+        {
+            const int32 P = MayaParents[Maya];
+            if (P >= Maya || (P >= 0 && !BindWorld.IsValidIndex(P))) { Test->AddError(TEXT("Maya snapshot hierarchy is not parent-first")); return false; }
+            BindWorld[Maya] = CharacterTransform(MayaBind[Maya]).ToMatrixWithScale()
+                * (P < 0 ? FMatrix::Identity : BindWorld[P]);
+            CurrentWorld[Maya] = CharacterTransform(MayaCurrent[Maya]).ToMatrixWithScale()
+                * (P < 0 ? FMatrix::Identity : CurrentWorld[P]);
+        }
+        for (int32 I = 0; I < Required.GetNum(); ++I)
+        {
+            const int32 P = Required.GetParentIndex(I);
+            RequiredWorld.Add(Required.GetRefBonePose()[I].ToMatrixWithScale() * (P < 0 ? FMatrix::Identity : RequiredWorld[P]));
         }
         double MaxPositionError = 0;
         double MaxDisplayedError = 0;
@@ -304,17 +396,13 @@ private:
         for (int32 I = 0; I < Static->BoneNames.Num(); ++I)
         {
             const int32 P = Static->BoneParents[I];
-            const int32 Target = Ref.FindBoneIndex(Static->BoneNames[I]);
-            if (!Test->TestTrue(TEXT("published bone exists in actual Driver"), Target != INDEX_NONE)) { return false; }
-            BindWorld.Add(CharacterTransform(Result->GetArrayField(TEXT("bind"))[I]).ToMatrixWithScale()
-                * (P < 0 ? FMatrix::Identity : BindWorld[P]));
-            CurrentWorld.Add(CharacterTransform(Result->GetArrayField(TEXT("transforms"))[I]).ToMatrixWithScale()
-                * (P < 0 ? FMatrix::Identity : CurrentWorld[P]));
+            const FName BoneName = Static->BoneNames[I];
+            const int32 Maya = PublishedToMaya[I];
             PublishedWorld.Add(Animation->Transforms[I].ToMatrixWithScale()
                 * (P < 0 ? FMatrix::Identity : PublishedWorld[P]));
             FMatrix Inverse;
-            if (!VectorMatrixInverse(&Inverse, &BindWorld[I])) { Test->AddError(TEXT("Fixture bind inverse failed")); return false; }
-            const FMatrix Expected = RefWorld[Target] * Inverse * CurrentWorld[I];
+            if (!VectorMatrixInverse(&Inverse, &BindWorld[Maya])) { Test->AddError(TEXT("Fixture bind inverse failed")); return false; }
+            const FMatrix Expected = RequiredWorld[I] * Inverse * CurrentWorld[Maya];
             MaxPositionError = FMath::Max(MaxPositionError, FVector::Distance(Expected.GetOrigin(), PublishedWorld[I].GetOrigin()));
             for (EAxis::Type Axis : {EAxis::X, EAxis::Y, EAxis::Z})
             {
@@ -322,12 +410,30 @@ private:
                     Expected.GetScaledAxis(Axis).GetSafeNormal(0.0),
                     PublishedWorld[I].GetScaledAxis(Axis).GetSafeNormal(0.0)));
             }
-            const auto& Displayed = Actor->GetSkeletalMeshComponent()->GetComponentSpaceTransforms();
-            if (Displayed.IsValidIndex(Target))
+            // A part-only required bone is displayed by the part that owns it,
+            // so the published pose is compared against the component that
+            // carries this name.
+            const USkeletalMeshComponent* DisplayComponent = Actor->GetSkeletalMeshComponent();
+            int32 DisplayIndex = DisplayComponent ? DisplayComponent->GetBoneIndex(BoneName) : INDEX_NONE;
+            if (DisplayIndex == INDEX_NONE)
+            {
+                for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
+                {
+                    if (Part && Part->GetBoneIndex(BoneName) != INDEX_NONE)
+                    {
+                        DisplayComponent = Part;
+                        DisplayIndex = Part->GetBoneIndex(BoneName);
+                        break;
+                    }
+                }
+            }
+            const TArray<FTransform>* Displayed = DisplayComponent
+                ? &DisplayComponent->GetComponentSpaceTransforms() : nullptr;
+            if (Displayed && Displayed->IsValidIndex(DisplayIndex))
             {
                 MaxDisplayedError = FMath::Max(MaxDisplayedError,
-                    FVector::Distance(PublishedWorld[I].GetOrigin(), Displayed[Target].GetTranslation()));
-                const FMatrix DisplayedMatrix = Displayed[Target].ToMatrixWithScale();
+                    FVector::Distance(PublishedWorld[I].GetOrigin(), (*Displayed)[DisplayIndex].GetTranslation()));
+                const FMatrix DisplayedMatrix = (*Displayed)[DisplayIndex].ToMatrixWithScale();
                 for (EAxis::Type Axis : {EAxis::X, EAxis::Y, EAxis::Z})
                 {
                     MaxDisplayedAxisError = FMath::Max(MaxDisplayedAxisError, FVector::Distance(

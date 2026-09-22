@@ -61,8 +61,8 @@ enum class EMtoUDisplayTarget : uint8
 /**
  * Display component of one enabled Additional Part. Each part evaluates the
  * one character Live Link subject itself, so the whole character poses from the
- * same session, while the Primary Driver stays the only source of skeleton
- * baseline, garment Preview data, and accepted Preview Morphs.
+ * same session, while the Primary Driver stays the only source of garment
+ * Preview data and accepted Preview Morphs.
  */
 UCLASS(ClassGroup = MtoULiveLink)
 class MTOULIVELINK_API UMtoUCharacterPartComponent : public USkeletalMeshComponent

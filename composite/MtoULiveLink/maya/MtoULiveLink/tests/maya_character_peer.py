@@ -32,6 +32,44 @@ def write_json(path, value):
             time.sleep(0.02)
 
 
+def _create_secondary_bone_character(cmds, bones):
+    """Disposable split-export fixture; never reads or saves production assets."""
+    cmds.file(new=True, force=True)
+    cmds.currentUnit(linear="cm", time="ntsc")
+    group = cmds.createNode("transform", name="Group")
+    motion = cmds.createNode("transform", name="MotionSystem", parent=group)
+    add = cmds.createNode("transform", name="Add_Ctrl_grp", parent=motion)
+    display_group = cmds.createNode("transform", name="Display_ctrl_grp", parent=add)
+    display = cmds.createNode("transform", name="Display_ctrl", parent=display_group)
+    cmds.addAttr(display, longName="clothes", attributeType="enum", enumName="Clothes01")
+    import maya.api.OpenMaya as om
+    joints = []
+    for name, parent, transform in bones:
+        joint = cmds.createNode("joint", name=name,
+                                parent=group if parent < 0 else joints[parent])
+        matrix = om.MTransformationMatrix()
+        matrix.setTranslation(om.MVector(transform[0], transform[2], transform[1]), om.MSpace.kTransform)
+        matrix.setRotation(om.MQuaternion(-transform[3], -transform[5], -transform[4], transform[6]))
+        matrix.setScale((transform[7], transform[9], transform[8]), om.MSpace.kTransform)
+        cmds.xform(joint, objectSpace=True, matrix=list(matrix.asMatrix()))
+        joints.append(joint)
+    cmds.createNode("joint", name="UnusedMaya", parent=joints[0])
+    for mesh_name, joint, aliases in (("Body", joints[1], ["Shared"]),
+                                       ("Head", joints[1], ["HeadOnly"]),
+                                       ("SM_Clothes01", "ClothTip", ["Shared"])):
+        mesh = cmds.polyCube(name=mesh_name)[0]
+        cmds.parent(mesh, group)
+        target = cmds.duplicate(mesh, name=mesh_name + "ShapeTarget")[0]
+        cmds.move(0.2, 0, 0, target + ".vtx[*]", relative=True)
+        blend = cmds.blendShape(target, mesh)[0]
+        cmds.aliasAttr(aliases[0], blend + ".weight[0]")
+        cmds.delete(target)
+        cmds.skinCluster(joint, mesh, toSelectedBones=True)
+    cmds.setKeyframe("ClothTip.translateY", time=1, value=5)
+    cmds.setKeyframe("ClothTip.translateY", time=12, value=16)
+    cmds.currentTime(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", required=True)
@@ -50,8 +88,11 @@ def main():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         module.PORT = fixture["port"]
-        cmds.file(fixture["scene"], open=True, force=True, prompt=False,
-                  executeScriptNodes=False, ignoreVersion=True)
+        if fixture.get("synthetic_secondary_bones"):
+            _create_secondary_bone_character(cmds, fixture["synthetic_bones"])
+        else:
+            cmds.file(fixture["scene"], open=True, force=True, prompt=False,
+                      executeScriptNodes=False, ignoreVersion=True)
 
         class Controller(module._Controller):
             def _show_error(self, diagnostic):
@@ -79,7 +120,7 @@ def main():
                     continue
                 pairs = cmds.aliasAttr(node, query=True) or []
                 for alias, attribute in zip(pairs[0::2], pairs[1::2]):
-                    alias_plugs.setdefault(alias, node + "." + attribute)
+                    alias_plugs.setdefault(alias, set()).add(node + "." + attribute)
 
         base = {}
 
@@ -149,9 +190,9 @@ def main():
                         for plug, delta in pose.get("edits", {}).items():
                             cmds.setAttr(plug, base[plug] + delta)
                         for alias, value in pose.get("alias_edits", {}).items():
-                            plug = alias_plugs[alias]
-                            detach(plug)
-                            cmds.setAttr(plug, base[plug] + value)
+                            for plug in sorted(alias_plugs[alias]):
+                                detach(plug)
+                                cmds.setAttr(plug, base[plug] + value)
                         # Only the edited plugs are dirtied: a production scene
                         # re-evaluates the rest of the graph on read.
                         result["pose"] = command["pose"]
@@ -160,9 +201,9 @@ def main():
                         # Drive one BlendShape alias that the Unreal side asked
                         # for, resolved from the character's own libraries.
                         name = command["alias"]
-                        plug = alias_plugs[name]
-                        detach(plug)
-                        cmds.setAttr(plug, base[plug] + float(command["value"]))
+                        for plug in sorted(alias_plugs[name]):
+                            detach(plug)
+                            cmds.setAttr(plug, base[plug] + float(command["value"]))
                         result["alias"] = name
                         result["alias_value"] = float(command["value"])
                         result["phase"] = "alias"
@@ -229,7 +270,7 @@ def main():
             else:
                 raise AssertionError("Character acceptance command timeout")
     except Exception:
-        result.update(ok=False, error=traceback.format_exc())
+        result.update(ok=False, phase="failed", error=traceback.format_exc())
         write_json(args.result, result)
     finally:
         if controller is not None:

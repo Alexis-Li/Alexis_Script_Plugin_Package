@@ -13,6 +13,8 @@ public class MtoULiveLink : ModuleRules
         if (Target.bBuildEditor)
         {
             PrivateDependencyModuleNames.Add("UnrealEd");
+            // Automation constructs CPU skin-weight LOD fixtures.
+            PrivateDependencyModuleNames.AddRange(new[] { "RenderCore", "RHI" });
         }
     }
 }

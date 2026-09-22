@@ -54,11 +54,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 
 ## 准备角色
 
-- Maya 的变形骨架应与 Unreal 的 **Primary Driver Skeletal Mesh** 匹配，包括骨骼
-  名称和父子关系；骨骼之间的中间分组也会参与匹配。同一短名出现在多个 Maya 分支
-  时，只要 Unreal 导入在相同父级下为该重名骨骼添加了数字后缀或 32 位 hash 后缀
-  即可连接，连接会报告每一处改名映射。插件不提供自动重定向，Maya 增删骨骼后需
-  同步更新 Unreal 资产。
+- Maya 必须包含启用网格实际蒙皮所需的骨骼及完整祖先链，包括骨骼之间的中间
+  分组，名称与父子关系应一致。同一短名出现在多个 Maya 分支时，支持同一父级下
+  的 Unreal 导入数字后缀或 32 位 hash 后缀，并报告映射。无关的导出骨骼分支
+  不会阻止连接。
 - 预览服装时，准备与 Primary Driver 服装位置对齐的 **Preview Static Mesh**。
   服装与身体等非服装几何体应使用不同的导入材质槽。
 - 预览 BlendShape 时，Maya BlendShape 与 Unreal Morph Target 需要名称匹配，
@@ -66,17 +65,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 
 ### 拆分角色部件
 
-当同一个角色由多个 Skeletal Mesh 组成时，将保留完整变形层级的网格指定为
-Primary Driver，其余网格添加到 Binding 的 **Additional Parts**。所有启用部件
-会在同一个连接下作为同一个角色摆姿和显示：
+当同一个角色由多个 Skeletal Mesh 组成时，将服装数据来源指定为 Primary Driver，
+其余网格添加到 Binding 的 **Additional Parts**。所有启用部件在同一个连接下摆姿和显示：
 
-- 只有 Primary Driver 定义骨架基准，并提供服装识别、权重转移和
-  **Preview Morph transfer**；身体、面部和 BlendShape 预览仍通过它生效。
-- 每个部件包含名称、Skeletal Mesh 和 **Enabled** 开关。部件必须与 Primary
-  Driver 共用同一个 **Skeleton** 资产，其骨骼需按名称与父路径映射到 Primary，
-  各 LOD 中影响部件蒙皮的骨骼及其父链需匹配 Primary 的参考姿势。
-  部件可以使用更少的骨骼和不同的几何体；
-  Primary 中不存在的骨骼会被拒绝，并提示部件与骨骼名称。
+- 只有 Primary Driver 提供服装识别、权重转移和 **Preview Morph transfer**。
+- 每个部件包含名称、Skeletal Mesh 和 **Enabled** 开关。所有网格必须共用同一个
+  **Skeleton** 资产。各 LOD 实际蒙皮所需的共有骨骼及其完整祖先链，必须具有一致
+  的层级和参考姿势。部件独有的次级骨骼即使不在 Primary 中，也会接收 Maya 动画；
+  禁用部件不增加骨骼依赖。
+- 新增服装及次级骨骼后，导入新服装、更新启用部件并重连。旧网格仅在自身绑定
+  姿势或权重改变时需要更新。Maya 缺少必要骨骼或共有骨骼不兼容时仍会拒绝连接，
+  并提示具体部件和骨骼。
 - 只有某个部件拥有的 Morph Target 也会传输；多个部件同名的 Morph 会接收到
   相同数值。
 - 新增、删除、启用、停用或替换部件都会结束当前连接，之后需在 Maya 中重连。
@@ -127,7 +126,7 @@ BlendShape 变形。没有 BlendShape 的服装可正常使用骨骼驱动预览
 | 问题 | 处理方法 |
 | --- | --- |
 | 骨架不匹配 | 先按详情中的根因排查：首个未映射骨骼的完整路径与父级、受阻的 Maya 后代与未访问的 Unreal 骨骼数量，以及提示的导入改名候选；再检查 Maya 选择的根骨骼、层级，以及 Unreal Driver 网格是否为最新版本。 |
-| 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查该部件是否与 Primary Driver 共用同一个 **Skeleton** 资产、提示的骨骼是否在 Primary 中以相同的父骨骼存在，以及参考姿势是否匹配。 |
+| 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查是否共用同一个 **Skeleton** 资产、Maya 中提示的必要骨骼及父链是否完整，以及共有参考姿势是否一致。若无法读取蒙皮权重，保留 CPU 蒙皮数据后重新构建或导入网格。 |
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |
 | BlendShape 未生效 | 检查“传递 BS”、名称匹配、当前服装及连接诊断。模型预览的源资产变更后需重新刷新。 |

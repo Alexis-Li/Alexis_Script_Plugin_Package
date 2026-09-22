@@ -6,6 +6,7 @@
 #include "MtoUConnectionNegotiator.h"
 #include "MtoUCharacterComposition.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkinWeightVertexBuffer.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 #include "MtoULiveLinkTestAnimInstance.h"
@@ -2096,8 +2097,8 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
         FMtoUConnectionNegotiator::Negotiate(ExactCharacter, ExactTarget);
     TestTrue(TEXT("equivalent shuffled skeletons are usable"), Exact.bUsable);
     TestTrue(TEXT("usable outcome has no failure category"), Exact.FailureCategory.IsEmpty());
-    TestTrue(TEXT("publish names preserve Maya transform order"),
-        Exact.PublishBoneNames == TArray<FName>({TEXT("root"), TEXT("arm"), TEXT("hand")}));
+    TestTrue(TEXT("Maya transform order maps onto the shuffled Unreal bones"),
+        Exact.TargetBoneIndices == TArray<int32>({1, 2, 0}));
     TestTrue(TEXT("matching Maya curve is accepted by index and name"),
         Exact.AcceptedCurveIndices == TArray<int32>({0})
         && Exact.AcceptedCurveNames == TArray<FName>({TEXT("Smile")}));
@@ -2132,8 +2133,9 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     const FMtoUNegotiationOutcome Remapped =
         FMtoUConnectionNegotiator::Negotiate(DuplicateCharacter, AutoRenamedTarget);
     TestTrue(TEXT("unique parent-scoped numeric suffix remaps are usable"), Remapped.bUsable);
-    TestTrue(TEXT("second duplicate receives the UE imported name"),
-        Remapped.PublishBoneNames[5] == FName(TEXT("tip_21")));
+    // Target index 5 is the imported `tip_21` rename of Maya's second `tip_2`.
+    TestTrue(TEXT("second duplicate maps onto the UE imported name"),
+        Remapped.TargetBoneIndices[5] == 5);
     TestEqual(TEXT("both imported renames are reported"), Remapped.BoneNameMappings.Num(), 2);
 
     FMtoUTargetDescription AmbiguousTarget = AutoRenamedTarget;
@@ -2189,9 +2191,10 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     const FMtoUNegotiationOutcome SplitSpine =
         FMtoUConnectionNegotiator::Negotiate(SplitSpineCharacter, SplitSpineTarget);
     TestTrue(TEXT("a hash-renamed ancestor maps its whole branch"), SplitSpine.bUsable);
-    TestTrue(TEXT("the renamed bone publishes the Unreal hash name"),
-        SplitSpine.PublishBoneNames[5] == HashRename(TEXT("spine_04"), HeadHash)
-        && SplitSpine.PublishBoneNames[3] == FName(TEXT("spine_04")));
+    // Target index 5 is the hash-renamed head branch; index 3 keeps the plain
+    // name under the body branch, so each duplicate maps to its own candidate.
+    TestTrue(TEXT("the renamed bone maps onto the Unreal hash name"),
+        SplitSpine.TargetBoneIndices[5] == 5 && SplitSpine.TargetBoneIndices[3] == 3);
     TestTrue(TEXT("the hash rename is reported exactly once"),
         SplitSpine.BoneNameMappings.Num() == 1
         && SplitSpine.BoneNameMappings[0].Contains(HeadHash));
@@ -6534,6 +6537,27 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the Head owns a Head-only Morph and repeats the shared Morph"),
         AddUniformMorph(*Head, FName(TEXT("HeadOnly")), FVector3f(0.0f, 1.0f, 0.0f))
         && AddUniformMorph(*Head, FName(TEXT("Shared")), FVector3f(1.0f, 0.0f, 0.0f)));
+    // A reproducible split export: only the part skins ClothTip; the old Primary
+    // has no such branch. The extra exported branch has no positive influence.
+    USkeleton* SharedSkeleton = DuplicateObject<USkeleton>(Primary->GetSkeleton(), Actor);
+    Primary->SetSkeleton(SharedSkeleton);
+    Head->SetSkeleton(SharedSkeleton);
+    FReferenceSkeleton PartSkeleton;
+    {
+        FReferenceSkeletonModifier Modifier(PartSkeleton, nullptr);
+        Modifier.Add(Primary->GetRefSkeleton().GetRefBoneInfo()[0], Primary->GetRefSkeleton().GetRefBonePose()[0]);
+        Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), Primary->GetRefSkeleton().GetRefBonePose()[1]);
+        Modifier.Add(FMeshBoneInfo(TEXT("UnusedExport"), TEXT("UnusedExport"), 0), FTransform::Identity);
+    }
+    Head->SetRefSkeleton(PartSkeleton);
+    Head->CalculateInvRefMatrices();
+    SharedSkeleton->MergeAllBonesToBoneTree(Head);
+    FReferenceSkeleton MayaSkeleton = Primary->GetRefSkeleton();
+    {
+        FReferenceSkeletonModifier Modifier(MayaSkeleton, nullptr);
+        Modifier.Add(FMeshBoneInfo(TEXT("UnusedMaya"), TEXT("UnusedMaya"), 0), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), PartSkeleton.GetRefBonePose()[1]);
+    }
     Binding->SkeletalMesh = Primary;
     Actor->NotifyBindingInputsChanged();
     AddCharacterPart(*Binding, TEXT("Head"), Head);
@@ -6568,7 +6592,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
 
     FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("character part client connects"), Client);
-    const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
+    const FString Bones = ReferenceSkeletonBonesJson(MayaSkeleton);
     const FString Init = FString::Printf(
         TEXT("{\"type\":\"init\",\"revision\":11,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
         *Bones);
@@ -6589,7 +6613,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     // A frame carries one value per manifest name, in manifest order; only the
     // accepted names are published to the subject.
     const TArray<uint8> Frame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,8,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
     TestTrue(TEXT("composed character frame is sent"), Client
         && SendBytes(*Client, Frame.GetData(), Frame.Num()));
 
@@ -6620,12 +6644,13 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         const FVector PrimaryRoot =
             SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World).GetLocation();
         const FVector PartChild =
-            Part->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
+            Part->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation();
         const FVector PrimaryChild =
             SkeletalMeshComponent->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
-        return PartRoot.Equals(PrimaryRoot, 0.1) && PartChild.Equals(PrimaryChild, 0.1);
+        return PartRoot.Equals(FVector(5, 0, 0), 0.1) && PartRoot.Equals(PrimaryRoot, 0.1)
+            && PartChild.Equals(FVector(5, 8, 0), 0.1) && !PartChild.Equals(PrimaryChild, 0.1);
     });
-    TestTrue(TEXT("body, head, and face bones move the part with the Primary"), bPartFollowsTheStreamedPose);
+    TestTrue(TEXT("part-only ClothTip moves independently while the common root agrees"), bPartFollowsTheStreamedPose);
 
     // The transient test world tick does not drive skeletal animation, so each
     // component is animated explicitly. Live Link curves are the observable
@@ -6647,6 +6672,31 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
             }
         }
     };
+    int32 SkinVertexIndex = INDEX_NONE;
+    float ClothWeight = 0;
+    const auto& SkinLOD = Head->GetResourceForRendering()->LODRenderData[0];
+    for (const auto& Section : SkinLOD.RenderSections)
+    {
+        for (uint32 Vertex = Section.BaseVertexIndex; Vertex < Section.BaseVertexIndex + Section.NumVertices; ++Vertex)
+        {
+            float Weight = 0;
+            for (uint32 Influence = 0; Influence < SkinLOD.SkinWeightVertexBuffer.GetMaxBoneInfluences(); ++Influence)
+            {
+                const uint16 Value = SkinLOD.SkinWeightVertexBuffer.GetBoneWeight(Vertex, Influence);
+                if (Value && Section.BoneMap[SkinLOD.SkinWeightVertexBuffer.GetBoneIndex(Vertex, Influence)] == 1)
+                { Weight += float(Value) / 65535.0f; }
+            }
+            if (Weight > ClothWeight) { ClothWeight = Weight; SkinVertexIndex = Vertex; }
+        }
+    }
+    TestTrue(TEXT("the fixture has a surface weighted to ClothTip"), SkinVertexIndex != INDEX_NONE);
+    auto SkinVertex = [&]()
+    {
+        auto& LOD = Head->GetResourceForRendering()->LODRenderData[0];
+        return USkinnedMeshComponent::GetSkinnedVertexPosition(
+            PartComponents[0], FMath::Max(0, SkinVertexIndex), LOD, LOD.SkinWeightVertexBuffer);
+    };
+    const FVector3f LiveVertex = SkinVertex();
     float PartOnlyValue = 0.0f;
     const bool bPartOwnMorphApplied = PollUntil([&]()
     {
@@ -6717,7 +6767,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("cached playback entry, upload, and end are sent"),
         SendText(TEXT("{\"type\":\"cache_enter\"}"))
         && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":11,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
-        && SendText(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.5,0.25,0.0]}"))
+        && SendText(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,12,0,0,0,0,1,1,1,1]],\"curves\":[0.5,0.25,0.0]}"))
         && SendText(TEXT("{\"type\":\"cache_end\"}")));
     Payload.Reset();
     TestTrue(TEXT("cached upload reaches ready"), Client && ReceivePacket(
@@ -6738,6 +6788,10 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("a captured frame drives the Primary and its parts together"),
         bPartsFollowCachedPlayback);
+    TestTrue(TEXT("cached ClothTip pose is consumed by the part"),
+        PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(7, 12, 0), 0.1));
+    TestTrue(TEXT("the part's skinned surface follows its independent bone in cached playback"),
+        (SkinVertex() - LiveVertex).Equals(FVector3f(2, 4 * ClothWeight, 0), 0.1f));
     // Playback must finish before the session accepts a clear.
     FString PlaybackOutcome;
     const bool bPlaybackCompleted = PollUntil([&]()
@@ -6759,7 +6813,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("cleared outcome received"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
     const TArray<uint8> ResumedFrame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[13,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[13,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,16,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
     TestTrue(TEXT("resumed live frame is sent"), Client
         && SendBytes(*Client, ResumedFrame.GetData(), ResumedFrame.Num()));
     const bool bPartFollowsLivePreviewAgain = PollUntil([&]()
@@ -6772,6 +6826,32 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("returning to live preview drives the part again"),
         bPartFollowsLivePreviewAgain);
+
+    TestTrue(TEXT("resumed real-time ClothTip uses the same mapping"),
+        PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(13, 16, 0), 0.1));
+
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("animation disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Primary, *Actor);
+    TestTrue(TEXT("Model test establishes garment readiness from Primary only"),
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor)
+        && FMtoUPreviewReadinessTestAccess::Commit(*Actor, Generated, false, TEXT("test garment"), FString(), {0}));
+    Client = ConnectLoopback(*SocketSubsystem, Port);
+    const auto ModelInit = Packet(Init.Replace(TEXT("animation"), TEXT("model")));
+    TestTrue(TEXT("extended character reconnects in Model workflow"), Client
+        && SendBytes(*Client, ModelInit.GetData(), ModelInit.Num())
+        && ReceivePacket(*Client, Payload, [&]() { Source->Update(); })
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("model pose is sent"), Client && SendBytes(*Client, Frame.GetData(), Frame.Num()));
+    TestTrue(TEXT("Model part-only bone animates beside the generated garment"), PollUntil([&]()
+    {
+        PumpCharacter();
+        return Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(5, 8, 0), 0.1)
+            && SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World).GetLocation().Equals(FVector(5, 0, 0), 0.1);
+    }));
+    TestTrue(TEXT("Model keeps the Primary skeleton on its generated garment"),
+        Generated->GetRefSkeleton().FindBoneIndex(TEXT("ClothTip")) == INDEX_NONE);
 
     // A part edit made through a real editor transaction must terminate the
     // running session before the new composition can be displayed, so frames
@@ -7361,6 +7441,97 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneNegotiationTest,
+    "MtoULiveLink.Negotiation.RequiredBones",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneNegotiationTest::RunTest(const FString& Parameters)
+{
+    FMtoUCharacterDescription Maya;
+    Maya.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0}, {TEXT("unused"), 0},
+        {TEXT("cloth"), 0}, {TEXT("tip"), 3}};
+    FMtoUTargetDescription Target;
+    Target.bAllowUnusedSourceBones = true;
+    Target.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0}, {TEXT("cloth"), 0}, {TEXT("tip"), 2}};
+    Target.BoneOwners = {TEXT("Body, Coat"), TEXT("Body"), TEXT("Coat (ancestor)"), TEXT("Coat")};
+    auto Result = FMtoUConnectionNegotiator::Negotiate(Maya, Target);
+    TestTrue(TEXT("required union accepts interleaved unused source branches"), Result.bUsable);
+    TestTrue(TEXT("source projection identifies the actual cloth motion"),
+        Result.TargetBoneIndices == TArray<int32>({0, 1, -1, 2, 3}));
+    auto Missing = Maya;
+    Missing.Bones.SetNum(3);
+    Result = FMtoUConnectionNegotiator::Negotiate(Missing, Target);
+    TestFalse(TEXT("missing required branch rejects"), Result.bUsable);
+    TestTrue(TEXT("missing and unreached dependencies name their owner"),
+        Result.ExtraBones.Contains(TEXT("cloth (required by Coat (ancestor))"))
+        && Result.UnreachedUnrealBones.Contains(TEXT("tip (required by Coat)")));
+    auto WrongParent = Maya;
+    WrongParent.Bones[4].ParentIndex = 1;
+    TestFalse(TEXT("required bone under wrong parent rejects"), FMtoUConnectionNegotiator::Negotiate(WrongParent, Target).bUsable);
+    // An unused duplicate on another matched branch is harmless, whichever is first.
+    Maya.Bones.Insert({TEXT("tip"), 1}, 2);
+    Maya.Bones[5].ParentIndex = 4;
+    TestTrue(TEXT("an unused earlier duplicate cannot reject a required later branch"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones[3].Name = TEXT("tip1");
+    TestTrue(TEXT("numeric mapping retains counts from the complete Maya snapshot"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones[3].Name = TEXT("tip_0123456789abcdef0123456789abcdef");
+    TestTrue(TEXT("hash mapping remains parent-scoped on a subset"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones.Add({TEXT("tip2"), 2});
+    TestFalse(TEXT("subset negotiation cannot guess between suffix candidates"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneLODTest,
+    "MtoULiveLink.Negotiation.RequiredBoneLODs",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneLODTest::RunTest(const FString& Parameters)
+{
+    USkeletalMesh* Base = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture mesh loads"), Base)) { return false; }
+    auto* Binding = NewObject<UMtoULiveLinkBinding>();
+    Binding->SkeletalMesh = DuplicateObject<USkeletalMesh>(Base, Binding);
+    auto* Coat = DuplicateObject<USkeletalMesh>(Base, Binding);
+    FReferenceSkeleton Ref = Coat->GetRefSkeleton();
+    const int32 ParentIndex = Ref.GetNum();
+    {
+        FReferenceSkeletonModifier Modifier(Ref, nullptr);
+        Modifier.Add(FMeshBoneInfo(TEXT("CoatParent"), TEXT("CoatParent"), 0), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("CoatTip"), TEXT("CoatTip"), ParentIndex), FTransform(FVector(0, 5, 0)));
+    }
+    Coat->SetRefSkeleton(Ref);
+    auto* LOD = new FSkeletalMeshLODRenderData();
+    auto& Section = LOD->RenderSections.AddDefaulted_GetRef();
+    Section.BaseVertexIndex = 0; Section.NumVertices = 1;
+    Section.BoneMap.Add(ParentIndex + 1);
+    TArray<FSkinWeightInfo> Weights;
+    Weights.AddZeroed(); Weights[0].InfluenceWeights[0] = 65535;
+    LOD->SkinWeightVertexBuffer.SetNeedsCPUAccess(true);
+    LOD->SkinWeightVertexBuffer = Weights;
+    Coat->GetResourceForRendering()->LODRenderData.Add(LOD);
+    AddCharacterPart(*Binding, TEXT("Coat"), Coat);
+    auto Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("a bone used only in LOD1 and its unweighted ancestor join the target"),
+        Composition.IsUsable() && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatTip")) != INDEX_NONE
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatParent")) != INDEX_NONE);
+    Binding->AdditionalParts[0].bEnabled = false;
+    Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("disabled LOD dependencies leave the target"), Composition.IsUsable()
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatTip")) == INDEX_NONE);
+    Binding->AdditionalParts[0].bEnabled = true;
+    Section.BoneMap[0] = 65000;
+    Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestFalse(TEXT("invalid positive skin indices fail closed"), Composition.IsUsable());
+    TestTrue(TEXT("the malformed LOD identifies the part and LOD"), Composition.Diagnostics.Contains(TEXT("Coat"))
+        && Composition.Diagnostics.Contains(TEXT("LOD 1")));
+    Section.BoneMap[0] = ParentIndex + 1;
+    LOD->SkinWeightVertexBuffer.CleanUp();
+    TestFalse(TEXT("unreadable skinning data fails closed"), FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartCompatibilityTest,
     "MtoULiveLink.Negotiation.CharacterPartCompatibility",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -7423,8 +7594,8 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
-    // The Maya description always matches the Primary Driver, so every failure
-    // below can only come from the Additional Parts of the composition.
+    // The Maya description matches the required Primary bones, so a part-only
+    // extra bone cannot be the reason for any failure below.
     const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
     const FString Init = FString::Printf(
         TEXT("{\"type\":\"init\",\"revision\":13,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
@@ -7484,8 +7655,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
         && Reply.Contains(OtherSkeleton->GetName()));
     PartMesh->SetSkeleton(Primary->GetSkeleton());
 
-    // An extra bone the Primary Driver does not have can never be driven, so it
-    // is a hard incompatibility naming the offending bone.
+    // Unweighted exported branches do not create a character dependency.
     const FReferenceSkeleton OriginalPartSkeleton = PartMesh->GetRefSkeleton();
     FReferenceSkeleton ExtraBoneSkeleton = OriginalPartSkeleton;
     {
@@ -7497,14 +7667,13 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     }
     PartMesh->SetRefSkeleton(ExtraBoneSkeleton);
     Actor->NotifyCharacterPartsChanged();
-    TestTrue(TEXT("a bone absent from the Primary Driver is refused by bone name"),
+    TestTrue(TEXT("an unused bone absent from the Primary does not block negotiation"),
         NegotiateCurrentBinding(Reply)
-        && Reply.Contains(TEXT("SKELETON_MISMATCH"))
-        && Reply.Contains(TEXT("ExtraHeadBone")));
+        && Reply.Contains(TEXT("\"type\":\"ready\"")));
     PartMesh->SetRefSkeleton(OriginalPartSkeleton);
 
-    // Shared bones must agree in reference pose, because the streamed pose is
-    // computed against the Primary Driver's reference pose.
+    // Shared required bones must agree in reference pose, because the streamed
+    // pose is computed against the character's own reference pose.
     FReferenceSkeleton ShiftedSkeleton = OriginalPartSkeleton;
     const int32 ShiftedBoneIndex = ShiftedSkeleton.GetRawRefBonePose().Num() - 1;
     const FTransform ShiftedOriginal =
@@ -7560,8 +7729,23 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     {
         auto& Palette = PartRenderData->LODRenderData.Last().RenderSections[0].BoneMap;
         Palette.Add(static_cast<FBoneIndexType>(UnusedIndex));
+        TestTrue(TEXT("a zero-weight palette entry does not create a dependency"),
+            FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        auto& Weights = PartRenderData->LODRenderData.Last().SkinWeightVertexBuffer;
+        auto& PrimaryLOD = Primary->GetResourceForRendering()->LODRenderData.Last();
+        auto& PrimaryPalette = PrimaryLOD.RenderSections[0].BoneMap;
+        const uint32 Vertex = PartRenderData->LODRenderData.Last().RenderSections[0].BaseVertexIndex;
+        const uint32 OldBone = Weights.GetBoneIndex(Vertex, 0);
+        const uint32 PrimaryVertex = PrimaryLOD.RenderSections[0].BaseVertexIndex;
+        const uint32 PrimaryOldBone = PrimaryLOD.SkinWeightVertexBuffer.GetBoneIndex(PrimaryVertex, 0);
+        PrimaryPalette.Add(static_cast<FBoneIndexType>(UnusedIndex));
+        Weights.SetBoneIndex(Vertex, 0, Palette.Num() - 1);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryPalette.Num() - 1);
         TestFalse(TEXT("a conflicting influence in the last LOD still rejects the part"),
             FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Weights.SetBoneIndex(Vertex, 0, OldBone);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryOldBone);
+        PrimaryPalette.Pop();
         Palette.Pop();
         // A non-weighted parent is relevant when one of its descendants skins.
         FReferenceSkeleton WithChild = ExtendedPart;
@@ -7577,8 +7761,14 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
         Primary->SetRefSkeleton(PrimaryWithChild);
         PartMesh->SetRefSkeleton(WithChild);
         Palette.Add(static_cast<FBoneIndexType>(UnusedIndex + 1));
+        PrimaryPalette.Add(static_cast<FBoneIndexType>(UnusedIndex + 1));
+        Weights.SetBoneIndex(Vertex, 0, Palette.Num() - 1);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryPalette.Num() - 1);
         TestFalse(TEXT("unweighted ancestor of a skinning bone remains checked"),
             FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Weights.SetBoneIndex(Vertex, 0, OldBone);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryOldBone);
+        PrimaryPalette.Pop();
         Palette.Pop();
     }
     FReferenceSkeleton ParentOrderPrimary;
@@ -7597,8 +7787,16 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     }
     Primary->SetRefSkeleton(ParentOrderPrimary);
     PartMesh->SetRefSkeleton(ParentOrderPart);
+    auto& PrimaryPalette = Primary->GetResourceForRendering()->LODRenderData[0].RenderSections[0].BoneMap;
+    auto& PartPalette = PartMesh->GetResourceForRendering()->LODRenderData[0].RenderSections[0].BoneMap;
+    const auto SavedPrimaryPalette = PrimaryPalette;
+    const auto SavedPartPalette = PartPalette;
+    for (auto& Bone : PrimaryPalette) { Bone = 3; }
+    for (auto& Bone : PartPalette) { Bone = 3; }
     TestFalse(TEXT("equal parent indices cannot conceal different parent names"),
         FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    PrimaryPalette = SavedPrimaryPalette;
+    PartPalette = SavedPartPalette;
     Primary->SetRefSkeleton(OriginalPrimarySkeleton);
     PartMesh->SetRefSkeleton(OriginalPartSkeleton);
     // A Binding without a Primary Driver has no character at all.
@@ -7898,9 +8096,55 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     {
         return false;
     }
-    UMtoULiveLinkBinding* Original = LoadObject<UMtoULiveLinkBinding>(
-        nullptr, *FixtureObject->GetStringField(TEXT("binding")));
-    TestNotNull(TEXT("production Binding loads"), Original);
+    bool bSynthetic = false;
+    FixtureObject->TryGetBoolField(TEXT("synthetic_secondary_bones"), bSynthetic);
+    UMtoULiveLinkBinding* Original = nullptr;
+    if (bSynthetic)
+    {
+        Original = NewObject<UMtoULiveLinkBinding>();
+        auto* Base = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+        if (!TestNotNull(TEXT("synthetic cube loads"), Base)) { return false; }
+        auto* Skeleton = DuplicateObject<USkeleton>(Base->GetSkeleton(), Original);
+        Original->SkeletalMesh = DuplicateObject<USkeletalMesh>(Base, Original);
+        Original->SkeletalMesh->SetSkeleton(Skeleton);
+        auto* Head = DuplicateObject<USkeletalMesh>(Base, Original);
+        Head->SetSkeleton(Skeleton);
+        FReferenceSkeleton HeadRef = Base->GetRefSkeleton();
+        {
+            FReferenceSkeletonModifier Modifier(HeadRef, nullptr);
+            Modifier.Add(FMeshBoneInfo(TEXT("UnusedExport"), TEXT("UnusedExport"), 0), FTransform::Identity);
+        }
+        Head->SetRefSkeleton(HeadRef);
+        Head->CalculateInvRefMatrices();
+        auto* Coat = DuplicateObject<USkeletalMesh>(Base, Original);
+        Coat->SetSkeleton(Skeleton);
+        FReferenceSkeleton CoatRef;
+        {
+            FReferenceSkeletonModifier Modifier(CoatRef, nullptr);
+            Modifier.Add(Base->GetRefSkeleton().GetRefBoneInfo()[0], Base->GetRefSkeleton().GetRefBonePose()[0]);
+            Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), Base->GetRefSkeleton().GetRefBonePose()[1]);
+        }
+        Coat->SetRefSkeleton(CoatRef);
+        Coat->CalculateInvRefMatrices();
+        Skeleton->MergeAllBonesToBoneTree(Coat);
+        AddUniformMorph(*Head, TEXT("HeadOnly"), FVector3f(0, 1, 0));
+        AddUniformMorph(*Original->SkeletalMesh, TEXT("Shared"), FVector3f(1, 0, 0));
+        AddUniformMorph(*Coat, TEXT("Shared"), FVector3f(1, 0, 0));
+        AddCharacterPart(*Original, TEXT("Head"), Head);
+        AddCharacterPart(*Original, TEXT("Coat"), Coat);
+        const auto Composition = FMtoUCharacterComposition::Resolve(Original);
+        TestTrue(TEXT("synthetic composition resolves"), Composition.IsUsable());
+        TArray<TSharedPtr<FJsonValue>> Bones;
+        auto Reader = TJsonReaderFactory<>::Create(TEXT("[") + ReferenceSkeletonBonesJson(Composition.RequiredSkeleton) + TEXT("]"));
+        FJsonSerializer::Deserialize(Reader, Bones);
+        FixtureObject->SetArrayField(TEXT("synthetic_bones"), Bones);
+        FixtureObject->SetStringField(TEXT("root"), TEXT("|Group|") + Composition.RequiredSkeleton.GetBoneName(0).ToString());
+    }
+    else
+    {
+        Original = LoadObject<UMtoULiveLinkBinding>(nullptr, *FixtureObject->GetStringField(TEXT("binding")));
+    }
+    TestNotNull(TEXT("character Binding loads"), Original);
     if (!Original || !Original->SkeletalMesh)
     {
         return false;
@@ -8044,9 +8288,12 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         return Result.IsValid() && Result->TryGetStringField(TEXT("phase"), Phase)
             && (Phase == TEXT("loaded") || Phase == TEXT("failed"));
     }, 600.0);
-    TestTrue(TEXT("Maya peer loads the production scene"), bPeerLoaded);
-    if (!bPeerLoaded)
+    const auto LoadedResult = ReadResult();
+    const bool bLoadedWithoutError = bPeerLoaded && LoadedResult.IsValid() && !LoadedResult->HasField(TEXT("error"));
+    TestTrue(TEXT("Maya peer loads the character"), bLoadedWithoutError);
+    if (!bLoadedWithoutError)
     {
+        if (LoadedResult.IsValid() && LoadedResult->HasField(TEXT("error"))) { AddError(LoadedResult->GetStringField(TEXT("error"))); }
         FPlatformProcess::TerminateProc(Process, true);
         FPlatformProcess::CloseProc(Process);
         Source->StopListener();
@@ -8161,9 +8408,7 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
                     {
                         for (const uint16 Bone : Section.BoneMap)
                         {
-                            const int32 SkeletonBone = LOD.RequiredBones.IsValidIndex(Bone)
-                                ? static_cast<int32>(LOD.RequiredBones[Bone])
-                                : INDEX_NONE;
+                            const int32 SkeletonBone = Bone < PartSkeleton.GetNum() ? Bone : INDEX_NONE;
                             for (int32 Index = SkeletonBone; Index != INDEX_NONE;
                                  Index = PartSkeleton.GetParentIndex(Index))
                             {

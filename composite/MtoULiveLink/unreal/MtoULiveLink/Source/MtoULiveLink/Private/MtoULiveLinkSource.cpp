@@ -95,26 +95,6 @@ bool SendPacket(FSocket& Socket, const TArray<uint8>& Packet, const TAtomic<bool
     return Offset == Packet.Num();
 }
 
-FMtoUTargetDescription DescribeTarget(const USkeletalMesh& Mesh)
-{
-    const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-    FMtoUTargetDescription Target;
-    Target.Bones.Reserve(Skeleton.GetNum());
-    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
-    {
-        Target.Bones.Add({Skeleton.GetBoneName(Index), Skeleton.GetParentIndex(Index)});
-    }
-    Target.MorphTargetNames.Reserve(Mesh.GetMorphTargets().Num());
-    for (const TObjectPtr<UMorphTarget>& MorphTarget : Mesh.GetMorphTargets())
-    {
-        if (MorphTarget)
-        {
-            Target.MorphTargetNames.Add(MorphTarget->GetFName());
-        }
-    }
-    return Target;
-}
-
 bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
 {
     if (Actor.HasAnyFlags(RF_ClassDefaultObject) || !IsValid(&Actor))
@@ -242,6 +222,7 @@ void FMtoULiveLinkSource::Update()
             SourceBindLocalPose.Reset();
             TargetRefLocalPose.Reset();
             BoneParents.Reset();
+            SourceBoneIndices.Reset();
             AcceptedCurveIndices.Reset();
             AcceptedCurveNames.Reset();
             // The transient cache and its upload/play identity history are
@@ -1033,9 +1014,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
             Details);
         return;
     }
-    // The composed character is resolved once per connection: the Primary
-    // Driver defines the skeleton baseline, and every enabled Additional Part
-    // must map onto it before any pose can be published.
+    // Freeze the required skeleton of every enabled mesh for this session.
     const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
     if (!Composition.IsUsable())
     {
@@ -1047,7 +1026,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         EnqueueErrorOnGameThread(
             Composition.FailureCategory,
             Composition.FailureCategory == FMtoUCompositionFailures::SkeletonMismatch
-                ? TEXT("An enabled Additional Part does not match the Primary Driver Skeletal Mesh.")
+                ? TEXT("The character has incompatible required skeletal dependencies.")
                 : InvalidBindingMessage,
             Details);
         return;
@@ -1077,7 +1056,18 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     // Either way the streamed library is the composed character's Morph Targets,
     // so a name that only some meshes own still reaches the meshes that have it.
     USkeletalMesh* Mesh = bModelWorkflow ? Readiness.GeneratedPreview : DriverMesh;
-    FMtoUTargetDescription Target = DescribeTarget(*Mesh);
+    FMtoUTargetDescription Target;
+    Target.bAllowUnusedSourceBones = true;
+    Target.BoneOwners = Composition.BoneOwners;
+    const FReferenceSkeleton& Required = Composition.RequiredSkeleton;
+    for (int32 Index = 0; Index < Required.GetNum(); ++Index)
+    {
+        Target.Bones.Add({Required.GetBoneName(Index), Required.GetParentIndex(Index)});
+    }
+    for (const TObjectPtr<UMorphTarget>& Morph : Mesh->GetMorphTargets())
+    {
+        if (Morph) { Target.MorphTargetNames.AddUnique(Morph->GetFName()); }
+    }
     Composition.AppendMorphNames(Target.MorphTargetNames);
     const int32 TargetMorphCount = Target.MorphTargetNames.Num();
 
@@ -1194,14 +1184,19 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     ExpectedCurveCount = Message.Curves.Num();
     NegotiatedRevision = Message.Revision;
     CacheSession.BeginSession({ExpectedBoneCount, ExpectedCurveCount, NegotiatedRevision});
-    SourceBindLocalPose = Message.SourceBindLocalPose;
-    TargetRefLocalPose.Reset(ExpectedBoneCount);
-    BoneParents.Reset(ExpectedBoneCount);
-    const TArray<FTransform>& RefBonePose = Mesh->GetRefSkeleton().GetRefBonePose();
-    for (int32 Index = 0; Index < ExpectedBoneCount; ++Index)
+    SourceBoneIndices.Init(INDEX_NONE, Required.GetNum());
+    for (int32 MayaIndex = 0; MayaIndex < Outcome.TargetBoneIndices.Num(); ++MayaIndex)
     {
-        TargetRefLocalPose.Add(RefBonePose[Outcome.TargetBoneIndices[Index]]);
-        BoneParents.Add(Message.Bones[Index].ParentIndex);
+        const int32 TargetIndex = Outcome.TargetBoneIndices[MayaIndex];
+        if (TargetIndex != INDEX_NONE) { SourceBoneIndices[TargetIndex] = MayaIndex; }
+    }
+    SourceBindLocalPose.Reset(Required.GetNum());
+    TargetRefLocalPose = Required.GetRefBonePose();
+    BoneParents.Reset(Required.GetNum());
+    for (int32 Index = 0; Index < Required.GetNum(); ++Index)
+    {
+        SourceBindLocalPose.Add(Message.SourceBindLocalPose[SourceBoneIndices[Index]]);
+        BoneParents.Add(Required.GetParentIndex(Index));
     }
     // A bone-only session streams no Morph values at all. StaticData, the
     // ready reply, and the per-frame accepted indices must all agree on the
@@ -1213,10 +1208,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     AcceptedCurveNames = bBoneOnlySession
         ? TArray<FName>()
         : Outcome.AcceptedCurveNames;
-    for (int32 Index = 0; Index < Message.Bones.Num(); ++Index)
-    {
-        Message.Bones[Index].Name = Outcome.PublishBoneNames[Index];
-    }
+    Message.Bones = Target.Bones;
     if (bModelWorkflow)
     {
         Actor->ShowGeneratedPreview(bBoneOnlySession);
@@ -1409,10 +1401,14 @@ bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Fram
     {
         return false;
     }
+    FMtoUFrameMessage RequiredFrame;
+    RequiredFrame.Curves = Frame.Curves;
+    RequiredFrame.Transforms.Reserve(SourceBoneIndices.Num());
+    for (int32 SourceIndex : SourceBoneIndices) { RequiredFrame.Transforms.Add(Frame.Transforms[SourceIndex]); }
     FLiveLinkFrameDataStruct FrameData;
     FString RetargetError;
     if (!FMtoUProtocol::MakeRetargetedFrameData(
-            Frame,
+            RequiredFrame,
             AcceptedCurveIndices,
             SourceBindLocalPose,
             TargetRefLocalPose,

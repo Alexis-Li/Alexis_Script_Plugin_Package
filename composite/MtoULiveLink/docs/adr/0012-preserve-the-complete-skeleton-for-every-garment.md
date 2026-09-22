@@ -1,20 +1,22 @@
 # Preserve the complete skeleton for every garment
 
-Every Driver Skeletal Mesh used by Model preview retains the same full
-deformation hierarchy sent by the existing Maya character capture, including
-auxiliary bones not weighted by the currently selected outfit. The complete
-hierarchy comprises every joint under the selected Maya root plus the
-intermediate `transform` nodes that connect joints (for example `joints_grp`
-between `spine_02` and the head branch); branches without joints are not part
-of the published skeleton. MtoU_LiveLink
-does not derive an outfit-specific bone subset or relax its exact hierarchy
-negotiation, because that would change Live Link transform order and the
-implemented Animation preview contract. Changing the Maya Clothes selection
-disconnects; the user selects the corresponding single-outfit Driver (the
-full-character mesh or a garment-only mesh) and Preview assets in the same
-binding, refreshes the dirty actor, and reconnects. The Generated Preview
-Skeletal Mesh always carries this complete reference skeleton even though only
-the resolved garment surface participates in weight and Morph transfer.
+Revised by Issue #55: Maya capture still freezes every joint below the selected
+root and the intermediate transforms connecting joints. Branches without joints
+remain excluded. Unreal now negotiates the union of enabled meshes' positive
+skin influences across every LOD and their complete ancestors; the Primary need
+not contain other parts' secondary branches. Non-required exported branches do
+not block connection. Each required bone must map uniquely under an already
+mapped parent using the existing exact/numeric/hash rules.
+
+The wire snapshot and cached frames remain complete (protocol v6 unchanged).
+Unreal freezes a source-index projection, target reference pose and target
+hierarchy for the session. Both live and cached frames use that projection
+before component-space bind/current conversion and publication to one subject.
+Each part evaluates that subject against its own mesh. The Generated Preview
+retains the Primary reference skeleton and uses only Primary garment data; the
+original Driver can therefore continue following that Generated Preview.
+Composition edits and reimports terminate the session before mappings or cached
+frames can be reused. Changing the Maya Clothes selection still disconnects.
 
 Complete skeletons can include auxiliary joints with tiny non-zero scales
 (such as pupil joints at `1e-12`). These nodes remain in the hierarchy. Pose

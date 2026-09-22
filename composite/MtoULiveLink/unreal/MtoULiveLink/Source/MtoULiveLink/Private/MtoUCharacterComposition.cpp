@@ -6,17 +6,17 @@
 #include "Engine/SkeletalMesh.h"
 #include "ReferenceSkeleton.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkinWeightVertexBuffer.h"
 
 namespace
 {
-// A part's reference pose must agree with the Primary Driver closely enough
-// that the streamed Primary-relative pose deforms both meshes identically. The
-// translation and scale tolerance is relative to the Primary's reference-pose
-// extent, so the same rule holds for a character rig measured in any unit.
+// A required bone's reference pose must agree with the pose already owned by
+// the character's union closely enough that the streamed union-relative pose
+// deforms every mesh identically. The translation and scale tolerance is
+// relative to the union's reference-pose extent, so the same rule holds for a
+// character rig measured in any unit.
 constexpr double ReferencePoseRelativeTolerance = 1.e-3;
 constexpr double ReferencePoseRotationToleranceDegrees = 1.0;
-// Bones named per problem category before the remainder is summarized.
-constexpr int32 MaxReportedBones = 8;
 
 FString ParentName(const FReferenceSkeleton& Skeleton, int32 Index)
 {
@@ -38,15 +38,6 @@ int32 ComponentSpacePoses(const FReferenceSkeleton& Skeleton, TArray<FTransform>
     return BoneCount;
 }
 
-FString JoinBones(const TArray<FString>& Bones)
-{
-    return Bones.Num() <= MaxReportedBones
-        ? FString::Join(Bones, TEXT(", "))
-        : FString::Printf(TEXT("%s, ... and %d more"),
-            *FString::Join(TArrayView<const FString>(Bones).Left(MaxReportedBones), TEXT(", ")),
-            Bones.Num() - MaxReportedBones);
-}
-
 FString ResolvePartLabel(const FMtoUCharacterPartResolution& Part, int32 PartNumber)
 {
     if (!Part.Name.IsEmpty())
@@ -58,162 +49,117 @@ FString ResolvePartLabel(const FMtoUCharacterPartResolution& Part, int32 PartNum
         : FString::Printf(TEXT("Additional Part %d"), PartNumber);
 }
 
-TSet<int32> DeformationBones(const USkeletalMesh& Mesh)
+bool DeformationBones(const USkeletalMesh& Mesh, TSet<int32>& Bones, FString& Problem)
 {
     const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
-    TSet<int32> Bones;
     const FSkeletalMeshRenderData* Data = Mesh.GetResourceForRendering();
-    if (Data)
+    if (!Data || Data->LODRenderData.IsEmpty())
     {
-        // Section palettes cover skinning influences, including all LODs.
-        // Ancestors matter even when they carry no vertex weights themselves.
-        for (const FSkeletalMeshLODRenderData& LOD : Data->LODRenderData)
+        Problem = TEXT("has no reliable skinning data; rebuild or reimport the Skeletal Mesh.");
+        return false;
+    }
+    for (int32 LODIndex = 0; LODIndex < Data->LODRenderData.Num(); ++LODIndex)
+    {
+        const FSkeletalMeshLODRenderData& LOD = Data->LODRenderData[LODIndex];
+        const FSkinWeightVertexBuffer& Weights = LOD.SkinWeightVertexBuffer;
+        if (!Weights.GetDataVertexBuffer()->GetWeightData() || LOD.RenderSections.IsEmpty())
         {
-            for (const FSkelMeshRenderSection& Section : LOD.RenderSections)
+            Problem = FString::Printf(TEXT("LOD %d has no readable skin weights; rebuild with CPU skin data available."), LODIndex);
+            return false;
+        }
+        for (const FSkelMeshRenderSection& Section : LOD.RenderSections)
+        {
+            if (uint64(Section.BaseVertexIndex) + Section.NumVertices > Weights.GetNumVertices())
             {
-                for (const FBoneIndexType Bone : Section.BoneMap)
+                Problem = FString::Printf(TEXT("LOD %d has invalid skin vertex ranges."), LODIndex);
+                return false;
+            }
+            for (uint32 Vertex = Section.BaseVertexIndex; Vertex < Section.BaseVertexIndex + Section.NumVertices; ++Vertex)
+            {
+                bool bWeighted = false;
+                for (uint32 Influence = 0; Influence < Weights.GetMaxBoneInfluences(); ++Influence)
                 {
-                    for (int32 Index = Bone; Index != INDEX_NONE
-                         && Index < Skeleton.GetNum(); Index = Skeleton.GetParentIndex(Index))
+                    if (Weights.GetBoneWeight(Vertex, Influence) == 0) { continue; }
+                    const uint32 PaletteIndex = Weights.GetBoneIndex(Vertex, Influence);
+                    if (!Section.BoneMap.IsValidIndex(PaletteIndex) || Section.BoneMap[PaletteIndex] >= Skeleton.GetNum())
                     {
-                        Bones.Add(Index);
+                        Problem = FString::Printf(TEXT("LOD %d has an invalid positive skin influence."), LODIndex);
+                        return false;
                     }
+                    bWeighted = true;
+                    for (int32 Bone = Section.BoneMap[PaletteIndex]; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
+                    {
+                        Bones.Add(Bone);
+                    }
+                }
+                if (!bWeighted)
+                {
+                    Problem = FString::Printf(TEXT("LOD %d has a vertex without positive skin weights."), LODIndex);
+                    return false;
                 }
             }
         }
     }
-    // Without usable skinning evidence, retain the conservative old check.
-    if (Bones.IsEmpty())
-    {
-        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index) { Bones.Add(Index); }
-    }
-    return Bones;
+    if (Bones.IsEmpty()) { Problem = TEXT("has no positive skin influences."); }
+    return !Bones.IsEmpty();
 }
 
-/**
- * The one compatibility rule for an enabled Additional Part. Returns true when
- * the part may join the character; otherwise OutProblem names the offending
- * part-level reason, and bOutSkeletonProblem records whether the reason is a
- * skeleton, bone-mapping, or reference-pose conflict.
- */
-bool ValidatePartAgainstPrimary(
-    const USkeletalMesh& Primary,
-    const USkeletalMesh& Part,
-    FString& OutProblem,
-    bool& bOutSkeletonProblem)
+bool MergeRequiredBones(FMtoUCharacterComposition& Composition, FMtoUCharacterPartResolution& Part)
 {
-    OutProblem.Reset();
-    bOutSkeletonProblem = false;
-
-    const FReferenceSkeleton& PrimarySkeleton = Primary.GetRefSkeleton();
-    const FReferenceSkeleton& PartSkeleton = Part.GetRefSkeleton();
-    if (PartSkeleton.GetNum() == 0)
-    {
-        OutProblem = TEXT("has an empty skeleton.");
-        bOutSkeletonProblem = true;
-        return false;
-    }
-    if (Part.GetSkeleton() != Primary.GetSkeleton())
-    {
-        OutProblem = FString::Printf(
-            TEXT("uses Skeleton asset '%s' instead of the Primary Driver Skeleton asset '%s'."),
-            Part.GetSkeleton() ? *Part.GetSkeleton()->GetName() : TEXT("<none>"),
-            Primary.GetSkeleton() ? *Primary.GetSkeleton()->GetName() : TEXT("<none>"));
-        bOutSkeletonProblem = true;
-        return false;
-    }
-
-    TArray<FTransform> PrimaryComponentPose;
-    ComponentSpacePoses(PrimarySkeleton, PrimaryComponentPose);
-    TArray<FTransform> PartComponentPose;
-    ComponentSpacePoses(PartSkeleton, PartComponentPose);
-
+    TSet<int32> Required;
+    if (!DeformationBones(*Part.Mesh, Required, Part.Problem)) { return false; }
+    const FReferenceSkeleton& Skeleton = Part.Mesh->GetRefSkeleton();
+    TArray<FTransform> Poses;
+    ComponentSpacePoses(Skeleton, Poses);
+    TArray<FTransform> UnionPoses;
+    ComponentSpacePoses(Composition.RequiredSkeleton, UnionPoses);
     double Extent = 1.0;
-    for (const FTransform& Pose : PrimaryComponentPose)
+    for (const FTransform& Pose : UnionPoses) { Extent = FMath::Max(Extent, Pose.GetTranslation().Size()); }
+    for (int32 Bone : Required) { Extent = FMath::Max(Extent, Poses[Bone].GetTranslation().Size()); }
+    FReferenceSkeletonModifier Modifier(Composition.RequiredSkeleton, nullptr);
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
     {
-        Extent = FMath::Max(Extent, Pose.GetTranslation().Size());
-    }
-    const double TranslationTolerance = Extent * ReferencePoseRelativeTolerance;
-
-    TArray<FString> ExtraBones;
-    TArray<FString> ParentMismatches;
-    TArray<FString> PoseConflicts;
-    const TSet<int32> PartDeformationBones = DeformationBones(Part);
-    for (int32 Index = 0; Index < PartSkeleton.GetNum(); ++Index)
-    {
-        const FName BoneName = PartSkeleton.GetBoneName(Index);
-        const int32 PrimaryIndex = PrimarySkeleton.FindBoneIndex(BoneName);
-        if (PrimaryIndex == INDEX_NONE)
+        if (!Required.Contains(Index)) { continue; }
+        const FName Name = Skeleton.GetBoneName(Index);
+        const int32 Parent = Skeleton.GetParentIndex(Index);
+        const int32 UnionParent = Parent == INDEX_NONE ? INDEX_NONE
+            : Composition.RequiredSkeleton.FindRawBoneIndex(Skeleton.GetBoneName(Parent));
+        const int32 Existing = Composition.RequiredSkeleton.FindRawBoneIndex(Name);
+        if (Existing != INDEX_NONE)
         {
-            ExtraBones.Add(BoneName.ToString());
-            continue;
+            if (Composition.RequiredSkeleton.GetRawParentIndex(Existing) != UnionParent)
+            {
+                Part.Problem = FString::Printf(TEXT("required bone '%s' has parent '%s', conflicting with %s."),
+                    *Name.ToString(), *ParentName(Skeleton, Parent), *Composition.BoneOwners[Existing]);
+                return false;
+            }
+            const FTransform& A = Poses[Index];
+            const FTransform& B = UnionPoses[Existing];
+            if ((A.GetTranslation() - B.GetTranslation()).Size() > Extent * ReferencePoseRelativeTolerance
+                || FMath::RadiansToDegrees(A.GetRotation().AngularDistance(B.GetRotation())) > ReferencePoseRotationToleranceDegrees
+                || (A.GetScale3D() - B.GetScale3D()).GetAbsMax() / FMath::Max(1.0, B.GetScale3D().GetAbsMax()) > ReferencePoseRelativeTolerance)
+            {
+                Part.Problem = FString::Printf(TEXT("required bone '%s' reference pose or import space conflicts with %s."),
+                    *Name.ToString(), *Composition.BoneOwners[Existing]);
+                return false;
+            }
+            Composition.BoneOwners[Existing] += TEXT(", ") + Part.Name;
         }
-        const int32 PartParent = PartSkeleton.GetParentIndex(Index);
-        const int32 PrimaryParent = PrimarySkeleton.GetParentIndex(PrimaryIndex);
-        const bool bSameParent = (PartParent == INDEX_NONE && PrimaryParent == INDEX_NONE)
-            || (PartParent != INDEX_NONE && PrimaryParent != INDEX_NONE
-                && PartSkeleton.GetBoneName(PartParent) == PrimarySkeleton.GetBoneName(PrimaryParent));
-        if (!bSameParent)
+        else
         {
-            ParentMismatches.Add(FString::Printf(TEXT("%s (parent %s instead of %s)"),
-                *BoneName.ToString(),
-                *ParentName(PartSkeleton, PartParent),
-                *ParentName(PrimarySkeleton, PrimaryParent)));
-            continue;
+            if (Parent == INDEX_NONE && Composition.RequiredSkeleton.GetRawBoneNum() != 0)
+            {
+                Part.Problem = FString::Printf(TEXT("required root '%s' differs from the character root."), *Name.ToString());
+                return false;
+            }
+            Modifier.Add(FMeshBoneInfo(Name, Name.ToString(), UnionParent), Skeleton.GetRefBonePose()[Index]);
+            UnionPoses.Add(Poses[Index]);
+            Composition.BoneOwners.Add(Part.Name);
         }
-
-        // Exported complete hierarchies also carry unrelated garment/hair
-        // branches. Their bind poses cannot deform this part and must not
-        // prevent its display. Name/parent validation above remains strict.
-        if (!PartDeformationBones.Contains(Index)) { continue; }
-        const FTransform& PartPose = PartComponentPose[Index];
-        const FTransform& PrimaryPose = PrimaryComponentPose[PrimaryIndex];
-        const double TranslationDelta =
-            (PartPose.GetTranslation() - PrimaryPose.GetTranslation()).Size();
-        const double RotationDeltaDegrees = FMath::RadiansToDegrees(
-            PartPose.GetRotation().AngularDistance(PrimaryPose.GetRotation()));
-        const FVector PartScale = PartPose.GetScale3D();
-        const FVector PrimaryScale = PrimaryPose.GetScale3D();
-        const double ScaleDelta = (PartScale - PrimaryScale).GetAbsMax()
-            / FMath::Max(1.0, PrimaryScale.GetAbsMax());
-        if (TranslationDelta <= TranslationTolerance
-            && RotationDeltaDegrees <= ReferencePoseRotationToleranceDegrees
-            && ScaleDelta <= ReferencePoseRelativeTolerance)
-        {
-            continue;
-        }
-        PoseConflicts.Add(FString::Printf(
-            TEXT("%s (translation %.3f, rotation %.2f deg, scale %.4f)"),
-            *BoneName.ToString(), TranslationDelta, RotationDeltaDegrees, ScaleDelta));
     }
-
-    TArray<FString> Reasons;
-    if (!ExtraBones.IsEmpty())
-    {
-        Reasons.Add(FString::Printf(
-            TEXT("adds bones that are absent from the Primary Driver Skeletal Mesh: %s"),
-            *JoinBones(ExtraBones)));
-    }
-    if (!ParentMismatches.IsEmpty())
-    {
-        Reasons.Add(FString::Printf(
-            TEXT("maps bones under a different parent than the Primary Driver: %s"),
-            *JoinBones(ParentMismatches)));
-    }
-    if (!PoseConflicts.IsEmpty())
-    {
-        Reasons.Add(FString::Printf(
-            TEXT("reference pose or import space differs from the Primary Driver: %s"),
-            *JoinBones(PoseConflicts)));
-    }
-    if (Reasons.IsEmpty())
-    {
-        return true;
-    }
-    OutProblem = FString::Join(Reasons, TEXT("; "));
-    bOutSkeletonProblem = true;
-    return false;
+    return true;
 }
+
 }
 
 void FMtoUCharacterComposition::AppendMorphNames(TArray<FName>& InOut) const
@@ -283,10 +229,32 @@ FMtoUCharacterComposition FMtoUCharacterComposition::Resolve(const UMtoULiveLink
         }
     }
 
+    // Canonical processing order makes list reordering inert, including union pose ownership.
+    TArray<int32> Order;
+    for (int32 Index = 1; Index < Composition.Parts.Num(); ++Index) { Order.Add(Index); }
+    Order.Sort([&](int32 A, int32 B) { return Composition.Parts[A].PartId < Composition.Parts[B].PartId; });
+    Order.Insert(0, 0);
+    bool bSkeletonProblem = false;
+    for (int32 Index : Order)
+    {
+        auto& Part = Composition.Parts[Index];
+        if (!Part.bEnabled || !Part.Problem.IsEmpty() || !Composition.Parts[0].Mesh) { continue; }
+        if (!Part.bPrimary && !Part.PartId.IsValid())
+        {
+            Part.Problem = TEXT("has no stable identity; re-save the Binding asset.");
+            continue;
+        }
+        if (!Part.Mesh->GetSkeleton() || Part.Mesh->GetSkeleton() != Composition.Parts[0].Mesh->GetSkeleton())
+        {
+            Part.Problem = FString::Printf(TEXT("uses Skeleton asset '%s' instead of the Primary Driver Skeleton asset."),
+                Part.Mesh->GetSkeleton() ? *Part.Mesh->GetSkeleton()->GetName() : TEXT("<none>"));
+            bSkeletonProblem = true;
+        }
+        else if (!MergeRequiredBones(Composition, Part)) { bSkeletonProblem = true; }
+    }
     const FMtoUCharacterPartResolution& Primary = Composition.Parts[0];
     const bool bCharacterPresent = Primary.Mesh != nullptr;
     bool bUsable = Primary.Problem.IsEmpty();
-    bool bSkeletonProblem = false;
     TArray<FString> Diagnostics;
     TArray<FString> Summary;
     Summary.Add(FString::Printf(TEXT("Primary: %s"),
@@ -303,19 +271,6 @@ FMtoUCharacterComposition FMtoUCharacterComposition::Resolve(const UMtoULiveLink
         FMtoUCharacterPartResolution& Part = Composition.Parts[Index];
         // A disabled part is not part of the character: it is neither validated
         // nor displayed, so an incomplete part stays harmless while parked.
-        if (Part.bEnabled && Part.Problem.IsEmpty() && bUsable)
-        {
-            bool bPartSkeletonProblem = false;
-            if (!Part.PartId.IsValid())
-            {
-                Part.Problem = TEXT("has no stable identity; re-save the Binding asset.");
-            }
-            else if (!ValidatePartAgainstPrimary(
-                *Primary.Mesh, *Part.Mesh, Part.Problem, bPartSkeletonProblem))
-            {
-                bSkeletonProblem |= bPartSkeletonProblem;
-            }
-        }
         if (!Part.Problem.IsEmpty())
         {
             bUsable = false;

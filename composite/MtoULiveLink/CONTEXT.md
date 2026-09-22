@@ -62,9 +62,8 @@ The formally bound Skeletal Mesh that supplies its reference skeleton, source
 skin weights, and Morph Target library. It is either the production
 full-character mesh containing body, face, hair, and exactly one current
 outfit, or a garment-only mesh; it never aggregates several outfit variants.
-Every Driver retains the same complete deformation hierarchy. Within a
-character composition it is the Primary Driver: the single skeleton baseline
-and the only source of garment Preview data.
+Within a character composition it is the Primary Driver and the only source
+of garment Preview data. It need not contain another part's secondary bones.
 _Avoid_: Source mesh, final mesh, binding mesh
 
 **Character composition**:
@@ -77,13 +76,14 @@ _Avoid_: Multi-character setup, mesh list, attachment list
 **Additional Part**:
 One Skeletal Mesh of the character composition beside the Primary Driver, with
 a display name, a Skeletal Mesh, and an enabled state. An enabled part shares
-the Primary Driver's Skeleton asset, maps every bone it contains onto the
-Primary by name and parent path, and matches the Primary's reference pose for
-the bones in its skinning palettes across all LODs and their ancestors; it may
-use fewer bones and different geometry, and a bone the
-Primary does not have is a blocking incompatibility. A disabled part takes part
-in neither negotiation nor display, and parts never contribute to garment
-resolution, weight transfer, or Preview Morph transfer.
+the Primary Driver's Skeleton asset. Positive skin influences across every LOD
+and their complete ancestor chains define its required bones. The composition
+merges these requirements deterministically; shared names must have compatible
+parent paths and component-space reference poses. Unique required branches
+receive the same session's Maya motion independently on each part. Unused
+branches impose no dependency. A disabled part participates in neither
+negotiation nor display. Parts never contribute to garment resolution, weight
+transfer, or Preview Morph transfer.
 _Avoid_: Sub-mesh, attachment, extra mesh, garment part
 
 **Driver garment surface**:

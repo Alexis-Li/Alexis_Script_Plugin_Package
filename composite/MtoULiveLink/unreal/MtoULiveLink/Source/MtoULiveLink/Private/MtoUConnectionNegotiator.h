@@ -19,6 +19,9 @@ struct FMtoUTargetDescription
 {
     TArray<FMtoUDescriptionBone> Bones;
     TArray<FName> MorphTargetNames;
+    /** Composition targets require every target bone, but allow unused Maya branches. */
+    bool bAllowUnusedSourceBones = false;
+    TArray<FString> BoneOwners;
 };
 
 /**
@@ -46,7 +49,7 @@ struct FMtoUNegotiationFailure
 struct FMtoUNegotiationOutcome
 {
     bool bUsable = false;
-    TArray<FName> PublishBoneNames;
+    /** Target bone each published Maya bone maps to, by complete Maya snapshot index. */
     TArray<int32> TargetBoneIndices;
     TArray<FString> BoneNameMappings;
     TArray<int32> AcceptedCurveIndices;

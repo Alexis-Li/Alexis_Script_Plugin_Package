@@ -135,7 +135,6 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     const FMtoUTargetDescription& Target)
 {
     FMtoUNegotiationOutcome Outcome;
-    Outcome.PublishBoneNames.SetNum(Character.Bones.Num());
     Outcome.TargetBoneIndices.Init(INDEX_NONE, Character.Bones.Num());
 
     TMap<FName, int32> MayaNameCounts;
@@ -148,6 +147,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     MayaToUnreal.Init(INDEX_NONE, Character.Bones.Num());
     TArray<bool> bMayaMappingFailed;
     bMayaMappingFailed.Init(false, Character.Bones.Num());
+    TSet<int32> SkippedMaya;
     TSet<int32> UsedUnreal;
     TSet<int32> AccountedUnreal;
     int32 FirstFailureIndex = INDEX_NONE;
@@ -157,6 +157,11 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     for (int32 MayaIndex = 0; MayaIndex < Character.Bones.Num(); ++MayaIndex)
     {
         const FMtoUDescriptionBone& MayaBone = Character.Bones[MayaIndex];
+        if (SkippedMaya.Contains(MayaBone.ParentIndex))
+        {
+            SkippedMaya.Add(MayaIndex);
+            continue;
+        }
         if (MayaBone.ParentIndex != INDEX_NONE && bMayaMappingFailed[MayaBone.ParentIndex])
         {
             bMayaMappingFailed[MayaIndex] = true;
@@ -209,7 +214,6 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
             MayaToUnreal[MayaIndex] = UnrealIndex;
             UsedUnreal.Add(UnrealIndex);
             AccountedUnreal.Add(UnrealIndex);
-            Outcome.PublishBoneNames[MayaIndex] = Target.Bones[UnrealIndex].Name;
             Outcome.TargetBoneIndices[MayaIndex] = UnrealIndex;
             if (Target.Bones[UnrealIndex].Name != MayaBone.Name)
             {
@@ -222,6 +226,20 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
             continue;
         }
 
+        if (Target.bAllowUnusedSourceBones && Candidates.IsEmpty())
+        {
+            // A duplicate on an unused branch must not steal or reject a
+            // required name that a later Maya branch can map correctly.
+            for (int32 WrongParent : WrongParentExact)
+            {
+                Outcome.ParentMismatches.Add(FString::Printf(TEXT("%s: Maya=%s, Unreal=%s"),
+                    *BonePath(Character.Bones, MayaIndex),
+                    *ParentName(Character.Bones, MayaBone.ParentIndex),
+                    *ParentName(Target.Bones, Target.Bones[WrongParent].ParentIndex)));
+            }
+            SkippedMaya.Add(MayaIndex);
+            continue;
+        }
         bMayaMappingFailed[MayaIndex] = true;
         FString FailureReason;
         if (Candidates.Num() > 1)
@@ -287,11 +305,13 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
         const int32 ParentIndex = Target.Bones[UnrealIndex].ParentIndex;
         if (ParentIndex != INDEX_NONE && !UsedUnreal.Contains(ParentIndex))
         {
-            Outcome.UnreachedUnrealBones.Add(Target.Bones[UnrealIndex].Name.ToString());
+            Outcome.UnreachedUnrealBones.Add(Target.Bones[UnrealIndex].Name.ToString()
+                + (Target.BoneOwners.IsValidIndex(UnrealIndex) ? TEXT(" (required by ") + Target.BoneOwners[UnrealIndex] + TEXT(")") : FString()));
         }
         else
         {
-            Outcome.ExtraBones.Add(Target.Bones[UnrealIndex].Name.ToString());
+            Outcome.ExtraBones.Add(Target.Bones[UnrealIndex].Name.ToString()
+                + (Target.BoneOwners.IsValidIndex(UnrealIndex) ? TEXT(" (required by ") + Target.BoneOwners[UnrealIndex] + TEXT(")") : FString()));
         }
     }
 
@@ -366,6 +386,11 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
         Outcome.FirstFailure = MoveTemp(Failure);
     }
 
+    if (Target.bAllowUnusedSourceBones && UsedUnreal.Num() == Target.Bones.Num()
+        && Outcome.MappingAmbiguities.IsEmpty())
+    {
+        Outcome.ParentMismatches.Reset();
+    }
     Outcome.MissingBones.Sort();
     Outcome.ExtraBones.Sort();
     Outcome.UnreachedUnrealBones.Sort();
@@ -379,12 +404,11 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
         && Outcome.ParentMismatches.IsEmpty()
         && Outcome.MappingAmbiguities.IsEmpty()
         && Outcome.DescendantsBlockedByParent.IsEmpty()
-        && UsedUnreal.Num() == Character.Bones.Num()
+        && (Target.bAllowUnusedSourceBones || UsedUnreal.Num() == Character.Bones.Num())
         && UsedUnreal.Num() == Target.Bones.Num();
     if (!Outcome.bUsable)
     {
         Outcome.FailureCategory = TEXT("SKELETON_MISMATCH");
-        Outcome.PublishBoneNames.Reset();
         Outcome.TargetBoneIndices.Reset();
         Outcome.BoneNameMappings.Reset();
         return Outcome;

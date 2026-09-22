@@ -10,9 +10,11 @@ class UStaticMesh;
 /**
  * One additional character part of a Binding: a Skeletal Mesh displayed beside
  * the Primary Driver under the same character, streaming session, and Live Link
- * subject. An enabled part must share the Primary's Skeleton, and every bone it
- * contains must map by name and parent path onto the Primary with a compatible
- * reference pose. A disabled part takes part in neither negotiation nor display.
+ * subject. An enabled part must share the Primary's Skeleton; its positive skin
+ * influences across every LOD and their ancestors must map by name and parent
+ * path with a compatible reference pose. Bones outside that set are ignored, so
+ * an unrelated exported branch never blocks the part. A disabled part takes
+ * part in neither negotiation nor display.
  */
 USTRUCT(BlueprintType)
 struct MTOULIVELINK_API FMtoUCharacterPart
@@ -49,10 +51,10 @@ class MTOULIVELINK_API UMtoULiveLinkBinding : public UDataAsset
 
 public:
     /**
-     * The Primary Driver Skeletal Mesh of the character. It carries the
-     * complete deformation hierarchy, supplies the only garment Preview data,
-     * and defines the skeleton baseline every enabled Additional Part must map
-     * onto.
+     * The Primary Driver Skeletal Mesh of the character. It supplies the only
+     * garment Preview data, and its reference pose is the one shared required
+     * bones must agree with; enabled Additional Parts join it with their own
+     * required bones instead of mapping every exported bone onto it.
      */
     UPROPERTY(EditAnywhere, Category = "MtoU_LiveLink",
         meta = (DisplayName = "Primary Driver Skeletal Mesh"))
@@ -80,7 +82,7 @@ public:
      */
     UPROPERTY(EditAnywhere, Category = "MtoU_LiveLink",
         meta = (DisplayName = "Additional Parts", TitleProperty = "PartName",
-            Tooltip = "Additional Skeletal Meshes of the same character, for example a separated Head. Every enabled part must share the Primary Driver Skeleton, map its bones by name and parent path onto the Primary, and match the Primary reference pose for those bones. Body, face, and BlendShape preview keep working through the Primary, so a part never changes garment resolution, weight transfer, or Preview Morph transfer."))
+            Tooltip = "Additional Skeletal Meshes of the same character, for example a separated Head or a garment with its own secondary bones. Every enabled part must share the Primary Driver Skeleton; the bones it skins and their ancestors must map by name and parent path with a compatible reference pose, while unrelated exported branches are ignored. Disabled parts add no requirement. Body, face, and BlendShape preview keep working through the Primary, so a part never changes garment resolution, weight transfer, or Preview Morph transfer."))
     TArray<FMtoUCharacterPart> AdditionalParts;
 
     virtual void PostLoad() override;

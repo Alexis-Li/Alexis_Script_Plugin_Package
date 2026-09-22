@@ -164,6 +164,7 @@ private:
     TArray<FTransform> SourceBindLocalPose;
     TArray<FTransform> TargetRefLocalPose;
     TArray<int32> BoneParents;
+    TArray<int32> SourceBoneIndices;
     TArray<int32> AcceptedCurveIndices;
     TArray<FName> AcceptedCurveNames;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;

@@ -304,9 +304,8 @@ void AMtoULiveLinkActor::SetModelDiagnostics(
 
 void AMtoULiveLinkActor::NotifyBindingInputsChanged()
 {
-    // Primary Driver and Preview inputs are the Preview revision, but they are
-    // also the composition baseline every Additional Part is validated
-    // against, so the resolved composition is republished here too.
+    // Primary Driver and Preview inputs are the Preview revision, but they also
+    // change which parts resolve, so the composition is republished here too.
     SyncCharacterComposition();
     MtoURequestStreamingSessionEnd();
     RebindInputNotifications();

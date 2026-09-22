@@ -59,13 +59,11 @@ Omit `-Apply` to check the paths and preview the installation first.
 
 ## Prepare your character
 
-- Use a Maya deformation skeleton that matches the Unreal **Primary Driver
-  Skeletal Mesh**, including bone names and parent relationships. Intermediate
-  groups between joints also participate in matching. A short name that exists
-  in several Maya branches may still connect when the Unreal import renamed the
-  duplicate with a numeric or 32-digit hash suffix below the same parent; the
-  connection reports every such mapping. The plugin does not retarget; update
-  the Unreal asset after adding or removing bones in Maya.
+- Maya must contain the bones that deform the enabled Unreal meshes and their
+  complete ancestor chains, including intermediate groups. Names and parent
+  relationships must match. Duplicated Maya short names may map to imported
+  numeric or 32-digit hash suffixes under the same parent; the connection reports
+  those mappings. Unused exported branches do not prevent connection.
 - For garment preview, prepare a **Preview Static Mesh** aligned with the
   Primary Driver garment. Keep garment and non-garment geometry in separate
   imported material slots.
@@ -74,20 +72,21 @@ Omit `-Apply` to check the paths and preview the installation first.
 
 ### Separate character parts
 
-When one character is delivered as several Skeletal Meshes, assign the mesh with
-the complete deformation hierarchy as the Primary Driver and add the others
-under **Additional Parts** on the Binding. All enabled parts then pose and
-display as one character under one connection:
+When one character is delivered as several Skeletal Meshes, assign the garment
+source as the Primary Driver and add the other meshes under **Additional Parts**
+on the Binding. All enabled parts pose and display under one connection:
 
-- The Primary Driver alone defines the skeleton baseline and supplies garment
-  resolution, weight transfer, and **Preview Morph transfer**. Body, face, and
-  BlendShape preview keep working through it.
-- Give each part a name, its Skeletal Mesh, and an **Enabled** flag. A part must
-  share the Primary Driver's **Skeleton** asset, map its bones by name and
-  parent path onto the Primary, and match its reference pose for the bones that
-  deform the part and their ancestors across all LODs. A part may use fewer
-  bones and different geometry; a bone the Primary
-  does not have is rejected with the part and bone name.
+- Only the Primary Driver supplies garment resolution, weight transfer, and
+  **Preview Morph transfer**.
+- Give each part a name, its Skeletal Mesh, and an **Enabled** flag. All meshes
+  must share one **Skeleton** asset. Shared bones needed for skinning across
+  any LOD, including their ancestors, must agree in hierarchy and reference pose.
+  A part's own secondary bones receive Maya animation even when the Primary
+  does not contain them. Disabled parts add no bone requirements.
+- After adding clothing and secondary bones, import the new clothing, update
+  the enabled parts, and reconnect. Update older meshes only if their own bind
+  pose or weights changed. A missing required Maya bone or an incompatible
+  shared bone blocks connection and names the affected part and bone.
 - A Morph Target that only a part owns still streams, and a name owned by
   several parts receives the same value on each of them.
 - Adding, removing, enabling, disabling, or replacing a part ends the current
@@ -147,7 +146,7 @@ mesh display. Configure lighting and shadow settings on **SkeletalMeshComponent*
 | Problem | What to do |
 | --- | --- |
 | Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
-| An Additional Part is rejected | The diagnostics name the part and the reason. Check that it shares the Primary Driver **Skeleton** asset, that its reported bones exist in the Primary under the same parent, and that its reference pose matches. |
+| An Additional Part is rejected | The diagnostics name the part and the reason. Check the shared **Skeleton** asset, the reported required bones and their parent chains in Maya, and the shared reference poses. If skin weights cannot be read, rebuild or reimport the mesh with CPU skin data available. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |
 | BlendShapes do not appear | Check **Transfer BS**, matching names, the selected outfit, and the connection diagnostics. Refresh the Model preview after changing its source assets. |

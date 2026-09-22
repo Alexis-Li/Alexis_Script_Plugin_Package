@@ -17,9 +17,11 @@ and [ADR 0002](../../../composite/MtoULiveLink/docs/adr/0002-end-streaming-when-
 The acceptance fixes establish three durable boundaries:
 
 - Reference-pose checks use every LOD's skinning palettes and ancestor chains.
-  Unrelated unweighted branches do not reject Head/Hair; names, parent paths,
-  shared Skeleton, and the prohibition on extra bones remain strict. Missing
-  usable skinning evidence falls back to checking the complete reference pose.
+  This historical #45 gate retained strict names/parents, shared Skeleton and
+  rejected extra bones, with a full-pose fallback for missing evidence. Issue
+  #55 reopens that rule: current composition uses positive influences and
+  ancestors, supports required part-only branches and refuses unreadable skin
+  data. The #45 measurements below do not certify the expanded #55 behavior.
 - Saved-level PostLoad restores intent only. Component registration, mesh
   assignment, and animation initialization resume afterwards. Disabling Post
   Process evaluation alone cannot prevent Blueprint initialization during load.
