@@ -101,20 +101,27 @@ on the Binding. All enabled parts pose and display under one connection:
 1. In Unreal, create an **MtoU_LiveLink Binding** asset, assign its
    **Primary Driver Skeletal Mesh**, and add any **Additional Parts**.
 2. Drag the Binding asset from the Content Browser into the level to create
-   its Binding Actor. Use the **MtoU** section in Details for plugin controls.
-   Its **Character parts** row lists the resolved composition and reports any
-   part that cannot join the character.
+   its Binding Actor. Use the **MtoU** section in Details for plugin controls:
+   **Display source** names the mesh currently shown, **Connection** names the
+   live state, and **Next step** names the recovery action. **MtoU Diagnostics**
+   stays collapsed until you need part, preview, or Model details.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Check the detected Display controller, outfit,
-   scene frame rate, and transmission cap.
+   scene frame rate, and transmission cap. The status row names the display
+   source and the next-step row names what to do.
 4. Select **Animation** (动画) and click **Connect** (连接). Pose, scrub, or play
-   in Maya to preview the result in Unreal.
+   in Maya to preview the result in Unreal. A disabled button carries its
+   reason as a tooltip; repeat warnings for the same session appear once while
+   new errors still interrupt and full diagnostics stay available.
 
 ## Animation preview
 
 Use **Animation** for real-time character preview. For a captured animation
 range, set the Maya playback range, choose **Cached Playback** (缓存播放), and click
 **Capture and Play** (捕获并回放). Playback starts after capture and upload finish.
+Cache actions live in their own collapsible group; the Maya status row
+distinguishes capturing, uploading, replaying, completed on the last frame,
+stopped with the cache retained, and failed states.
 
 A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
 that limit. Capture or upload failures return to real-time preview and show the
@@ -123,23 +130,13 @@ reason. If playback fails, you can retry the retained cache or leave cached mode
 ## Garment model preview
 
 1. On the Unreal Binding, assign the garment **Preview Static Mesh**.
-2. Click **Refresh Preview** on the Binding Actor and check the result.
+2. Click **Refresh Preview** on the Binding Actor and check **Preview readiness**
+   (Ready, Warning, Error, Dirty, Building, None) plus the result.
    **Modified parts** lists the material slots replaced by the preview;
    the rest of the Driver character remains visible.
 3. In Maya, select **Model** (模型), confirm the outfit and **Transfer BS**
    setting, then click **Connect**.
 4. Pose the character in Maya to inspect garment deformation in Unreal.
-
-Keep **Transfer BS** enabled when evaluating the model. Turning it off provides
-bone-only diagnostics and does not validate BlendShape deformation. Garments
-with no BlendShapes can be previewed normally with bone-driven deformation.
-
-Inspect any yellow **Warning** before accepting the result. An **Error** blocks
-Model connection until **Refresh Preview** succeeds. Refresh can take several
-seconds on larger meshes; wait for it to finish.
-
-Use **Delete Preview** to remove the generated preview and restore the Driver
-mesh display. Configure lighting and shadow settings on **SkeletalMeshComponent**.
 
 ## Common problems
 

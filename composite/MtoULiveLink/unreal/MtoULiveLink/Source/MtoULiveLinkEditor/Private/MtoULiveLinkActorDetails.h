@@ -19,4 +19,12 @@ public:
      * Named so automation executes the same code the button invokes.
      */
     static FReply HandleRefreshPreviewClicked(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+
+#if WITH_DEV_AUTOMATION_TESTS
+    /** Test-only readers over the same actor state the Details rows render. */
+    static FText TestDisplaySourceText(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+    static FText TestConnectionText(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+    static FText TestNextStepText(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+    static FText TestReadinessText(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+#endif
 };

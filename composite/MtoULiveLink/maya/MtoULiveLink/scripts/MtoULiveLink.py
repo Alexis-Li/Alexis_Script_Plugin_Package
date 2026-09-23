@@ -3962,6 +3962,11 @@ class _Controller(object):
         self._bone_text = None
         self._curve_text = None
         self._status_text = None
+        self._next_text = None
+        self._connect_button = None
+        self._disconnect_button = None
+        self._cache_section = None
+        self._shown_warning_signatures = set()
         self._warning_checkbox = None
         self._duplicate_button = None
 
@@ -3969,9 +3974,13 @@ class _Controller(object):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
                     sizeable=False, width=430, resizeToFitChildren=True)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnAttach=("both", 10))
-        cmds.text(label="", height=6)
+        cmds.text(label="1 · 角色设置（Maya 制作侧）", align="left", font="boldLabelFont")
         self._light = cmds.text(label="●  未连接", align="left",
                                 backgroundColor=(0.55, 0.08, 0.08), height=28)
+        self._status_text = cmds.text(label="状态：未设置角色", align="left", wordWrap=True,
+                                      height=38)
+        self._next_text = cmds.text(label="下一步：选择根骨骼后点击“设置角色”。",
+                                    align="left", wordWrap=True)
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
                        columnAttach2=("both", "both"))
         self._animation_workflow_button = cmds.button(
@@ -3995,12 +4004,20 @@ class _Controller(object):
         self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
         cmds.setParent("..")
         cmds.setParent("..")
+        cmds.button(label="设置角色（请先选择根骨骼）", command=lambda *_: self.set_role())
+        cmds.button(
+            label="手动选择 Display 控制器",
+            command=lambda *_: self.set_display_controller())
+        self._duplicate_button = cmds.button(
+            label="选中重名骨骼（0）", enable=False,
+            command=lambda *_: self.select_duplicate_bones())
         self._playback_cap = load_playback_cap()
         self._playback_cap_menu = cmds.optionMenu(
             label="播放传输上限", changeCommand=self._on_playback_cap_changed)
         for choice in PLAYBACK_CAP_CHOICES:
             cmds.menuItem(label=choice)
         cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
+        cmds.text(label="2 · 预览方式与连接", align="left", font="boldLabelFont")
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(205, 205),
                        columnAttach2=("both", "both"))
         self._realtime_mode_button = cmds.button(
@@ -4013,6 +4030,17 @@ class _Controller(object):
             command=lambda *_: self._on_mode_changed(CACHED_MODE))
         cmds.setParent("..")
         self._cache_text = cmds.text(label="缓存：无", align="left", wordWrap=True)
+        self._bs_checkbox = cmds.checkBox(
+            label="传递 BS", value=True,
+            changeCommand=lambda *_: self._on_blendshapes_toggled())
+        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1, columnWidth2=(200, 200))
+        self._connect_button = cmds.button(
+            label="连接", command=lambda *_: self.connect())
+        self._disconnect_button = cmds.button(
+            label="断开连接", command=lambda *_: self.disconnect())
+        cmds.setParent("..")
+        self._cache_section = cmds.frameLayout(label="缓存操作", collapsable=True, collapse=False)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
         cmds.rowLayout(numberOfColumns=4, columnWidth4=(103, 103, 102, 102),
                        columnAttach4=("both", "both", "both", "both"))
         self._capture_button = cmds.button(
@@ -4028,25 +4056,15 @@ class _Controller(object):
             label="取消捕获", enable=False,
             command=lambda *_: self._cancel_cached_capture())
         cmds.setParent("..")
-        cmds.button(label="设置角色（请先选择根骨骼）", command=lambda *_: self.set_role())
-        cmds.button(
-            label="手动选择 Display 控制器",
-            command=lambda *_: self.set_display_controller())
-        self._duplicate_button = cmds.button(
-            label="选中重名骨骼（0）", enable=False,
-            command=lambda *_: self.select_duplicate_bones())
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1, columnWidth2=(200, 200))
-        cmds.button(label="连接", command=lambda *_: self.connect())
-        cmds.button(label="断开连接", command=lambda *_: self.disconnect())
         cmds.setParent("..")
+        cmds.setParent("..")
+        cmds.frameLayout(label="高级 / 诊断", collapsable=True, collapse=True)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
         self._warning_checkbox = cmds.checkBox(
             label="连接成功后弹出差异警告", value=True)
-        self._bs_checkbox = cmds.checkBox(
-            label="传递 BS", value=True,
-            changeCommand=lambda *_: self._on_blendshapes_toggled())
         cmds.button(label="查看诊断详情", command=lambda *_: self.show_diagnostics())
-        self._status_text = cmds.text(label="状态：未设置角色", align="left", wordWrap=True,
-                                      height=38)
+        cmds.setParent("..")
+        cmds.setParent("..")
         self._refresh_fps()
         self._update_mode_controls()
         self._update_workflow_controls()
@@ -4088,6 +4106,34 @@ class _Controller(object):
             except (AttributeError, RuntimeError, TypeError):
                 pass
 
+    def _set_tooltip(self, control, tooltip):
+        if self._control_exists(control):
+            try:
+                cmds.control(control, edit=True, annotation=tooltip or "")
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
+    @staticmethod
+    def _disabled_reason(enabled, action):
+        if enabled:
+            return ""
+        reasons = {
+            "capture": "先连接 Unreal 并进入缓存播放，再捕获当前 Maya Playback Range。",
+            "replay": "需要 UE 已就绪的完整缓存；先捕获并等待上传完成。",
+            "stop": "仅在 UE 本地回放运行时可停止。",
+            "cancel": "仅在捕获过程中可取消。",
+        }
+        return reasons.get(action, "")
+
+    def _set_next(self, text):
+        self._set_text(self._next_text, "下一步：" + text)
+
+    def _warning_signature(self, warning):
+        missing_unreal = tuple(sorted(warning.get("missing_in_unreal") or ()))
+        missing_maya = tuple(sorted(warning.get("missing_in_maya") or ()))
+        remaps = tuple(sorted(warning.get("bone_name_remaps") or ()))
+        return (missing_unreal, missing_maya, remaps)
+
     def _session_ready(self):
         session = self._session
         if session is None:
@@ -4125,13 +4171,24 @@ class _Controller(object):
         can_stop = bool(view and view.can_stop)
         can_cancel = bool(view and view.can_cancel)
         can_leave = bool(view and view.can_leave)
+        connected = self._session_ready()
         self._set_enabled(self._playback_cap_menu, realtime and not can_cancel)
         self._set_enabled(self._capture_button, not realtime and can_capture)
         self._set_enabled(self._replay_button, not realtime and can_replay)
         self._set_enabled(self._stop_replay_button, not realtime and can_stop)
         self._set_enabled(self._cancel_capture_button, not realtime and can_cancel)
         self._set_enabled(self._realtime_mode_button, realtime or can_leave)
-        self._set_enabled(self._cached_mode_button, not can_cancel)
+        self._set_enabled(self._cached_mode_button, connected and not can_cancel)
+        self._set_enabled(self._connect_button, not connected)
+        self._set_enabled(self._disconnect_button, connected or self._scene is not None)
+        self._set_tooltip(
+            self._capture_button, self._disabled_reason(can_capture, "capture"))
+        self._set_tooltip(
+            self._replay_button, self._disabled_reason(can_replay, "replay"))
+        self._set_tooltip(
+            self._stop_replay_button, self._disabled_reason(can_stop, "stop"))
+        self._set_tooltip(
+            self._cancel_capture_button, self._disabled_reason(can_cancel, "cancel"))
         self._update_mode_selection()
 
     def _update_workflow_controls(self):
@@ -4144,6 +4201,11 @@ class _Controller(object):
                         self._cancel_capture_button):
             self._set_visible(control, animation)
         self._set_visible(self._bs_checkbox, not animation)
+        if self._cache_section and cmds is not None:
+            try:
+                cmds.frameLayout(self._cache_section, edit=True, visible=animation)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
 
     def _on_workflow_changed(self, workflow):
         if workflow == self._workflow or workflow not in WORKFLOWS:
@@ -4209,6 +4271,7 @@ class _Controller(object):
                 self._set_connected(
                     True,
                     "缓存播放模式：实时采样已暂停，Unreal 保留最近姿势；回放时显示缓存")
+                self._set_next("已进入缓存播放：点击“捕获并回放”，再到 UE 开始回放。")
             except _CachedPlaybackError as error:
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
@@ -4219,9 +4282,12 @@ class _Controller(object):
             self._mode = REALTIME_MODE
             if self._cached_playback is not None:
                 self._cached_playback.leave()
-            self._set_connected(
-                self._session_ready(),
-                "已连接" if self._session_ready() else "未连接")
+            if self._session_ready():
+                self._set_connected(True, "已连接：UE 显示实时姿势")
+                self._set_next("已返回实时预览：在 Maya 摆姿或播放以预览。")
+            else:
+                self._set_connected(False, "未连接")
+                self._set_next("已返回实时预览：连接后继续制作。")
         self._update_mode_controls()
 
     def _confirm_large_cache(self, estimated_size, total_frames):
@@ -4287,35 +4353,45 @@ class _Controller(object):
         if (view.state == _CachedPlayback.CAPTURING and view.total
                 and view.current == view.total):
             self._set_text(self._status_text, "状态：缓存完成，正在上传…")
+            self._set_next("等待上传完成；上传后到 UE 开始回放。")
         elif view.state == _CachedPlayback.CAPTURING and view.current == 0:
             self._set_text(self._status_text, "状态：正在捕获缓存…")
+            self._set_next("等待捕获完成；需要中断时点击“取消捕获”。")
         elif view.state == _CachedPlayback.CAPTURING:
             self._set_text(
                 self._status_text,
                 "状态：正在捕获缓存 {0}/{1}".format(view.current, view.total))
+            self._set_next("等待捕获完成；需要中断时点击“取消捕获”。")
         elif (view.state == _CachedPlayback.UPLOADING and view.total
               and view.current == view.total):
             self._set_connected(True, "缓存已上传，Unreal 正在本地回放")
+            self._set_next("上传完成：在 UE 观察回放；Maya 保持连接即可。")
         elif view.state == _CachedPlayback.UPLOADING and view.current == 0:
             self._set_text(self._status_text, "状态：正在上传缓存…")
+            self._set_next("等待上传完成；上传后到 UE 开始回放。")
         elif view.state == _CachedPlayback.UPLOADING:
             self._set_text(
                 self._status_text,
                 "状态：正在上传缓存 {0}/{1}".format(
                     view.current, view.total))
+            self._set_next("等待上传完成；上传后到 UE 开始回放。")
         elif view.state == _CachedPlayback.REPLAYING and view.current == 0:
             self._set_connected(
                 True, "缓存回放中：Unreal 按捕获帧率本地播放 {0}/{1}".format(
                     view.current, view.total))
+            self._set_next("回放中：在 UE 观察；结束或停止后可再次回放或返回实时。")
         elif view.state == _CachedPlayback.REPLAYING:
             self._set_text(
                 self._status_text,
                 "状态：缓存播放（仅显示已捕获缓存） {0}/{1}".format(
                     view.current, view.total))
+            self._set_next("回放中：在 UE 观察；结束或停止后可再次回放或返回实时。")
         elif view.state == _CachedPlayback.COMPLETED:
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
+            self._set_next("已停在最后一帧：可再次回放，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.STOPPED:
             self._set_connected(True, "缓存播放已停止，已保留缓存，可再次回放")
+            self._set_next("缓存已保留：可再次回放，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.FAILED:
             # A FAILED cached view always keeps the negotiated connection: the
             # capture/upload paths that resume Real-time Preview now render as
@@ -4323,6 +4399,7 @@ class _Controller(object):
             diagnostic = view.diagnostic or make_diagnostic("INTERNAL_ERROR")
             self._last_diagnostic = diagnostic
             self._set_connected(True, diagnostic["summary"])
+            self._set_next("查看诊断详情后重试，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.REALTIME and view.diagnostic:
             # A recoverable capture/upload/invalidation failure already resumed
             # Real-time Preview and cleared Unreal ownership; complete the same
@@ -4335,10 +4412,12 @@ class _Controller(object):
             self._set_connected(
                 self._session_ready(),
                 "{0}（已恢复实时预览）".format(diagnostic["summary"]))
+            self._set_next("已恢复实时预览：查看诊断详情后可重新捕获。")
         elif view.state == _CachedPlayback.DETACHED and view.diagnostic:
             diagnostic = view.diagnostic
             self._last_diagnostic = diagnostic
             self._set_connected(False, diagnostic["summary"])
+            self._set_next("连接已结束：检查 UE 后重新连接。")
         self._update_mode_controls()
 
     def _set_text(self, control, text):
@@ -4466,17 +4545,21 @@ class _Controller(object):
                     len(snapshot.duplicate_paths))
             status += _bind_conflict_status(snapshot)
             self._set_connected(False, status)
+            self._set_next("角色已设置：点击“连接”，在 UE 观察实时姿势。")
         except _CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":
                 self._pending_root = root
                 self._set_text(self._root_text, "角色根骨骼：" + root)
                 self._set_connected(False, error.message)
+                self._set_next("检测到多个服装属性：点击“手动选择 Display 控制器”。")
             else:
                 self._pending_root = None
                 self._set_connected(False, error.message)
+                self._set_next("角色设置失败：按提示修正后重新设置角色。")
             self._show_error(self._scene_diagnostic(error))
         except (RuntimeError, ValueError) as exc:
             self._set_connected(False, str(exc))
+            self._set_next("角色设置失败：选择根骨骼后重新设置角色。")
             code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
             self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
 
@@ -4508,15 +4591,12 @@ class _Controller(object):
             self._set_connected(False, status + _bind_conflict_status(snapshot))
         except _CharacterSceneError as error:
             self._show_error(self._scene_diagnostic(error))
-        except (RuntimeError, ValueError) as exc:
-            code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
-            self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
-
     def _on_character_scene_event(self, event):
         if event.kind == "character_change_started":
             self._discard_cached_playback()
             self._outfit_change_was_connected = self._session is not None
             self.disconnect(status="衣服正在切换，正在刷新角色…")
+            self._set_next("衣服切换中：等待刷新完成后再连接。")
             return
         if event.kind == "outfit_changed":
             self._render_snapshot(event.snapshot)
@@ -4524,8 +4604,10 @@ class _Controller(object):
                 status = (
                     "衣服已切换为 {0}。请在 UE 删除旧 Actor，放置新 Binding 后重新连接。"
                 ).format(event.snapshot.outfit)
+                self._set_next("衣服已切换：在 UE 放置新 Binding 后重新连接。")
             else:
                 status = "当前衣服已切换为 {0}。".format(event.snapshot.outfit)
+                self._set_next("衣服已切换：点击“连接”继续预览。")
             status += _bind_conflict_status(event.snapshot)
             self._outfit_change_was_connected = False
             self._set_connected(False, status)
@@ -4538,6 +4620,7 @@ class _Controller(object):
             self._scene = None
             self._pending_root = None
             self._clear_scene_text()
+            self._set_next("角色已失效：重新设置角色后再连接。")
             if was_connected:
                 diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
                 cmds.evalDeferred(lambda: self._show_error(diagnostic, session=True))
@@ -4585,7 +4668,9 @@ class _Controller(object):
         self._last_warning = {"missing_in_unreal": [], "missing_in_maya": [],
                               "bone_name_remaps": [],
                               "has_warning": False}
+        self._shown_warning_signatures = set()
         self._set_connected(False, "正在连接 Unreal…")
+        self._set_next("正在连接：在 UE 确认 Binding Actor 已放入关卡。")
         holder = {}
 
         def on_event(event):
@@ -4635,11 +4720,18 @@ class _Controller(object):
                 "missing_in_unreal": [], "missing_in_maya": [],
                 "bone_name_remaps": [], "has_warning": False}
             self._last_warning = warning
-            self._set_connected(
-                True, "已连接（有警告）" if warning["has_warning"] else "已连接")
+            if warning["has_warning"]:
+                self._set_connected(True, "已连接（有警告）：UE 显示实时姿势，请检查差异")
+                self._set_next("已连接并显示实时姿势：检查差异详情后继续制作。")
+            else:
+                self._set_connected(True, "已连接：UE 显示实时姿势")
+                self._set_next("已连接并显示实时姿势：在 Maya 摆姿或播放以预览。")
             if warning["has_warning"] \
                     and cmds.checkBox(self._warning_checkbox, query=True, value=True):
-                self._show_warning(warning)
+                signature = self._warning_signature(warning)
+                if signature not in self._shown_warning_signatures:
+                    self._shown_warning_signatures.add(signature)
+                    self._show_warning(warning)
             return
         cached_playback = self._cached_playback
         if cached_playback is not None:
@@ -4653,12 +4745,14 @@ class _Controller(object):
             if event.recapture_scene:
                 self._clear_scene(keep_capture=True)
             self._set_connected(False, diagnostic["summary"])
+            self._set_next("连接失败：查看诊断详情后重新连接。")
             self._show_error(diagnostic)
             return
         if event.kind == "stopped":
             status = self._pending_stop_status or "已断开连接"
             self._pending_stop_status = None
             self._set_connected(False, status)
+            self._set_next("已断开：检查角色与 UE 后可重新连接。")
 
     def _diagnostic_text(self, diagnostic=None):
         diagnostic = diagnostic or self._last_diagnostic
@@ -4768,8 +4862,10 @@ class _Controller(object):
         session = self._session
         if session is None:
             self._set_connected(False, status)
+            self._set_next("已断开：检查角色与 UE 后可重新连接。")
             return
         self._pending_stop_status = status
+        self._set_next("正在断开：等待连接结束后再重新连接。")
         session.stop()
 
     def _clear_scene_text(self):

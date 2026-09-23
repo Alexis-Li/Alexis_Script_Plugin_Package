@@ -47,6 +47,7 @@ public:
             LOCTEXT("MtoUSection", "MtoU"), 1000);
         MtoUSection->AddCategory("MtoU_LiveLink");
         MtoUSection->AddCategory("MtoU Preview");
+        MtoUSection->AddCategory("MtoU Diagnostics");
 
         AssetReimportHandle = GEditor->GetEditorSubsystem<UImportSubsystem>()
             ->OnAssetReimport.AddRaw(this, &FMtoULiveLinkEditorModule::HandleAssetReimport);

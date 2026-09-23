@@ -451,7 +451,7 @@ USkeletalMesh* MakeMorphDriver(UObject& Outer, bool bSplitMissingSurface = false
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSectionTest,
-    "MtoULiveLink.Editor.Details",
+    "MtoULiveLink.Editor.DetailsSection",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
@@ -459,7 +459,8 @@ bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
     (void)Parameters;
     FPropertyEditorModule& PropertyEditor =
         FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-    for (const FName Category : { FName("MtoU_LiveLink"), FName("MtoU Preview") })
+    for (const FName Category : { FName("MtoU_LiveLink"), FName("MtoU Preview"),
+        FName("MtoU Diagnostics") })
     {
         const TArray<TSharedPtr<FPropertySection>> Sections =
             PropertyEditor.FindSectionsForCategory(AMtoULiveLinkActor::StaticClass(), Category);
@@ -470,7 +471,6 @@ bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
                     && Section->GetOrder() == 1000;
             }));
     }
-
     for (const FName PropertyName : {
             FName("PreviewState"), FName("PreviewBuildStage"), FName("DisplayTarget"),
             FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel"),
@@ -480,6 +480,39 @@ bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
             AMtoULiveLinkActor::StaticClass(), PropertyName);
         TestTrue(FString::Printf(TEXT("%s stays out of the default property rows"), *PropertyName.ToString()),
             Property && !Property->HasAnyPropertyFlags(CPF_Edit));
+    }
+
+    UWorld* ReadoutWorld = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* ReadoutActor = ReadoutWorld
+        ? ReadoutWorld->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    TestNotNull(TEXT("Details readout actor is created"), ReadoutActor);
+    if (ReadoutActor)
+    {
+        ReadoutActor->ShowDriverMesh();
+        ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+        TestEqual(TEXT("Details names the Driver display source"),
+            FMtoULiveLinkActorDetails::TestDisplaySourceText(ReadoutActor).ToString(),
+            FString(TEXT("Driver (real-time Animation preview)")));
+        TestTrue(TEXT("Details names the disconnected next step"),
+            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
+                .Contains(TEXT("Disconnected")));
+        TestEqual(TEXT("Details names the unconfigured readiness"),
+            FMtoULiveLinkActorDetails::TestReadinessText(ReadoutActor).ToString(),
+            FString(TEXT("None: assign the Binding inputs, then Refresh Preview.")));
+        ReadoutActor->SetConnectionStatus(
+            TEXT("Connected: partial Morph coverage"));
+        TestTrue(TEXT("Details keeps the partial-coverage next step actionable"),
+            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
+                .Contains(TEXT("partial Morph coverage")));
+        ReadoutActor->SetConnectionStatus(
+            TEXT("Error: the Maya and Unreal skeletons do not match."));
+        TestTrue(TEXT("Details routes errors to the fix-and-reconnect step"),
+            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
+                .Contains(TEXT("reconnect in Maya")));
+    }
+    if (ReadoutWorld)
+    {
+        ReadoutWorld->DestroyWorld(false);
     }
     return true;
 }

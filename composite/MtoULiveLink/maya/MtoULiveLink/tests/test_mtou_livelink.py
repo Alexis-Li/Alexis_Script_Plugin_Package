@@ -3056,6 +3056,7 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertFalse(hasattr(controller, "_cached_cache"))
 
         controller._set_enabled = mock.Mock()
+        controller._set_tooltip = mock.Mock()
         controller._mode = MODULE.CACHED_MODE
         controller._capture_button = "capture"
         controller._replay_button = "replay"
@@ -3063,6 +3064,8 @@ class ControllerLifecycleTests(unittest.TestCase):
         controller._cancel_capture_button = "cancel"
         controller._realtime_mode_button = "realtime"
         controller._cached_mode_button = "cached"
+        controller._connect_button = "connect"
+        controller._disconnect_button = "disconnect"
         controller._playback_cap_menu = "cap"
         controller._cached_view = MODULE._CachedPlaybackView(
             MODULE._CachedPlayback.REPLAYING, can_capture=True, can_stop=True,
@@ -3076,6 +3079,39 @@ class ControllerLifecycleTests(unittest.TestCase):
         self.assertTrue(enabled["stop"])
         self.assertFalse(enabled["cancel"])
         self.assertTrue(enabled["realtime"])
+        tooltips = {recorded_call[0][0]: recorded_call[0][1]
+                    for recorded_call in controller._set_tooltip.call_args_list}
+        self.assertEqual("", tooltips["capture"])
+        self.assertNotEqual("", tooltips["replay"])
+        self.assertEqual("", tooltips["stop"])
+        self.assertNotEqual("", tooltips["cancel"])
+
+    def test_same_warning_signature_does_not_interrupt_twice(self):
+        controller = MODULE._Controller()
+        session = object()
+        controller._session = session
+        controller._workflow = MODULE.WORKFLOW_ANIMATION
+        controller._scene = object()
+        controller._cached_retention = None
+        controller._set_connected = mock.Mock()
+        controller._set_next = mock.Mock()
+        controller._on_cached_playback_view = mock.Mock()
+        controller._show_warning = mock.Mock()
+        cached = mock.Mock()
+        cached.view = MODULE._CachedPlaybackView(MODULE._CachedPlayback.REALTIME)
+        fake_cmds = mock.Mock()
+        fake_cmds.checkBox.return_value = True
+        warning = {"missing_in_unreal": ["Jaw"], "missing_in_maya": [],
+                   "bone_name_remaps": [], "has_warning": True}
+        event = MODULE._StreamingSessionEvent("ready", warning=warning)
+        with mock.patch.object(MODULE, "cmds", fake_cmds), \
+                mock.patch.object(MODULE, "_CachedPlayback", return_value=cached):
+            controller._on_streaming_session_event(session, event)
+            controller._on_streaming_session_event(session, event)
+        self.assertEqual(1, controller._show_warning.call_count)
+        self.assertIn("UE 显示实时姿势", controller._set_connected.call_args[0][1])
+        self.assertTrue(controller._set_next.called)
+
 
     def test_diagnostic_details_only_include_error_specific_information(self):
         snapshot = character_snapshot(
@@ -3451,13 +3487,11 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(state[controller._capture_button])
             self.assertTrue(state[controller._realtime_mode_button])
             self.assertFalse(state[controller._bs_checkbox])
-        self.assertFalse(model_visibility[controller._capture_button])
-        self.assertFalse(model_visibility[controller._replay_button])
-        self.assertFalse(model_visibility[controller._stop_replay_button])
-        self.assertFalse(model_visibility[controller._cancel_capture_button])
-        self.assertFalse(model_visibility[controller._cache_text])
+        # Cache actions live inside the collapsible cache section; the section
+        # folds while the individual buttons keep their previous visibility.
         self.assertFalse(model_visibility[controller._realtime_mode_button])
         self.assertFalse(model_visibility[controller._cached_mode_button])
+        self.assertFalse(model_visibility[controller._cache_text])
         self.assertTrue(model_visibility[controller._bs_checkbox])
 
     def test_switching_workflow_disconnects_and_clears_cached_playback(self):
