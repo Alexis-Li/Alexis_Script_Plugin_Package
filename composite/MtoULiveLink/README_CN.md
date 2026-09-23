@@ -57,7 +57,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 - Maya 必须包含启用网格实际蒙皮所需的骨骼及完整祖先链，包括骨骼之间的中间
   分组，名称与父子关系应一致。同一短名出现在多个 Maya 分支时，支持同一父级下
   的 Unreal 导入数字后缀或 32 位 hash 后缀，并报告映射。无关的导出骨骼分支
-  不会阻止连接。
+  不会阻止连接；但每根 Unreal 骨骼只由一根 Maya 骨骼驱动，若同一父级下有两根
+  Maya 骨骼发布同一名称，请在 Maya 中重命名其中一根。
 - 预览服装时，准备与 Primary Driver 服装位置对齐的 **Preview Static Mesh**。
   服装与身体等非服装几何体应使用不同的导入材质槽。
 - 预览 BlendShape 时，Maya BlendShape 与 Unreal Morph Target 需要名称匹配，
@@ -121,7 +122,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 
 | 问题 | 处理方法 |
 | --- | --- |
-| 骨架不匹配 | 先按详情中的根因排查：首个未映射骨骼的完整路径与父级、受阻的 Maya 后代与未访问的 Unreal 骨骼数量，以及提示的导入改名候选；再检查 Maya 选择的根骨骼、层级，以及 Unreal Driver 网格是否为最新版本。 |
+| 骨架不匹配 | 先按详情中的根因排查：首个未映射骨骼的完整路径与父级、受阻的 Maya 后代与未访问的 Unreal 骨骼数量，以及提示的导入改名候选；若详情指出同一必要骨骼由两根 Maya 骨骼竞争，请在 Maya 中重命名其中一根。再检查 Maya 选择的根骨骼、层级，以及 Unreal Driver 网格是否为最新版本。 |
 | 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查是否共用同一个 **Skeleton** 资产、Maya 中提示的必要骨骼及父链是否完整，以及共有参考姿势是否一致。若无法读取蒙皮权重，保留 CPU 蒙皮数据后重新构建或导入网格。 |
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |

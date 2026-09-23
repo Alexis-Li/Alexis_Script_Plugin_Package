@@ -63,7 +63,9 @@ Omit `-Apply` to check the paths and preview the installation first.
   complete ancestor chains, including intermediate groups. Names and parent
   relationships must match. Duplicated Maya short names may map to imported
   numeric or 32-digit hash suffixes under the same parent; the connection reports
-  those mappings. Unused exported branches do not prevent connection.
+  those mappings. Unused exported branches do not prevent connection, but one
+  Unreal bone is driven by exactly one Maya bone: rename a Maya bone when two of
+  them publish the same name under the same parent.
 - For garment preview, prepare a **Preview Static Mesh** aligned with the
   Primary Driver garment. Keep garment and non-garment geometry in separate
   imported material slots.
@@ -142,7 +144,7 @@ reason. If playback fails, you can retry the retained cache or leave cached mode
 
 | Problem | What to do |
 | --- | --- |
-| Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
+| Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. When the details report that one required bone is claimed by two Maya bones, rename one of them in Maya. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
 | An Additional Part is rejected | The diagnostics name the part and the reason. Check the shared **Skeleton** asset, the reported required bones and their parent chains in Maya, and the shared reference poses. If skin weights cannot be read, rebuild or reimport the mesh with CPU skin data available. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |

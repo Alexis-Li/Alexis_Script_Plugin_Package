@@ -406,7 +406,13 @@ already mapped parent: either the numeric suffix the engine appends, or the
 complete short name followed by `_` and exactly 32 hexadecimal digits. A
 partial original name, another separator, a different hash length, an
 unduplicated Maya name, a different parent, and several candidates stay
-blocking rather than selecting one.
+blocking rather than selecting one. Uniqueness is decided against every Maya
+source in the mapped parent's scope rather than against the first candidate the
+capture listed: a required bone an exact Maya name owns is never taken by an
+import-rename candidate, and a second source that could equally drive the same
+required bone is reported as a mapping ambiguity naming the target, its parent,
+and both complete Maya paths. Only a source that matches no required bone in
+its own scope is treated as an unused branch.
 
 The validation response leads with the root cause of the first unmapped bone:
 its complete Maya path, the mapped Unreal parent it had to match, the blocked

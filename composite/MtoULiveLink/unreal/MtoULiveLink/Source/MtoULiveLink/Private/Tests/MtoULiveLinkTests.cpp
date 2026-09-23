@@ -6902,6 +6902,284 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartSourceMappingTest,
+    "MtoULiveLink.Workflow.CharacterPartSourceMapping",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        TestTrue(TEXT("Live Link client feature is available"), false);
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Actor->GetBinding())
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    USkeletalMesh* Primary = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    USkeletalMesh* Part = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    TestTrue(TEXT("source-mapping fixtures are created"), Primary && Part);
+    if (!Primary || !Part)
+    {
+        return false;
+    }
+    // The part skins one branch the Primary never had, so `Cloth1` is a
+    // required target of the composed character rather than an extra branch.
+    USkeleton* SharedSkeleton = DuplicateObject<USkeleton>(Primary->GetSkeleton(), Actor);
+    Primary->SetSkeleton(SharedSkeleton);
+    Part->SetSkeleton(SharedSkeleton);
+    FReferenceSkeleton PartSkeleton;
+    {
+        FReferenceSkeletonModifier Modifier(PartSkeleton, nullptr);
+        Modifier.Add(
+            Primary->GetRefSkeleton().GetRefBoneInfo()[0],
+            Primary->GetRefSkeleton().GetRefBonePose()[0]);
+        Modifier.Add(
+            FMeshBoneInfo(TEXT("Cloth1"), TEXT("Cloth1"), 0),
+            Primary->GetRefSkeleton().GetRefBonePose()[1]);
+    }
+    Part->SetRefSkeleton(PartSkeleton);
+    Part->CalculateInvRefMatrices();
+    SharedSkeleton->MergeAllBonesToBoneTree(Part);
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    AddCharacterPart(*Binding, TEXT("Head"), Part);
+    Actor->NotifyCharacterPartsChanged();
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("the composed character requires the part-only branch"),
+        Composition.IsUsable()
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
+    if (!Composition.IsUsable())
+    {
+        return false;
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton& PrimarySkeleton = Primary->GetRefSkeleton();
+    const FTransform ClothBind = PartSkeleton.GetRefBonePose()[1];
+    const FString PrimaryBones = ReferenceSkeletonBonesJson(PrimarySkeleton);
+    // A split export carries the whole Primary branch, the duplicated `Cloth`
+    // short name one import generated an `Cloth1` target from, and the exact
+    // `Cloth1` itself. The rename candidate is captured first on purpose.
+    const FString MayaBones = FString::Printf(
+        TEXT("%s,[\"Cloth\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",0,%s]"),
+        *PrimaryBones,
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
+        *TransformJson(FTransform::Identity),
+        *TransformJson(ClothBind));
+    const FString Init = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *MayaBones);
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("source-mapping client connects"), Client);
+    const TArray<uint8> InitPacket = Packet(Init);
+    TestTrue(TEXT("source-mapping init is sent"),
+        Client && SendBytes(*Client, InitPacket.GetData(), InitPacket.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the composed character negotiates ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString ReadyReply = FromUtf8(Payload);
+    TestTrue(TEXT("the exact source owns the target without an import rename"),
+        ReadyReply.Contains(TEXT("\"type\":\"ready\""))
+        && ReadyReply.Contains(TEXT("\"bone_name_remaps\":[]"))
+        && !ReadyReply.Contains(TEXT("missing_in_unreal\":[\"")));
+    if (!ReadyReply.Contains(TEXT("\"type\":\"ready\"")))
+    {
+        // Leave no session, source, or world behind: the tests that run after
+        // this one share the same editor process.
+        AddError(FString::Printf(TEXT("negotiation reply: %s"), *ReadyReply));
+        DestroySocket(*SocketSubsystem, Client);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+
+    USkeletalMeshComponent* SkeletalMeshComponent = Actor->GetSkeletalMeshComponent();
+    USkeletalMeshComponent* PartComponent = Actor->GetCharacterPartComponents().IsEmpty()
+        ? nullptr
+        : Actor->GetCharacterPartComponents()[0];
+    TestNotNull(TEXT("the part owns one display component"), PartComponent);
+    if (!PartComponent)
+    {
+        return false;
+    }
+    // The transient test world does not drive skeletal animation, so every
+    // component is evaluated explicitly, exactly as the character parts
+    // workflow fixture does.
+    auto Pump = [&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        for (USkeletalMeshComponent* Component : { SkeletalMeshComponent, PartComponent })
+        {
+            if (Component && Component->IsRegistered())
+            {
+                Component->TickAnimation(1.0f / 60.0f, false);
+                Component->RefreshBoneTransforms();
+            }
+        }
+    };
+    const FName RootBoneName = PrimarySkeleton.GetBoneName(0);
+    const FString LiveFrame = FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],%s,[11,0,0,0,0,0,1,1,1,1],[12,0,0,0,0,0,1,1,1,1],[20,8,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[1]));
+    const TArray<uint8> Frame = Packet(LiveFrame);
+    TestTrue(TEXT("source-mapping live frame is sent"),
+        Client && SendBytes(*Client, Frame.GetData(), Frame.Num()));
+    TestTrue(TEXT("the required branch follows the exact source, not the earlier rename candidate"),
+        PollUntil([&]()
+        {
+            Pump();
+            return PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+                    .GetLocation().Equals(FVector(25.0, 8.0, 0.0), 0.1)
+                && SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World)
+                    .GetLocation().Equals(FVector(5.0, 0.0, 0.0), 0.1);
+        }));
+    // The rename candidate is an unused branch, so its own animation must not
+    // reach the displayed branch in any form.
+    TestFalse(TEXT("the discarded rename candidate drives nothing"),
+        PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+            .GetLocation().Equals(FVector(16.0, 0.0, 0.0), 0.1));
+
+    // Cached Playback consumes the same frozen projection, so a captured frame
+    // must drive the exact source as well.
+    auto SendText = [&](const TCHAR* Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return Client && SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    const FString CachedFrame = FString::Printf(
+        TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],%s,[13,0,0,0,0,0,1,1,1,1],[14,0,0,0,0,0,1,1,1,1],[30,8,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[1]));
+    TestTrue(TEXT("cached playback entry, upload, and end are sent"),
+        SendText(TEXT("{\"type\":\"cache_enter\"}"))
+        && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":21,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
+        && SendText(*CachedFrame)
+        && SendText(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("cached upload reaches ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("the cached outcome belongs to this upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\"")));
+    TestTrue(TEXT("cached playback starts"), SendText(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("cached playback keeps the same source mapping"),
+        PollUntil([&]()
+        {
+            Pump();
+            return PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+                .GetLocation().Equals(FVector(37.0, 8.0, 0.0), 0.1);
+        }));
+    FString PlaybackOutcome;
+    TestTrue(TEXT("cached playback completes"), PollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        while (Client && Client->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+        {
+            PlaybackOutcome.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+        }
+        return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
+    }));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+
+    // A second Maya source with the same exact name under the same mapped
+    // parent would make the required target answer to two animations, so the
+    // connection must be refused instead of publishing one of them.
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
+    Client = ConnectLoopback(*SocketSubsystem, Port);
+    const FString AmbiguousInit = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
+        *PrimaryBones,
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
+        *TransformJson(ClothBind),
+        *TransformJson(ClothBind));
+    const TArray<uint8> AmbiguousPacket = Packet(AmbiguousInit);
+    Payload.Reset();
+    TestTrue(TEXT("the ambiguous init is sent"),
+        Client && SendBytes(*Client, AmbiguousPacket.GetData(), AmbiguousPacket.Num()));
+    TestTrue(TEXT("a second source for one required target is refused"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString AmbiguousReply = FromUtf8(Payload);
+    AddInfo(FString::Printf(TEXT("ambiguity reply: %s"), *AmbiguousReply));
+    TestTrue(TEXT("the refusal names the target and its competing sources"),
+        AmbiguousReply.Contains(TEXT("\"type\":\"error\""))
+        && AmbiguousReply.Contains(TEXT("SKELETON_MISMATCH"))
+        && AmbiguousReply.Contains(TEXT("Mapping ambiguities"))
+        && AmbiguousReply.Contains(TEXT("'Cloth1' below"))
+        && AmbiguousReply.Contains(TEXT("2 Maya bones")));
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("the refused connection returns the source to listening"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartLifecycleTest,
     "MtoULiveLink.Actor.CharacterPartLifecycle",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -7481,6 +7759,119 @@ bool FMtoURequiredBoneNegotiationTest::RunTest(const FString& Parameters)
     Target.Bones.Add({TEXT("tip2"), 2});
     TestFalse(TEXT("subset negotiation cannot guess between suffix candidates"),
         FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneSourceTest,
+    "MtoULiveLink.Negotiation.RequiredBoneSources",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneSourceTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUTargetDescription JointTarget;
+    JointTarget.bAllowUnusedSourceBones = true;
+    JointTarget.Bones = {{TEXT("root"), -1}, {TEXT("joint1"), 0}};
+    JointTarget.BoneOwners = {TEXT("Body"), TEXT("Coat")};
+
+    // The exact name is published after the rename candidate that also matches
+    // the required target, and then before it. The exact source must take the
+    // target in both captures, and the losing duplicate must stay unused
+    // instead of being published as the authority for the branch.
+    const FMtoUCharacterDescription RenameBeforeExact = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("joint")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint1")), 0},
+        },
+        {},
+    };
+    const FMtoUCharacterDescription ExactBeforeRename = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("joint1")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint")), 0},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome RenameFirst =
+        FMtoUConnectionNegotiator::Negotiate(RenameBeforeExact, JointTarget);
+    const FMtoUNegotiationOutcome ExactFirst =
+        FMtoUConnectionNegotiator::Negotiate(ExactBeforeRename, JointTarget);
+    TestTrue(TEXT("the exact name takes the target a rename candidate claimed first"),
+        RenameFirst.bUsable
+        && RenameFirst.TargetBoneIndices == TArray<int32>({0, -1, -1, 1}));
+    TestTrue(TEXT("the same exact source takes it when the capture lists it first"),
+        ExactFirst.bUsable
+        && ExactFirst.TargetBoneIndices == TArray<int32>({0, 1, -1, -1}));
+    TestTrue(TEXT("a superseded rename claim is never published as a mapping"),
+        RenameFirst.BoneNameMappings.IsEmpty() && ExactFirst.BoneNameMappings.IsEmpty());
+
+    // One published short name under one mapped parent, twice: both sources
+    // match the single required target, so the character must refuse rather
+    // than stream whichever source the capture happened to list first.
+    const FMtoUCharacterDescription DuplicateShortName = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("group")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint")), 1},
+        },
+        {},
+    };
+    FMtoUTargetDescription GroupTarget;
+    GroupTarget.bAllowUnusedSourceBones = true;
+    GroupTarget.Bones = {{TEXT("root"), -1}, {TEXT("group"), 0}, {TEXT("joint"), 1}};
+    GroupTarget.BoneOwners = {TEXT("Body"), TEXT("Body"), TEXT("Coat")};
+    const FMtoUNegotiationOutcome AmbiguousJoint =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, GroupTarget);
+    TestFalse(TEXT("two exact sources for one required target reject the connection"),
+        AmbiguousJoint.bUsable);
+    TestEqual(TEXT("a duplicate source keeps the stable failure category"),
+        AmbiguousJoint.FailureCategory, FString(TEXT("SKELETON_MISMATCH")));
+    TestTrue(TEXT("the ambiguity names the required target, its parent, and both sources"),
+        AmbiguousJoint.MappingAmbiguities.Num() == 1
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("'joint' below group"))
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("root/group/joint")));
+    TestTrue(TEXT("a rejected ambiguity carries no source projection"),
+        AmbiguousJoint.TargetBoneIndices.IsEmpty() && AmbiguousJoint.BoneNameMappings.IsEmpty());
+
+    // The same collision on the imported rename form: neither duplicate can be
+    // preferred, so the suffix target is ambiguous as well.
+    FMtoUTargetDescription RenamedGroupTarget;
+    RenamedGroupTarget.bAllowUnusedSourceBones = true;
+    RenamedGroupTarget.Bones = {{TEXT("root"), -1}, {TEXT("group"), 0}, {TEXT("joint1"), 1}};
+    const FMtoUNegotiationOutcome AmbiguousRename =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, RenamedGroupTarget);
+    TestFalse(TEXT("two rename candidates for one required target reject the connection"),
+        AmbiguousRename.bUsable);
+    TestTrue(TEXT("the rename ambiguity names the imported target"),
+        AmbiguousRename.MappingAmbiguities.Num() == 1
+        && AmbiguousRename.MappingAmbiguities[0].Contains(TEXT("'joint1' below group")));
+
+    // Two branches that map to their own parents each keep a duplicate short
+    // name: only the mapped parent's own scope decides competition.
+    const FMtoUCharacterDescription SplitBranches = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("joint")), 3},
+        },
+        {},
+    };
+    FMtoUTargetDescription SplitTarget;
+    SplitTarget.bAllowUnusedSourceBones = true;
+    SplitTarget.Bones = {
+        {TEXT("root"), -1}, {TEXT("left"), 0}, {TEXT("joint"), 1},
+        {TEXT("right"), 0}, {TEXT("joint"), 3}};
+    const FMtoUNegotiationOutcome Split =
+        FMtoUConnectionNegotiator::Negotiate(SplitBranches, SplitTarget);
+    TestTrue(TEXT("duplicate short names under their own mapped parents stay supported"),
+        Split.bUsable && Split.TargetBoneIndices == TArray<int32>({0, 1, 2, 3, 4}));
     return true;
 }
 

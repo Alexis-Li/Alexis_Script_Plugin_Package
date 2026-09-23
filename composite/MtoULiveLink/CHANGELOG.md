@@ -19,6 +19,15 @@
   reject the connection with part diagnostics. Binding and protocol v6 remain
   compatible; garment Preview data continues to come only from Primary.
 
+- Drive every required bone from exactly one Maya source (Issue #55 review).
+  A subset negotiation no longer keeps the first candidate it found and skips
+  the losers it never compared: an exact Maya name takes a required bone a
+  rename candidate claimed first, and a second source that could equally drive
+  it blocks the connection with `Mapping ambiguities` naming the target, its
+  parent, and both complete Maya paths. Duplicate short names under their own
+  mapped parents and unused exported branches stay supported, and the frozen
+  live/cached source projection carries the resolved source.
+
 ## 0.5.0 - 2026-09-22
 
 Milestone accepted by the project owner after practical use with no issues

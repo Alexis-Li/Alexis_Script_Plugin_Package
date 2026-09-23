@@ -194,7 +194,12 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   Issue #55 with Clothes_12, Head, and Hair: rendered Animation/Model poses,
   transient Preview Refresh and reconnect, plus live and Cached Playback.
   The [acceptance record](issue-55-real-c01-acceptance.md) owns the evidence
-  and limits; the issue remains open for owner review.
+  and limits. Independent UE verification then reproduced ambiguous
+  source-bone selection; the mapping now resolves every required bone against
+  all Maya sources in its mapped parent's scope, with exact names outranking
+  import renames and equal claims refused. The reviewer's three reproductions,
+  the new source-mapping regressions, the full 76-test suite, and a real C01
+  Animation/reconnect re-run all pass on the fixed tree.
 
 ## Stable Records
 

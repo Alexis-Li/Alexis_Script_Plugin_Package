@@ -38,8 +38,12 @@ The complete result of connection negotiation: whether streaming may begin, the 
 _Avoid_: Ready reply, validation result
 
 **Bone-name mapping**:
-The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch.
+The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch, and only for a required bone no Maya source already owns by its exact name.
 _Avoid_: Bone rename, fuzzy match
+
+**Competing source**:
+A second Maya bone that could equally drive one required Unreal bone: the same published short name below the same matched parent, or an import-rename candidate for a target another source owns by its exact name. Equal claims block the connection and name the target, its parent, and both Maya paths; an exact name always outranks a rename candidate.
+_Avoid_: Duplicate bone, ambiguous rename
 
 **Unreached bone**:
 An Unreal bone below an unmatched ancestor, which negotiation never examined because its parent could not be mapped. It is reported separately from a confirmed extra bone and never claims that Maya lacks that bone.
@@ -80,10 +84,10 @@ the Primary Driver's Skeleton asset. Positive skin influences across every LOD
 and their complete ancestor chains define its required bones. The composition
 merges these requirements deterministically; shared names must have compatible
 parent paths and component-space reference poses. Unique required branches
-receive the same session's Maya motion independently on each part. Unused
-branches impose no dependency. A disabled part participates in neither
-negotiation nor display. Parts never contribute to garment resolution, weight
-transfer, or Preview Morph transfer.
+receive the same session's Maya motion independently on each part. An unused
+branch imposes no dependency and may not claim a required bone. A disabled part
+participates in neither negotiation nor display. Parts never contribute to
+garment resolution, weight transfer, or Preview Morph transfer.
 _Avoid_: Sub-mesh, attachment, extra mesh, garment part
 
 **Driver garment surface**:

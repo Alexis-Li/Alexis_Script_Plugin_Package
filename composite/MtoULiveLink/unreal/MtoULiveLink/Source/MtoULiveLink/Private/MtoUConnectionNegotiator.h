@@ -19,7 +19,12 @@ struct FMtoUTargetDescription
 {
     TArray<FMtoUDescriptionBone> Bones;
     TArray<FName> MorphTargetNames;
-    /** Composition targets require every target bone, but allow unused Maya branches. */
+    /**
+     * Composition targets require every target bone, but allow unused Maya
+     * branches. An unused branch may not claim a required target: an exact Maya
+     * name outranks an import rename for it, and two equally valid Maya sources
+     * are reported as an ambiguity instead of letting the capture order choose.
+     */
     bool bAllowUnusedSourceBones = false;
     TArray<FString> BoneOwners;
 };
