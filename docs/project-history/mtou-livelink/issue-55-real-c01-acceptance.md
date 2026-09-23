@@ -22,5 +22,3 @@ Status: real C01 host acceptance completed on 2026-09-23. [Issue #55](https://gi
 The test harness holds each pose until its screenshot is written and retains driven Morph values across pose changes. Fixture overrides apply only to a transient Binding duplicate.
 
 The disposable FBX import commandlet exited with a UE Slate assertion. A separate editor run loaded the saved Static Mesh and completed the Model and Refresh checks.
-
-Raw local reports and images are retained under ignored `Saved/issue55/`. The rendered acceptance artifacts include Base Color Animation/Model screenshots and an Automation report; the cache artifacts include `parts-host-report.json`. These machine-local files are evidence for this run.
