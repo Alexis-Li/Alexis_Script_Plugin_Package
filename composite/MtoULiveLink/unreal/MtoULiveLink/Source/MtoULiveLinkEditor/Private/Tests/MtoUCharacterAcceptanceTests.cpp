@@ -271,6 +271,18 @@ private:
             if (!Path.IsEmpty() && !Binding->PreviewStaticMesh)
             { Test->AddError(TEXT("Could not load fixture Preview Static Mesh: ") + Path); return false; }
         }
+        if (Fixture->HasField(TEXT("driver_garment_slots")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>* Slots = nullptr;
+            if (!Fixture->TryGetArrayField(TEXT("driver_garment_slots"), Slots))
+            { Test->AddError(TEXT("Fixture driver_garment_slots must be an array")); return false; }
+            for (const TSharedPtr<FJsonValue>& Value : *Slots)
+            {
+                if (!Value.IsValid() || Value->Type != EJson::String || Value->AsString().IsEmpty())
+                { Test->AddError(TEXT("Fixture driver_garment_slots must contain nonempty names")); return false; }
+                Binding->DriverGarmentSlotOverride.AddUnique(FName(*Value->AsString()));
+            }
+        }
         if (Fixture->HasField(TEXT("parts")))
         {
             Binding->AdditionalParts.Reset();
