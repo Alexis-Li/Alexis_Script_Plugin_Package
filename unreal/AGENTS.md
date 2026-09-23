@@ -22,6 +22,9 @@ composite components and templates that reference this file.
   inspect new warnings, and run relevant Automation tests.
 - Verify changed host behavior in ToolsLab or the project's designated acceptance
   host. Use the project's documented build/package checks when applicable.
+- Capture automated viewport screenshots for visual asset acceptance in Buffer
+  Visualization > Base Color (`BaseColor`). Record the viewport mode with the
+  evidence; use other view modes for their specific diagnostic purpose.
 - Documentation-only changes do not require an engine build. If a required host
   is unavailable, report that limit and use useful available checks without
   claiming host verification.

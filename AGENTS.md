@@ -75,6 +75,9 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   history records; use `docs/project-history/<project-name>/` for substantial
   completed work. Small fixes do not need new documents. Replace completed plans
   with durable conclusions when needed, rather than leaving active-looking plans.
+- Write acceptance records and issue comments as current conclusions, supporting
+  evidence, and material limits. Update an incorrect conclusion in place; keep
+  superseded debugging and correction narratives out of the final account.
 
 ## Validation
 
