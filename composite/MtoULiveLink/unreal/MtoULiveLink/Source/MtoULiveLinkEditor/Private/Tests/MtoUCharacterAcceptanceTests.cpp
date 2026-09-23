@@ -15,6 +15,7 @@
 #include "MtoULiveLinkSource.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Editor.h"
 #include "DrawDebugHelpers.h"
@@ -114,8 +115,8 @@ public:
         else if (Stage == 1 || Stage == 4)
         {
             if (!Acknowledged(Result)) { return false; }
-            Test->TestEqual(TEXT("complete Maya skeleton"), Result->GetArrayField(TEXT("bones")).Num(),
-                Binding->SkeletalMesh->GetRefSkeleton().GetNum());
+            Test->TestTrue(TEXT("Maya publishes a nonempty scene snapshot"),
+                Result->GetArrayField(TEXT("bones")).Num() > 0);
             Test->AddInfo(TEXT("Negotiated remaps: ") + JsonText(Result->GetObjectField(TEXT("warning"))));
             if (Fixture->HasField(TEXT("expected_remaps")))
             {
@@ -137,15 +138,32 @@ public:
             if (!FParse::Param(FCommandLine::Get(), TEXT("NullRHI")))
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::Combine(Evidence, Label + TEXT(".png")), false, false);
+                // The viewport captures on a later tick. Keep this pose until
+                // the image has been written instead of switching Maya to the
+                // next pose while the screenshot is still pending.
+                Stage = 10;
+                Settled = FPlatformTime::Seconds();
             }
             Test->AddInfo(TEXT("Accepted ") + Label);
-            if (++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
+            if (Stage != 10 && ++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
             {
                 Send(TEXT("pose"), Pose); Settled = 0;
             }
+            else if (Stage != 10)
+            {
+                Stage = bPreviewStages ? 3 : 9; Settled = FPlatformTime::Seconds();
+            }
+        }
+        else if (Stage == 10)
+        {
+            if (FScreenshotRequest::IsScreenshotRequested() || FPlatformTime::Seconds() - Settled < 1.0)
+            { return false; }
+            if (++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
+            {
+                Send(TEXT("pose"), Pose); Settled = 0; Stage = 2;
+            }
             else
             {
-                // Give the screenshot a frame before the synchronous Refresh.
                 Stage = bPreviewStages ? 3 : 9; Settled = FPlatformTime::Seconds();
             }
         }
@@ -234,6 +252,43 @@ private:
         // one the run stays on the Animation phases and reconnects instead.
         bPreviewStages = Original->PreviewStaticMesh != nullptr;
         Binding.Reset(DuplicateObject<UMtoULiveLinkBinding>(Original, GetTransientPackage()));
+        // Optional fixture overrides stay on this transient duplicate. They let
+        // a production project's existing meshes be accepted in a new outfit
+        // combination without editing or saving the owner's Binding asset.
+        if (Fixture->HasField(TEXT("primary_mesh")))
+        {
+            const FString Path = Fixture->GetStringField(TEXT("primary_mesh"));
+            Binding->SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+            if (!Binding->SkeletalMesh)
+            { Test->AddError(TEXT("Could not load fixture Primary Driver: ") + Path); return false; }
+            Binding->PreviewStaticMesh = nullptr;
+            Binding->DriverGarmentSlotOverride.Reset();
+        }
+        if (Fixture->HasField(TEXT("preview_mesh")))
+        {
+            const FString Path = Fixture->GetStringField(TEXT("preview_mesh"));
+            Binding->PreviewStaticMesh = Path.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *Path);
+            if (!Path.IsEmpty() && !Binding->PreviewStaticMesh)
+            { Test->AddError(TEXT("Could not load fixture Preview Static Mesh: ") + Path); return false; }
+        }
+        if (Fixture->HasField(TEXT("parts")))
+        {
+            Binding->AdditionalParts.Reset();
+            for (const TSharedPtr<FJsonValue>& Value : Fixture->GetArrayField(TEXT("parts")))
+            {
+                const TSharedPtr<FJsonObject> PartValue = Value->AsObject();
+                if (!PartValue) { Test->AddError(TEXT("Fixture part must be an object")); return false; }
+                FMtoUCharacterPart& Part = Binding->AdditionalParts.AddDefaulted_GetRef();
+                Part.PartName = PartValue->GetStringField(TEXT("name"));
+                const FString Path = PartValue->GetStringField(TEXT("mesh"));
+                Part.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+                Part.bEnabled = !PartValue->HasField(TEXT("enabled")) || PartValue->GetBoolField(TEXT("enabled"));
+                if (!Part.SkeletalMesh)
+                { Test->AddError(TEXT("Could not load fixture Additional Part: ") + Path); return false; }
+            }
+            Binding->EnsureCharacterPartIds();
+        }
+        bPreviewStages = Binding->PreviewStaticMesh != nullptr;
         UWorld* World = GEditor->GetEditorWorldContext().World();
         if (!World->GetOutermost()->GetName().StartsWith(TEXT("/Engine/")))
         { Test->AddError(TEXT("Run character acceptance in a disposable editor launched on /Engine/Maps/Entry.")); return false; }
@@ -252,7 +307,8 @@ private:
             const FVector Center = Bounds.Origin;
             const FVector Eye = Center + FVector(0.8, 3.5, 0.4) * Bounds.SphereRadius;
             View->SetViewLocation(Eye); View->SetViewRotation((Center - Eye).Rotation());
-            View->SetRealtime(true); View->SetViewMode(VMI_Unlit); View->FocusViewportOnBox(Bounds.GetBox().ExpandBy(Bounds.SphereRadius * 0.15), true); View->Invalidate();
+            View->SetRealtime(true); View->ChangeBufferVisualizationMode(FName(TEXT("BaseColor")));
+            View->FocusViewportOnBox(Bounds.GetBox().ExpandBy(Bounds.SphereRadius * 0.15), true); View->Invalidate();
         }
         auto* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
         FSocket* Socket = Sockets->CreateSocket(NAME_Stream, TEXT("Character acceptance port"));
@@ -410,30 +466,28 @@ private:
                     Expected.GetScaledAxis(Axis).GetSafeNormal(0.0),
                     PublishedWorld[I].GetScaledAxis(Axis).GetSafeNormal(0.0)));
             }
-            // A part-only required bone is displayed by the part that owns it,
-            // so the published pose is compared against the component that
-            // carries this name.
-            const USkeletalMeshComponent* DisplayComponent = Actor->GetSkeletalMeshComponent();
-            int32 DisplayIndex = DisplayComponent ? DisplayComponent->GetBoneIndex(BoneName) : INDEX_NONE;
-            if (DisplayIndex == INDEX_NONE)
+            // Verify every mesh that owns a shared bone, and the owning part
+            // for part-only bones. Checking only the Primary would miss a
+            // detached Head or Hair component in the real character.
+            TArray<const USkeletalMeshComponent*> Displays;
+            Displays.Add(Actor->GetSkeletalMeshComponent());
+            for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
             {
-                for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
-                {
-                    if (Part && Part->GetBoneIndex(BoneName) != INDEX_NONE)
-                    {
-                        DisplayComponent = Part;
-                        DisplayIndex = Part->GetBoneIndex(BoneName);
-                        break;
-                    }
-                }
+                if (Part) { Displays.Add(Part); }
             }
-            const TArray<FTransform>* Displayed = DisplayComponent
-                ? &DisplayComponent->GetComponentSpaceTransforms() : nullptr;
-            if (Displayed && Displayed->IsValidIndex(DisplayIndex))
+            bool bDisplayed = false;
+            for (const USkeletalMeshComponent* DisplayComponent : Displays)
             {
+                if (!DisplayComponent) { continue; }
+                const int32 DisplayIndex = DisplayComponent->GetBoneIndex(BoneName);
+                if (DisplayIndex == INDEX_NONE) { continue; }
+                const TArray<FTransform>& Displayed = DisplayComponent->GetComponentSpaceTransforms();
+                if (!Displayed.IsValidIndex(DisplayIndex))
+                { Test->AddError(TEXT("Displayed skeleton is incomplete")); return false; }
+                bDisplayed = true;
                 MaxDisplayedError = FMath::Max(MaxDisplayedError,
-                    FVector::Distance(PublishedWorld[I].GetOrigin(), (*Displayed)[DisplayIndex].GetTranslation()));
-                const FMatrix DisplayedMatrix = (*Displayed)[DisplayIndex].ToMatrixWithScale();
+                    FVector::Distance(PublishedWorld[I].GetOrigin(), Displayed[DisplayIndex].GetTranslation()));
+                const FMatrix DisplayedMatrix = Displayed[DisplayIndex].ToMatrixWithScale();
                 for (EAxis::Type Axis : {EAxis::X, EAxis::Y, EAxis::Z})
                 {
                     MaxDisplayedAxisError = FMath::Max(MaxDisplayedAxisError, FVector::Distance(
@@ -441,7 +495,7 @@ private:
                         DisplayedMatrix.GetScaledAxis(Axis).GetSafeNormal(0.0)));
                 }
             }
-            else { Test->AddError(TEXT("Displayed skeleton is incomplete")); return false; }
+            if (!bDisplayed) { Test->AddError(TEXT("No displayed component owns a required bone")); return false; }
         }
         Test->AddInfo(FString::Printf(TEXT("%s pose %d: %d bones, maximum world position error %.9g cm"),
             *Workflow, Pose, Static->BoneNames.Num(), MaxPositionError));

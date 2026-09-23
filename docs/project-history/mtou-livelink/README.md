@@ -190,6 +190,12 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   or additional host-version validation. Subsequent work uses a separate
   development branch.
 
+- **2026-09-23:** Completed the real C01 Maya-to-UE technical acceptance for
+  Issue #55 with Clothes_12, Head, and Hair: rendered Animation/Model poses,
+  transient Preview Refresh and reconnect, plus live and Cached Playback.
+  The [acceptance record](issue-55-real-c01-acceptance.md) owns the evidence
+  and limits; the issue remains open for owner review.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -206,6 +212,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Complete-skeleton connection and preview acceptance](complete-skeleton-acceptance.md)
 - [Hash-suffix skeleton mapping acceptance](hash-suffix-mapping-acceptance.md)
 - [Character-part composition acceptance](character-parts-acceptance.md)
+- [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project
 

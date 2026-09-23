@@ -91,8 +91,17 @@ def main():
         if fixture.get("synthetic_secondary_bones"):
             _create_secondary_bone_character(cmds, fixture["synthetic_bones"])
         else:
-            cmds.file(fixture["scene"], open=True, force=True, prompt=False,
-                      executeScriptNodes=False, ignoreVersion=True)
+            try:
+                cmds.file(fixture["scene"], open=True, force=True, prompt=False,
+                          executeScriptNodes=False, ignoreVersion=True)
+            except RuntimeError as exc:
+                # Older production scenes can report unavailable optional
+                # render/skin-layer plug-ins after loading their DAG. Continue
+                # only when this opt-in fixture explicitly allows that host
+                # condition and the requested character root actually loaded.
+                if not fixture.get("allow_scene_load_warnings") or not cmds.objExists(fixture["root"]):
+                    raise
+                result["scene_load_warning"] = str(exc)[:400]
 
         class Controller(module._Controller):
             def _show_error(self, diagnostic):
@@ -123,6 +132,7 @@ def main():
                     alias_plugs.setdefault(alias, set()).add(node + "." + attribute)
 
         base = {}
+        driven_aliases = {}
 
         def detach(plug):
             """Make one authored plug writable in this disposable process."""
@@ -193,6 +203,11 @@ def main():
                             for plug in sorted(alias_plugs[alias]):
                                 detach(plug)
                                 cmds.setAttr(plug, base[plug] + value)
+                        # A separate alias command remains active while the
+                        # host changes poses and captures/replays a cache.
+                        for alias, value in driven_aliases.items():
+                            for plug in sorted(alias_plugs[alias]):
+                                cmds.setAttr(plug, base[plug] + value)
                         # Only the edited plugs are dirtied: a production scene
                         # re-evaluates the rest of the graph on read.
                         result["pose"] = command["pose"]
@@ -201,9 +216,10 @@ def main():
                         # Drive one BlendShape alias that the Unreal side asked
                         # for, resolved from the character's own libraries.
                         name = command["alias"]
+                        driven_aliases[name] = float(command["value"])
                         for plug in sorted(alias_plugs[name]):
                             detach(plug)
-                            cmds.setAttr(plug, base[plug] + float(command["value"]))
+                            cmds.setAttr(plug, base[plug] + driven_aliases[name])
                         result["alias"] = name
                         result["alias_value"] = float(command["value"])
                         result["phase"] = "alias"

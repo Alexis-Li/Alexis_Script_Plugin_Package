@@ -8151,6 +8151,33 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     }
     UMtoULiveLinkBinding* Binding = DuplicateObject<UMtoULiveLinkBinding>(
         Original, GetTransientPackage());
+    // A production outfit can be tested without editing the owner's Binding.
+    // The same transient fixture overrides are used by the rendered acceptance.
+    if (FixtureObject->HasField(TEXT("primary_mesh")))
+    {
+        const FString Path = FixtureObject->GetStringField(TEXT("primary_mesh"));
+        Binding->SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+        if (!TestNotNull(TEXT("fixture Primary Driver loads"), Binding->SkeletalMesh.Get()))
+        { AddError(Path); return false; }
+    }
+    if (FixtureObject->HasField(TEXT("parts")))
+    {
+        Binding->AdditionalParts.Reset();
+        for (const TSharedPtr<FJsonValue>& Value : FixtureObject->GetArrayField(TEXT("parts")))
+        {
+            const TSharedPtr<FJsonObject> PartValue = Value->AsObject();
+            if (!PartValue) { AddError(TEXT("Fixture part must be an object")); return false; }
+            FMtoUCharacterPart& Part = Binding->AdditionalParts.AddDefaulted_GetRef();
+            Part.PartName = PartValue->GetStringField(TEXT("name"));
+            const FString Path = PartValue->GetStringField(TEXT("mesh"));
+            Part.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+            Part.bEnabled = !PartValue->HasField(TEXT("enabled"))
+                || PartValue->GetBoolField(TEXT("enabled"));
+            if (!TestNotNull(TEXT("fixture Additional Part loads"), Part.SkeletalMesh.Get()))
+            { AddError(Path); return false; }
+        }
+        Binding->EnsureCharacterPartIds();
+    }
     int32 EnabledParts = 0;
     for (FMtoUCharacterPart& Part : Binding->AdditionalParts)
     {
@@ -8162,7 +8189,7 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     }
     AddInfo(FString::Printf(TEXT("Measured configuration: primary + %d enabled part(s)"),
         EnabledParts));
-    TestTrue(TEXT("the fixture exercises a split character"), Original->AdditionalParts.Num() >= 2);
+    TestTrue(TEXT("the fixture exercises a split character"), Binding->AdditionalParts.Num() >= 2);
 
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
