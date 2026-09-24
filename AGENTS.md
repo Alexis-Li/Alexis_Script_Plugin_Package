@@ -39,6 +39,21 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   Keep commits coherent and release tags project-prefixed, for example
   `maya-mesh-normal-tool-v0.2.0` or `ue-asset-audit-v1.1.0`.
 
+## Scratch files
+
+- For agent-created temporary files, first use the `.tmp` directory beside this
+  repository's root. Resolve it from the actual Git root (its parent directory
+  plus `.tmp`), rather than hard-coding a drive letter or the current shell
+  directory. The directory for this checkout is `../.tmp` relative to the root.
+- If that directory is absent or cannot be written under the current sandbox,
+  use the ignored `.tmp/` directory inside the repository. Keep scratch files
+  out of tracked source directories and remove them when they are no longer
+  needed. Do not choose the operating system's default temporary directory for
+  agent-created scratch files when either repository location is available.
+- A tool or host may create its own internal temporary files through `TEMP`,
+  `TMP`, or equivalent settings. This rule does not redirect those processes;
+  set their temporary-directory environment explicitly when a task requires it.
+
 ## Documentation
 
 - Update affected documentation when installation, public contracts, supported

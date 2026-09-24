@@ -1,5 +1,6 @@
 # Local agent instructions
 AGENTS.override.md
+.tmp/
 
 # Operating system
 .DS_Store
