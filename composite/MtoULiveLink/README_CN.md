@@ -89,9 +89,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 1. 在 Unreal 中创建 **MtoU_LiveLink Binding** 资产，指定
    **Primary Driver Skeletal Mesh**，并按需添加 **Additional Parts**。
 2. 将 Binding 资产从内容浏览器拖入关卡，创建对应的 Binding Actor。
-   细节面板的 **MtoU Preview** 用一个 **Status** 区显示预览就绪状态、连接、
-   下一步和当前显示网格，下方是 **Refresh Preview** 与 **Delete Preview**。
-   需要部件、预览、模型或原始连接详情时再展开 **MtoU Diagnostics**。
+   细节面板默认展开 **MtoU · 运行状态**（分别显示预览与连接状态及下一步）、
+   **角色组成**（主体和可展开的附加部件）和 **预览控制**（绑定资产、生成的网格、
+   刷新和删除）。需要查看、选中或复制完整原始错误时，展开
+   **高级设置与诊断**；没有诊断时日常界面不会显示空白日志。
 3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击“设置角色”。
    顶部切换“动画”／“模型”，下方依次是连接控制（设置角色、连接、断开与连接
    状态）、场景信息（左列根骨骼、衣服、帧率；右列骨骼／BlendShape 数量与缓存）、
@@ -115,9 +116,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 ## 服装模型预览
 
 1. 在 Unreal Binding 中指定服装 **Preview Static Mesh**。
-2. 在 Binding Actor 上点击 **Refresh Preview**，等待 **Status** 显示 Ready、
-   Ready with a warning 或 Refresh failed。**MtoU Diagnostics** 中的
-   **Modified parts** 会列出预览替换的材质槽，Driver 角色的其他部分仍会显示。
+2. 在 Binding Actor 上点击 **刷新预览**，等待预览状态显示已就绪、有警告或失败。
+   失败时会显示中文原因，连接状态独立显示；展开 **高级设置与诊断** 可查看并
+   复制原始错误。Driver 角色的其他部分仍会显示。
 3. 在 Maya 中选择“模型”，确认服装和“传递 BS”设置，再点击“连接”。
 4. 在 Maya 中给角色摆姿，检查 Unreal 中的服装变形。
 

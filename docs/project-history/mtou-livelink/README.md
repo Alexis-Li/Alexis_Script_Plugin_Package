@@ -222,6 +222,16 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   the exact checks and limits; Issue #55 remains open for final owner
   acceptance.
 
+- **2026-09-24:** Reworked the Unreal Binding Actor Details for Issue #48 into
+  four native groups: Runtime, Character, and Preview Controls open by default,
+  and Advanced Settings and Diagnostics collapsed. Preview and connection are
+  independent states, failures carry a Chinese summary with one next step, the
+  original error is collected once and stays selectable and copyable, and the
+  `MtoU` category filter registers the new groups instead of the retired names.
+  The Maya panel remains as accepted. The
+  [acceptance record](issue-48-ue-details-acceptance.md) owns the field map,
+  verification evidence, and limits.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -238,6 +248,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Complete-skeleton connection and preview acceptance](complete-skeleton-acceptance.md)
 - [Hash-suffix skeleton mapping acceptance](hash-suffix-mapping-acceptance.md)
 - [Character-part composition acceptance](character-parts-acceptance.md)
+- [Issue #48 UE Details acceptance](issue-48-ue-details-acceptance.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project

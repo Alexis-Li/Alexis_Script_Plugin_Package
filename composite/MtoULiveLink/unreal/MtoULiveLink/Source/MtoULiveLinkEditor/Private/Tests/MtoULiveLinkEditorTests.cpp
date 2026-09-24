@@ -510,14 +510,22 @@ bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
             View.Display.ToString().TrimStartAndEnd().IsEmpty());
         TestTrue(FString::Printf(TEXT("status '%s' reports its own severity"), Case.Status),
             View.Severity == Case.Severity);
-        TestEqual(FString::Printf(TEXT("status '%s' shows the raw message"), Case.Status),
-            !View.Detail.ToString().TrimStartAndEnd().IsEmpty(), Case.bShowsDetail);
+        // The raw message reaches the copyable diagnostics whenever it says
+        // more than the headline already does, and stays out of it when the
+        // headline already carries the whole status.
+        if (Case.Status[0] != 0)
+        {
+            TestEqual(
+                FString::Printf(TEXT("status '%s' keeps the raw message in the diagnostics"),
+                    Case.Status),
+                View.RawDiagnostics.ToString().Contains(Case.Status), Case.bShowsDetail);
+        }
     }
 
     // A blocking error keeps its own text instead of a generic headline.
     ReadoutActor->SetConnectionStatus(TEXT("Error: the Maya and Unreal skeletons do not match."));
     TestTrue(TEXT("a connection error keeps its own message"),
-        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Detail.ToString()
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).RawDiagnostics.ToString()
             .Contains(TEXT("skeletons do not match")));
 
     // Distinct states cannot read as the same status.
@@ -548,6 +556,58 @@ bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
     // The Delete action is offered only while it can change something.
     TestFalse(TEXT("Delete Preview stays unavailable without a usable Generated Preview"),
         FMtoULiveLinkActorDetails::CanDeletePreview(ReadoutActor));
+
+    // The real garment resolver emits these values in its raw error. The UI
+    // parses candidates from that message without assuming the screenshot's
+    // section IDs, triangle counts, or threshold are constants.
+    FMtoUPreviewReadiness Ambiguous;
+    Ambiguous.State = EMtoUPreviewState::Error;
+    Ambiguous.Diagnostics = TEXT(
+        "Automatic garment resolution found two indistinguishable source regions "
+        "[86 tris in section 1] and [38 tris in section 4]. Their surfaces "
+        "coincide within 0.0200 of the Preview scale, so the choice is ambiguous. "
+        "Remove one duplicate or pin the intended imported slots with Driver Garment Slot Override.");
+    Ambiguous.Summary = Ambiguous.Diagnostics;
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    const FMtoULiveLinkActorDetails::FStatusView AmbiguousView =
+        FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(ReadoutActor, Ambiguous);
+    TestEqual(TEXT("failed Preview has its own status"), AmbiguousView.Preview.ToString(),
+        FString(TEXT("预览生成失败")));
+    TestEqual(TEXT("disconnected link stays independent"), AmbiguousView.Connection.ToString(),
+        FString(TEXT("未连接")));
+    TestTrue(TEXT("ambiguity receives a Chinese summary"),
+        AmbiguousView.Summary.ToString().Contains(TEXT("服装区域匹配冲突")));
+    TestTrue(TEXT("first candidate comes from the raw error"),
+        AmbiguousView.Candidates.ToString().Contains(TEXT("区段 1：86 个三角面")));
+    TestTrue(TEXT("second candidate comes from the raw error"),
+        AmbiguousView.Candidates.ToString().Contains(TEXT("区段 4：38 个三角面")));
+    TestTrue(TEXT("the original Preview error starts the single raw log"),
+        AmbiguousView.RawDiagnostics.ToString().StartsWith(Ambiguous.Diagnostics));
+    TestEqual(TEXT("a duplicated Preview Summary is collected only once"),
+        AmbiguousView.RawDiagnostics.ToString().Find(Ambiguous.Diagnostics, ESearchCase::CaseSensitive,
+            ESearchDir::FromEnd), 0);
+    TestTrue(TEXT("raw threshold stays available for copy"),
+        AmbiguousView.RawDiagnostics.ToString().Contains(TEXT("0.0200")));
+
+    FMtoUPreviewReadiness UnknownFailure;
+    UnknownFailure.State = EMtoUPreviewState::Error;
+    UnknownFailure.Diagnostics = TEXT("Unexpected native failure 12345");
+    const auto UnknownView = FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+        ReadoutActor, UnknownFailure);
+    TestTrue(TEXT("unknown errors use a Chinese fallback"),
+        UnknownView.Summary.ToString().Contains(TEXT("请查看错误详情")));
+    TestTrue(TEXT("unknown raw error is preserved"),
+        UnknownView.RawDiagnostics.ToString().StartsWith(UnknownFailure.Diagnostics));
+
+    FMtoUPreviewReadiness Building;
+    Building.State = EMtoUPreviewState::Building;
+    Building.Stage = EMtoUPreviewBuildStage::WeightTransfer;
+    const auto BuildingView = FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+        ReadoutActor, Building);
+    TestTrue(TEXT("building state is shown in Chinese"),
+        BuildingView.Preview.ToString().Contains(TEXT("正在生成")));
+    TestFalse(TEXT("a new build does not retain the previous Preview error"),
+        BuildingView.RawDiagnostics.ToString().Contains(Ambiguous.Diagnostics));
 
     if (ReadoutWorld)
     {
@@ -4525,7 +4585,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         StatusPresenter.Get().State.ToString() != StatusBeforeRefresh
             && StatusPresenter.Get().State.ToString()
                 == FMtoULiveLinkActorDetails::MakeStatusView(Actor).State.ToString()
-            && StatusPresenter.Get().Display.ToString().Contains(TEXT("Generated Preview")));
+            && StatusPresenter.Get().Display.ToString().Contains(TEXT("生成的预览网格")));
     FSocket* ReconnectClient = ConnectClient();
     TestNotNull(TEXT("animation reconnects explicitly after the Details click"), ReconnectClient);
     TestTrue(TEXT("reconnect init is sent"),

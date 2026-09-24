@@ -4,7 +4,7 @@
 #include "IDetailCustomization.h"
 #include "MtoULiveLinkActor.h"
 
-/** Details customization for the Binding actor (MtoU Preview category). */
+/** Details customization for the Binding actor. */
 class FMtoULiveLinkActorDetails final : public IDetailCustomization
 {
 public:
@@ -22,15 +22,19 @@ public:
         Error
     };
 
-    /**
-     * The one status a Binding actor presents: the combined Preview and
-     * connection headline, the raw connection message when it carries more than
-     * the headline, the single next step, and the current display source.
-     */
+    /** UI-only projection of the actor's independent Preview and connection state. */
     struct FStatusView
     {
+        FText Preview;
+        FText Connection;
+        FText Summary;
+        FText Cause;
+        FText Candidates;
+        FText RawDiagnostics;
+        ESeverity PreviewSeverity = ESeverity::Neutral;
+        ESeverity ConnectionSeverity = ESeverity::Neutral;
+        /** Both axes in one line; the panel renders the two lines separately. */
         FText State;
-        FText Detail;
         FText NextStep;
         FText Display;
         ESeverity Severity = ESeverity::Neutral;
@@ -38,6 +42,10 @@ public:
 
     /** The status row content for the actor's current public state. */
     static FStatusView MakeStatusView(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+
+    /** Projection of a supplied readiness snapshot for focused Editor tests. */
+    static FStatusView MakeStatusViewForReadiness(
+        TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoUPreviewReadiness& Readiness);
 
     /**
      * The status row's shared cache. Every binding of the row reads one
@@ -60,7 +68,11 @@ public:
             bool bHasActor = false;
             EMtoUPreviewState State = EMtoUPreviewState::None;
             EMtoUPreviewBuildStage Stage = EMtoUPreviewBuildStage::None;
+            FString PreviewDiagnostics;
+            FString PreviewSummary;
             FString Connection;
+            FString ModelDiagnostics;
+            FString CharacterDiagnostics;
             EMtoUDisplayTarget Display = EMtoUDisplayTarget::Hidden;
         };
 

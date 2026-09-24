@@ -8,7 +8,7 @@ public class MtoULiveLinkEditor : ModuleRules
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "MtoULiveLink" });
         PrivateDependencyModuleNames.AddRange(new[]
         {
-            "AssetRegistry", "DynamicMesh", "EditorFramework", "Engine", "GeometryCore", "GeometryFramework",
+            "ApplicationCore", "AssetRegistry", "DynamicMesh", "EditorFramework", "Engine", "GeometryCore", "GeometryFramework",
             "GeometryScriptingCore", "Json", "LiveLinkAnimationCore", "LiveLinkInterface", "MeshDescription", "PropertyEditor",
             "SkeletalMeshDescription", "Slate", "SlateCore", "Sockets", "StaticMeshDescription", "UnrealEd"
         });

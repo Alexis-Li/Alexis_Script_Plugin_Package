@@ -1,14 +1,22 @@
 #include "MtoULiveLinkActorDetails.h"
 
 #include "MtoULiveLinkActor.h"
+#include "MtoULiveLinkBinding.h"
 #include "MtoULiveLinkPreview.h"
 
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "IDetailPropertyRow.h"
 #include "DetailWidgetRow.h"
+#include "Engine/SkeletalMesh.h"
 #include "Input/Reply.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "Internationalization/Regex.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -37,15 +45,15 @@ FText StageText(EMtoUPreviewBuildStage Stage)
     switch (Stage)
     {
     case EMtoUPreviewBuildStage::Preflight:
-        return LOCTEXT("Preflight", "Preflight");
+        return LOCTEXT("Preflight", "检查输入");
     case EMtoUPreviewBuildStage::GeometryConversion:
-        return LOCTEXT("GeometryConversion", "Geometry conversion");
+        return LOCTEXT("GeometryConversion", "转换几何体");
     case EMtoUPreviewBuildStage::WeightTransfer:
-        return LOCTEXT("WeightTransfer", "Weight transfer");
+        return LOCTEXT("WeightTransfer", "传递权重");
     case EMtoUPreviewBuildStage::SkeletalMeshBuild:
-        return LOCTEXT("SkeletalMeshBuild", "Skeletal Mesh build");
+        return LOCTEXT("SkeletalMeshBuild", "构建骨骼网格");
     case EMtoUPreviewBuildStage::Validation:
-        return LOCTEXT("Validation", "Validation");
+        return LOCTEXT("Validation", "验证结果");
     default:
         return FText::GetEmpty();
     }
@@ -67,13 +75,6 @@ FSlateColor SeverityColor(ESeverity Severity)
     default:
         return FSlateColor::UseForeground();
     }
-}
-
-/** The first line of a raw status, so a multi-line message stays scannable inline. */
-FString FirstLine(const FString& Status)
-{
-    int32 LineBreak = INDEX_NONE;
-    return Status.FindChar(TEXT('\n'), LineBreak) ? Status.Left(LineBreak) : Status;
 }
 
 EMtoUConnectionState ClassifyConnection(const FString& Status)
@@ -122,23 +123,23 @@ FText ReadinessHeadline(const FMtoUPreviewReadiness& Readiness, ESeverity& OutSe
     {
     case EMtoUPreviewState::Dirty:
         OutSeverity = ESeverity::Info;
-        return LOCTEXT("ReadinessDirty", "Needs refresh");
+        return LOCTEXT("ReadinessDirty", "需要刷新");
     case EMtoUPreviewState::Building:
         OutSeverity = ESeverity::Info;
-        return FText::Format(LOCTEXT("ReadinessBuilding", "Refreshing: {0}"), StageText(Readiness.Stage));
+        return FText::Format(LOCTEXT("ReadinessBuilding", "正在生成：{0}"), StageText(Readiness.Stage));
     case EMtoUPreviewState::Ready:
         OutSeverity = ESeverity::Success;
-        return LOCTEXT("ReadinessReady", "Ready");
+        return LOCTEXT("ReadinessReady", "预览已就绪");
     case EMtoUPreviewState::Warning:
         OutSeverity = ESeverity::Warning;
-        return LOCTEXT("ReadinessWarning", "Ready with a warning");
+        return LOCTEXT("ReadinessWarning", "预览已就绪（有警告）");
     case EMtoUPreviewState::Error:
         OutSeverity = ESeverity::Error;
-        return LOCTEXT("ReadinessError", "Refresh failed");
+        return LOCTEXT("ReadinessError", "预览生成失败");
     case EMtoUPreviewState::None:
     default:
         OutSeverity = ESeverity::Neutral;
-        return LOCTEXT("ReadinessNone", "Not set up");
+        return LOCTEXT("ReadinessNone", "尚未生成预览");
     }
 }
 
@@ -148,31 +149,33 @@ FText ConnectionHeadline(EMtoUConnectionState State, const FString& Status, ESev
     {
     case EMtoUConnectionState::Disconnected:
         OutSeverity = ESeverity::Neutral;
-        return LOCTEXT("ConnectionDisconnected", "Disconnected");
+        return Status == TEXT("Disconnected")
+            ? LOCTEXT("ConnectionDisconnected", "未连接")
+            : LOCTEXT("ConnectionInterrupted", "连接已中断");
     case EMtoUConnectionState::Validating:
         OutSeverity = ESeverity::Info;
-        return LOCTEXT("ConnectionValidating", "Connecting");
+        return LOCTEXT("ConnectionValidating", "连接中");
     case EMtoUConnectionState::NotReady:
         OutSeverity = ESeverity::Warning;
-        return LOCTEXT("ConnectionNotReady", "Preview not ready");
+        return LOCTEXT("ConnectionNotReady", "未连接（预览未就绪）");
     case EMtoUConnectionState::Partial:
         OutSeverity = ESeverity::Warning;
-        return LOCTEXT("ConnectionPartial", "Connected with partial Morphs");
+        return LOCTEXT("ConnectionPartial", "已连接（部分 Morph）");
     case EMtoUConnectionState::BoneOnly:
         OutSeverity = ESeverity::Warning;
-        return LOCTEXT("ConnectionBoneOnly", "Connected without Morphs");
+        return LOCTEXT("ConnectionBoneOnly", "已连接（仅骨骼）");
     case EMtoUConnectionState::Connected:
         OutSeverity = ESeverity::Success;
-        return LOCTEXT("ConnectionConnected", "Connected");
+        return LOCTEXT("ConnectionConnected", "已连接");
     case EMtoUConnectionState::Error:
         OutSeverity = ESeverity::Error;
-        return LOCTEXT("ConnectionError", "Connection error");
+        return LOCTEXT("ConnectionError", "连接出错");
     case EMtoUConnectionState::Unknown:
     default:
         OutSeverity = ESeverity::Neutral;
         return Status.TrimStartAndEnd().IsEmpty()
-            ? LOCTEXT("ConnectionIdle", "Not connected")
-            : FText::FromString(FirstLine(Status));
+            ? LOCTEXT("ConnectionIdle", "未连接")
+            : LOCTEXT("ConnectionUnknown", "连接状态未知");
     }
 }
 
@@ -187,50 +190,41 @@ bool ConnectionNeedsDetail(const FString& Status)
 
 FText NextStepText(EMtoUConnectionState Connection, const FMtoUPreviewReadiness& Readiness)
 {
-    switch (Connection)
-    {
-    case EMtoUConnectionState::Error:
-        return LOCTEXT("NextStepConnectionError",
-            "Fix the reported error, then reconnect in Maya; the full message stays in MtoU Diagnostics.");
-    case EMtoUConnectionState::NotReady:
-        return LOCTEXT("NextStepPreviewNotReady",
-            "Run Refresh Preview, then connect the Model workflow in Maya.");
-    case EMtoUConnectionState::Validating:
-        return LOCTEXT("NextStepValidating",
-            "Maya is negotiating the connection; wait for its result.");
-    case EMtoUConnectionState::BoneOnly:
-        return LOCTEXT("NextStepBoneOnly",
-            "Enable Transfer BS in Maya and reconnect before accepting; this session streams no Morphs.");
-    case EMtoUConnectionState::Partial:
-        return LOCTEXT("NextStepPartial",
-            "Connected with partial Morph coverage; review Model diagnostics before accepting.");
-    case EMtoUConnectionState::Connected:
-        return LOCTEXT("NextStepConnected",
-            "Connected through the Maya workflow in use; this display follows the session.");
-    case EMtoUConnectionState::Disconnected:
-    case EMtoUConnectionState::Unknown:
-    default:
-        break;
-    }
+    // A failed Preview is the current blocker even if the link is also down.
     switch (Readiness.State)
     {
     case EMtoUPreviewState::Building:
-        return LOCTEXT("NextStepBuilding", "Refresh is running; wait for it to finish.");
+        return LOCTEXT("NextStepBuilding", "正在刷新预览，请等待结果。");
     case EMtoUPreviewState::Error:
-        return LOCTEXT("NextStepRefreshFailed",
-            "Fix the reported inputs, then run Refresh Preview again; the failure message stays in MtoU Diagnostics.");
+        if (Readiness.Diagnostics.Contains(TEXT("two indistinguishable source regions")))
+        {
+            return LOCTEXT("NextStepAmbiguous", "检查候选区段；确认目标材质槽后重新刷新预览。");
+        }
+        return LOCTEXT("NextStepRefreshFailed", "查看错误详情，修正输入后重新刷新预览。");
     case EMtoUPreviewState::Warning:
-        return LOCTEXT("NextStepQualityWarning",
-            "The preview is usable with a quality warning; review MtoU Diagnostics before accepting.");
+        return LOCTEXT("NextStepQualityWarning", "预览可用；请先检查高级诊断中的质量警告。");
     case EMtoUPreviewState::Dirty:
-        return LOCTEXT("NextStepDirty",
-            "Inputs changed; run Refresh Preview to rebuild the Generated Preview.");
+        return LOCTEXT("NextStepDirty", "输入已改变，请刷新预览。");
     case EMtoUPreviewState::Ready:
-        return LOCTEXT("NextStepReady",
-            "Connect the Model workflow in Maya, or run Refresh Preview after changing inputs.");
+        break;
     case EMtoUPreviewState::None:
     default:
-        return LOCTEXT("NextStepNone", "Assign the Binding inputs, then run Refresh Preview.");
+        return LOCTEXT("NextStepNone", "配置绑定资产中的主体和预览网格，然后刷新预览。");
+    }
+    switch (Connection)
+    {
+    case EMtoUConnectionState::Error:
+        return LOCTEXT("NextStepConnectionError", "检查连接诊断，然后在 Maya 中重新连接。");
+    case EMtoUConnectionState::Validating:
+        return LOCTEXT("NextStepValidating", "正在建立连接，请等待结果。");
+    case EMtoUConnectionState::BoneOnly:
+        return LOCTEXT("NextStepBoneOnly", "如需 Morph，请在 Maya 中启用传递 BS 后重新连接。");
+    case EMtoUConnectionState::Partial:
+        return LOCTEXT("NextStepPartial", "检查模型诊断中的 Morph 覆盖情况。");
+    case EMtoUConnectionState::Connected:
+        return LOCTEXT("NextStepConnected", "预览跟随当前 Maya 会话；修改输入后请重新刷新。");
+    default:
+        return LOCTEXT("NextStepReady", "如需实时更新，请在 Maya 中连接模型工作流。");
     }
 }
 
@@ -239,12 +233,12 @@ FText DisplayText(EMtoUDisplayTarget Target)
     switch (Target)
     {
     case EMtoUDisplayTarget::GeneratedPreview:
-        return LOCTEXT("DisplayGeneratedPreview", "Showing Generated Preview");
+        return LOCTEXT("DisplayGeneratedPreview", "当前显示：生成的预览网格");
     case EMtoUDisplayTarget::Driver:
-        return LOCTEXT("DisplayDriver", "Showing Driver");
+        return LOCTEXT("DisplayDriver", "当前显示：主体网格（Driver）");
     case EMtoUDisplayTarget::Hidden:
     default:
-        return LOCTEXT("DisplayHidden", "Showing nothing (no mesh selected)");
+        return LOCTEXT("DisplayHidden", "当前未显示网格");
     }
 }
 
@@ -252,18 +246,18 @@ FText RefreshPreviewTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
 {
     return Actor.IsValid()
         ? LOCTEXT("RefreshPreviewTooltip",
-            "Rebuild the Generated Preview from the current Binding inputs. Ends the active session and shows the new Generated Preview.")
+            "根据当前绑定输入重新生成预览；会结束当前会话并显示新网格。")
         : LOCTEXT("RefreshPreviewUnavailable",
-            "Select a Binding actor to refresh its Generated Preview.");
+            "选择绑定 Actor 后刷新预览。");
 }
 
 FText DeletePreviewTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
 {
     return FMtoULiveLinkActorDetails::CanDeletePreview(Actor)
         ? LOCTEXT("DeletePreviewTooltip",
-            "Remove the Generated Preview and return to the Driver display.")
+            "删除生成的预览，改为显示主体网格。")
         : LOCTEXT("DeletePreviewUnavailable",
-            "Available after Refresh Preview produces a usable Generated Preview.");
+            "生成可用预览后才能删除。");
 }
 
 /** Builds the one status view from an already-read axis snapshot. */
@@ -279,13 +273,71 @@ FMtoULiveLinkActorDetails::FStatusView BuildStatusView(
     ESeverity ConnectionSeverity = ESeverity::Neutral;
     const FText ConnectionText = ConnectionHeadline(Connection, ConnectionStatus, ConnectionSeverity);
 
-    View.State = FText::Format(LOCTEXT("StatusHeadline", "{0} \u00B7 {1}"), ReadinessText, ConnectionText);
+    View.Preview = ReadinessText;
+    View.Connection = ConnectionText;
+    View.PreviewSeverity = ReadinessSeverity;
+    View.ConnectionSeverity = ConnectionSeverity;
+    View.State = FText::Format(LOCTEXT("StatusHeadline", "{0} · {1}"), ReadinessText, ConnectionText);
     View.Severity = ReadinessSeverity > ConnectionSeverity ? ReadinessSeverity : ConnectionSeverity;
-    View.Detail = ConnectionNeedsDetail(ConnectionStatus)
-        ? FText::FromString(ConnectionStatus.TrimStartAndEnd())
-        : FText::GetEmpty();
     View.NextStep = NextStepText(Connection, Readiness);
     View.Display = DisplayText(Target.GetDisplayTarget());
+
+    if (Readiness.State == EMtoUPreviewState::Error)
+    {
+        if (Readiness.Diagnostics.Contains(TEXT("Automatic garment resolution found two indistinguishable source regions")))
+        {
+            View.Summary = LOCTEXT("AmbiguousGarmentSummary", "预览生成失败：服装区域匹配冲突");
+            View.Cause = LOCTEXT("AmbiguousGarmentCause", "自动识别发现两个无法可靠区分的候选区域，预览未生成。");
+            const FRegexPattern RegionPattern(TEXT("\\[([0-9]+) tris in sections? ([0-9/]+)\\]"));
+            FRegexMatcher Matcher(RegionPattern, Readiness.Diagnostics);
+            TArray<FString> CandidateLines;
+            while (Matcher.FindNext())
+            {
+                CandidateLines.Add(FText::Format(
+                    LOCTEXT("GarmentCandidate", "区段 {0}：{1} 个三角面"),
+                    FText::FromString(Matcher.GetCaptureGroup(2)),
+                    FText::FromString(Matcher.GetCaptureGroup(1))).ToString());
+            }
+            View.Candidates = FText::FromString(FString::Join(CandidateLines, TEXT("\n")));
+        }
+        else
+        {
+            View.Summary = LOCTEXT("UnknownPreviewFailure", "预览生成失败：请查看错误详情");
+            View.Cause = LOCTEXT("UnknownPreviewCause", "当前输入未能生成预览；原始诊断保留在下方。");
+        }
+    }
+    else if (Connection == EMtoUConnectionState::Error)
+    {
+        View.Summary = LOCTEXT("ConnectionFailureSummary", "连接出错：请查看诊断");
+    }
+    else if (Readiness.State == EMtoUPreviewState::Warning)
+    {
+        View.Summary = LOCTEXT("PreviewWarningSummary", "预览已就绪，但存在质量警告");
+    }
+
+    // The raw source strings are collected once. Summary and diagnostics often
+    // carry the exact same failure, so showing both would duplicate the error.
+    TArray<FString> RawMessages;
+    auto AddRaw = [&RawMessages](const FString& Message)
+    {
+        const FString Trimmed = Message.TrimStartAndEnd();
+        if (!Trimmed.IsEmpty() && !RawMessages.Contains(Trimmed))
+        {
+            RawMessages.Add(Trimmed);
+        }
+    };
+    AddRaw(Readiness.Diagnostics);
+    if (Readiness.Summary != Readiness.Diagnostics)
+    {
+        AddRaw(Readiness.Summary);
+    }
+    AddRaw(Target.GetCharacterPartDiagnostics());
+    AddRaw(Target.GetModelDiagnostics());
+    if (ConnectionNeedsDetail(ConnectionStatus))
+    {
+        AddRaw(ConnectionStatus);
+    }
+    View.RawDiagnostics = FText::FromString(FString::Join(RawMessages, TEXT("\n\n")));
     return View;
 }
 }
@@ -309,117 +361,169 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         }
     }
 
-    // The curated Status row below is the one place the connection state is
-    // read; the actor's raw status property row would repeat it verbatim.
+    // Curated rows own all status text. Keep the serialized property intact.
     DetailBuilder.HideProperty(FName(TEXT("ConnectionStatus")));
-
-    IDetailCategoryBuilder& PreviewCategory = DetailBuilder.EditCategory(
-        "MtoU Preview", LOCTEXT("MtoUPreviewCategory", "MtoU Preview"),
-        ECategoryPriority::Important);
-
-    // One presenter per panel: every binding of the status row reads the same
-    // cached view, so a Slate poll keeps the status instead of rebuilding it.
     const TSharedRef<FStatusPresenter> Status = MakeShared<FStatusPresenter>(Actor);
 
-    // One status block: Preview readiness and connection state in the colored
-    // headline, the raw message only when it adds information, the single next
-    // step, and the display source that follows the actor.
-    PreviewCategory.AddCustomRow(LOCTEXT("StatusFilter", "Status"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("Status", "Status"))
-        ]
-        .ValueContent()
+    IDetailCategoryBuilder& Runtime = DetailBuilder.EditCategory(
+        "MtoU Runtime", LOCTEXT("RuntimeCategory", "MtoU · 运行状态"),
+        ECategoryPriority::Important);
+    Runtime.InitiallyCollapsed(false);
+    Runtime.AddCustomRow(LOCTEXT("RuntimeFilter", "预览 连接 状态"))
+        .WholeRowContent()
         [
             SNew(SVerticalBox)
-            + SVerticalBox::Slot()
-            .AutoHeight()
+            + SVerticalBox::Slot().AutoHeight()
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
-                .ColorAndOpacity_Lambda([Status]()
-                {
-                    return SeverityColor(Status->Get().Severity);
-                })
+                .ColorAndOpacity_Lambda([Status]() { return SeverityColor(Status->Get().PreviewSeverity); })
                 .Text_Lambda([Status]()
                 {
-                    return Status->Get().State;
+                    return FText::Format(LOCTEXT("PreviewStateLine", "预览：{0}"), Status->Get().Preview);
                 })
             ]
-            + SVerticalBox::Slot()
-            .AutoHeight()
-            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
-                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .ColorAndOpacity_Lambda([Status]() { return SeverityColor(Status->Get().ConnectionSeverity); })
                 .Text_Lambda([Status]()
                 {
-                    return Status->Get().Detail;
+                    return FText::Format(LOCTEXT("ConnectionStateLine", "连接：{0}"), Status->Get().Connection);
                 })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity_Lambda([Status]() { return SeverityColor(Status->Get().Severity); })
+                .Text_Lambda([Status]() { return Status->Get().Summary; })
                 .Visibility_Lambda([Status]()
                 {
-                    return Status->Get().Detail.IsEmpty()
-                        ? EVisibility::Collapsed
-                        : EVisibility::Visible;
+                    return Status->Get().Summary.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
                 })
             ]
-            + SVerticalBox::Slot()
-            .AutoHeight()
-            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
                 .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-                .Text_Lambda([Status]()
+                .Text_Lambda([Status]() { return Status->Get().NextStep; })
+            ]
+        ];
+
+    IDetailCategoryBuilder& Character = DetailBuilder.EditCategory(
+        "MtoU Character", LOCTEXT("CharacterCategory", "角色组成"),
+        ECategoryPriority::Important);
+    Character.InitiallyCollapsed(false);
+    Character.AddCustomRow(LOCTEXT("PrimaryFilter", "主体"))
+        .WholeRowContent()
+        [
+            SNew(STextBlock)
+            .AutoWrapText(true)
+            .Text_Lambda([Actor]()
+            {
+                const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                const USkeletalMesh* Mesh = Binding ? Binding->SkeletalMesh.Get() : nullptr;
+                return FText::Format(LOCTEXT("PrimaryValue", "主体：{0}"),
+                    Mesh ? FText::FromString(Mesh->GetName()) : LOCTEXT("NoPrimary", "未指定"));
+            })
+            .ToolTipText_Lambda([Actor]()
+            {
+                const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                const USkeletalMesh* Mesh = Binding ? Binding->SkeletalMesh.Get() : nullptr;
+                return Mesh ? FText::FromString(Mesh->GetPathName()) : FText::GetEmpty();
+            })
+        ];
+    Character.AddCustomRow(LOCTEXT("AdditionalPartsFilter", "附加部件"))
+        .WholeRowContent()
+        [
+            SNew(SExpandableArea)
+            .InitiallyCollapsed(true)
+            .HeaderContent()
+            [
+                SNew(STextBlock)
+                .Text_Lambda([Actor]()
                 {
-                    return Status->Get().NextStep;
+                    const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                    return FText::Format(LOCTEXT("AdditionalPartsCount", "附加部件：{0} 个"),
+                        FText::AsNumber(Binding ? Binding->AdditionalParts.Num() : 0));
                 })
             ]
-            + SVerticalBox::Slot()
-            .AutoHeight()
-            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            .BodyContent()
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
-                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-                .Text_Lambda([Status]()
+                .Text_Lambda([Actor]()
                 {
-                    return Status->Get().Display;
+                    const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                    if (!Binding || Binding->AdditionalParts.IsEmpty())
+                    {
+                        return LOCTEXT("NoAdditionalParts", "无附加部件");
+                    }
+                    TArray<FString> Lines;
+                    for (const FMtoUCharacterPart& Part : Binding->AdditionalParts)
+                    {
+                        const FString Name = Part.SkeletalMesh
+                            ? Part.SkeletalMesh->GetName() : TEXT("未指定网格");
+                        Lines.Add(Part.bEnabled ? Name : FString::Printf(TEXT("%s（已停用）"), *Name));
+                    }
+                    return FText::FromString(FString::Join(Lines, TEXT("\n")));
+                })
+                .ToolTipText_Lambda([Actor]()
+                {
+                    const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                    TArray<FString> Paths;
+                    if (Binding)
+                    {
+                        for (const FMtoUCharacterPart& Part : Binding->AdditionalParts)
+                        {
+                            if (Part.SkeletalMesh)
+                            {
+                                Paths.Add(Part.SkeletalMesh->GetPathName());
+                            }
+                        }
+                    }
+                    return FText::FromString(FString::Join(Paths, TEXT("\n")));
                 })
             ]
         ];
 
-    // The two Preview actions sit together, content-sized, directly under the
-    // status that explains them.
-    PreviewCategory.AddCustomRow(LOCTEXT("PreviewActionsFilter", "Preview actions"))
+    IDetailCategoryBuilder& Controls = DetailBuilder.EditCategory(
+        "MtoU Preview Controls", LOCTEXT("ControlsCategory", "预览控制"),
+        ECategoryPriority::Important);
+    Controls.InitiallyCollapsed(false);
+    Controls.AddProperty(DetailBuilder.GetProperty(FName(TEXT("Binding"))))
+        .DisplayName(LOCTEXT("BindingAsset", "绑定资产"));
+    Controls.AddProperty(DetailBuilder.GetProperty(FName(TEXT("GeneratedPreviewMesh"))))
+        .DisplayName(LOCTEXT("GeneratedPreviewMesh", "生成的预览网格"));
+    Controls.AddCustomRow(LOCTEXT("DisplayFilter", "当前显示"))
+        .WholeRowContent()
+        [
+            SNew(STextBlock)
+            .AutoWrapText(true)
+            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+            .Text_Lambda([Status]() { return Status->Get().Display; })
+        ];
+    Controls.AddCustomRow(LOCTEXT("PreviewActionsFilter", "预览操作"))
         .WholeRowContent()
         [
             SNew(SHorizontalBox)
-            + SHorizontalBox::Slot()
-            .AutoWidth()
-            .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
             [
                 SNew(SButton)
-                .Text(LOCTEXT("RefreshPreview", "Refresh Preview"))
+                .Text(LOCTEXT("RefreshPreview", "刷新预览"))
                 .ToolTipText_Lambda([Actor]() { return RefreshPreviewTooltip(Actor); })
                 .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
-                .OnClicked_Lambda([Actor]()
-                {
-                    return HandleRefreshPreviewClicked(Actor);
-                })
+                .OnClicked_Lambda([Actor]() { return HandleRefreshPreviewClicked(Actor); })
             ]
-            + SHorizontalBox::Slot()
-            .AutoWidth()
+            + SHorizontalBox::Slot().AutoWidth()
             [
                 SNew(SButton)
-                .Text(LOCTEXT("DeletePreview", "Delete Preview"))
+                .Text(LOCTEXT("DeletePreview", "删除预览"))
                 .ToolTipText_Lambda([Actor]() { return DeletePreviewTooltip(Actor); })
-                .IsEnabled_Lambda([Actor]()
-                {
-                    return CanDeletePreview(Actor);
-                })
+                .IsEnabled_Lambda([Actor]() { return CanDeletePreview(Actor); })
                 .OnClicked_Lambda([Actor]()
                 {
                     if (AMtoULiveLinkActor* Target = Actor.Get())
@@ -431,156 +535,117 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             ]
         ];
 
-    IDetailCategoryBuilder& DiagnosticsCategory = DetailBuilder.EditCategory(
-        "MtoU Diagnostics", LOCTEXT("MtoUDiagnosticsCategory", "MtoU Diagnostics"),
+    IDetailCategoryBuilder& Advanced = DetailBuilder.EditCategory(
+        "MtoU Advanced", LOCTEXT("AdvancedCategory", "高级设置与诊断"),
         ECategoryPriority::Default);
-    DiagnosticsCategory.InitiallyCollapsed(true);
-
-    DiagnosticsCategory.AddCustomRow(LOCTEXT("CharacterPartsFilter", "Character parts"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("CharacterParts", "Character parts"))
-        ]
-        .ValueContent()
+    Advanced.InitiallyCollapsed(true);
+    Advanced.AddCustomRow(LOCTEXT("GarmentOverrideFilter", "服装材质槽覆盖"))
+        .WholeRowContent()
         [
             SNew(STextBlock)
             .AutoWrapText(true)
-            .ColorAndOpacity_Lambda([Actor]()
-            {
-                return Actor.IsValid() && !Actor->GetCharacterPartDiagnostics().IsEmpty()
-                    ? FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f))
-                    : FSlateColor::UseForeground();
-            })
             .Text_Lambda([Actor]()
             {
-                if (!Actor.IsValid())
+                const UMtoULiveLinkBinding* Binding = Actor.IsValid() ? Actor->GetBinding() : nullptr;
+                if (!Binding)
                 {
-                    return FText::GetEmpty();
+                    return LOCTEXT("OverrideNeedsBinding", "服装材质槽覆盖：请先指定绑定资产。");
                 }
-                const FString& Diagnostics = Actor->GetCharacterPartDiagnostics();
-                if (!Diagnostics.IsEmpty())
+                if (Binding->DriverGarmentSlotOverride.IsEmpty())
                 {
-                    return FText::FromString(FString::Printf(
-                        TEXT("%s\n%s"), *Actor->GetCharacterPartSummary(), *Diagnostics));
+                    return LOCTEXT("OverrideAutomatic", "服装材质槽覆盖：自动识别。可在绑定资产的 Driver Garment Slot Override 中指定已确认的材质槽。");
                 }
-                return Actor->GetCharacterPartSummary().IsEmpty()
-                    ? LOCTEXT("NoCharacterParts", "No Primary Driver Skeletal Mesh")
-                    : FText::FromString(Actor->GetCharacterPartSummary());
+                TArray<FString> Slots;
+                for (const FName Slot : Binding->DriverGarmentSlotOverride)
+                {
+                    Slots.Add(Slot.ToString());
+                }
+                return FText::Format(LOCTEXT("OverrideManual", "服装材质槽覆盖：{0}（在绑定资产中编辑）"),
+                    FText::FromString(FString::Join(Slots, TEXT(", "))));
             })
         ];
-
-    DiagnosticsCategory.AddCustomRow(LOCTEXT("ModifiedPartsFilter", "Modified parts"))
-        .NameContent()
+    Advanced.AddCustomRow(LOCTEXT("DiagnosticsFilter", "错误详情 原始诊断"))
+        .WholeRowContent()
         [
-            SNew(STextBlock)
-            .Text(LOCTEXT("ModifiedParts", "Modified parts"))
-        ]
-        .ValueContent()
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                const FString Summary = Actor.IsValid()
-                    ? Actor->GetPreviewReadiness().Summary : FString();
-                return !Summary.IsEmpty()
-                    ? FText::FromString(Summary)
-                    : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
-            })
-        ];
-
-    DiagnosticsCategory.AddCustomRow(LOCTEXT("PreviewDetailsFilter", "Preview details"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("PreviewDetails", "Preview details"))
-        ]
-        .ValueContent()
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                if (!Actor.IsValid())
+            SNew(SVerticalBox)
+            + SVerticalBox::Slot().AutoHeight()
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Status]() { return Status->Get().Summary; })
+                .Visibility_Lambda([Status]()
                 {
-                    return FText::GetEmpty();
-                }
-                const FString& Diagnostics = Actor->GetPreviewReadiness().Diagnostics;
-                return !Diagnostics.IsEmpty()
-                    ? FText::FromString(Diagnostics)
-                    : LOCTEXT("NoPreviewDetails", "No preview diagnostics recorded");
-            })
-        ];
-
-    DiagnosticsCategory.AddCustomRow(LOCTEXT("ModelDiagnosticsFilter", "Model diagnostics"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("ModelDiagnostics", "Model diagnostics"))
-        ]
-        .ValueContent()
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .ColorAndOpacity_Lambda([Actor]()
-            {
-                if (!Actor.IsValid())
+                    return Status->Get().Summary.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Status]() { return Status->Get().Cause; })
+                .Visibility_Lambda([Status]()
                 {
-                    return FSlateColor::UseForeground();
-                }
-                switch (Actor->GetModelDiagnosticLevel())
+                    return Status->Get().Cause.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Status]() { return Status->Get().Candidates; })
+                .Visibility_Lambda([Status]()
                 {
-                case EMtoUModelDiagnosticLevel::Partial:
-                    return FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f));
-                case EMtoUModelDiagnosticLevel::BoneOnly:
-                    return FSlateColor(FLinearColor(1.0f, 0.6f, 0.25f));
-                case EMtoUModelDiagnosticLevel::Error:
-                    return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
-                case EMtoUModelDiagnosticLevel::Full:
-                    return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
-                case EMtoUModelDiagnosticLevel::None:
-                default:
-                    return FSlateColor::UseForeground();
-                }
-            })
-            .Text_Lambda([Actor]()
-            {
-                if (!Actor.IsValid())
+                    return Status->Get().Candidates.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Status]()
                 {
-                    return FText::GetEmpty();
-                }
-                const FString& Diagnostics = Actor->GetModelDiagnostics();
-                return !Diagnostics.IsEmpty()
-                    ? FText::FromString(Diagnostics)
-                    : LOCTEXT("NoModelDiagnostics", "No Model connection diagnostics recorded");
-            })
-        ];
-
-    DiagnosticsCategory.AddCustomRow(LOCTEXT("ConnectionDetailsFilter", "Connection details"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("ConnectionDetails", "Connection"))
-        ]
-        .ValueContent()
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                if (!Actor.IsValid())
+                    return FText::Format(LOCTEXT("AdvancedNextStep", "下一步：{0}"),
+                        Status->Get().NextStep);
+                })
+                .Visibility_Lambda([Status]()
                 {
-                    return FText::GetEmpty();
-                }
-                const FString& Status = Actor->GetConnectionStatus();
-                return !Status.IsEmpty()
-                    ? FText::FromString(Status)
-                    : LOCTEXT("NoConnectionStatus", "No connection status recorded");
-            })
+                    return Status->Get().Summary.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f)
+            [
+                SNew(SBox)
+                .MaxDesiredHeight(180.0f)
+                .Visibility_Lambda([Status]()
+                {
+                    return Status->Get().RawDiagnostics.IsEmpty()
+                        ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+                [
+                    SNew(SMultiLineEditableTextBox)
+                    .IsReadOnly(true)
+                    .AutoWrapText(true)
+                    .Text_Lambda([Status]() { return Status->Get().RawDiagnostics; })
+                ]
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
+            [
+                SNew(SButton)
+                .HAlign(HAlign_Center)
+                .Text(LOCTEXT("CopyDiagnostics", "复制完整诊断"))
+                .Visibility_Lambda([Status]()
+                {
+                    return Status->Get().RawDiagnostics.IsEmpty()
+                        ? EVisibility::Collapsed : EVisibility::Visible;
+                })
+                .OnClicked_Lambda([Status]()
+                {
+                    FPlatformApplicationMisc::ClipboardCopy(*Status->Get().RawDiagnostics.ToString());
+                    return FReply::Handled();
+                })
+            ]
         ];
 }
-
 FMtoULiveLinkActorDetails::FStatusView FMtoULiveLinkActorDetails::MakeStatusView(
     TWeakObjectPtr<AMtoULiveLinkActor> Actor)
 {
@@ -589,10 +654,19 @@ FMtoULiveLinkActorDetails::FStatusView FMtoULiveLinkActorDetails::MakeStatusView
         return BuildStatusView(*Target, Target->GetPreviewReadiness());
     }
     FStatusView View;
-    View.State = LOCTEXT("StatusNoActor", "No Binding actor selected");
+    View.Preview = LOCTEXT("StatusNoActor", "未选择绑定 Actor");
+    View.Connection = LOCTEXT("ConnectionIdle", "未连接");
+    View.State = View.Preview;
     View.NextStep = LOCTEXT("NextStepNoActor",
-        "Select a Binding actor to refresh or delete its Generated Preview.");
+        "选择绑定 Actor 后刷新或删除预览。");
     return View;
+}
+
+FMtoULiveLinkActorDetails::FStatusView FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+    TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoUPreviewReadiness& Readiness)
+{
+    return Actor.IsValid() ? BuildStatusView(*Actor.Get(), Readiness)
+        : MakeStatusView(Actor);
 }
 
 FMtoULiveLinkActorDetails::FStatusPresenter::FStatusPresenter(TWeakObjectPtr<AMtoULiveLinkActor> InActor)
@@ -627,7 +701,11 @@ const FMtoULiveLinkActorDetails::FStatusView& FMtoULiveLinkActorDetails::FStatus
         && CachedKey.State == Readiness.State
         && CachedKey.Stage == Readiness.Stage
         && CachedKey.Display == Display
-        && CachedKey.Connection == Connection)
+        && CachedKey.PreviewDiagnostics == Readiness.Diagnostics
+        && CachedKey.PreviewSummary == Readiness.Summary
+        && CachedKey.Connection == Connection
+        && CachedKey.ModelDiagnostics == Target->GetModelDiagnostics()
+        && CachedKey.CharacterDiagnostics == Target->GetCharacterPartDiagnostics())
     {
         return View;
     }
@@ -636,8 +714,12 @@ const FMtoULiveLinkActorDetails::FStatusView& FMtoULiveLinkActorDetails::FStatus
     CachedKey.bHasActor = true;
     CachedKey.State = Readiness.State;
     CachedKey.Stage = Readiness.Stage;
+    CachedKey.PreviewDiagnostics = Readiness.Diagnostics;
+    CachedKey.PreviewSummary = Readiness.Summary;
     CachedKey.Display = Display;
     CachedKey.Connection = Connection;
+    CachedKey.ModelDiagnostics = Target->GetModelDiagnostics();
+    CachedKey.CharacterDiagnostics = Target->GetCharacterPartDiagnostics();
     bHasView = true;
     return View;
 }
@@ -652,7 +734,7 @@ FReply FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(TWeakObjectPtr<AMt
     if (AMtoULiveLinkActor* Target = Actor.Get())
     {
         FScopedSlowTask Progress(5.0f, LOCTEXT(
-            "PreparingPreview", "Preparing Generated Preview"));
+            "PreparingPreview", "正在生成预览网格"));
         Progress.MakeDialogDelayed(0.25f);
         FMtoUPreviewPreparation::RefreshActor(
             *Target,

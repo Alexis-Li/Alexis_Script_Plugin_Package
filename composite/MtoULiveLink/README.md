@@ -103,10 +103,11 @@ on the Binding. All enabled parts pose and display under one connection:
 1. In Unreal, create an **MtoU_LiveLink Binding** asset, assign its
    **Primary Driver Skeletal Mesh**, and add any **Additional Parts**.
 2. Drag the Binding asset from the Content Browser into the level to create
-   its Binding Actor. In Details, **MtoU Preview** shows one **Status** block
-   (preview readiness, connection, next step, and displayed mesh) above
-   **Refresh Preview** and **Delete Preview**. **MtoU Diagnostics** stays
-   collapsed until you need part, preview, Model, or raw connection details.
+   its Binding Actor. Its Details panel opens **MtoU · 运行状态** (separate Preview
+   and connection states plus the next step), **角色组成** (Primary and expandable
+   Additional Parts), and **预览控制** (Binding and generated mesh asset fields,
+   Refresh and Delete). Expand **高级设置与诊断** for the full selectable and
+   copyable raw error; an empty diagnostic does not occupy the daily view.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
    (模型) at the top. Below are Connection Controls (set character, connect,
@@ -138,10 +139,10 @@ reason. If playback fails, you can retry the retained cache or leave cached mode
 ## Garment model preview
 
 1. On the Unreal Binding, assign the garment **Preview Static Mesh**.
-2. Click **Refresh Preview** on the Binding Actor and wait for **Status** to
-   show Ready, Ready with a warning, or Refresh failed. **Modified parts** in
-   **MtoU Diagnostics** lists the material slots replaced by the preview; the
-   rest of the Driver character remains visible.
+2. Click **刷新预览** on the Binding Actor and wait for the Preview status to
+   show ready, warning, or failed. A failure names the cause in Chinese while
+   connection remains a separate status. Expand **高级设置与诊断** to inspect and
+   copy the original error; the rest of the Driver character remains visible.
 3. In Maya, select **Model** (模型), confirm the outfit and **Transfer BS**
    setting, then click **Connect**.
 4. Pose the character in Maya to inspect garment deformation in Unreal.

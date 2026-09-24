@@ -45,9 +45,10 @@ public:
         TSharedRef<FPropertySection> MtoUSection = PropertyEditor.FindOrCreateSection(
             AMtoULiveLinkActor::StaticClass()->GetFName(), "MtoU",
             LOCTEXT("MtoUSection", "MtoU"), 1000);
-        MtoUSection->AddCategory("MtoU_LiveLink");
-        MtoUSection->AddCategory("MtoU Preview");
-        MtoUSection->AddCategory("MtoU Diagnostics");
+        MtoUSection->AddCategory("MtoU Runtime");
+        MtoUSection->AddCategory("MtoU Character");
+        MtoUSection->AddCategory("MtoU Preview Controls");
+        MtoUSection->AddCategory("MtoU Advanced");
 
         AssetReimportHandle = GEditor->GetEditorSubsystem<UImportSubsystem>()
             ->OnAssetReimport.AddRaw(this, &FMtoULiveLinkEditorModule::HandleAssetReimport);
