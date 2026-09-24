@@ -2,18 +2,15 @@
 
 ## Unreleased
 
-- Redesign both host panels without changing workflows (Issue #48). Maya now
-  follows the 0.5.0 single-column order on one aligned grid as titled card
-  sections: Workflow (animation/model tabs), Connect (set character, connect,
-  disconnect, indicator), Scene Info (character summary and cache), Preview &
-  Playback (mode buttons, transfer cap, cache actions only in Cached
-  Playback), Tools, and Diagnostics; the window height follows the visible
-  cards. UE Details combines readiness, connection, next step, and displayed
-  mesh in one colored Status block above content-sized
-  preview actions, with part, preview, Model, and raw connection details in
-  collapsed MtoU Diagnostics. Repeated same-session warnings interrupt once;
-  new warnings and blocking errors still interrupt. No protocol, cache, or
-  recovery change.
+- Redesign both host panels without changing workflows (Issue #48). Maya uses
+  a compact dark card layout with a blue two-tab workflow switch, connection
+  controls and status, two-column Scene Info, green preview selection, contextual
+  cache actions, Tools, and Diagnostics. The window resizes when cached actions
+  appear or disappear. UE Details combines readiness, connection, next step,
+  and displayed mesh in one colored Status block above content-sized preview
+  actions, with part, preview, Model, and raw connection details in collapsed
+  MtoU Diagnostics. Repeated same-session warnings interrupt once; new warnings
+  and blocking errors still interrupt. No protocol, cache, or recovery change.
 
 - Negotiate the required skinning bones and ancestors of every enabled part
   (Issue #55). Ignore unrelated exported branches and stream part-only secondary

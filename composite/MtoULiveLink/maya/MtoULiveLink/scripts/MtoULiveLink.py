@@ -56,26 +56,61 @@ REALTIME_MODE = "realtime"
 CACHED_MODE = "cached"
 TOGGLE_ON_BACKGROUND = (0.16, 0.55, 0.24)
 TOGGLE_OFF_BACKGROUND = (0.26, 0.26, 0.26)
-# Workflow tabs use a neutral lighter tone so they never read as a green
-# mode toggle or a blue primary action.
-TAB_ON_BACKGROUND = (0.52, 0.52, 0.52)
-TAB_OFF_BACKGROUND = (0.20, 0.20, 0.20)
-LIGHT_ON_BACKGROUND = (0.08, 0.45, 0.12)
-LIGHT_OFF_BACKGROUND = (0.55, 0.08, 0.08)
-# Panel grid: card stack width, outer margin, and the shared 4-column grid
-# inside each card (CARD_HALF = two grid columns + gutter for 2-up rows).
-PANEL_WIDTH = 480
-PANEL_MARGIN = 16
-CARD_MARGIN = 12
-GRID_GAP = 10
+# Panel geometry follows the compact two-column card layout. Maya adds a
+# one-pixel control frame around each Qt-backed control.
+TAB_ON_BACKGROUND = (0.16, 0.42, 0.56)
+TAB_OFF_BACKGROUND = (0.18, 0.19, 0.20)
+LIGHT_ON_BACKGROUND = (0.09, 0.40, 0.23)
+LIGHT_OFF_BACKGROUND = (0.34, 0.10, 0.11)
+PANEL_WIDTH = 432
+PANEL_MARGIN = 8
+CARD_MARGIN = 8
+GRID_GAP = 8
 CARD_GAP = GRID_GAP
-ROW_SPACING = 10
-TAB_HEIGHT = 40
+ROW_SPACING = 9
+TAB_HEIGHT = 32
 BUTTON_HEIGHT = 34
 CARD_CONTENT = PANEL_WIDTH
 CARD_HALF = (CARD_CONTENT - CARD_GAP) // 2
-CARD_QUARTER = (CARD_CONTENT - 3 * CARD_GAP) // 4
-PRIMARY_BACKGROUND = (0.20, 0.40, 0.48)
+PRIMARY_BACKGROUND = (0.16, 0.42, 0.56)
+PANEL_STYLE = """
+QWidget#MtoULiveLinkWindow { background: #2d3133; color: #e5e8e9; }
+QPushButton {
+    background: #474c4f; color: #f2f3f3; border: 1px solid #62686a;
+    border-radius: 3px; padding: 0 4px;
+}
+QPushButton:hover:enabled { background: #535b5e; border-color: #8a969a; }
+QPushButton:pressed:enabled { background: #343a3d; }
+QPushButton:disabled { background: #363a3d; color: #a3a8aa; border-color: #484d50; }
+QPushButton[mtouRole="tabOn"], QPushButton[mtouRole="primary"] {
+    background: #286f91; border-color: #499aba; color: #ffffff; font-weight: bold;
+}
+QPushButton[mtouRole="tabOn"]:hover:enabled,
+QPushButton[mtouRole="primary"]:hover:enabled { background: #3583a6; }
+QPushButton[mtouRole="tabOff"] { background: #2e3234; border-color: #454b4e; }
+QPushButton[mtouRole="realtime"] {
+    background: #198d54; border-color: #31af6c; color: #f9fffc; font-weight: bold;
+}
+QPushButton[mtouRole="realtime"]:hover:enabled { background: #23a464; }
+QPushButton[mtouRole="primary"]:disabled {
+    background: #363a3d; color: #a3a8aa; border-color: #484d50;
+}
+QLabel { color: #e5e8e9; }
+QLabel[mtouRole="disconnected"] {
+    background: #4b1e20; border: 1px solid #9d3d43; border-radius: 3px;
+    color: #ff727a; font-weight: bold;
+}
+QLabel[mtouRole="connected"] {
+    background: #1b4930; border: 1px solid #319965; border-radius: 3px;
+    color: #86e5ac; font-weight: bold;
+}
+QComboBox {
+    background: #393e41; color: #e5e8e9; border: 1px solid #60686b;
+    border-radius: 3px; padding-left: 5px;
+}
+QComboBox:disabled { color: #a3a8aa; border-color: #484d50; }
+QCheckBox { color: #e0e3e4; }
+"""
 TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -192,6 +227,11 @@ except ImportError:
     om = None
     oma = None
     cmds = None
+
+try:
+    import maya.OpenMayaUI as omui
+except ImportError:
+    omui = None
 
 
 def normalize_playback_cap(value):
@@ -3988,6 +4028,9 @@ class _Controller(object):
         self._shown_warning_signatures = set()
         self._warning_checkbox = None
         self._duplicate_button = None
+        self._styled_controls = {}
+        self._card_decorations = []
+        self._resize_scheduled = False
 
     @staticmethod
     def _grid_row(controls, spans=None, height=BUTTON_HEIGHT):
@@ -4017,13 +4060,13 @@ class _Controller(object):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
                     sizeable=False, width=PANEL_WIDTH + 2 * PANEL_MARGIN,
                     resizeToFitChildren=True)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=CARD_MARGIN,
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=ROW_SPACING,
                           columnAttach=("both", PANEL_MARGIN))
-        cmds.separator(height=4, style="none")
+        cmds.text(label="", height=1)
 
-        # Card 1 · workflow tabs.
-        cmds.frameLayout(label="工作流", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
+        # Card 1 · the active workflow is the card's title.
+        workflow_card = cmds.frameLayout(labelVisible=False, collapsable=False,
+                                         marginWidth=6, marginHeight=6)
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF, CARD_HALF + CARD_GAP),
                        columnAttach2=("both", "both"))
         self._animation_workflow_button = cmds.button(
@@ -4038,8 +4081,8 @@ class _Controller(object):
         cmds.setParent("..")
 
         # Card 2 · connect.
-        cmds.frameLayout(label="连接控制", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
+        connection_card = cmds.frameLayout(label="连接控制", collapsable=False,
+                                           marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN)
         cmds.formLayout(width=CARD_CONTENT)
         set_role = cmds.button(label="设置角色", height=BUTTON_HEIGHT,
                                annotation="先在 Maya 中选择变形根骨骼，再设置角色。",
@@ -4056,17 +4099,16 @@ class _Controller(object):
         cmds.setParent("..")
 
         # Card 3 · scene info, two label columns.
-        cmds.frameLayout(label="场景信息", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
-        cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF - 8, CARD_HALF - 8),
-                       columnAttach2=("left", "left"),
-                       columnOffset2=(8, CARD_HALF + CARD_GAP))
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=4)
+        scene_card = cmds.frameLayout(label="场景信息", collapsable=False,
+                                      marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN + 2)
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF, CARD_HALF),
+                       columnAttach2=("left", "left"))
+        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
         self._root_text = cmds.text(label="角色根骨骼：—", align="left")
         self._outfit_text = cmds.text(label="当前衣服：—", align="left")
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
         cmds.setParent("..")
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=4)
+        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
         self._bone_text = cmds.text(label="骨骼数：0", align="left")
         self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
         self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
@@ -4075,9 +4117,9 @@ class _Controller(object):
         cmds.setParent("..")
 
         # Card 4 · preview modes, transfer cap, and the cache action row.
-        cmds.frameLayout(label="预览与播放", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=CARD_MARGIN)
+        preview_card = cmds.frameLayout(label="预览与播放", collapsable=False,
+                                        marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=0)
         cmds.formLayout(width=CARD_CONTENT)
         self._realtime_mode_button = cmds.button(
             label="实时预览", height=BUTTON_HEIGHT, backgroundColor=TOGGLE_ON_BACKGROUND,
@@ -4118,8 +4160,8 @@ class _Controller(object):
         cmds.setParent("..")
 
         # Card 5 · advanced tools.
-        cmds.frameLayout(label="工具", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
+        tools_card = cmds.frameLayout(label="工具", collapsable=False,
+                                      marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
         cmds.formLayout(width=CARD_CONTENT)
         display = cmds.button(label="选择 Display 控制器", height=BUTTON_HEIGHT,
                               annotation="检测到多个服装属性时，选中 Display 控制器后点击。",
@@ -4132,21 +4174,24 @@ class _Controller(object):
         cmds.setParent("..")
 
         # Card 6 · diagnostics.
-        cmds.frameLayout(label="诊断", collapsable=False, marginWidth=CARD_MARGIN,
-                         marginHeight=CARD_MARGIN)
+        diagnostics_card = cmds.frameLayout(label="诊断", collapsable=False,
+                                            marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
         cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
                        columnWidth2=(CARD_CONTENT - 110, 110),
                        columnAttach2=("both", "both"), columnOffset2=(0, 4))
         self._status_text = cmds.text(label="未设置角色：选择根骨骼后点击“设置角色”",
-                                      align="left", wordWrap=True, font="boldLabelFont")
+                                      align="left", wordWrap=True)
         cmds.button(label="诊断详情", height=BUTTON_HEIGHT,
                     command=lambda *_: self.show_diagnostics())
         cmds.setParent("..")
         cmds.setParent("..")
 
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+        cmds.separator(height=1, style="single")
         cmds.rowLayout(numberOfColumns=1, columnWidth1=CARD_CONTENT)
         self._warning_checkbox = cmds.checkBox(
             label="连接成功后弹出差异警告", value=True)
+        cmds.setParent("..")
         cmds.setParent("..")
         self._refresh_fps()
         self._update_mode_controls()
@@ -4164,7 +4209,96 @@ class _Controller(object):
             except (AttributeError, RuntimeError, TypeError):
                 self._maya_exit_callback = None
         cmds.showWindow(WINDOW_NAME)
+        self._apply_panel_theme(
+            (workflow_card, connection_card, scene_card, preview_card,
+             tools_card, diagnostics_card),
+            {self._animation_workflow_button: "tabOn",
+             self._model_workflow_button: "tabOff",
+             self._connect_button: "primary",
+             self._realtime_mode_button: "realtime",
+             self._cached_mode_button: "neutral",
+             self._light: "disconnected",
+             self._capture_button: "primary"})
 
+
+    def _apply_panel_theme(self, cards, roles):
+        """Style only this Maya window's Qt widgets; keep cmds as state owner."""
+        if omui is None:  # Pure-Python controller tests have no Maya UI.
+            return
+        from PySide2 import QtCore, QtGui, QtWidgets
+        from shiboken2 import wrapInstance
+
+        window = wrapInstance(int(omui.MQtUtil.findWindow(WINDOW_NAME)),
+                              QtWidgets.QWidget)
+        window.setFont(QtGui.QFont("Microsoft YaHei UI", 10))
+        window.setStyleSheet(PANEL_STYLE)
+        class _CardDecoration(QtCore.QObject):
+            def __init__(self, card_widget, border, title_widget):
+                super(_CardDecoration, self).__init__(card_widget)
+                self.border = border
+                self.title = title_widget
+                card_widget.installEventFilter(self)
+
+            def eventFilter(self, watched, event):
+                if event.type() == QtCore.QEvent.Resize:
+                    self.border.setGeometry(watched.rect())
+                    if self.title is not None:
+                        self.title.setFixedWidth(watched.width() - 2)
+                return False
+
+        for index, card in enumerate(cards):
+            ptr = omui.MQtUtil.findLayout(card)
+            widget = wrapInstance(int(ptr), QtWidgets.QWidget)
+            children = [child for child in widget.children()
+                        if isinstance(child, QtWidgets.QWidget)]
+            body = children[-1]
+            title = None
+            if index:
+                # Maya paints its own frame header after the Qt style. An
+                # inert label gives each card the intended header surface
+                # without replacing any cmds control or event callback.
+                title = QtWidgets.QLabel(
+                    cmds.frameLayout(card, query=True, label=True), widget)
+                title.setGeometry(1, 1, widget.width() - 2, 25)
+                title.setContentsMargins(10, 0, 0, 0)
+                title.setFont(QtGui.QFont("Microsoft YaHei UI", 10, QtGui.QFont.Bold))
+                title.setStyleSheet(
+                    "background: #393f43; color: #e5e8e9; border: none;"
+                    "border-top-left-radius: 3px; border-top-right-radius: 3px;")
+                title.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+                title.show()
+            outline = QtWidgets.QFrame(widget)
+            outline.setGeometry(widget.rect())
+            outline.setStyleSheet(
+                "background: transparent; border: 1px solid #454b4e; border-radius: 4px;")
+            outline.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+            outline.show()
+            outline.raise_()
+            self._card_decorations.append(_CardDecoration(widget, outline, title))
+            if index == 2:
+                divider = QtWidgets.QFrame(body)
+                divider.setGeometry(CARD_MARGIN + CARD_HALF + CARD_GAP // 2,
+                                    CARD_MARGIN + 4, 1, 58)
+                divider.setStyleSheet("background: #656b6e;")
+                divider.show()
+        for control, role in roles.items():
+            ptr = omui.MQtUtil.findControl(control)
+            widget = wrapInstance(int(ptr), QtWidgets.QWidget)
+            self._styled_controls[control] = widget
+            widget.setProperty("mtouRole", role)
+        window.style().unpolish(window)
+        window.style().polish(window)
+        for widget in self._styled_controls.values():
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def _set_style_role(self, control, role):
+        widget = self._styled_controls.get(control)
+        if widget is not None and widget.property("mtouRole") != role:
+            widget.setProperty("mtouRole", role)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
 
 
     def _control_exists(self, control):
@@ -4241,6 +4375,7 @@ class _Controller(object):
                 TOGGLE_ON_BACKGROUND if selected else TOGGLE_OFF_BACKGROUND))
         except (AttributeError, RuntimeError, TypeError):
             pass
+        self._set_style_role(control, "realtime" if selected else "neutral")
 
     def _update_mode_selection(self):
         self._apply_toggle_background(
@@ -4306,6 +4441,7 @@ class _Controller(object):
                     TAB_ON_BACKGROUND if selected else TAB_OFF_BACKGROUND))
             except (AttributeError, RuntimeError, TypeError):
                 pass
+            self._set_style_role(control, "tabOn" if selected else "tabOff")
 
     def _update_context_layout(self):
         visible = self._workflow == WORKFLOW_ANIMATION and self._mode == CACHED_MODE
@@ -4313,6 +4449,24 @@ class _Controller(object):
         if layout and cmds is not None and cmds.layout(layout, exists=True):
             if cmds.layout(layout, query=True, manage=True) != visible:
                 cmds.layout(layout, edit=True, visible=visible, manage=visible)
+                if self._card_decorations and not self._resize_scheduled:
+                    from PySide2 import QtCore
+                    self._resize_scheduled = True
+                    QtCore.QTimer.singleShot(0, self._fit_panel_height)
+
+    def _fit_panel_height(self):
+        self._resize_scheduled = False
+        if not cmds.window(WINDOW_NAME, exists=True):
+            return
+        from PySide2 import QtCore, QtWidgets
+        from shiboken2 import wrapInstance
+
+        window = wrapInstance(int(omui.MQtUtil.findWindow(WINDOW_NAME)),
+                              QtWidgets.QWidget)
+        checkbox = wrapInstance(int(omui.MQtUtil.findControl(self._warning_checkbox)),
+                                QtWidgets.QWidget)
+        bottom = checkbox.mapTo(window, QtCore.QPoint(0, 0)).y() + checkbox.height()
+        window.resize(window.width(), bottom + PANEL_MARGIN)
 
     def _on_workflow_changed(self, workflow):
         if workflow == self._workflow or workflow not in WORKFLOWS:
@@ -4520,6 +4674,7 @@ class _Controller(object):
         if self._light and cmds.control(self._light, exists=True):
             cmds.text(self._light, edit=True, label=label, backgroundColor=(
                 LIGHT_ON_BACKGROUND if connected else LIGHT_OFF_BACKGROUND))
+            self._set_style_role(self._light, "connected" if connected else "disconnected")
         self._set_text(self._status_text, status)
         self._update_mode_controls()
 

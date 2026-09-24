@@ -108,13 +108,13 @@ on the Binding. All enabled parts pose and display under one connection:
    **Refresh Preview** and **Delete Preview**. **MtoU Diagnostics** stays
    collapsed until you need part, preview, Model, or raw connection details.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
-   **Set Character** (设置角色). The panel is organized into five titled
-   sections: Workflow (动画／模型 tabs), Connect (设置角色, 连接, 断开, and the
-   red/green connection indicator), Scene Info (root, outfit, frame rate,
-   bone/BlendShape counts, cache), Preview & Playback (mode buttons, transfer
-   cap, and cache actions only in Cached Playback), Tools (manual Display
-   selection and duplicate-bone selection), and Diagnostics (status line and
-   诊断详情). The warning switch sits below the Diagnostics card.
+   **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
+   (模型) at the top. Below are Connection Controls (set character, connect,
+   disconnect, and connection status), Scene Info (root, outfit, and frame rate
+   on the left; bone/BlendShape counts and cache on the right), Preview &
+   Playback (preview mode, transmission cap, and cache actions in Cached Playback),
+   Tools (Display and duplicate-bone selection), and Diagnostics (status and
+   诊断详情). The warning switch sits below Diagnostics.
 4. Select **Animation** (动画) and click **Connect** (连接); the indicator turns
    green. Pose, scrub, or play in Maya to preview the result in Unreal. **Cap**
    (上限) on the preview row limits the real-time transmission rate. A disabled
