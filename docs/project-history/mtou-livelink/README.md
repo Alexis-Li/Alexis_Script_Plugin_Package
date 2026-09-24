@@ -219,8 +219,10 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   capture orders over a public socket handshake, live/cache projection, all 78
   UE Automation tests, and another real C01 Animation/reconnect run pass on the
   fixed tree. The [acceptance record](issue-55-real-c01-acceptance.md) retains
-  the exact checks and limits; Issue #55 remains open for final owner
-  acceptance.
+  the exact checks and limits. Final independent acceptance of `1ef0c1c`
+  passed the original 78-test suite, all five retained review reproductions,
+  and 5,125 independently enumerated mapping combinations; the owner's visual
+  feedback completes Issue #55 acceptance.
 
 - **2026-09-24:** Reworked the Unreal Binding Actor Details for Issue #48 into
   four native groups: Runtime, Character, and Preview Controls open by default,

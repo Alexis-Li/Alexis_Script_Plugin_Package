@@ -1,6 +1,26 @@
 # Issue #55: real C01 Maya-to-Unreal acceptance
 
-Status: real C01 host checks passed on 2026-09-23 and 2026-09-24, and the owner reported no visual issues. The three source-mapping blockers found in independent reviews are fixed; synthetic socket, host, and real C01 Animation/reconnect checks pass on the current implementation. Model/Refresh and real C01 Cached Playback visuals were not repeated after the mapping changes. [Issue #55](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55) stays open for final owner acceptance.
+Status: accepted on 2026-09-24 at `1ef0c1c1e509045afe1c4ca3accd005dac4906f9`, with the owner's report of no visual issues. Independent review confirms the source-mapping blockers are resolved. Real C01 host checks passed on 2026-09-23 and 2026-09-24; Model/Refresh and real C01 Cached Playback visuals were not repeated after the mapping changes. The final conclusion is recorded in [Issue #55](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55).
+
+## Final independent acceptance
+
+An isolated copy of the accepted commit compiled both modules with stock UE
+5.7.4. The unmodified `MtoULiveLink` Automation suite passed all 78 tests
+(9 with existing diagnostics), with zero failures or unrun tests. The five
+retained independent review reproductions passed, including the previously
+failing rename-versus-rename capture-order case and the public socket ambiguity
+refusal. An additional independent test enumerated 5,125 small exact/numeric/hash
+name combinations and compared acceptance and source projection with exhaustive
+assignment enumeration; all agreed. Existing socket tests verified live and
+Cached Playback projection in both capture orders.
+
+Running the temporary review tests together with the product suite produced one
+`CacheBackpressure` Ready failure. That test passed in a fresh process, and the
+complete original suite passed after removing the temporary review tests. The
+mixed run is not counted as a clean suite pass; no product change was needed.
+The latest C01 raw report was inspected and confirms Animation/reconnect
+Success with zero errors and 122 existing asset-version warnings. This review
+used NullRHI and retains the earlier rendered evidence and owner visual feedback.
 
 ## Hosts and assets
 
