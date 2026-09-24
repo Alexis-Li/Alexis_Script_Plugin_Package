@@ -56,12 +56,12 @@ REALTIME_MODE = "realtime"
 CACHED_MODE = "cached"
 TOGGLE_ON_BACKGROUND = (0.16, 0.55, 0.24)
 TOGGLE_OFF_BACKGROUND = (0.26, 0.26, 0.26)
-# Panel geometry follows the compact two-column card layout. Maya adds a
-# one-pixel control frame around each Qt-backed control.
 TAB_ON_BACKGROUND = (0.16, 0.42, 0.56)
 TAB_OFF_BACKGROUND = (0.18, 0.19, 0.20)
 LIGHT_ON_BACKGROUND = (0.09, 0.40, 0.23)
 LIGHT_OFF_BACKGROUND = (0.34, 0.10, 0.11)
+# Panel grid: card stack width, outer margin, and the shared column grid.
+# Maya adds a one-pixel control frame around each Qt-backed control.
 PANEL_WIDTH = 432
 PANEL_MARGIN = 8
 CARD_MARGIN = 8
@@ -4038,9 +4038,7 @@ class _Controller(object):
 
         ``spans`` gives each control's column count (default one each). Every
         row shares the same columns and GRID_GAP gutter, so edges line up.
-        ``top`` insets the row inside its own height, which carries a gap that
-        disappears with the row instead of a parent rowSpacing that would also
-        pad the card when the row is hidden.
+        ``top`` insets the row from the top of its own height.
         """
         form = cmds.setParent(query=True)
         spans = spans or [1] * len(controls)
@@ -4067,7 +4065,7 @@ class _Controller(object):
                           columnAttach=("both", PANEL_MARGIN))
         cmds.text(label="", height=1)
 
-        # Card 1 · the active workflow is the card's title.
+        # Card 1 · workflow tabs.
         workflow_card = cmds.frameLayout(labelVisible=False, collapsable=False,
                                          marginWidth=6, marginHeight=6)
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF, CARD_HALF + CARD_GAP),
@@ -4158,8 +4156,6 @@ class _Controller(object):
         self._cancel_capture_button = cmds.button(
             label="取消捕获", height=BUTTON_HEIGHT, enable=False,
             command=lambda *_: self._cancel_cached_capture())
-        # The cache row carries its own top gap so the rows never touch, and
-        # the card stays compact while the row is hidden.
         self._grid_row([self._capture_button, self._replay_button,
                         self._stop_replay_button, self._cancel_capture_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
@@ -4261,9 +4257,8 @@ class _Controller(object):
             body = children[-1]
             title = None
             if index:
-                # Maya paints its own frame header after the Qt style. An
-                # inert label gives each card the intended header surface
-                # without replacing any cmds control or event callback.
+                # Maya paints its frame header after the Qt style, so the
+                # header surface comes from an inert overlay label.
                 title = QtWidgets.QLabel(
                     cmds.frameLayout(card, query=True, label=True), widget)
                 title.setGeometry(1, 1, widget.width() - 2, 25)
