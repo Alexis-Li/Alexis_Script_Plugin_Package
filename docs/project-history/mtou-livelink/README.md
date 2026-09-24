@@ -210,9 +210,17 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   check. Numeric/hash suffixes, both sibling orders, a public socket
   handshake, live/cache projection, and all 76 UE Automation tests pass in an
   isolated stock UE 5.7.4 project. Maya 2024 and the actual C01 meshes pass
-  Animation/reconnect again with 872 required bones. The
-  [acceptance record](issue-55-real-c01-acceptance.md) retains the exact
-  checks and limits; Issue #55 remains open for final owner acceptance.
+  Animation/reconnect again with 872 required bones. A third review round then
+  found that two sources needing importer renames still resolved in sibling
+  order; each mapped parent scope now resolves its remaining rename candidates
+  as one relation and accepts only a unique assignment covering the required
+  targets, rejecting contested or unsettled relations with
+  `Mapping ambiguities`. The rename chain, all six sibling permutations, both
+  capture orders over a public socket handshake, live/cache projection, all 78
+  UE Automation tests, and another real C01 Animation/reconnect run pass on the
+  fixed tree. The [acceptance record](issue-55-real-c01-acceptance.md) retains
+  the exact checks and limits; Issue #55 remains open for final owner
+  acceptance.
 
 ## Stable Records
 

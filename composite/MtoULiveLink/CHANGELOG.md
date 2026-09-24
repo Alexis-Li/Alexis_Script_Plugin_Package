@@ -29,6 +29,15 @@
   parents remain supported. Real-time and Cached Playback continue to use the
   same frozen source-index projection.
 
+- Resolve a whole mapped parent scope's importer renames as one relation
+  (Issue #55 review). A connection now requires exactly one assignment of Maya
+  sources to the scope's required targets, so two duplicated short names that
+  only resolve together connect in any sibling capture order, while several
+  possible assignments, a contested target, and a source whose feasible targets
+  the relation does not settle all reject with `Mapping ambiguities`. Exact-name
+  reservation, same-parent duplicate rejection, and unrelated-branch support are
+  unchanged.
+
 ## 0.5.0 - 2026-09-22
 
 Milestone accepted by the project owner after practical use with no issues

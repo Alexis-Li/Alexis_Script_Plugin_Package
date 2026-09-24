@@ -406,15 +406,20 @@ renames may map a duplicate Maya short name only below an
 already mapped parent: either the numeric suffix the engine appends, or the
 complete short name followed by `_` and exactly 32 hexadecimal digits. A
 partial original name, another separator, a different hash length, an
-unduplicated Maya name, a different parent, and several candidates stay
-blocking rather than selecting one. Within each mapped parent scope, all
+unduplicated Maya name, a different parent, and a candidate set the scope
+relation does not settle stay blocking rather than selecting one. Within each
+mapped parent scope, all
 exact-name Maya sources reserve their targets before import-renamed candidates
-are resolved. Same-parent, same-name Maya siblings remain ambiguous even when
-both a plain and a suffixed target are free; neither source can be assigned to
-one target based on capture order. A second equally valid source is reported
-with the target, parent, and both complete Maya paths. An unrelated short name
-in another mapped parent scope imposes no conflict. Only a source that matches
-no required bone in its own scope is treated as an unused branch.
+are resolved, and the remaining rename candidates are resolved as one relation:
+a connection requires exactly one assignment of sources to that scope's required
+targets. A target no source can drive, a target two or more sources claim, and a
+source whose several feasible targets the relation does not settle are all
+blocking, so neither capture order nor prefix length decides a mapping.
+Same-parent, same-name Maya siblings remain ambiguous even when both a plain and
+a suffixed target are free. Every competing claim is reported with the target,
+parent, and both complete Maya paths. An unrelated short name in another mapped
+parent scope imposes no conflict. Only a source that matches no required bone in
+its own scope is treated as an unused branch.
 
 The validation response leads with the root cause of the first unmapped bone:
 its complete Maya path, the mapped Unreal parent it had to match, the blocked

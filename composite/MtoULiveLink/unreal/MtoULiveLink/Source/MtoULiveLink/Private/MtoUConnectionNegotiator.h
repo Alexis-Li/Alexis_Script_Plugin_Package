@@ -22,8 +22,12 @@ struct FMtoUTargetDescription
     /**
      * Composition targets require every target bone, but allow unused Maya
      * branches. Exact-name sources in a mapped parent scope reserve their
-     * targets before importer renames; indistinguishable same-parent siblings
-     * remain ambiguous even if a suffixed target is free.
+     * targets before importer renames. The remaining rename candidates are
+     * resolved as one relation over the complete scope, and the required
+     * targets are accepted only when exactly one assignment of sources to
+     * targets covers them; several possible assignments, indistinguishable
+     * same-parent siblings, and a target no source can drive are refused
+     * rather than settled by traversal order.
      */
     bool bAllowUnusedSourceBones = false;
     TArray<FString> BoneOwners;
