@@ -3030,7 +3030,6 @@ class ControllerLifecycleTests(unittest.TestCase):
         controller._scene = object()
         controller._cached_retention = None
         controller._set_connected = mock.Mock()
-        controller._set_next = mock.Mock()
         controller._on_cached_playback_view = mock.Mock()
         controller._show_warning = mock.Mock()
         cached = mock.Mock()
@@ -3046,7 +3045,6 @@ class ControllerLifecycleTests(unittest.TestCase):
             controller._on_streaming_session_event(session, event)
         self.assertEqual(1, controller._show_warning.call_count)
         self.assertIn("UE 显示实时姿势", controller._set_connected.call_args[0][1])
-        self.assertTrue(controller._set_next.called)
 
 
     def test_diagnostic_details_only_include_error_specific_information(self):
@@ -3345,7 +3343,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(MODULE.WORKFLOW_MODEL, model_workflow)
         self.assertEqual(MODULE.WORKFLOW_ANIMATION, controller._workflow)
         for state in (animation_visibility, back_visibility):
-            self.assertTrue(state[controller._capture_button])
             self.assertTrue(state[controller._realtime_mode_button])
             self.assertFalse(state[controller._bs_checkbox])
         self.assertFalse(model_visibility[controller._realtime_mode_button])

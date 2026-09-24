@@ -54,8 +54,21 @@ UPLOAD_CHUNK_FRAMES = 64
 UPLOAD_READY_TIMEOUT_SECONDS = 60.0
 REALTIME_MODE = "realtime"
 CACHED_MODE = "cached"
-TOGGLE_ON_BACKGROUND = (0.20, 0.40, 0.48)
+TOGGLE_ON_BACKGROUND = (0.16, 0.55, 0.24)
 TOGGLE_OFF_BACKGROUND = (0.26, 0.26, 0.26)
+# Workflow tabs use a neutral lighter tone so they never read as a green
+# mode toggle or a blue primary action.
+TAB_ON_BACKGROUND = (0.52, 0.52, 0.52)
+TAB_OFF_BACKGROUND = (0.20, 0.20, 0.20)
+LIGHT_ON_BACKGROUND = (0.08, 0.45, 0.12)
+LIGHT_OFF_BACKGROUND = (0.55, 0.08, 0.08)
+# Panel grid: content width, the gutter between columns, and row spacing.
+PANEL_WIDTH = 456
+PANEL_MARGIN = 16
+GRID_GAP = 10
+ROW_SPACING = 10
+BUTTON_HEIGHT = 30
+PRIMARY_BACKGROUND = (0.20, 0.40, 0.48)
 TIME_UNIT_FPS = {
     "game": 15.0,
     "film": 24.0,
@@ -3962,161 +3975,148 @@ class _Controller(object):
         self._bone_text = None
         self._curve_text = None
         self._status_text = None
-        self._next_text = None
+        self._cache_row = None
         self._connect_button = None
         self._disconnect_button = None
-        self._cache_section = None
-        self._preview_row = None
+        self._mode_form = None
         self._shown_warning_signatures = set()
         self._warning_checkbox = None
         self._duplicate_button = None
 
+    @staticmethod
+    def _grid_row(controls, spans=None, height=BUTTON_HEIGHT):
+        """Attach controls of the current formLayout to equal grid columns.
+
+        ``spans`` gives each control's column count (default one each). Every
+        row shares the same columns and GRID_GAP gutter, so edges line up.
+        """
+        form = cmds.setParent(query=True)
+        spans = spans or [1] * len(controls)
+        columns = sum(spans)
+        positions, attach_form, start = [], [], 0
+        for control, span in zip(controls, spans):
+            end = start + span
+            positions.append((control, "left", 0 if start == 0 else GRID_GAP // 2,
+                              start * 100 // columns))
+            positions.append((control, "right", 0 if end == columns else GRID_GAP // 2,
+                              end * 100 // columns))
+            attach_form.append((control, "top", 0))
+            start = end
+        cmds.formLayout(form, edit=True, height=height, attachPosition=positions,
+                        attachForm=attach_form)
+        cmds.setParent("..")
+        return form
+
     def build_ui(self):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
-                    sizeable=True, width=464, resizeToFitChildren=True)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=10,
-                          columnAttach=("both", 12))
-        cmds.separator(height=2, style="none")
-        cmds.rowLayout(numberOfColumns=3, adjustableColumn=1,
-                       columnWidth3=(216, 104, 104),
-                       columnAttach3=("both", "both", "both"),
-                       columnOffset3=(0, 4, 4))
-        cmds.text(label="MtoU  /  Maya → Unreal", align="left", font="boldLabelFont")
+                    sizeable=False, width=PANEL_WIDTH + 2 * PANEL_MARGIN,
+                    resizeToFitChildren=True)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=ROW_SPACING,
+                          columnAttach=("both", PANEL_MARGIN))
+        cmds.separator(height=4, style="none")
+
+        # Workflow tabs: left-aligned, compact, neutral grey (not an action colour).
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(76, 80),
+                       columnAttach2=("left", "left"), columnOffset2=(0, 4))
         self._animation_workflow_button = cmds.button(
-            label="动画", height=28,
-            backgroundColor=TOGGLE_ON_BACKGROUND,
+            label="动画", width=76, height=24, backgroundColor=TAB_ON_BACKGROUND,
+            annotation="动画工作流：实时预览或缓存播放角色动画。",
             command=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
         self._model_workflow_button = cmds.button(
-            label="模型", height=28,
-            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            label="模型", width=76, height=24, backgroundColor=TAB_OFF_BACKGROUND,
+            annotation="模型工作流：在 UE 用 Generated Preview 检查服装。",
             command=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
         cmds.setParent("..")
+        cmds.separator(height=2, style="in")
 
-        cmds.frameLayout(label="角色", collapsable=False,
-                         marginWidth=10, marginHeight=8)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=6)
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
-                       columnWidth2=(292, 112), columnAttach2=("both", "both"),
-                       columnOffset2=(0, 8))
-        self._root_text = cmds.text(label="角色根骨骼：—", align="left")
-        cmds.button(label="设置角色", height=28,
-                    annotation="先在 Maya 中选择变形根骨骼，再设置角色。",
-                    command=lambda *_: self.set_role())
-        cmds.setParent("..")
-        self._outfit_text = cmds.text(label="当前衣服：—", align="left")
-        cmds.rowLayout(numberOfColumns=3, adjustableColumn=3,
-                       columnWidth3=(140, 100, 164),
-                       columnAttach3=("both", "both", "both"))
-        self._fps_text = cmds.text(label="场景帧率：—", align="left")
-        self._bone_text = cmds.text(label="骨骼数：0", align="left")
-        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
-        cmds.setParent("..")
-        cmds.setParent("..")
-        cmds.setParent("..")
+        cmds.formLayout(width=PANEL_WIDTH)
+        set_role = cmds.button(label="设置角色", height=BUTTON_HEIGHT,
+                               annotation="先在 Maya 中选择变形根骨骼，再设置角色。",
+                               command=lambda *_: self.set_role())
+        display = cmds.button(label="选择 Display 控制器", height=BUTTON_HEIGHT,
+                              annotation="检测到多个服装属性时，选中 Display 控制器后点击。",
+                              command=lambda *_: self.set_display_controller())
+        self._duplicate_button = cmds.button(
+            label="选中重名骨骼（0）", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self.select_duplicate_bones())
+        self._grid_row([set_role, display, self._duplicate_button])
 
-        cmds.frameLayout(label="预览", collapsable=False,
-                         marginWidth=10, marginHeight=8)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=8)
-        self._preview_row = cmds.rowLayout(
-            numberOfColumns=3, adjustableColumn=3,
-            columnWidth3=(64, 164, 176),
-            columnAttach3=("both", "both", "both"),
-            columnOffset3=(0, 0, 4))
-        cmds.text(label="方式", align="left")
+        self._mode_form = cmds.formLayout(width=PANEL_WIDTH)
         self._realtime_mode_button = cmds.button(
-            label="实时预览", height=28,
-            backgroundColor=TOGGLE_ON_BACKGROUND,
+            label="实时预览", height=BUTTON_HEIGHT, backgroundColor=TOGGLE_ON_BACKGROUND,
             command=lambda *_: self._on_mode_changed(REALTIME_MODE))
         self._cached_mode_button = cmds.button(
-            label="缓存播放", height=28,
-            backgroundColor=TOGGLE_OFF_BACKGROUND,
+            label="缓存播放", height=BUTTON_HEIGHT, backgroundColor=TOGGLE_OFF_BACKGROUND,
             command=lambda *_: self._on_mode_changed(CACHED_MODE))
-        cmds.setParent("..")
         self._bs_checkbox = cmds.checkBox(
-            label="传递 BS", value=True,
+            label="传递 BS", value=True, height=BUTTON_HEIGHT,
             changeCommand=lambda *_: self._on_blendshapes_toggled())
-        cmds.rowLayout(numberOfColumns=3, adjustableColumn=1,
-                       columnWidth3=(136, 156, 112),
-                       columnAttach3=("both", "both", "both"),
-                       columnOffset3=(0, 4, 8))
-        cmds.text(label="本机 Unreal Editor", align="left")
-        self._connect_button = cmds.button(
-            label="连接", height=32, backgroundColor=(0.20, 0.40, 0.48),
-            command=lambda *_: self.connect())
-        self._disconnect_button = cmds.button(
-            label="断开", height=32, command=lambda *_: self.disconnect())
-        cmds.setParent("..")
-        self._cache_section = cmds.columnLayout(
-            adjustableColumn=True, rowSpacing=6)
-        cmds.separator(height=6, style="in")
-        cmds.rowLayout(numberOfColumns=4, adjustableColumn=1,
-                       columnWidth4=(136, 92, 88, 88),
-                       columnAttach4=("both", "both", "both", "both"),
-                       columnOffset4=(0, 4, 4, 4))
-        self._capture_button = cmds.button(
-            label="捕获并回放", height=30, enable=False,
-            backgroundColor=(0.20, 0.40, 0.48),
-            command=lambda *_: self._capture_cached_playback())
-        self._replay_button = cmds.button(
-            label="再次回放", height=30, enable=False,
-            command=lambda *_: self._replay_cached_playback())
-        self._stop_replay_button = cmds.button(
-            label="停止回放", height=30, enable=False,
-            command=lambda *_: self._stop_cached_replay())
-        self._cancel_capture_button = cmds.button(
-            label="取消捕获", height=30, enable=False,
-            command=lambda *_: self._cancel_cached_capture())
-        cmds.setParent("..")
-        self._cache_text = cmds.text(label="缓存：无", align="left", wordWrap=True)
-        cmds.setParent("..")
-        cmds.setParent("..")
-        cmds.setParent("..")
-
-        cmds.frameLayout(label="状态", collapsable=False,
-                         marginWidth=10, marginHeight=8)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=2,
-                       columnWidth2=(88, 316), columnAttach2=("both", "both"))
-        self._light = cmds.text(label="●  未连接", align="left", height=24)
-        self._status_text = cmds.text(
-            label="状态：未设置角色", align="left", wordWrap=True, height=34)
-        cmds.setParent("..")
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
-                       columnWidth2=(300, 104), columnAttach2=("both", "both"),
-                       columnOffset2=(0, 8))
-        self._next_text = cmds.text(
-            label="下一步：选择根骨骼后点击“设置角色”。",
-            align="left", wordWrap=True, height=34)
-        cmds.button(label="诊断详情", height=24,
-                    command=lambda *_: self.show_diagnostics())
-        cmds.setParent("..")
-        cmds.setParent("..")
-        cmds.setParent("..")
-
-        cmds.frameLayout(label="高级设置", collapsable=True, collapse=True,
-                         marginWidth=10, marginHeight=8,
-                         collapseCommand=self._queue_fit_window,
-                         expandCommand=self._queue_fit_window)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=8)
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
-                       columnWidth2=(244, 160), columnAttach2=("both", "both"),
-                       columnOffset2=(0, 8))
-        cmds.button(label="选择 Display 控制器", height=28,
-                    command=lambda *_: self.set_display_controller())
-        self._duplicate_button = cmds.button(
-            label="选中重名骨骼（0）", height=28, enable=False,
-            command=lambda *_: self.select_duplicate_bones())
-        cmds.setParent("..")
         self._playback_cap = load_playback_cap()
         self._playback_cap_menu = cmds.optionMenu(
-            label="播放传输上限", changeCommand=self._on_playback_cap_changed)
+            label="上限", height=BUTTON_HEIGHT, changeCommand=self._on_playback_cap_changed)
         for choice in PLAYBACK_CAP_CHOICES:
             cmds.menuItem(label=choice)
         cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
+        # The mode buttons and the BS switch share the first two columns; only
+        # one of them is managed per workflow.
+        cmds.formLayout(self._mode_form, edit=True, attachPosition=[
+            (self._bs_checkbox, "left", 4, 0),
+            (self._bs_checkbox, "right", GRID_GAP // 2, 66),
+        ], attachForm=[(self._bs_checkbox, "top", 0)])
+        self._grid_row([self._realtime_mode_button, self._cached_mode_button,
+                        self._playback_cap_menu])
+
+        self._cache_row = cmds.formLayout(width=PANEL_WIDTH)
+        self._capture_button = cmds.button(
+            label="捕获并回放", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self._capture_cached_playback())
+        self._replay_button = cmds.button(
+            label="再次回放", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self._replay_cached_playback())
+        self._stop_replay_button = cmds.button(
+            label="停止回放", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self._stop_cached_replay())
+        self._cancel_capture_button = cmds.button(
+            label="取消捕获", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self._cancel_cached_capture())
+        self._grid_row([self._capture_button, self._replay_button,
+                        self._stop_replay_button, self._cancel_capture_button])
+
+        cmds.formLayout(width=PANEL_WIDTH)
+        self._connect_button = cmds.button(
+            label="连接", height=BUTTON_HEIGHT + 2, command=lambda *_: self.connect())
+        self._disconnect_button = cmds.button(
+            label="断开", height=BUTTON_HEIGHT + 2, command=lambda *_: self.disconnect())
+        self._light = cmds.text(label="●  未连接", align="center", height=BUTTON_HEIGHT + 2,
+                                font="boldLabelFont", backgroundColor=LIGHT_OFF_BACKGROUND)
+        self._grid_row([self._connect_button, self._disconnect_button, self._light],
+                       height=BUTTON_HEIGHT + 2)
+        cmds.separator(height=2, style="in")
+
+        # Status bar for the whole panel: the current state first, then the
+        # captured character it refers to.
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        self._status_text = cmds.text(label="未设置角色：选择根骨骼后点击“设置角色”",
+                                      align="left", wordWrap=True, font="boldLabelFont",
+                                      width=PANEL_WIDTH)
+        self._root_text = cmds.text(label="根骨骼：—", align="left")
+        self._outfit_text = cmds.text(label="衣服：—", align="left")
+        cmds.formLayout(width=PANEL_WIDTH)
+        self._fps_text = cmds.text(label="帧率：—", align="left")
+        self._bone_text = cmds.text(label="骨骼：0", align="left")
+        self._curve_text = cmds.text(label="BlendShape：0", align="left")
+        self._grid_row([self._fps_text, self._bone_text, self._curve_text], height=18)
+        self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
+        cmds.setParent("..")
+        cmds.separator(height=2, style="in")
+
+        cmds.formLayout(width=PANEL_WIDTH)
         self._warning_checkbox = cmds.checkBox(
-            label="连接成功后弹出差异警告", value=True)
-        cmds.setParent("..")
-        cmds.setParent("..")
+            label="连接成功后弹出差异警告", value=True, height=26)
+        diagnostics = cmds.button(label="诊断详情", height=26,
+                                  command=lambda *_: self.show_diagnostics())
+        self._grid_row([self._warning_checkbox, diagnostics], spans=[2, 1], height=26)
+        cmds.separator(height=6, style="none")
         self._refresh_fps()
         self._update_mode_controls()
         self._update_workflow_controls()
@@ -4151,7 +4151,7 @@ class _Controller(object):
                 cmds.control(control, edit=True, enable=bool(enabled))
                 if control in (self._connect_button, self._capture_button):
                     cmds.button(control, edit=True, backgroundColor=(
-                        TOGGLE_ON_BACKGROUND if enabled else TOGGLE_OFF_BACKGROUND))
+                        PRIMARY_BACKGROUND if enabled else TOGGLE_OFF_BACKGROUND))
             except (AttributeError, RuntimeError, TypeError):
                 pass
 
@@ -4182,8 +4182,6 @@ class _Controller(object):
         }
         return reasons.get(action, "")
 
-    def _set_next(self, text):
-        self._set_text(self._next_text, "下一步：" + text)
 
     def _warning_signature(self, warning):
         missing_unreal = tuple(sorted(warning.get("missing_in_unreal") or ()))
@@ -4263,27 +4261,29 @@ class _Controller(object):
 
     def _update_workflow_controls(self):
         animation = self._workflow == WORKFLOW_ANIMATION
-        self._apply_toggle_background(self._animation_workflow_button, animation)
-        self._apply_toggle_background(self._model_workflow_button, not animation)
+        self._apply_tab_background(self._animation_workflow_button, animation)
+        self._apply_tab_background(self._model_workflow_button, not animation)
         for control in (self._realtime_mode_button, self._cached_mode_button,
-                        self._cache_text, self._capture_button,
-                        self._replay_button, self._stop_replay_button,
-                        self._cancel_capture_button):
+                        self._cache_text):
             self._set_visible(control, animation)
         self._set_visible(self._bs_checkbox, not animation)
         self._update_context_layout()
 
+    def _apply_tab_background(self, control, selected):
+        if self._control_exists(control):
+            try:
+                cmds.button(control, edit=True, backgroundColor=(
+                    TAB_ON_BACKGROUND if selected else TAB_OFF_BACKGROUND))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
     def _update_context_layout(self):
-        animation = self._workflow == WORKFLOW_ANIMATION
-        changed = False
-        for layout, visible in (
-                (self._preview_row, animation),
-                (self._cache_section, animation and self._mode == CACHED_MODE)):
-            if layout and cmds is not None and cmds.layout(layout, exists=True):
-                changed = changed or cmds.layout(layout, query=True, manage=True) != visible
+        visible = self._workflow == WORKFLOW_ANIMATION and self._mode == CACHED_MODE
+        layout = self._cache_row
+        if layout and cmds is not None and cmds.layout(layout, exists=True):
+            if cmds.layout(layout, query=True, manage=True) != visible:
                 cmds.layout(layout, edit=True, visible=visible, manage=visible)
-        if changed:
-            self._queue_fit_window()
+                self._queue_fit_window()
 
     def _queue_fit_window(self, *unused):
         # Maya resolves managed/collapsed children on the next UI turn.
@@ -4298,7 +4298,9 @@ class _Controller(object):
         if pointer:
             window = wrapInstance(int(pointer), QtWidgets.QWidget)
             window.layout().activate()
-            window.resize(window.width(), window.sizeHint().height())
+            # The panel is not sizeable; pin it to the grid width and to the
+            # height of the rows currently shown.
+            window.setFixedSize(PANEL_WIDTH + 2 * PANEL_MARGIN, window.sizeHint().height())
 
     def _on_workflow_changed(self, workflow):
         if workflow == self._workflow or workflow not in WORKFLOWS:
@@ -4363,8 +4365,7 @@ class _Controller(object):
                 self._mode = CACHED_MODE
                 self._set_connected(
                     True,
-                    "缓存播放模式：实时采样已暂停，Unreal 保留最近姿势；回放时显示缓存")
-                self._set_next("点击“捕获并回放”；上传完成后 UE 将自动回放。")
+                    "缓存播放：实时采样已暂停，点击“捕获并回放”")
             except _CachedPlaybackError as error:
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
@@ -4377,10 +4378,8 @@ class _Controller(object):
                 self._cached_playback.leave()
             if self._session_ready():
                 self._set_connected(True, "已连接：UE 显示实时姿势")
-                self._set_next("已返回实时预览：在 Maya 摆姿或播放以预览。")
             else:
                 self._set_connected(False, "未连接")
-                self._set_next("已返回实时预览：连接后继续制作。")
         self._update_mode_controls()
 
     def _confirm_large_cache(self, estimated_size, total_frames):
@@ -4399,7 +4398,7 @@ class _Controller(object):
         try:
             cached = self._ensure_cached_playback()
             fps = validate_frame_rate(self._refresh_fps())
-            self._set_text(self._status_text, "状态：准备捕获缓存…")
+            self._set_text(self._status_text, "准备捕获缓存…")
             cached.capture(fps, self._confirm_large_cache)
         except _CachedPlaybackError as error:
             diagnostic = make_diagnostic(
@@ -4445,46 +4444,36 @@ class _Controller(object):
         self._update_cache_text(view.cache_summary)
         if (view.state == _CachedPlayback.CAPTURING and view.total
                 and view.current == view.total):
-            self._set_text(self._status_text, "状态：缓存完成，正在上传…")
-            self._set_next("等待上传完成，UE 将自动开始回放。")
+            self._set_text(self._status_text, "缓存完成，正在上传…")
         elif view.state == _CachedPlayback.CAPTURING and view.current == 0:
-            self._set_text(self._status_text, "状态：正在捕获缓存…")
-            self._set_next("等待捕获完成；需要中断时点击“取消捕获”。")
+            self._set_text(self._status_text, "正在捕获缓存…")
         elif view.state == _CachedPlayback.CAPTURING:
             self._set_text(
                 self._status_text,
-                "状态：正在捕获缓存 {0}/{1}".format(view.current, view.total))
-            self._set_next("等待捕获完成；需要中断时点击“取消捕获”。")
+                "正在捕获缓存 {0}/{1}".format(view.current, view.total))
         elif (view.state == _CachedPlayback.UPLOADING and view.total
               and view.current == view.total):
             self._set_connected(True, "缓存已上传，Unreal 正在本地回放")
-            self._set_next("上传完成：在 UE 观察回放；Maya 保持连接即可。")
         elif view.state == _CachedPlayback.UPLOADING and view.current == 0:
-            self._set_text(self._status_text, "状态：正在上传缓存…")
-            self._set_next("等待上传完成，UE 将自动开始回放。")
+            self._set_text(self._status_text, "正在上传缓存…")
         elif view.state == _CachedPlayback.UPLOADING:
             self._set_text(
                 self._status_text,
-                "状态：正在上传缓存 {0}/{1}".format(
+                "正在上传缓存 {0}/{1}".format(
                     view.current, view.total))
-            self._set_next("等待上传完成，UE 将自动开始回放。")
         elif view.state == _CachedPlayback.REPLAYING and view.current == 0:
             self._set_connected(
                 True, "缓存回放中：Unreal 按捕获帧率本地播放 {0}/{1}".format(
                     view.current, view.total))
-            self._set_next("回放中：在 UE 观察；结束或停止后可再次回放或返回实时。")
         elif view.state == _CachedPlayback.REPLAYING:
             self._set_text(
                 self._status_text,
-                "状态：缓存播放（仅显示已捕获缓存） {0}/{1}".format(
+                "缓存播放（仅显示已捕获缓存） {0}/{1}".format(
                     view.current, view.total))
-            self._set_next("回放中：在 UE 观察；结束或停止后可再次回放或返回实时。")
         elif view.state == _CachedPlayback.COMPLETED:
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
-            self._set_next("已停在最后一帧：可再次回放，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.STOPPED:
             self._set_connected(True, "缓存播放已停止，已保留缓存，可再次回放")
-            self._set_next("缓存已保留：可再次回放，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.FAILED:
             # A FAILED cached view always keeps the negotiated connection: the
             # capture/upload paths that resume Real-time Preview now render as
@@ -4492,7 +4481,6 @@ class _Controller(object):
             diagnostic = view.diagnostic or make_diagnostic("INTERNAL_ERROR")
             self._last_diagnostic = diagnostic
             self._set_connected(True, diagnostic["summary"])
-            self._set_next("查看诊断详情后重试，或返回实时预览继续修改。")
         elif view.state == _CachedPlayback.REALTIME and view.diagnostic:
             # A recoverable capture/upload/invalidation failure already resumed
             # Real-time Preview and cleared Unreal ownership; complete the same
@@ -4505,34 +4493,35 @@ class _Controller(object):
             self._set_connected(
                 self._session_ready(),
                 "{0}（已恢复实时预览）".format(diagnostic["summary"]))
-            self._set_next("已恢复实时预览：查看诊断详情后可重新捕获。")
         elif view.state == _CachedPlayback.DETACHED and view.diagnostic:
             diagnostic = view.diagnostic
             self._last_diagnostic = diagnostic
             self._set_connected(False, diagnostic["summary"])
-            self._set_next("连接已结束：检查 UE 后重新连接。")
         self._update_mode_controls()
 
     def _set_text(self, control, text):
         if control and cmds.control(control, exists=True):
             cmds.text(control, edit=True, label=text, annotation=text)
+            if control == self._status_text:
+                # A wrapped status may change the panel height.
+                self._queue_fit_window()
 
     def _set_connected(self, connected, status):
         label = "●  已连接" if connected else "●  未连接"
         if self._light and cmds.control(self._light, exists=True):
-            cmds.text(self._light, edit=True, label=label,
-                      enableBackground=False, font="boldLabelFont")
-        self._set_text(self._status_text, "状态：" + status)
+            cmds.text(self._light, edit=True, label=label, backgroundColor=(
+                LIGHT_ON_BACKGROUND if connected else LIGHT_OFF_BACKGROUND))
+        self._set_text(self._status_text, status)
         self._update_mode_controls()
 
     def _refresh_fps(self):
         try:
             fps = frames_per_second(cmds.currentUnit(query=True, time=True))
-            self._set_text(self._fps_text, "场景帧率：" + format_fps(fps))
+            self._set_text(self._fps_text, "帧率：" + format_fps(fps))
             return fps
         except ValueError:
             unit = cmds.currentUnit(query=True, time=True)
-            self._set_text(self._fps_text, "场景帧率：{0}（不受支持）".format(unit))
+            self._set_text(self._fps_text, "帧率：{0}（不受支持）".format(unit))
             return None
 
     def _on_playback_cap_changed(self, value, *unused):
@@ -4617,10 +4606,10 @@ class _Controller(object):
         return scene
 
     def _render_snapshot(self, snapshot):
-        self._set_text(self._root_text, "角色根骨骼：" + snapshot.root)
-        self._set_text(self._outfit_text, "当前衣服：" + snapshot.outfit)
-        self._set_text(self._bone_text, "骨骼数：{0}".format(len(snapshot.bones)))
-        self._set_text(self._curve_text, "BlendShape 数：{0}".format(
+        self._set_text(self._root_text, "根骨骼：" + snapshot.root)
+        self._set_text(self._outfit_text, "衣服：" + snapshot.outfit)
+        self._set_text(self._bone_text, "骨骼：{0}".format(len(snapshot.bones)))
+        self._set_text(self._curve_text, "BlendShape：{0}".format(
             len(snapshot.curve_names)))
         self._refresh_duplicate_button()
         self._refresh_fps()
@@ -4638,21 +4627,18 @@ class _Controller(object):
                     len(snapshot.duplicate_paths))
             status += _bind_conflict_status(snapshot)
             self._set_connected(False, status)
-            self._set_next("角色已设置：点击“连接”，在 UE 观察实时姿势。")
         except _CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":
                 self._pending_root = root
-                self._set_text(self._root_text, "角色根骨骼：" + root)
-                self._set_connected(False, error.message)
-                self._set_next("展开“高级设置”，点击“选择 Display 控制器”。")
+                self._set_text(self._root_text, "根骨骼：" + root)
+                self._set_connected(
+                    False, error.message + "：选中 Display 控制器后点击“选择 Display 控制器”")
             else:
                 self._pending_root = None
                 self._set_connected(False, error.message)
-                self._set_next("角色设置失败：按提示修正后重新设置角色。")
             self._show_error(self._scene_diagnostic(error))
         except (RuntimeError, ValueError) as exc:
             self._set_connected(False, str(exc))
-            self._set_next("角色设置失败：选择根骨骼后重新设置角色。")
             code = str(exc) if str(exc) in DIAGNOSTICS else "ROLE_SETUP_FAILED"
             self._show_error(make_diagnostic(code, str(exc), solution=str(exc), details=str(exc)))
 
@@ -4689,7 +4675,6 @@ class _Controller(object):
             self._discard_cached_playback()
             self._outfit_change_was_connected = self._session is not None
             self.disconnect(status="衣服正在切换，正在刷新角色…")
-            self._set_next("衣服切换中：等待刷新完成后再连接。")
             return
         if event.kind == "outfit_changed":
             self._render_snapshot(event.snapshot)
@@ -4697,10 +4682,8 @@ class _Controller(object):
                 status = (
                     "衣服已切换为 {0}。请在 UE 删除旧 Actor，放置新 Binding 后重新连接。"
                 ).format(event.snapshot.outfit)
-                self._set_next("衣服已切换：在 UE 放置新 Binding 后重新连接。")
             else:
                 status = "当前衣服已切换为 {0}。".format(event.snapshot.outfit)
-                self._set_next("衣服已切换：点击“连接”继续预览。")
             status += _bind_conflict_status(event.snapshot)
             self._outfit_change_was_connected = False
             self._set_connected(False, status)
@@ -4713,7 +4696,6 @@ class _Controller(object):
             self._scene = None
             self._pending_root = None
             self._clear_scene_text()
-            self._set_next("角色已失效：重新设置角色后再连接。")
             if was_connected:
                 diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
                 cmds.evalDeferred(lambda: self._show_error(diagnostic, session=True))
@@ -4763,7 +4745,6 @@ class _Controller(object):
                               "has_warning": False}
         self._shown_warning_signatures = set()
         self._set_connected(False, "正在连接 Unreal…")
-        self._set_next("正在连接：在 UE 确认 Binding Actor 已放入关卡。")
         holder = {}
 
         def on_event(event):
@@ -4815,10 +4796,8 @@ class _Controller(object):
             self._last_warning = warning
             if warning["has_warning"]:
                 self._set_connected(True, "已连接（有警告）：UE 显示实时姿势，请检查差异")
-                self._set_next("已连接并显示实时姿势：检查差异详情后继续制作。")
             else:
                 self._set_connected(True, "已连接：UE 显示实时姿势")
-                self._set_next("已连接并显示实时姿势：在 Maya 摆姿或播放以预览。")
             if warning["has_warning"] \
                     and cmds.checkBox(self._warning_checkbox, query=True, value=True):
                 signature = self._warning_signature(warning)
@@ -4838,14 +4817,12 @@ class _Controller(object):
             if event.recapture_scene:
                 self._clear_scene(keep_capture=True)
             self._set_connected(False, diagnostic["summary"])
-            self._set_next("连接失败：查看诊断详情后重新连接。")
             self._show_error(diagnostic)
             return
         if event.kind == "stopped":
             status = self._pending_stop_status or "已断开连接"
             self._pending_stop_status = None
             self._set_connected(False, status)
-            self._set_next("已断开：检查角色与 UE 后可重新连接。")
 
     def _diagnostic_text(self, diagnostic=None):
         diagnostic = diagnostic or self._last_diagnostic
@@ -4955,17 +4932,15 @@ class _Controller(object):
         session = self._session
         if session is None:
             self._set_connected(False, status)
-            self._set_next("已断开：检查角色与 UE 后可重新连接。")
             return
         self._pending_stop_status = status
-        self._set_next("正在断开：等待连接结束后再重新连接。")
         session.stop()
 
     def _clear_scene_text(self):
-        self._set_text(self._root_text, "角色根骨骼：—")
-        self._set_text(self._outfit_text, "当前衣服：—")
-        self._set_text(self._bone_text, "骨骼数：0")
-        self._set_text(self._curve_text, "BlendShape 数：0")
+        self._set_text(self._root_text, "根骨骼：—")
+        self._set_text(self._outfit_text, "衣服：—")
+        self._set_text(self._bone_text, "骨骼：0")
+        self._set_text(self._curve_text, "BlendShape：0")
         self._refresh_duplicate_button()
 
     def _discard_cached_playback(self):

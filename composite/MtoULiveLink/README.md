@@ -108,25 +108,26 @@ on the Binding. All enabled parts pose and display under one connection:
    **Refresh Preview** and **Delete Preview**. **MtoU Diagnostics** stays
    collapsed until you need part, preview, Model, or raw connection details.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
-   **Set Character** (设置角色) in the Character card. Check the outfit, scene
-   frame rate, and bone/BlendShape counts there. **Advanced Settings** (高级设置)
-   contains manual Display selection, duplicate-bone selection, the transmission
-   cap, and warning preferences.
-4. Select **Animation** (动画) and click **Connect** (连接). Pose, scrub, or play
-   in Maya to preview the result in Unreal. A disabled button carries its
-   reason as a tooltip. The **Status** area groups the connection, current
-   activity/display source, and next action; **Diagnostic Details** (诊断详情)
-   stays available beside it. Repeated warnings for the same session appear
-   once; new errors still interrupt.
+   **Set Character** (设置角色). The buttons beside it select the Display
+   controller manually or select duplicated bones. The status bar below the
+   buttons shows the current state together with the root, outfit, frame rate,
+   and bone/BlendShape counts.
+4. Select **Animation** (动画) and click **Connect** (连接); the indicator beside
+   **Disconnect** (断开) turns green. Pose, scrub, or play in Maya to preview the
+   result in Unreal. **Cap** (上限) on the preview row limits the real-time
+   transmission rate. A disabled button carries its reason as a tooltip.
+   Repeated warnings for the same session appear once; new errors still
+   interrupt. **Diagnostic Details** (诊断详情) sits at the bottom next to the
+   warning switch.
 
 ## Animation preview
 
 Use **Animation** for real-time character preview. For a captured animation
 range, set the Maya playback range, choose **Cached Playback** (缓存播放), and click
 **Capture and Play** (捕获并回放). Playback starts after capture and upload finish.
-Cache actions appear directly below Connect only in Cached Playback mode.
-The shared Status area distinguishes capturing, uploading, replaying, completed
-on the last frame, stopped with the cache retained, and failed states.
+The capture buttons appear under the preview row only in Cached Playback mode.
+The status bar distinguishes capturing, uploading, replaying, completed on the
+last frame, stopped with the cache retained, and failed states.
 
 A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
 that limit. Capture or upload failures return to real-time preview and show the
