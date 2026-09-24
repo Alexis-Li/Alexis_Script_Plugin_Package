@@ -4033,11 +4033,14 @@ class _Controller(object):
         self._resize_scheduled = False
 
     @staticmethod
-    def _grid_row(controls, spans=None, height=BUTTON_HEIGHT):
+    def _grid_row(controls, spans=None, height=BUTTON_HEIGHT, top=0):
         """Attach controls of the current formLayout to equal grid columns.
 
         ``spans`` gives each control's column count (default one each). Every
         row shares the same columns and GRID_GAP gutter, so edges line up.
+        ``top`` insets the row inside its own height, which carries a gap that
+        disappears with the row instead of a parent rowSpacing that would also
+        pad the card when the row is hidden.
         """
         form = cmds.setParent(query=True)
         spans = spans or [1] * len(controls)
@@ -4049,7 +4052,7 @@ class _Controller(object):
                               start * 100 // columns))
             positions.append((control, "right", 0 if end == columns else GRID_GAP // 2,
                               end * 100 // columns))
-            attach_form.append((control, "top", 0))
+            attach_form.append((control, "top", top))
             start = end
         cmds.formLayout(form, edit=True, height=height, attachPosition=positions,
                         attachForm=attach_form)
@@ -4155,8 +4158,11 @@ class _Controller(object):
         self._cancel_capture_button = cmds.button(
             label="取消捕获", height=BUTTON_HEIGHT, enable=False,
             command=lambda *_: self._cancel_cached_capture())
+        # The cache row carries its own top gap so the rows never touch, and
+        # the card stays compact while the row is hidden.
         self._grid_row([self._capture_button, self._replay_button,
-                        self._stop_replay_button, self._cancel_capture_button])
+                        self._stop_replay_button, self._cancel_capture_button],
+                       height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.setParent("..")
         cmds.setParent("..")
 
