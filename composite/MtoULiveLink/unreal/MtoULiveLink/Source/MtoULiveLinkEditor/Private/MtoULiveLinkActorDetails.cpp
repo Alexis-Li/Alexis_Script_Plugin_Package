@@ -1,7 +1,6 @@
 #include "MtoULiveLinkActorDetails.h"
 
 #include "MtoULiveLinkActor.h"
-#include "MtoULiveLinkFactories.h"
 #include "MtoULiveLinkPreview.h"
 
 #include "DetailCategoryBuilder.h"
@@ -17,6 +16,22 @@
 
 namespace
 {
+using ESeverity = FMtoULiveLinkActorDetails::ESeverity;
+
+/** The user-facing meaning of the source's connection status string. */
+enum class EMtoUConnectionState : uint8
+{
+    /** No session yet, or a status this build does not classify. */
+    Unknown,
+    Disconnected,
+    Validating,
+    NotReady,
+    Partial,
+    BoneOnly,
+    Connected,
+    Error
+};
+
 FText StageText(EMtoUPreviewBuildStage Stage)
 {
     switch (Stage)
@@ -36,161 +51,242 @@ FText StageText(EMtoUPreviewBuildStage Stage)
     }
 }
 
-FText DisplaySourceText(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
+FSlateColor SeverityColor(ESeverity Severity)
 {
-    if (!Actor.IsValid())
+    switch (Severity)
     {
-        return FText::GetEmpty();
-    }
-    switch (Actor->GetDisplayTarget())
-    {
-    case EMtoUDisplayTarget::Driver:
-        return LOCTEXT("DisplaySourceDriver", "Driver (real-time Animation preview)");
-    case EMtoUDisplayTarget::GeneratedPreview:
-        return LOCTEXT("DisplaySourceGenerated", "Generated Preview (Model garment preview)");
-    case EMtoUDisplayTarget::Hidden:
+    case ESeverity::Info:
+        return FSlateColor(FLinearColor(0.45f, 0.72f, 1.0f));
+    case ESeverity::Success:
+        return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
+    case ESeverity::Warning:
+        return FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f));
+    case ESeverity::Error:
+        return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
+    case ESeverity::Neutral:
     default:
-        return LOCTEXT("DisplaySourceHidden", "Hidden (no mesh selected for display)");
-    }
-}
-
-FText ConnectionText(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
-{
-    if (!Actor.IsValid())
-    {
-        return FText::GetEmpty();
-    }
-    const FString& Status = Actor->GetConnectionStatus();
-    return Status.IsEmpty()
-        ? LOCTEXT("ConnectionUnknown", "Unknown: reconnect in Maya to refresh")
-        : FText::FromString(Status);
-}
-
-FSlateColor ConnectionColor(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
-{
-    if (!Actor.IsValid())
-    {
         return FSlateColor::UseForeground();
     }
-    const FString& Status = Actor->GetConnectionStatus();
-    if (Status.StartsWith(TEXT("Error")) || Status.StartsWith(TEXT("Preview morph mismatch")))
-    {
-        return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
-    }
-    if (Status.StartsWith(TEXT("Connected")))
-    {
-        return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
-    }
-    return FSlateColor::UseForeground();
 }
 
-FText NextStepText(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
+/** The first line of a raw status, so a multi-line message stays scannable inline. */
+FString FirstLine(const FString& Status)
 {
-    if (!Actor.IsValid())
+    int32 LineBreak = INDEX_NONE;
+    return Status.FindChar(TEXT('\n'), LineBreak) ? Status.Left(LineBreak) : Status;
+}
+
+EMtoUConnectionState ClassifyConnection(const FString& Status)
+{
+    // The strings are the ones MtoULiveLinkSource publishes for the actor; a
+    // status this build does not know keeps its raw text in the headline.
+    if (Status.IsEmpty())
     {
-        return FText::GetEmpty();
+        return EMtoUConnectionState::Unknown;
     }
-    const FString Status = Actor->GetConnectionStatus();
-    const FMtoUPreviewReadiness Readiness = Actor->GetPreviewReadiness();
-    if (Status.StartsWith(TEXT("Error")) || Status.StartsWith(TEXT("Preview morph mismatch")))
+    if (Status.StartsWith(TEXT("Error"))
+        || Status.StartsWith(TEXT("Preview morph mismatch")))
     {
-        return LOCTEXT("NextStepFixError", "Fix the reported error, then reconnect in Maya.");
+        return EMtoUConnectionState::Error;
     }
     if (Status.StartsWith(TEXT("Preview not ready")))
     {
-        return LOCTEXT("NextStepRefresh", "Run Refresh Preview, then connect the Model workflow in Maya.");
+        return EMtoUConnectionState::NotReady;
     }
     if (Status.StartsWith(TEXT("Validating")))
     {
-        return LOCTEXT("NextStepValidating", "Negotiating the connection; wait for the result in Maya.");
-    }
-    if (Status.StartsWith(TEXT("Connected: partial")))
-    {
-        return LOCTEXT("NextStepPartial", "Connected with partial Morph coverage; check Model diagnostics before accepting.");
+        return EMtoUConnectionState::Validating;
     }
     if (Status.StartsWith(TEXT("Connected: bone-only")))
     {
-        return LOCTEXT("NextStepBoneOnly", "Bone-only diagnostic only; enable Transfer BS and reconnect for model acceptance.");
+        return EMtoUConnectionState::BoneOnly;
+    }
+    if (Status.StartsWith(TEXT("Connected: partial")))
+    {
+        return EMtoUConnectionState::Partial;
     }
     if (Status.StartsWith(TEXT("Connected")))
     {
-        return LOCTEXT("NextStepConnected", "Connected: pose or play in Maya and observe this display.");
+        return EMtoUConnectionState::Connected;
     }
-    if (Readiness.State == EMtoUPreviewState::Building)
+    if (Status.StartsWith(TEXT("Disconnected")))
     {
-        return LOCTEXT("NextStepBuilding", "Refresh is running; wait for it to finish.");
+        return EMtoUConnectionState::Disconnected;
     }
-    return LOCTEXT("NextStepDisconnected", "Disconnected: connect in Maya to start previewing.");
+    return EMtoUConnectionState::Unknown;
 }
 
-FText ReadinessText(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
+FText ReadinessHeadline(const FMtoUPreviewReadiness& Readiness, ESeverity& OutSeverity)
 {
-    if (!Actor.IsValid())
-    {
-        return FText::GetEmpty();
-    }
-    const FMtoUPreviewReadiness Readiness = Actor->GetPreviewReadiness();
     switch (Readiness.State)
     {
-    case EMtoUPreviewState::None:
-        return LOCTEXT("ReadinessNone", "None: assign the Binding inputs, then Refresh Preview.");
     case EMtoUPreviewState::Dirty:
-        return LOCTEXT("ReadinessDirty", "Dirty: inputs changed; run Refresh Preview.");
+        OutSeverity = ESeverity::Info;
+        return LOCTEXT("ReadinessDirty", "Needs refresh");
     case EMtoUPreviewState::Building:
-        return FText::Format(
-            LOCTEXT("ReadinessBuilding", "Building: {0}."), StageText(Readiness.Stage));
+        OutSeverity = ESeverity::Info;
+        return FText::Format(LOCTEXT("ReadinessBuilding", "Refreshing: {0}"), StageText(Readiness.Stage));
     case EMtoUPreviewState::Ready:
-        return LOCTEXT("ReadinessReady", "Ready: the current revision has a complete Generated Preview.");
+        OutSeverity = ESeverity::Success;
+        return LOCTEXT("ReadinessReady", "Ready");
     case EMtoUPreviewState::Warning:
-        return LOCTEXT("ReadinessWarning", "Warning: usable preview; inspect the quality warning before accepting.");
+        OutSeverity = ESeverity::Warning;
+        return LOCTEXT("ReadinessWarning", "Ready with a warning");
     case EMtoUPreviewState::Error:
+        OutSeverity = ESeverity::Error;
+        return LOCTEXT("ReadinessError", "Refresh failed");
+    case EMtoUPreviewState::None:
     default:
-        return LOCTEXT("ReadinessError", "Error: Refresh failed; fix the inputs and run Refresh Preview again.");
+        OutSeverity = ESeverity::Neutral;
+        return LOCTEXT("ReadinessNone", "Not set up");
     }
 }
 
-FSlateColor ReadinessColor(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
+FText ConnectionHeadline(EMtoUConnectionState State, const FString& Status, ESeverity& OutSeverity)
 {
-    if (!Actor.IsValid())
+    switch (State)
     {
-        return FSlateColor::UseForeground();
+    case EMtoUConnectionState::Disconnected:
+        OutSeverity = ESeverity::Neutral;
+        return LOCTEXT("ConnectionDisconnected", "Disconnected");
+    case EMtoUConnectionState::Validating:
+        OutSeverity = ESeverity::Info;
+        return LOCTEXT("ConnectionValidating", "Connecting");
+    case EMtoUConnectionState::NotReady:
+        OutSeverity = ESeverity::Warning;
+        return LOCTEXT("ConnectionNotReady", "Preview not ready");
+    case EMtoUConnectionState::Partial:
+        OutSeverity = ESeverity::Warning;
+        return LOCTEXT("ConnectionPartial", "Connected with partial Morphs");
+    case EMtoUConnectionState::BoneOnly:
+        OutSeverity = ESeverity::Warning;
+        return LOCTEXT("ConnectionBoneOnly", "Connected without Morphs");
+    case EMtoUConnectionState::Connected:
+        OutSeverity = ESeverity::Success;
+        return LOCTEXT("ConnectionConnected", "Connected");
+    case EMtoUConnectionState::Error:
+        OutSeverity = ESeverity::Error;
+        return LOCTEXT("ConnectionError", "Connection error");
+    case EMtoUConnectionState::Unknown:
+    default:
+        OutSeverity = ESeverity::Neutral;
+        return Status.TrimStartAndEnd().IsEmpty()
+            ? LOCTEXT("ConnectionIdle", "Not connected")
+            : FText::FromString(FirstLine(Status));
     }
-    const EMtoUPreviewState State = Actor->GetPreviewReadiness().State;
-    if (State == EMtoUPreviewState::Warning)
-    {
-        return FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f));
-    }
-    if (State == EMtoUPreviewState::Error)
-    {
-        return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
-    }
-    if (State == EMtoUPreviewState::Ready)
-    {
-        return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
-    }
-    return FSlateColor::UseForeground();
 }
 
-FSlateColor ModelDiagnosticsColor(const TWeakObjectPtr<AMtoULiveLinkActor>& Actor)
+/** The raw message is shown whenever it says more than the headline already does. */
+bool ConnectionNeedsDetail(const FString& Status)
 {
-    if (!Actor.IsValid())
+    return !Status.IsEmpty()
+        && Status != TEXT("Connected")
+        && Status != TEXT("Disconnected")
+        && Status != TEXT("Validating");
+}
+
+FText NextStepText(EMtoUConnectionState Connection, const FMtoUPreviewReadiness& Readiness)
+{
+    switch (Connection)
     {
-        return FSlateColor::UseForeground();
-    }
-    switch (Actor->GetModelDiagnosticLevel())
-    {
-    case EMtoUModelDiagnosticLevel::Partial:
-        return FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f));
-    case EMtoUModelDiagnosticLevel::BoneOnly:
-        return FSlateColor(FLinearColor(1.0f, 0.6f, 0.25f));
-    case EMtoUModelDiagnosticLevel::Error:
-        return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
-    case EMtoUModelDiagnosticLevel::Full:
-        return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
-    case EMtoUModelDiagnosticLevel::None:
+    case EMtoUConnectionState::Error:
+        return LOCTEXT("NextStepConnectionError",
+            "Fix the reported error, then reconnect in Maya; the full message stays in MtoU Diagnostics.");
+    case EMtoUConnectionState::NotReady:
+        return LOCTEXT("NextStepPreviewNotReady",
+            "Run Refresh Preview, then connect the Model workflow in Maya.");
+    case EMtoUConnectionState::Validating:
+        return LOCTEXT("NextStepValidating",
+            "Maya is negotiating the connection; wait for its result.");
+    case EMtoUConnectionState::BoneOnly:
+        return LOCTEXT("NextStepBoneOnly",
+            "Enable Transfer BS in Maya and reconnect before accepting; this session streams no Morphs.");
+    case EMtoUConnectionState::Partial:
+        return LOCTEXT("NextStepPartial",
+            "Connected with partial Morph coverage; review Model diagnostics before accepting.");
+    case EMtoUConnectionState::Connected:
+        return LOCTEXT("NextStepConnected",
+            "Connected through the Maya workflow in use; this display follows the session.");
+    case EMtoUConnectionState::Disconnected:
+    case EMtoUConnectionState::Unknown:
     default:
-        return FSlateColor::UseForeground();
+        break;
     }
+    switch (Readiness.State)
+    {
+    case EMtoUPreviewState::Building:
+        return LOCTEXT("NextStepBuilding", "Refresh is running; wait for it to finish.");
+    case EMtoUPreviewState::Error:
+        return LOCTEXT("NextStepRefreshFailed",
+            "Fix the reported inputs, then run Refresh Preview again; the failure message stays in MtoU Diagnostics.");
+    case EMtoUPreviewState::Warning:
+        return LOCTEXT("NextStepQualityWarning",
+            "The preview is usable with a quality warning; review MtoU Diagnostics before accepting.");
+    case EMtoUPreviewState::Dirty:
+        return LOCTEXT("NextStepDirty",
+            "Inputs changed; run Refresh Preview to rebuild the Generated Preview.");
+    case EMtoUPreviewState::Ready:
+        return LOCTEXT("NextStepReady",
+            "Connect the Model workflow in Maya, or run Refresh Preview after changing inputs.");
+    case EMtoUPreviewState::None:
+    default:
+        return LOCTEXT("NextStepNone", "Assign the Binding inputs, then run Refresh Preview.");
+    }
+}
+
+FText DisplayText(EMtoUDisplayTarget Target)
+{
+    switch (Target)
+    {
+    case EMtoUDisplayTarget::GeneratedPreview:
+        return LOCTEXT("DisplayGeneratedPreview", "Showing Generated Preview");
+    case EMtoUDisplayTarget::Driver:
+        return LOCTEXT("DisplayDriver", "Showing Driver");
+    case EMtoUDisplayTarget::Hidden:
+    default:
+        return LOCTEXT("DisplayHidden", "Showing nothing (no mesh selected)");
+    }
+}
+
+FText RefreshPreviewTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    return Actor.IsValid()
+        ? LOCTEXT("RefreshPreviewTooltip",
+            "Rebuild the Generated Preview from the current Binding inputs. Ends the active session and shows the new Generated Preview.")
+        : LOCTEXT("RefreshPreviewUnavailable",
+            "Select a Binding actor to refresh its Generated Preview.");
+}
+
+FText DeletePreviewTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    return FMtoULiveLinkActorDetails::CanDeletePreview(Actor)
+        ? LOCTEXT("DeletePreviewTooltip",
+            "Remove the Generated Preview and return to the Driver display.")
+        : LOCTEXT("DeletePreviewUnavailable",
+            "Available after Refresh Preview produces a usable Generated Preview.");
+}
+
+/** Builds the one status view from an already-read axis snapshot. */
+FMtoULiveLinkActorDetails::FStatusView BuildStatusView(
+    AMtoULiveLinkActor& Target, const FMtoUPreviewReadiness& Readiness)
+{
+    FMtoULiveLinkActorDetails::FStatusView View;
+    const FString& ConnectionStatus = Target.GetConnectionStatus();
+    const EMtoUConnectionState Connection = ClassifyConnection(ConnectionStatus);
+
+    ESeverity ReadinessSeverity = ESeverity::Neutral;
+    const FText ReadinessText = ReadinessHeadline(Readiness, ReadinessSeverity);
+    ESeverity ConnectionSeverity = ESeverity::Neutral;
+    const FText ConnectionText = ConnectionHeadline(Connection, ConnectionStatus, ConnectionSeverity);
+
+    View.State = FText::Format(LOCTEXT("StatusHeadline", "{0} \u00B7 {1}"), ReadinessText, ConnectionText);
+    View.Severity = ReadinessSeverity > ConnectionSeverity ? ReadinessSeverity : ConnectionSeverity;
+    View.Detail = ConnectionNeedsDetail(ConnectionStatus)
+        ? FText::FromString(ConnectionStatus.TrimStartAndEnd())
+        : FText::GetEmpty();
+    View.NextStep = NextStepText(Connection, Readiness);
+    View.Display = DisplayText(Target.GetDisplayTarget());
+    return View;
 }
 }
 
@@ -213,78 +309,101 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         }
     }
 
+    // The curated Status row below is the one place the connection state is
+    // read; the actor's raw status property row would repeat it verbatim.
+    DetailBuilder.HideProperty(FName(TEXT("ConnectionStatus")));
+
     IDetailCategoryBuilder& PreviewCategory = DetailBuilder.EditCategory(
         "MtoU Preview", LOCTEXT("MtoUPreviewCategory", "MtoU Preview"),
         ECategoryPriority::Important);
 
-    PreviewCategory.AddCustomRow(LOCTEXT("DisplaySourceFilter", "Display source"))
+    // One presenter per panel: every binding of the status row reads the same
+    // cached view, so a Slate poll keeps the status instead of rebuilding it.
+    const TSharedRef<FStatusPresenter> Status = MakeShared<FStatusPresenter>(Actor);
+
+    // One status block: Preview readiness and connection state in the colored
+    // headline, the raw message only when it adds information, the single next
+    // step, and the display source that follows the actor.
+    PreviewCategory.AddCustomRow(LOCTEXT("StatusFilter", "Status"))
         .NameContent()
         [
             SNew(STextBlock)
-            .Text(LOCTEXT("DisplaySource", "Display source"))
+            .Text(LOCTEXT("Status", "Status"))
         ]
         .ValueContent()
-        .MinDesiredWidth(400.0f)
         [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                return DisplaySourceText(Actor);
-            })
+            SNew(SVerticalBox)
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity_Lambda([Status]()
+                {
+                    return SeverityColor(Status->Get().Severity);
+                })
+                .Text_Lambda([Status]()
+                {
+                    return Status->Get().State;
+                })
+            ]
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .Text_Lambda([Status]()
+                {
+                    return Status->Get().Detail;
+                })
+                .Visibility_Lambda([Status]()
+                {
+                    return Status->Get().Detail.IsEmpty()
+                        ? EVisibility::Collapsed
+                        : EVisibility::Visible;
+                })
+            ]
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .Text_Lambda([Status]()
+                {
+                    return Status->Get().NextStep;
+                })
+            ]
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .Text_Lambda([Status]()
+                {
+                    return Status->Get().Display;
+                })
+            ]
         ];
 
-    PreviewCategory.AddCustomRow(LOCTEXT("ConnectionFilter", "Connection"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("Connection", "Connection"))
-        ]
-        .ValueContent()
-        .MinDesiredWidth(400.0f)
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .ColorAndOpacity_Lambda([Actor]()
-            {
-                return ConnectionColor(Actor);
-            })
-            .Text_Lambda([Actor]()
-            {
-                return ConnectionText(Actor);
-            })
-        ];
-
-    PreviewCategory.AddCustomRow(LOCTEXT("NextStepFilter", "Next step"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("NextStep", "Next step"))
-        ]
-        .ValueContent()
-        .MinDesiredWidth(400.0f)
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                return NextStepText(Actor);
-            })
-        ];
-
-    PreviewCategory.AddCustomRow(LOCTEXT("RefreshPreviewFilter", "Refresh Preview"))
+    // The two Preview actions sit together, content-sized, directly under the
+    // status that explains them.
+    PreviewCategory.AddCustomRow(LOCTEXT("PreviewActionsFilter", "Preview actions"))
         .WholeRowContent()
         [
             SNew(SHorizontalBox)
             + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
-            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+            .AutoWidth()
+            .Padding(0.0f, 0.0f, 6.0f, 0.0f)
             [
                 SNew(SButton)
                 .Text(LOCTEXT("RefreshPreview", "Refresh Preview"))
-                .ToolTipText(LOCTEXT(
-                    "RefreshPreviewTooltip",
-                    "Generate the current Preview revision. Ends the active session and shows the Generated Preview."))
+                .ToolTipText_Lambda([Actor]() { return RefreshPreviewTooltip(Actor); })
                 .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
                 .OnClicked_Lambda([Actor]()
                 {
@@ -292,16 +411,14 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                 })
             ]
             + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
+            .AutoWidth()
             [
                 SNew(SButton)
                 .Text(LOCTEXT("DeletePreview", "Delete Preview"))
-                .ToolTipText(LOCTEXT(
-                    "DeletePreviewTooltip",
-                    "Remove the Generated Preview and restore the Driver display. Only available while a preview is ready."))
+                .ToolTipText_Lambda([Actor]() { return DeletePreviewTooltip(Actor); })
                 .IsEnabled_Lambda([Actor]()
                 {
-                    return Actor.IsValid() && Actor->GetPreviewReadiness().IsUsable();
+                    return CanDeletePreview(Actor);
                 })
                 .OnClicked_Lambda([Actor]()
                 {
@@ -312,48 +429,6 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     return FReply::Handled();
                 })
             ]
-        ];
-
-    PreviewCategory.AddCustomRow(LOCTEXT("PreviewReadinessFilter", "Preview readiness"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("PreviewReadiness", "Preview readiness"))
-        ]
-        .ValueContent()
-        .MinDesiredWidth(400.0f)
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .ColorAndOpacity_Lambda([Actor]()
-            {
-                return ReadinessColor(Actor);
-            })
-            .Text_Lambda([Actor]()
-            {
-                return ReadinessText(Actor);
-            })
-        ];
-
-    PreviewCategory.AddCustomRow(LOCTEXT("ModifiedPartsFilter", "Modified parts"))
-        .NameContent()
-        [
-            SNew(STextBlock)
-            .Text(LOCTEXT("ModifiedParts", "Modified parts"))
-        ]
-        .ValueContent()
-        .MinDesiredWidth(400.0f)
-        [
-            SNew(STextBlock)
-            .AutoWrapText(true)
-            .Text_Lambda([Actor]()
-            {
-                const FString Summary = Actor.IsValid()
-                    ? Actor->GetPreviewReadiness().Summary : FString();
-                return !Summary.IsEmpty()
-                    ? FText::FromString(Summary)
-                    : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
-            })
         ];
 
     IDetailCategoryBuilder& DiagnosticsCategory = DetailBuilder.EditCategory(
@@ -368,7 +443,6 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             .Text(LOCTEXT("CharacterParts", "Character parts"))
         ]
         .ValueContent()
-        .MinDesiredWidth(400.0f)
         [
             SNew(STextBlock)
             .AutoWrapText(true)
@@ -396,6 +470,26 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             })
         ];
 
+    DiagnosticsCategory.AddCustomRow(LOCTEXT("ModifiedPartsFilter", "Modified parts"))
+        .NameContent()
+        [
+            SNew(STextBlock)
+            .Text(LOCTEXT("ModifiedParts", "Modified parts"))
+        ]
+        .ValueContent()
+        [
+            SNew(STextBlock)
+            .AutoWrapText(true)
+            .Text_Lambda([Actor]()
+            {
+                const FString Summary = Actor.IsValid()
+                    ? Actor->GetPreviewReadiness().Summary : FString();
+                return !Summary.IsEmpty()
+                    ? FText::FromString(Summary)
+                    : LOCTEXT("NoModifiedParts", "Run Refresh Preview to compare meshes");
+            })
+        ];
+
     DiagnosticsCategory.AddCustomRow(LOCTEXT("PreviewDetailsFilter", "Preview details"))
         .NameContent()
         [
@@ -403,7 +497,6 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             .Text(LOCTEXT("PreviewDetails", "Preview details"))
         ]
         .ValueContent()
-        .MinDesiredWidth(400.0f)
         [
             SNew(STextBlock)
             .AutoWrapText(true)
@@ -427,13 +520,29 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             .Text(LOCTEXT("ModelDiagnostics", "Model diagnostics"))
         ]
         .ValueContent()
-        .MinDesiredWidth(400.0f)
         [
             SNew(STextBlock)
             .AutoWrapText(true)
             .ColorAndOpacity_Lambda([Actor]()
             {
-                return ModelDiagnosticsColor(Actor);
+                if (!Actor.IsValid())
+                {
+                    return FSlateColor::UseForeground();
+                }
+                switch (Actor->GetModelDiagnosticLevel())
+                {
+                case EMtoUModelDiagnosticLevel::Partial:
+                    return FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f));
+                case EMtoUModelDiagnosticLevel::BoneOnly:
+                    return FSlateColor(FLinearColor(1.0f, 0.6f, 0.25f));
+                case EMtoUModelDiagnosticLevel::Error:
+                    return FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f));
+                case EMtoUModelDiagnosticLevel::Full:
+                    return FSlateColor(FLinearColor(0.35f, 0.85f, 0.45f));
+                case EMtoUModelDiagnosticLevel::None:
+                default:
+                    return FSlateColor::UseForeground();
+                }
             })
             .Text_Lambda([Actor]()
             {
@@ -447,6 +556,95 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     : LOCTEXT("NoModelDiagnostics", "No Model connection diagnostics recorded");
             })
         ];
+
+    DiagnosticsCategory.AddCustomRow(LOCTEXT("ConnectionDetailsFilter", "Connection details"))
+        .NameContent()
+        [
+            SNew(STextBlock)
+            .Text(LOCTEXT("ConnectionDetails", "Connection"))
+        ]
+        .ValueContent()
+        [
+            SNew(STextBlock)
+            .AutoWrapText(true)
+            .Text_Lambda([Actor]()
+            {
+                if (!Actor.IsValid())
+                {
+                    return FText::GetEmpty();
+                }
+                const FString& Status = Actor->GetConnectionStatus();
+                return !Status.IsEmpty()
+                    ? FText::FromString(Status)
+                    : LOCTEXT("NoConnectionStatus", "No connection status recorded");
+            })
+        ];
+}
+
+FMtoULiveLinkActorDetails::FStatusView FMtoULiveLinkActorDetails::MakeStatusView(
+    TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    if (AMtoULiveLinkActor* Target = Actor.Get())
+    {
+        return BuildStatusView(*Target, Target->GetPreviewReadiness());
+    }
+    FStatusView View;
+    View.State = LOCTEXT("StatusNoActor", "No Binding actor selected");
+    View.NextStep = LOCTEXT("NextStepNoActor",
+        "Select a Binding actor to refresh or delete its Generated Preview.");
+    return View;
+}
+
+FMtoULiveLinkActorDetails::FStatusPresenter::FStatusPresenter(TWeakObjectPtr<AMtoULiveLinkActor> InActor)
+    : Actor(InActor)
+{
+}
+
+const FMtoULiveLinkActorDetails::FStatusView& FMtoULiveLinkActorDetails::FStatusPresenter::Get()
+{
+    AMtoULiveLinkActor* Target = Actor.Get();
+    if (!Target)
+    {
+        // A destroyed actor drops its cached view instead of presenting the
+        // state it had while it was alive.
+        if (!bHasView || CachedKey.bHasActor)
+        {
+            CachedKey = FKey();
+            View = FMtoULiveLinkActorDetails::MakeStatusView(TWeakObjectPtr<AMtoULiveLinkActor>());
+            bHasView = true;
+        }
+        return View;
+    }
+
+    // The change key reads each axis once: readiness state and stage, the
+    // connection message, the display selection. Readiness is read through the
+    // actor's one coherent snapshot and only formatted when the key moved.
+    const FMtoUPreviewReadiness Readiness = Target->GetPreviewReadiness();
+    const FString& Connection = Target->GetConnectionStatus();
+    const EMtoUDisplayTarget Display = Target->GetDisplayTarget();
+    if (bHasView
+        && CachedKey.bHasActor
+        && CachedKey.State == Readiness.State
+        && CachedKey.Stage == Readiness.Stage
+        && CachedKey.Display == Display
+        && CachedKey.Connection == Connection)
+    {
+        return View;
+    }
+
+    View = BuildStatusView(*Target, Readiness);
+    CachedKey.bHasActor = true;
+    CachedKey.State = Readiness.State;
+    CachedKey.Stage = Readiness.Stage;
+    CachedKey.Display = Display;
+    CachedKey.Connection = Connection;
+    bHasView = true;
+    return View;
+}
+
+bool FMtoULiveLinkActorDetails::CanDeletePreview(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    return Actor.IsValid() && Actor->GetPreviewReadiness().IsUsable();
 }
 
 FReply FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
@@ -466,25 +664,4 @@ FReply FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(TWeakObjectPtr<AMt
     return FReply::Handled();
 }
 
-#if WITH_DEV_AUTOMATION_TESTS
-FText FMtoULiveLinkActorDetails::TestDisplaySourceText(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
-{
-    return DisplaySourceText(Actor);
-}
-
-FText FMtoULiveLinkActorDetails::TestConnectionText(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
-{
-    return ConnectionText(Actor);
-}
-
-FText FMtoULiveLinkActorDetails::TestNextStepText(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
-{
-    return NextStepText(Actor);
-}
-
-FText FMtoULiveLinkActorDetails::TestReadinessText(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
-{
-    return ReadinessText(Actor);
-}
-#endif
 #undef LOCTEXT_NAMESPACE

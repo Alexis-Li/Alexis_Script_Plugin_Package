@@ -89,22 +89,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 1. 在 Unreal 中创建 **MtoU_LiveLink Binding** 资产，指定
    **Primary Driver Skeletal Mesh**，并按需添加 **Additional Parts**。
 2. 将 Binding 资产从内容浏览器拖入关卡，创建对应的 Binding Actor。
-   在细节面板的 **MtoU** 分类中操作插件控件：**Display source** 说明当前显示
-   的网格，**Connection** 说明实时连接状态，**Next step** 给出下一步操作；
-   需要部件、预览或模型详情时再展开 **MtoU Diagnostics**。
-3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击“设置角色”。
-   检查检测到的 Display 控制器、服装、场景帧率和传输上限；状态行说明显示
-   来源，下一步行说明当前该做什么。
+   细节面板的 **MtoU Preview** 用一个 **Status** 区显示预览就绪状态、连接、
+   下一步和当前显示网格，下方是 **Refresh Preview** 与 **Delete Preview**。
+   需要部件、预览、模型或原始连接详情时再展开 **MtoU Diagnostics**。
+3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击角色卡片中的
+   “设置角色”。在卡片中检查服装、场景帧率和骨骼／BlendShape 数量。
+   “高级设置”中提供手动选择 Display 控制器、选中重名骨骼、播放传输上限
+   和警告偏好。
 4. 选择“动画”，点击“连接”。在 Maya 中摆姿、拖动时间轴或播放动画，
-   即可在 Unreal 中查看效果。不可用按钮会用提示说明原因；同一连接的相同
-   警告只打断一次，新错误仍会弹出，完整诊断始终可查看。
+   即可在 Unreal 中查看效果。不可用按钮会用提示说明原因。“状态”区集中
+   显示连接、当前活动／显示来源和下一步操作，旁边可随时打开“诊断详情”。
+   同一连接的相同警告只打断一次，新错误仍会弹出。
 
 ## 动画预览
 
 使用“动画”模式实时预览角色。需要查看一段缓存动画时，先设置 Maya 时间轴的
 播放范围，再选择“缓存播放”并点击“捕获并回放”。捕获和上传完成后开始播放。
-缓存操作收在独立的可折叠分组中；Maya 状态行可区分捕获中、上传中、回放中、
-完成停在最后一帧、已停止保留缓存和失败。
+缓存操作仅在“缓存播放”模式下出现在连接按钮下方。统一的状态区可区分
+捕获中、上传中、回放中、完成停在最后一帧、已停止保留缓存和失败。
 
 单次捕获上限为 20,000 帧或 1 GiB，达到上限时请缩短范围。捕获或上传失败会
 返回实时预览并显示原因；回放失败时可以重试保留的缓存，或退出缓存模式。
@@ -112,8 +114,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 ## 服装模型预览
 
 1. 在 Unreal Binding 中指定服装 **Preview Static Mesh**。
-2. 在 Binding Actor 上点击 **Refresh Preview**，检查 **Preview readiness**
-  （Ready、Warning、Error、Dirty、Building、None）与刷新结果。
+2. 在 Binding Actor 上点击 **Refresh Preview**，等待 **Status** 显示 Ready、
+   Ready with a warning 或 Refresh failed。**MtoU Diagnostics** 中的
    **Modified parts** 会列出预览替换的材质槽，Driver 角色的其他部分仍会显示。
 3. 在 Maya 中选择“模型”，确认服装和“传递 BS”设置，再点击“连接”。
 4. 在 Maya 中给角色摆姿，检查 Unreal 中的服装变形。

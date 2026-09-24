@@ -450,66 +450,105 @@ USkeletalMesh* MakeMorphDriver(UObject& Outer, bool bSplitMissingSurface = false
 }
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSectionTest,
-    "MtoULiveLink.Editor.DetailsSection",
+// Issue #48 redesign: the Details panel presents one unified status through
+// the actor's public state and its existing Refresh/Delete/Display actions.
+// The status vocabulary is asserted through that readout instead of through
+// control text snapshots.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
+    "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
+bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    FPropertyEditorModule& PropertyEditor =
-        FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-    for (const FName Category : { FName("MtoU_LiveLink"), FName("MtoU Preview"),
-        FName("MtoU Diagnostics") })
-    {
-        const TArray<TSharedPtr<FPropertySection>> Sections =
-            PropertyEditor.FindSectionsForCategory(AMtoULiveLinkActor::StaticClass(), Category);
-        TestTrue(FString::Printf(TEXT("%s belongs to the MtoU details section"), *Category.ToString()),
-            Sections.ContainsByPredicate([](const TSharedPtr<FPropertySection>& Section)
-            {
-                return Section.IsValid() && Section->GetName() == "MtoU"
-                    && Section->GetOrder() == 1000;
-            }));
-    }
-    for (const FName PropertyName : {
-            FName("PreviewState"), FName("PreviewBuildStage"), FName("DisplayTarget"),
-            FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel"),
-            FName("DriverMeshComponent") })
-    {
-        const FProperty* Property = FindFProperty<FProperty>(
-            AMtoULiveLinkActor::StaticClass(), PropertyName);
-        TestTrue(FString::Printf(TEXT("%s stays out of the default property rows"), *PropertyName.ToString()),
-            Property && !Property->HasAnyPropertyFlags(CPF_Edit));
-    }
-
     UWorld* ReadoutWorld = UWorld::CreateWorld(EWorldType::EditorPreview, false);
     AMtoULiveLinkActor* ReadoutActor = ReadoutWorld
         ? ReadoutWorld->SpawnActor<AMtoULiveLinkActor>() : nullptr;
-    TestNotNull(TEXT("Details readout actor is created"), ReadoutActor);
-    if (ReadoutActor)
+    TestNotNull(TEXT("Details status actor is created"), ReadoutActor);
+    if (!ReadoutActor)
     {
-        ReadoutActor->ShowDriverMesh();
-        ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
-        TestEqual(TEXT("Details names the Driver display source"),
-            FMtoULiveLinkActorDetails::TestDisplaySourceText(ReadoutActor).ToString(),
-            FString(TEXT("Driver (real-time Animation preview)")));
-        TestTrue(TEXT("Details names the disconnected next step"),
-            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
-                .Contains(TEXT("Disconnected")));
-        TestEqual(TEXT("Details names the unconfigured readiness"),
-            FMtoULiveLinkActorDetails::TestReadinessText(ReadoutActor).ToString(),
-            FString(TEXT("None: assign the Binding inputs, then Refresh Preview.")));
-        ReadoutActor->SetConnectionStatus(
-            TEXT("Connected: partial Morph coverage"));
-        TestTrue(TEXT("Details keeps the partial-coverage next step actionable"),
-            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
-                .Contains(TEXT("partial Morph coverage")));
-        ReadoutActor->SetConnectionStatus(
-            TEXT("Error: the Maya and Unreal skeletons do not match."));
-        TestTrue(TEXT("Details routes errors to the fix-and-reconnect step"),
-            FMtoULiveLinkActorDetails::TestNextStepText(ReadoutActor).ToString()
-                .Contains(TEXT("reconnect in Maya")));
+        if (ReadoutWorld)
+        {
+            ReadoutWorld->DestroyWorld(false);
+        }
+        return false;
     }
+
+    // Every connection status the source publishes must reach the same single
+    // readout with a state and a next step, and the raw message must stay
+    // visible whenever it says more than the state already does.
+    struct FCase
+    {
+        const TCHAR* Status;
+        FMtoULiveLinkActorDetails::ESeverity Severity;
+        bool bShowsDetail;
+    };
+    const FCase Cases[] = {
+        { TEXT(""), FMtoULiveLinkActorDetails::ESeverity::Neutral, false },
+        { TEXT("Disconnected"), FMtoULiveLinkActorDetails::ESeverity::Neutral, false },
+        { TEXT("Validating"), FMtoULiveLinkActorDetails::ESeverity::Info, false },
+        { TEXT("Connected"), FMtoULiveLinkActorDetails::ESeverity::Success, false },
+        { TEXT("Connected: partial Morph coverage"),
+            FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Connected: bone-only diagnostic; not valid for model acceptance"),
+            FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Preview not ready"), FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Preview morph mismatch"), FMtoULiveLinkActorDetails::ESeverity::Error, true },
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            FMtoULiveLinkActorDetails::ESeverity::Error, true },
+    };
+    for (const FCase& Case : Cases)
+    {
+        ReadoutActor->SetConnectionStatus(Case.Status);
+        const FMtoULiveLinkActorDetails::FStatusView View =
+            FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor);
+        TestFalse(FString::Printf(TEXT("status '%s' names the state"), Case.Status),
+            View.State.ToString().TrimStartAndEnd().IsEmpty());
+        TestFalse(FString::Printf(TEXT("status '%s' names the next step"), Case.Status),
+            View.NextStep.ToString().TrimStartAndEnd().IsEmpty());
+        TestFalse(FString::Printf(TEXT("status '%s' names the display source"), Case.Status),
+            View.Display.ToString().TrimStartAndEnd().IsEmpty());
+        TestTrue(FString::Printf(TEXT("status '%s' reports its own severity"), Case.Status),
+            View.Severity == Case.Severity);
+        TestEqual(FString::Printf(TEXT("status '%s' shows the raw message"), Case.Status),
+            !View.Detail.ToString().TrimStartAndEnd().IsEmpty(), Case.bShowsDetail);
+    }
+
+    // A blocking error keeps its own text instead of a generic headline.
+    ReadoutActor->SetConnectionStatus(TEXT("Error: the Maya and Unreal skeletons do not match."));
+    TestTrue(TEXT("a connection error keeps its own message"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Detail.ToString()
+            .Contains(TEXT("skeletons do not match")));
+
+    // Distinct states cannot read as the same status.
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    const FString ConnectedState =
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString();
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    TestTrue(TEXT("a disconnect reads differently from a connection"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString() != ConnectedState);
+
+    // The readout follows the public display selection.
+    ReadoutActor->ShowDriverMesh();
+    TestTrue(TEXT("the status readout follows the Driver display selection"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Display.ToString()
+            .Contains(TEXT("Driver")));
+
+    // The panel shares one presenter: it starts from the actor's current state
+    // and still matches the actor after that state moves.
+    FMtoULiveLinkActorDetails::FStatusPresenter Presenter(ReadoutActor);
+    TestEqual(TEXT("the presenter starts from the actor's current state"),
+        Presenter.Get().State.ToString(),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString());
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    TestEqual(TEXT("the presenter follows a connection change"),
+        Presenter.Get().State.ToString(),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString());
+
+    // The Delete action is offered only while it can change something.
+    TestFalse(TEXT("Delete Preview stays unavailable without a usable Generated Preview"),
+        FMtoULiveLinkActorDetails::CanDeletePreview(ReadoutActor));
+
     if (ReadoutWorld)
     {
         ReadoutWorld->DestroyWorld(false);
@@ -4458,6 +4497,10 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Details keeps the MtoU Preview customization registered for the Binding actor"),
         PropertyEditor.GetClassNameToDetailLayoutNameMap().Contains(
             AMtoULiveLinkActor::StaticClass()->GetFName()));
+    // The Details status cache exists before the refresh, so the same instance
+    // has to follow the readiness and display flip the click causes.
+    FMtoULiveLinkActorDetails::FStatusPresenter StatusPresenter(Actor);
+    const FString StatusBeforeRefresh = StatusPresenter.Get().State.ToString();
     // Execute the exact code the Details button invokes, including the
     // FScopedSlowTask/stage-callback path a direct RefreshActor call skips.
     FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(Actor);
@@ -4478,6 +4521,11 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
                 && Actor->GetPreviewReadiness().GeneratedPreview != nullptr
                 && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Actor->GetPreviewReadiness().GeneratedPreview;
         }));
+    TestTrue(TEXT("the cached Details status follows the refreshed actor"),
+        StatusPresenter.Get().State.ToString() != StatusBeforeRefresh
+            && StatusPresenter.Get().State.ToString()
+                == FMtoULiveLinkActorDetails::MakeStatusView(Actor).State.ToString()
+            && StatusPresenter.Get().Display.ToString().Contains(TEXT("Generated Preview")));
     FSocket* ReconnectClient = ConnectClient();
     TestNotNull(TEXT("animation reconnects explicitly after the Details click"), ReconnectClient);
     TestTrue(TEXT("reconnect init is sent"),

@@ -2,15 +2,16 @@
 
 ## Unreleased
 
-- Reorganize both host panels without changing workflows (Issue #48): Maya
-  groups role setup, preview workflow with connection, and collapsible cache
-  and advanced/diagnostics sections, names the display source, connection
-  state, and next step on every transition, explains disabled actions with
-  tooltips, and shows each session's repeated warning only once while new
-  errors still interrupt. UE Details adds Display source, Connection,
-  Next step, and Preview readiness rows with Error/Warning color, keeps
-  Refresh/Delete behavior, and folds part/preview/Model diagnostics into a
-  collapsed MtoU Diagnostics category. No protocol, cache, or recovery change.
+- Redesign both host panels without changing workflows (Issue #48). Maya now
+  uses a compact workflow header, a Character card, one Preview area with
+  Connect beside its target, cache actions only in Cached Playback, one Status
+  area with Diagnostic Details, and collapsed Advanced Settings; the window
+  fits its visible content. UE Details combines readiness, connection, next
+  step, and displayed mesh in one colored Status block above content-sized
+  preview actions, with part, preview, Model, and raw connection details in
+  collapsed MtoU Diagnostics. Repeated same-session warnings interrupt once;
+  new warnings and blocking errors still interrupt. No protocol, cache, or
+  recovery change.
 
 - Negotiate the required skinning bones and ancestors of every enabled part
   (Issue #55). Ignore unrelated exported branches and stream part-only secondary
