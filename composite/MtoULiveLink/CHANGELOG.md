@@ -4,8 +4,9 @@
 
 - Redesign both host panels without changing workflows (Issue #48). Maya uses
   a compact dark card layout with a blue two-tab workflow switch, connection
-  controls and status, two-column Scene Info, green preview selection, contextual
-  cache actions, Tools, and Diagnostics. The window resizes when cached actions
+  controls and status, two-column Scene Info with spacing between its divider
+  and labels, green preview selection, contextual cache actions, Tools, and
+  Diagnostics. The window resizes when cached actions
   appear or disappear. UE Details combines readiness, connection, next step,
   and displayed mesh in one colored Status block above content-sized preview
   actions, with part, preview, Model, and raw connection details in collapsed

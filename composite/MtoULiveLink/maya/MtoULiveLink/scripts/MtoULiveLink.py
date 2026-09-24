@@ -4108,7 +4108,8 @@ class _Controller(object):
         self._outfit_text = cmds.text(label="当前衣服：—", align="left")
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
         cmds.setParent("..")
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
+        cmds.columnLayout(adjustableColumn=False, rowSpacing=6,
+                          columnAttach=("left", 16))
         self._bone_text = cmds.text(label="骨骼数：0", align="left")
         self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
         self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
