@@ -62,12 +62,19 @@ TAB_ON_BACKGROUND = (0.52, 0.52, 0.52)
 TAB_OFF_BACKGROUND = (0.20, 0.20, 0.20)
 LIGHT_ON_BACKGROUND = (0.08, 0.45, 0.12)
 LIGHT_OFF_BACKGROUND = (0.55, 0.08, 0.08)
-# Panel grid: content width, the gutter between columns, and row spacing.
-PANEL_WIDTH = 456
+# Panel grid: card stack width, outer margin, and the shared 4-column grid
+# inside each card (CARD_HALF = two grid columns + gutter for 2-up rows).
+PANEL_WIDTH = 480
 PANEL_MARGIN = 16
+CARD_MARGIN = 12
 GRID_GAP = 10
+CARD_GAP = GRID_GAP
 ROW_SPACING = 10
-BUTTON_HEIGHT = 30
+TAB_HEIGHT = 40
+BUTTON_HEIGHT = 34
+CARD_CONTENT = PANEL_WIDTH
+CARD_HALF = (CARD_CONTENT - CARD_GAP) // 2
+CARD_QUARTER = (CARD_CONTENT - 3 * CARD_GAP) // 4
 PRIMARY_BACKGROUND = (0.20, 0.40, 0.48)
 TIME_UNIT_FPS = {
     "game": 15.0,
@@ -3978,7 +3985,6 @@ class _Controller(object):
         self._cache_row = None
         self._connect_button = None
         self._disconnect_button = None
-        self._mode_form = None
         self._shown_warning_signatures = set()
         self._warning_checkbox = None
         self._duplicate_button = None
@@ -4011,37 +4017,68 @@ class _Controller(object):
         cmds.window(WINDOW_NAME, title="MtoU Live Link", closeCommand=self.close,
                     sizeable=False, width=PANEL_WIDTH + 2 * PANEL_MARGIN,
                     resizeToFitChildren=True)
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=ROW_SPACING,
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=CARD_MARGIN,
                           columnAttach=("both", PANEL_MARGIN))
         cmds.separator(height=4, style="none")
 
-        # Workflow tabs: left-aligned, compact, neutral grey (not an action colour).
-        cmds.rowLayout(numberOfColumns=2, columnWidth2=(76, 80),
-                       columnAttach2=("left", "left"), columnOffset2=(0, 4))
+        # Card 1 · workflow tabs.
+        cmds.frameLayout(label="工作流", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF, CARD_HALF + CARD_GAP),
+                       columnAttach2=("both", "both"))
         self._animation_workflow_button = cmds.button(
-            label="动画", width=76, height=24, backgroundColor=TAB_ON_BACKGROUND,
+            label="动画", height=TAB_HEIGHT, backgroundColor=TAB_ON_BACKGROUND,
             annotation="动画工作流：实时预览或缓存播放角色动画。",
             command=lambda *_: self._on_workflow_changed(WORKFLOW_ANIMATION))
         self._model_workflow_button = cmds.button(
-            label="模型", width=76, height=24, backgroundColor=TAB_OFF_BACKGROUND,
+            label="模型", height=TAB_HEIGHT, backgroundColor=TAB_OFF_BACKGROUND,
             annotation="模型工作流：在 UE 用 Generated Preview 检查服装。",
             command=lambda *_: self._on_workflow_changed(WORKFLOW_MODEL))
         cmds.setParent("..")
-        cmds.separator(height=2, style="in")
+        cmds.setParent("..")
 
-        cmds.formLayout(width=PANEL_WIDTH)
+        # Card 2 · connect.
+        cmds.frameLayout(label="连接控制", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.formLayout(width=CARD_CONTENT)
         set_role = cmds.button(label="设置角色", height=BUTTON_HEIGHT,
                                annotation="先在 Maya 中选择变形根骨骼，再设置角色。",
                                command=lambda *_: self.set_role())
-        display = cmds.button(label="选择 Display 控制器", height=BUTTON_HEIGHT,
-                              annotation="检测到多个服装属性时，选中 Display 控制器后点击。",
-                              command=lambda *_: self.set_display_controller())
-        self._duplicate_button = cmds.button(
-            label="选中重名骨骼（0）", height=BUTTON_HEIGHT, enable=False,
-            command=lambda *_: self.select_duplicate_bones())
-        self._grid_row([set_role, display, self._duplicate_button])
+        self._connect_button = cmds.button(
+            label="连接", height=BUTTON_HEIGHT, backgroundColor=PRIMARY_BACKGROUND,
+            annotation="把当前角色连接到 Unreal Binding Actor。",
+            command=lambda *_: self.connect())
+        self._disconnect_button = cmds.button(
+            label="断开", height=BUTTON_HEIGHT, command=lambda *_: self.disconnect())
+        self._light = cmds.text(label="●  未连接", align="center", height=BUTTON_HEIGHT,
+                                font="boldLabelFont", backgroundColor=LIGHT_OFF_BACKGROUND)
+        self._grid_row([set_role, self._connect_button, self._disconnect_button, self._light])
+        cmds.setParent("..")
 
-        self._mode_form = cmds.formLayout(width=PANEL_WIDTH)
+        # Card 3 · scene info, two label columns.
+        cmds.frameLayout(label="场景信息", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF - 8, CARD_HALF - 8),
+                       columnAttach2=("left", "left"),
+                       columnOffset2=(8, CARD_HALF + CARD_GAP))
+        cmds.columnLayout(adjustableColumn=False, rowSpacing=4)
+        self._root_text = cmds.text(label="角色根骨骼：—", align="left")
+        self._outfit_text = cmds.text(label="当前衣服：—", align="left")
+        self._fps_text = cmds.text(label="场景帧率：—", align="left")
+        cmds.setParent("..")
+        cmds.columnLayout(adjustableColumn=False, rowSpacing=4)
+        self._bone_text = cmds.text(label="骨骼数：0", align="left")
+        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
+        cmds.setParent("..")
+        cmds.setParent("..")
+        cmds.setParent("..")
+
+        # Card 4 · preview modes, transfer cap, and the cache action row.
+        cmds.frameLayout(label="预览与播放", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=CARD_MARGIN)
+        cmds.formLayout(width=CARD_CONTENT)
         self._realtime_mode_button = cmds.button(
             label="实时预览", height=BUTTON_HEIGHT, backgroundColor=TOGGLE_ON_BACKGROUND,
             command=lambda *_: self._on_mode_changed(REALTIME_MODE))
@@ -4050,6 +4087,7 @@ class _Controller(object):
             command=lambda *_: self._on_mode_changed(CACHED_MODE))
         self._bs_checkbox = cmds.checkBox(
             label="传递 BS", value=True, height=BUTTON_HEIGHT,
+            annotation="连接时把 Maya BlendShape 值一起传给 Unreal。",
             changeCommand=lambda *_: self._on_blendshapes_toggled())
         self._playback_cap = load_playback_cap()
         self._playback_cap_menu = cmds.optionMenu(
@@ -4059,14 +4097,9 @@ class _Controller(object):
         cmds.optionMenu(self._playback_cap_menu, edit=True, value=self._playback_cap)
         # The mode buttons and the BS switch share the first two columns; only
         # one of them is managed per workflow.
-        cmds.formLayout(self._mode_form, edit=True, attachPosition=[
-            (self._bs_checkbox, "left", 4, 0),
-            (self._bs_checkbox, "right", GRID_GAP // 2, 66),
-        ], attachForm=[(self._bs_checkbox, "top", 0)])
         self._grid_row([self._realtime_mode_button, self._cached_mode_button,
                         self._playback_cap_menu])
-
-        self._cache_row = cmds.formLayout(width=PANEL_WIDTH)
+        self._cache_row = cmds.formLayout(width=CARD_CONTENT)
         self._capture_button = cmds.button(
             label="捕获并回放", height=BUTTON_HEIGHT, enable=False,
             command=lambda *_: self._capture_cached_playback())
@@ -4081,42 +4114,40 @@ class _Controller(object):
             command=lambda *_: self._cancel_cached_capture())
         self._grid_row([self._capture_button, self._replay_button,
                         self._stop_replay_button, self._cancel_capture_button])
-
-        cmds.formLayout(width=PANEL_WIDTH)
-        self._connect_button = cmds.button(
-            label="连接", height=BUTTON_HEIGHT + 2, command=lambda *_: self.connect())
-        self._disconnect_button = cmds.button(
-            label="断开", height=BUTTON_HEIGHT + 2, command=lambda *_: self.disconnect())
-        self._light = cmds.text(label="●  未连接", align="center", height=BUTTON_HEIGHT + 2,
-                                font="boldLabelFont", backgroundColor=LIGHT_OFF_BACKGROUND)
-        self._grid_row([self._connect_button, self._disconnect_button, self._light],
-                       height=BUTTON_HEIGHT + 2)
-        cmds.separator(height=2, style="in")
-
-        # Status bar for the whole panel: the current state first, then the
-        # captured character it refers to.
-        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
-        self._status_text = cmds.text(label="未设置角色：选择根骨骼后点击“设置角色”",
-                                      align="left", wordWrap=True, font="boldLabelFont",
-                                      width=PANEL_WIDTH)
-        self._root_text = cmds.text(label="根骨骼：—", align="left")
-        self._outfit_text = cmds.text(label="衣服：—", align="left")
-        cmds.formLayout(width=PANEL_WIDTH)
-        self._fps_text = cmds.text(label="帧率：—", align="left")
-        self._bone_text = cmds.text(label="骨骼：0", align="left")
-        self._curve_text = cmds.text(label="BlendShape：0", align="left")
-        self._grid_row([self._fps_text, self._bone_text, self._curve_text], height=18)
-        self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
         cmds.setParent("..")
-        cmds.separator(height=2, style="in")
+        cmds.setParent("..")
 
-        cmds.formLayout(width=PANEL_WIDTH)
+        # Card 5 · advanced tools.
+        cmds.frameLayout(label="工具", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.formLayout(width=CARD_CONTENT)
+        display = cmds.button(label="选择 Display 控制器", height=BUTTON_HEIGHT,
+                              annotation="检测到多个服装属性时，选中 Display 控制器后点击。",
+                              command=lambda *_: self.set_display_controller())
+        self._duplicate_button = cmds.button(
+            label="选中重名骨骼（0）", height=BUTTON_HEIGHT, enable=False,
+            annotation="重名会被 UE 自动映射；点击可在场景中选中所有冲突骨骼。",
+            command=lambda *_: self.select_duplicate_bones())
+        self._grid_row([display, self._duplicate_button])
+        cmds.setParent("..")
+
+        # Card 6 · diagnostics.
+        cmds.frameLayout(label="诊断", collapsable=False, marginWidth=CARD_MARGIN,
+                         marginHeight=CARD_MARGIN)
+        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
+                       columnWidth2=(CARD_CONTENT - 110, 110),
+                       columnAttach2=("both", "both"), columnOffset2=(0, 4))
+        self._status_text = cmds.text(label="未设置角色：选择根骨骼后点击“设置角色”",
+                                      align="left", wordWrap=True, font="boldLabelFont")
+        cmds.button(label="诊断详情", height=BUTTON_HEIGHT,
+                    command=lambda *_: self.show_diagnostics())
+        cmds.setParent("..")
+        cmds.setParent("..")
+
+        cmds.rowLayout(numberOfColumns=1, columnWidth1=CARD_CONTENT)
         self._warning_checkbox = cmds.checkBox(
-            label="连接成功后弹出差异警告", value=True, height=26)
-        diagnostics = cmds.button(label="诊断详情", height=26,
-                                  command=lambda *_: self.show_diagnostics())
-        self._grid_row([self._warning_checkbox, diagnostics], spans=[2, 1], height=26)
-        cmds.separator(height=6, style="none")
+            label="连接成功后弹出差异警告", value=True)
+        cmds.setParent("..")
         self._refresh_fps()
         self._update_mode_controls()
         self._update_workflow_controls()
@@ -4133,7 +4164,6 @@ class _Controller(object):
             except (AttributeError, RuntimeError, TypeError):
                 self._maya_exit_callback = None
         cmds.showWindow(WINDOW_NAME)
-        self._queue_fit_window()
 
 
 
@@ -4283,24 +4313,6 @@ class _Controller(object):
         if layout and cmds is not None and cmds.layout(layout, exists=True):
             if cmds.layout(layout, query=True, manage=True) != visible:
                 cmds.layout(layout, edit=True, visible=visible, manage=visible)
-                self._queue_fit_window()
-
-    def _queue_fit_window(self, *unused):
-        # Maya resolves managed/collapsed children on the next UI turn.
-        cmds.evalDeferred(self._fit_window)
-
-    def _fit_window(self):
-        from maya import OpenMayaUI
-        from PySide2 import QtWidgets
-        from shiboken2 import wrapInstance
-
-        pointer = OpenMayaUI.MQtUtil.findWindow(WINDOW_NAME)
-        if pointer:
-            window = wrapInstance(int(pointer), QtWidgets.QWidget)
-            window.layout().activate()
-            # The panel is not sizeable; pin it to the grid width and to the
-            # height of the rows currently shown.
-            window.setFixedSize(PANEL_WIDTH + 2 * PANEL_MARGIN, window.sizeHint().height())
 
     def _on_workflow_changed(self, workflow):
         if workflow == self._workflow or workflow not in WORKFLOWS:
@@ -4502,9 +4514,6 @@ class _Controller(object):
     def _set_text(self, control, text):
         if control and cmds.control(control, exists=True):
             cmds.text(control, edit=True, label=text, annotation=text)
-            if control == self._status_text:
-                # A wrapped status may change the panel height.
-                self._queue_fit_window()
 
     def _set_connected(self, connected, status):
         label = "●  已连接" if connected else "●  未连接"
@@ -4606,10 +4615,10 @@ class _Controller(object):
         return scene
 
     def _render_snapshot(self, snapshot):
-        self._set_text(self._root_text, "根骨骼：" + snapshot.root)
-        self._set_text(self._outfit_text, "衣服：" + snapshot.outfit)
-        self._set_text(self._bone_text, "骨骼：{0}".format(len(snapshot.bones)))
-        self._set_text(self._curve_text, "BlendShape：{0}".format(
+        self._set_text(self._root_text, "角色根骨骼：" + snapshot.root)
+        self._set_text(self._outfit_text, "当前衣服：" + snapshot.outfit)
+        self._set_text(self._bone_text, "骨骼数：{0}".format(len(snapshot.bones)))
+        self._set_text(self._curve_text, "BlendShape 数：{0}".format(
             len(snapshot.curve_names)))
         self._refresh_duplicate_button()
         self._refresh_fps()
@@ -4630,7 +4639,7 @@ class _Controller(object):
         except _CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":
                 self._pending_root = root
-                self._set_text(self._root_text, "根骨骼：" + root)
+                self._set_text(self._root_text, "角色根骨骼：" + root)
                 self._set_connected(
                     False, error.message + "：选中 Display 控制器后点击“选择 Display 控制器”")
             else:
@@ -4937,10 +4946,10 @@ class _Controller(object):
         session.stop()
 
     def _clear_scene_text(self):
-        self._set_text(self._root_text, "根骨骼：—")
-        self._set_text(self._outfit_text, "衣服：—")
-        self._set_text(self._bone_text, "骨骼：0")
-        self._set_text(self._curve_text, "BlendShape：0")
+        self._set_text(self._root_text, "角色根骨骼：—")
+        self._set_text(self._outfit_text, "当前衣服：—")
+        self._set_text(self._bone_text, "骨骼数：0")
+        self._set_text(self._curve_text, "BlendShape 数：0")
         self._refresh_duplicate_button()
 
     def _discard_cached_playback(self):

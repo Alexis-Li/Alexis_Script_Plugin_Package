@@ -3,14 +3,13 @@
 ## Unreleased
 
 - Redesign both host panels without changing workflows (Issue #48). Maya now
-  follows the 0.5.0 single-column order on one aligned grid: left-aligned
-  neutral workflow tabs, a character action row, the preview mode row with the
-  transmission cap (or Transfer BS in Model), cache actions only in Cached
-  Playback, Connect/Disconnect beside the connection indicator, one status bar
-  with the character summary, and the warning switch beside Diagnostic
-  Details at the bottom; the window fits its visible rows. UE Details combines
-  readiness, connection, next step, and displayed mesh in one colored Status
-  block above content-sized
+  follows the 0.5.0 single-column order on one aligned grid as titled card
+  sections: Workflow (animation/model tabs), Connect (set character, connect,
+  disconnect, indicator), Scene Info (character summary and cache), Preview &
+  Playback (mode buttons, transfer cap, cache actions only in Cached
+  Playback), Tools, and Diagnostics; the window height follows the visible
+  cards. UE Details combines readiness, connection, next step, and displayed
+  mesh in one colored Status block above content-sized
   preview actions, with part, preview, Model, and raw connection details in
   collapsed MtoU Diagnostics. Repeated same-session warnings interrupt once;
   new warnings and blocking errors still interrupt. No protocol, cache, or

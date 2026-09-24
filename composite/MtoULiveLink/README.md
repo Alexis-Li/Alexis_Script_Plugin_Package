@@ -108,26 +108,28 @@ on the Binding. All enabled parts pose and display under one connection:
    **Refresh Preview** and **Delete Preview**. **MtoU Diagnostics** stays
    collapsed until you need part, preview, Model, or raw connection details.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
-   **Set Character** (设置角色). The buttons beside it select the Display
-   controller manually or select duplicated bones. The status bar below the
-   buttons shows the current state together with the root, outfit, frame rate,
-   and bone/BlendShape counts.
-4. Select **Animation** (动画) and click **Connect** (连接); the indicator beside
-   **Disconnect** (断开) turns green. Pose, scrub, or play in Maya to preview the
-   result in Unreal. **Cap** (上限) on the preview row limits the real-time
-   transmission rate. A disabled button carries its reason as a tooltip.
-   Repeated warnings for the same session appear once; new errors still
-   interrupt. **Diagnostic Details** (诊断详情) sits at the bottom next to the
-   warning switch.
+   **Set Character** (设置角色). The panel is organized into five titled
+   sections: Workflow (动画／模型 tabs), Connect (设置角色, 连接, 断开, and the
+   red/green connection indicator), Scene Info (root, outfit, frame rate,
+   bone/BlendShape counts, cache), Preview & Playback (mode buttons, transfer
+   cap, and cache actions only in Cached Playback), Tools (manual Display
+   selection and duplicate-bone selection), and Diagnostics (status line and
+   诊断详情). The warning switch sits below the Diagnostics card.
+4. Select **Animation** (动画) and click **Connect** (连接); the indicator turns
+   green. Pose, scrub, or play in Maya to preview the result in Unreal. **Cap**
+   (上限) on the preview row limits the real-time transmission rate. A disabled
+   button carries its reason as a tooltip. Repeated warnings for the same
+   session appear once; new errors still interrupt.
 
 ## Animation preview
 
 Use **Animation** for real-time character preview. For a captured animation
 range, set the Maya playback range, choose **Cached Playback** (缓存播放), and click
 **Capture and Play** (捕获并回放). Playback starts after capture and upload finish.
-The capture buttons appear under the preview row only in Cached Playback mode.
-The status bar distinguishes capturing, uploading, replaying, completed on the
-last frame, stopped with the cache retained, and failed states.
+The cache action buttons appear inside Preview & Playback only in Cached
+Playback mode. The Diagnostics status line distinguishes capturing, uploading,
+replaying, completed on the last frame, stopped with the cache retained, and
+failed states.
 
 A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
 that limit. Capture or upload failures return to real-time preview and show the
