@@ -94,6 +94,13 @@ FString BonePath(const TArray<FMtoUDescriptionBone>& Bones, int32 Index)
     return FString::Join(Segments, TEXT("/"));
 }
 
+/** Compact index of Maya sources sharing a published short name. */
+struct FMtoUSourceNameInfo
+{
+    int32 Count = 0;
+    int32 LastIndex = INDEX_NONE;
+};
+
 /** The Maya source one required target was mapped from during a pass. */
 struct FMtoUTargetClaim
 {
@@ -102,7 +109,7 @@ struct FMtoUTargetClaim
     bool bRename = false;
 };
 
-/** Everything one mapping pass produces, including the corrections it found. */
+/** Everything one mapping pass produces. */
 struct FMtoUMappingPass
 {
     TArray<int32> MayaToUnreal;
@@ -122,26 +129,18 @@ struct FMtoUMappingPass
     int32 FirstFailureIndex = INDEX_NONE;
     int32 FirstFailureUnrealParent = INDEX_NONE;
     FString FirstFailureReason;
-    /** Rename claims an exact Maya name outranks; the next pass forbids them. */
-    TSet<int32> SupersededRenameClaims;
 };
 
 /**
- * Maps every Maya bone onto one required target. Maya bones are published
- * parent-first, so a bone is only examined once its parent is mapped.
- *
- * A required target may only ever answer to one Maya source. Exact names are
- * resolved before import renames, so a rename candidate never takes a target
- * another source owns by its exact name, and the winner never depends on the
- * order the capture listed them in. Where unused Maya branches are allowed, a
- * claim an exact name superseded is retired into SupersededRenameClaims and the
- * mapping runs again without it.
+ * Maps Maya bones parent-first. In a subset, exact-name siblings reserve their
+ * targets before import renames are considered. Identical siblings cannot be
+ * split across a plain target and an available suffixed target.
  */
 FMtoUMappingPass RunMappingPass(
     const FMtoUCharacterDescription& Character,
     const FMtoUTargetDescription& Target,
-    const TMap<FName, int32>& MayaNameCounts,
-    const TSet<int32>& RenameBlocked)
+    const TMap<FName, FMtoUSourceNameInfo>& SourceNames,
+    const TArray<int32>& PreviousWithName)
 {
     FMtoUMappingPass Pass;
     Pass.MayaToUnreal.Init(INDEX_NONE, Character.Bones.Num());
@@ -191,20 +190,90 @@ FMtoUMappingPass RunMappingPass(
                     WrongParentExact.Add(UnrealIndex);
                 }
             }
-            else if (!RenameBlocked.Contains(MayaIndex)
-                && MayaBone.ParentIndex != INDEX_NONE
+            else if (MayaBone.ParentIndex != INDEX_NONE
                 && UnrealBone.ParentIndex == ExpectedUnrealParent
-                && MayaNameCounts[MayaBone.Name] > 1
+                && SourceNames.FindChecked(MayaBone.Name).Count > 1
                 && IsImportedRename(MayaBone.Name, UnrealBone.Name))
             {
-                RenameCandidates.Add(UnrealIndex);
+                // Reserve exact targets within this Maya parent's scope even
+                // if the exact source appears later in the capture.
+                bool bReservedByExactSource = false;
+                if (Target.bAllowUnusedSourceBones)
+                {
+                    if (const FMtoUSourceNameInfo* Exact = SourceNames.Find(UnrealBone.Name))
+                    {
+                        for (int32 SourceIndex = Exact->LastIndex;
+                            SourceIndex != INDEX_NONE;
+                            SourceIndex = PreviousWithName[SourceIndex])
+                        {
+                            if (Character.Bones[SourceIndex].ParentIndex == MayaBone.ParentIndex)
+                            {
+                                bReservedByExactSource = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!bReservedByExactSource)
+                {
+                    RenameCandidates.Add(UnrealIndex);
+                }
+            }
+        }
+
+        bool bDuplicateExactSource = false;
+        if (Target.bAllowUnusedSourceBones && !ExactCandidates.IsEmpty()
+            && SourceNames.FindChecked(MayaBone.Name).Count > 1)
+        {
+            int32 FirstSibling = MayaIndex;
+            int32 SiblingCount = 0;
+            for (int32 SourceIndex = SourceNames.FindChecked(MayaBone.Name).LastIndex;
+                SourceIndex != INDEX_NONE;
+                SourceIndex = PreviousWithName[SourceIndex])
+            {
+                if (Character.Bones[SourceIndex].ParentIndex == MayaBone.ParentIndex)
+                {
+                    ++SiblingCount;
+                    FirstSibling = FMath::Min(FirstSibling, SourceIndex);
+                }
+            }
+            bDuplicateExactSource = SiblingCount > 1;
+            if (bDuplicateExactSource)
+            {
+                // Neither source can own the exact target; the other must not
+                // silently become an import rename just because one is free.
+                Pass.AccountedUnreal.Append(ExactCandidates);
+                if (MayaIndex == FirstSibling)
+                {
+                    TArray<FString> Paths;
+                    Paths.Reserve(SiblingCount);
+                    for (int32 SourceIndex = SourceNames.FindChecked(MayaBone.Name).LastIndex;
+                        SourceIndex != INDEX_NONE;
+                        SourceIndex = PreviousWithName[SourceIndex])
+                    {
+                        if (Character.Bones[SourceIndex].ParentIndex == MayaBone.ParentIndex)
+                        {
+                            Paths.Add(BonePath(Character.Bones, SourceIndex));
+                        }
+                    }
+                    Paths.Sort();
+                    for (int32 UnrealIndex : ExactCandidates)
+                    {
+                        Pass.MappingAmbiguities.Add(FString::Printf(
+                            TEXT("'%s' below %s is claimed by %d Maya bones: %s"),
+                            *Target.Bones[UnrealIndex].Name.ToString(),
+                            *ParentName(Target.Bones, ExpectedUnrealParent),
+                            SiblingCount,
+                            *FString::Join(Paths, TEXT(", "))));
+                    }
+                }
             }
         }
 
         const TArray<int32>& Candidates = ExactCandidates.IsEmpty()
             ? RenameCandidates
             : ExactCandidates;
-        if (Candidates.Num() == 1)
+        if (Candidates.Num() == 1 && !bDuplicateExactSource)
         {
             const int32 UnrealIndex = Candidates[0];
             Pass.MayaToUnreal[MayaIndex] = UnrealIndex;
@@ -224,14 +293,11 @@ FMtoUMappingPass RunMappingPass(
             continue;
         }
 
-        // A required target inside this bone's own scope may already be claimed
-        // by another Maya source. That claim is evidence, not an obstacle: an
-        // exact name outranks an import rename whoever came first, and two
-        // equally valid sources stay ambiguous instead of letting the capture
-        // order decide which animation the character receives.
-        bool bSupersededRename = false;
+        // An occupied rename target still counts as competing evidence, not
+        // permission to skip a source that could equally drive it.
         TArray<FString> CompetingSources;
-        if (Target.bAllowUnusedSourceBones && ExactCandidates.IsEmpty())
+        if (Target.bAllowUnusedSourceBones && !bDuplicateExactSource
+            && ExactCandidates.IsEmpty())
         {
             for (int32 UnrealIndex = 0; UnrealIndex < Target.Bones.Num(); ++UnrealIndex)
             {
@@ -242,18 +308,11 @@ FMtoUMappingPass RunMappingPass(
                     continue;
                 }
                 const bool bExact = Target.Bones[UnrealIndex].Name == MayaBone.Name;
-                const bool bRename = !RenameBlocked.Contains(MayaIndex)
-                    && MayaBone.ParentIndex != INDEX_NONE
-                    && MayaNameCounts[MayaBone.Name] > 1
+                const bool bRename = MayaBone.ParentIndex != INDEX_NONE
+                    && SourceNames.FindChecked(MayaBone.Name).Count > 1
                     && IsImportedRename(MayaBone.Name, Target.Bones[UnrealIndex].Name);
                 if (!bExact && !bRename)
                 {
-                    continue;
-                }
-                if (bExact && Claim.bRename)
-                {
-                    bSupersededRename = true;
-                    Pass.SupersededRenameClaims.Add(Claim.MayaIndex);
                     continue;
                 }
                 if (bRename && !Claim.bRename)
@@ -273,13 +332,6 @@ FMtoUMappingPass RunMappingPass(
                     *FString::Join(Sources, TEXT(", "))));
             }
         }
-        if (bSupersededRename)
-        {
-            // This pass only contributes the correction, and its descendants
-            // follow the claim it lost; the next pass maps them without it.
-            Pass.SkippedMaya.Add(MayaIndex);
-            continue;
-        }
         if (CompetingSources.IsEmpty()
             && Target.bAllowUnusedSourceBones && Candidates.IsEmpty())
         {
@@ -297,7 +349,11 @@ FMtoUMappingPass RunMappingPass(
         }
         Pass.bMayaMappingFailed[MayaIndex] = true;
         FString FailureReason;
-        if (!CompetingSources.IsEmpty())
+        if (bDuplicateExactSource)
+        {
+            FailureReason = TEXT("a required target has indistinguishable Maya siblings");
+        }
+        else if (!CompetingSources.IsEmpty())
         {
             CompetingSources.Sort();
             Pass.MappingAmbiguities.Append(CompetingSources);
@@ -392,23 +448,17 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
     const FMtoUCharacterDescription& Character,
     const FMtoUTargetDescription& Target)
 {
-    TMap<FName, int32> MayaNameCounts;
-    for (const FMtoUDescriptionBone& Bone : Character.Bones)
+    TMap<FName, FMtoUSourceNameInfo> SourceNames;
+    TArray<int32> PreviousWithName;
+    PreviousWithName.Init(INDEX_NONE, Character.Bones.Num());
+    for (int32 Index = 0; Index < Character.Bones.Num(); ++Index)
     {
-        MayaNameCounts.FindOrAdd(Bone.Name)++;
+        FMtoUSourceNameInfo& Name = SourceNames.FindOrAdd(Character.Bones[Index].Name);
+        PreviousWithName[Index] = Name.LastIndex;
+        Name.LastIndex = Index;
+        ++Name.Count;
     }
-
-    // Every correction retires one import rename, so the mapping ends after at
-    // most one pass per Maya bone.
-    TSet<int32> RenameBlocked;
-    FMtoUMappingPass Pass = RunMappingPass(Character, Target, MayaNameCounts, RenameBlocked);
-    for (int32 Attempt = 0;
-        !Pass.SupersededRenameClaims.IsEmpty() && Attempt < Character.Bones.Num();
-        ++Attempt)
-    {
-        RenameBlocked.Append(Pass.SupersededRenameClaims);
-        Pass = RunMappingPass(Character, Target, MayaNameCounts, RenameBlocked);
-    }
+    FMtoUMappingPass Pass = RunMappingPass(Character, Target, SourceNames, PreviousWithName);
 
     FMtoUNegotiationOutcome Outcome;
     Outcome.TargetBoneIndices = MoveTemp(Pass.TargetBoneIndices);
@@ -474,7 +524,7 @@ FMtoUNegotiationOutcome FMtoUConnectionNegotiator::Negotiate(
         // shaped like an import rename of the failed bone and the reason the
         // strict candidate rules did not apply them.
         const FName FailedName = Character.Bones[Pass.FirstFailureIndex].Name;
-        const bool bUniqueMayaName = MayaNameCounts[FailedName] <= 1;
+        const bool bUniqueMayaName = SourceNames.FindChecked(FailedName).Count <= 1;
         for (int32 UnrealIndex = 0; UnrealIndex < Target.Bones.Num(); ++UnrealIndex)
         {
             if (Pass.UsedUnreal.Contains(UnrealIndex) || Pass.AccountedUnreal.Contains(UnrealIndex))

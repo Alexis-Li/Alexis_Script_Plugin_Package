@@ -7167,6 +7167,61 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the refused connection returns the source to listening"),
         WaitForStatus(Source, TEXT("Listening on")));
 
+    // Both Cloth and Cloth1 are now required. The two same-parent Maya Cloth
+    // sources cannot split across them in capture order; no session may start.
+    USkeletalMesh* ExactPart = MakeCharacterPartMesh(Part, *Actor);
+    TestNotNull(TEXT("additional exact-name part is created"), ExactPart);
+    if (ExactPart)
+    {
+        FReferenceSkeleton ExactPartSkeleton;
+        {
+            FReferenceSkeletonModifier Modifier(ExactPartSkeleton, nullptr);
+            Modifier.Add(
+                PrimarySkeleton.GetRefBoneInfo()[0],
+                PrimarySkeleton.GetRefBonePose()[0]);
+            Modifier.Add(
+                FMeshBoneInfo(TEXT("Cloth"), TEXT("Cloth"), 0), ClothBind);
+        }
+        ExactPart->SetSkeleton(SharedSkeleton);
+        ExactPart->SetRefSkeleton(ExactPartSkeleton);
+        ExactPart->CalculateInvRefMatrices();
+        SharedSkeleton->MergeAllBonesToBoneTree(ExactPart);
+        AddCharacterPart(*Binding, TEXT("ExactCloth"), ExactPart);
+        Actor->NotifyCharacterPartsChanged();
+        const FMtoUCharacterComposition TwoPartComposition =
+            FMtoUCharacterComposition::Resolve(Binding);
+        TestTrue(TEXT("both exact and suffix branches are required by the character"),
+            TwoPartComposition.IsUsable()
+            && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth")) != INDEX_NONE
+            && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
+        Client = ConnectLoopback(*SocketSubsystem, Port);
+        const FString TwoTargetInit = FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
+            *PrimaryBones, *TransformJson(ClothBind), *TransformJson(ClothBind));
+        const TArray<uint8> TwoTargetPacket = Packet(TwoTargetInit);
+        TestTrue(TEXT("two-target init is sent"),
+            Client && SendBytes(*Client, TwoTargetPacket.GetData(), TwoTargetPacket.Num()));
+        Payload.Reset();
+        TestTrue(TEXT("two-target handshake replies"), Client && ReceivePacket(
+            *Client, Payload, [&]() { Source->Update(); }));
+        const FString CollisionReply = FromUtf8(Payload);
+        TestTrue(TEXT("public handshake rejects indistinguishable sources rather than publishing either motion"),
+            CollisionReply.Contains(TEXT("\"type\":\"error\""))
+            && CollisionReply.Contains(TEXT("SKELETON_MISMATCH"))
+            && CollisionReply.Contains(TEXT("Mapping ambiguities"))
+            && CollisionReply.Contains(TEXT("'Cloth' below"))
+            && CollisionReply.Contains(TEXT("2 Maya bones")));
+        DestroySocket(*SocketSubsystem, Client);
+        TestTrue(TEXT("two-target refusal resumes listening"), WaitForStatus(Source, TEXT("Listening on")));
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData RejectedFrame;
+        TestFalse(TEXT("two-target refusal leaves no published subject"),
+            LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
+                ULiveLinkAnimationRole::StaticClass(), RejectedFrame));
+    }
+
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -7872,6 +7927,50 @@ bool FMtoURequiredBoneSourceTest::RunTest(const FString& Parameters)
         FMtoUConnectionNegotiator::Negotiate(SplitBranches, SplitTarget);
     TestTrue(TEXT("duplicate short names under their own mapped parents stay supported"),
         Split.bUsable && Split.TargetBoneIndices == TArray<int32>({0, 1, 2, 3, 4}));
+    // Two indistinguishable siblings cannot be assigned to separate exact and
+    // importer-suffixed targets just because both happen to be available.
+    for (const FName Suffix : {FName(TEXT("joint1")),
+        FName(TEXT("joint_0123456789abcdef0123456789abcdef"))})
+    {
+        FMtoUTargetDescription TwoTargets = GroupTarget;
+        TwoTargets.Bones.Add({Suffix, 1});
+        const FMtoUNegotiationOutcome Collision =
+            FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, TwoTargets);
+        TestFalse(TEXT("a free suffix does not absorb a duplicate exact source"),
+            Collision.bUsable);
+        TestTrue(TEXT("the conflicting exact target, parent and source paths are diagnosed"),
+            Collision.FailureCategory == TEXT("SKELETON_MISMATCH")
+            && Collision.MappingAmbiguities.Num() == 1
+            && Collision.MappingAmbiguities[0].Contains(TEXT("'joint' below group"))
+            && Collision.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+            && Collision.MappingAmbiguities[0].Contains(TEXT("root/group/joint")));
+    }
+
+    // A later exact sibling reserves joint1 before the earlier joint considers
+    // its two possible importer renames. An unused duplicate on another branch
+    // is not a contender for either target.
+    FMtoUCharacterDescription TwoSourceNames;
+    TwoSourceNames.Bones = {{TEXT("root"), -1}, {TEXT("spare"), 0},
+        {TEXT("joint"), 1}, {TEXT("body"), 0}, {TEXT("joint"), 3},
+        {TEXT("joint1"), 3}};
+    FMtoUTargetDescription ReservedTargets;
+    ReservedTargets.bAllowUnusedSourceBones = true;
+    ReservedTargets.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0},
+        {TEXT("joint1"), 1}, {TEXT("joint2"), 1}};
+    const FMtoUNegotiationOutcome RenameBeforeExactSibling =
+        FMtoUConnectionNegotiator::Negotiate(TwoSourceNames, ReservedTargets);
+    TestTrue(TEXT("exact source reserves joint1 in the rename-first capture"),
+        RenameBeforeExactSibling.bUsable
+        && RenameBeforeExactSibling.TargetBoneIndices == TArray<int32>({0, -1, -1, 1, 3, 2})
+        && RenameBeforeExactSibling.BoneNameMappings.Num() == 1
+        && RenameBeforeExactSibling.BoneNameMappings[0].Contains(TEXT("joint -> joint2")));
+    Swap(TwoSourceNames.Bones[4], TwoSourceNames.Bones[5]);
+    const FMtoUNegotiationOutcome ExactBeforeRenameSibling =
+        FMtoUConnectionNegotiator::Negotiate(TwoSourceNames, ReservedTargets);
+    TestTrue(TEXT("the same names map identically after reversing sibling order"),
+        ExactBeforeRenameSibling.bUsable
+        && ExactBeforeRenameSibling.TargetBoneIndices == TArray<int32>({0, -1, -1, 1, 2, 3})
+        && ExactBeforeRenameSibling.BoneNameMappings == RenameBeforeExactSibling.BoneNameMappings);
     return true;
 }
 

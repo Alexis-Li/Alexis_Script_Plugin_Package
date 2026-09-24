@@ -399,20 +399,22 @@ During `init`, Unreal requires exactly one placed binding actor and compares
 the static Maya skeleton with its Skeletal Mesh. Maya publishes every joint
 under the selected root plus the intermediate `transform` nodes required to
 preserve joint parentage; branches without joints are excluded. Unreal compares
-normalized node name to parent name, not array position. A link succeeds when
-every published node and parent can be mapped uniquely and completely. An
-Unreal importer rename may map a duplicate Maya short name only below an
+normalized node name and mapped parent, not array position. A connection
+requires each enabled part's necessary skinning bones and ancestors to map
+uniquely; unrelated exported Maya branches may remain unused. Unreal importer
+renames may map a duplicate Maya short name only below an
 already mapped parent: either the numeric suffix the engine appends, or the
 complete short name followed by `_` and exactly 32 hexadecimal digits. A
 partial original name, another separator, a different hash length, an
 unduplicated Maya name, a different parent, and several candidates stay
-blocking rather than selecting one. Uniqueness is decided against every Maya
-source in the mapped parent's scope rather than against the first candidate the
-capture listed: a required bone an exact Maya name owns is never taken by an
-import-rename candidate, and a second source that could equally drive the same
-required bone is reported as a mapping ambiguity naming the target, its parent,
-and both complete Maya paths. Only a source that matches no required bone in
-its own scope is treated as an unused branch.
+blocking rather than selecting one. Within each mapped parent scope, all
+exact-name Maya sources reserve their targets before import-renamed candidates
+are resolved. Same-parent, same-name Maya siblings remain ambiguous even when
+both a plain and a suffixed target are free; neither source can be assigned to
+one target based on capture order. A second equally valid source is reported
+with the target, parent, and both complete Maya paths. An unrelated short name
+in another mapped parent scope imposes no conflict. Only a source that matches
+no required bone in its own scope is treated as an unused branch.
 
 The validation response leads with the root cause of the first unmapped bone:
 its complete Maya path, the mapped Unreal parent it had to match, the blocked
@@ -429,7 +431,7 @@ mapped onto the Skeletal Mesh reference pose before Live Link publication.
 Finite non-zero tiny scales remain valid through checked matrix inversion and
 TRS decomposition; zero-scale or non-finite transforms fail closed with the
 affected node index.
-Permissive skeleton subsets and fuzzy name matching remain outside scope.
+Arbitrary partial mappings and fuzzy name matching remain outside scope.
 
 ## UI
 

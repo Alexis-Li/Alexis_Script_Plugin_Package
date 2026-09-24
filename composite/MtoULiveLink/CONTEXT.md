@@ -38,11 +38,11 @@ The complete result of connection negotiation: whether streaming may begin, the 
 _Avoid_: Ready reply, validation result
 
 **Bone-name mapping**:
-The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch, and only for a required bone no Maya source already owns by its exact name.
+The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch, after all exact-name sources in that branch have reserved their required targets. Same-parent, same-name Maya sources cannot be assigned separately to an exact and an available suffixed target.
 _Avoid_: Bone rename, fuzzy match
 
 **Competing source**:
-A second Maya bone that could equally drive one required Unreal bone: the same published short name below the same matched parent, or an import-rename candidate for a target another source owns by its exact name. Equal claims block the connection and name the target, its parent, and both Maya paths; an exact name always outranks a rename candidate.
+A second Maya bone with equal authority for one required Unreal bone. Two sources publishing the same short name below one matched parent are indistinguishable even if a suffixed target is also free; reject the connection and name the exact target, parent, and both Maya paths. Exact names take priority over importer-generated suffix candidates, which may only drive still-unclaimed targets when the mapping is unique.
 _Avoid_: Duplicate bone, ambiguous rename
 
 **Unreached bone**:

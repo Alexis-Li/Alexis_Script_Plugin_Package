@@ -195,11 +195,24 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   transient Preview Refresh and reconnect, plus live and Cached Playback.
   The [acceptance record](issue-55-real-c01-acceptance.md) owns the evidence
   and limits. Independent UE verification then reproduced ambiguous
-  source-bone selection; the mapping now resolves every required bone against
-  all Maya sources in its mapped parent's scope, with exact names outranking
-  import renames and equal claims refused. The reviewer's three reproductions,
-  the new source-mapping regressions, the full 76-test suite, and a real C01
-  Animation/reconnect re-run all pass on the fixed tree.
+  source-bone selection; the first correction compared a required bone against
+  Maya sources in its mapped parent's scope, with exact names outranking
+  importer renames and equal claims refused. The reviewer's three single-target
+  reproductions, the new source-mapping regressions, the full 76-test suite,
+  and a real C01 Animation/reconnect re-run all pass on the fixed tree. A
+  second review round then found that several required targets still resolved
+  sources in capture order: a free suffix target split two indistinguishable
+  sources across targets, and an exact-versus-rename pair could connect or
+  refuse by sibling order. That review kept Issue #55 open.
+
+- **2026-09-24:** Fixed the multi-target source collision with exact-name
+  reservation per mapped parent scope and a fail-closed same-parent duplicate
+  check. Numeric/hash suffixes, both sibling orders, a public socket
+  handshake, live/cache projection, and all 76 UE Automation tests pass in an
+  isolated stock UE 5.7.4 project. Maya 2024 and the actual C01 meshes pass
+  Animation/reconnect again with 872 required bones. The
+  [acceptance record](issue-55-real-c01-acceptance.md) retains the exact
+  checks and limits; Issue #55 remains open for final owner acceptance.
 
 ## Stable Records
 

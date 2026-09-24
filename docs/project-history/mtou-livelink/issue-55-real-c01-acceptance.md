@@ -1,6 +1,6 @@
 # Issue #55: real C01 Maya-to-Unreal acceptance
 
-Status: real C01 host checks passed on 2026-09-23, and the owner reported no visual issues. The review's blocking source-mapping defect is fixed and re-verified on the same assets; [Issue #55](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55) stays open until final owner acceptance.
+Status: real C01 host checks passed on 2026-09-23, and the owner reported no visual issues. The two source-mapping blockers found in independent reviews are now fixed; synthetic socket and host regressions plus C01 Animation/reconnect passed on the updated implementation. Model/Refresh and real C01 Cached Playback visuals were not repeated after this mapping change. [Issue #55](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55) stays open for final owner acceptance.
 
 ## Hosts and assets
 
@@ -22,41 +22,43 @@ The test harness holds each pose until its screenshot is written and retains dri
 
 The FBX import commandlet exited with a UE Slate assertion after saving the temporary Static Mesh. The rendered editor run loaded that mesh and completed the Model and Refresh checks.
 
-## Source-mapping resolution
+## Source mapping
 
-An independent source review reproduced a regression in
-`MtoUConnectionNegotiator.cpp` introduced by `c6f5580`: subset negotiation
-committed the first matching Maya source for a required bone, removed that
-target from later candidate searches, and then skipped every competing source
-as an unused branch, so which Maya bone drove a target depended on capture
-order. It could return `ready` for two same-parent sources of one required bone
-and publish whichever came first.
+Independent reviews of subset negotiation found two capture-order defects:
+two Maya sources could compete for one required bone, and two same-parent,
+same-name sources could be split between an exact target and an unclaimed
+import-suffix target. A rename source listed before an exact sibling could
+also see two suffix candidates and reject a valid character. The review
+reproductions and original socket responses are in [Issue #55](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55).
 
-The fix resolves every required target against all Maya sources in its mapped
-parent's scope. An exact name outranks an import rename and retires that rename
-claim by re-running the mapping with the claim forbidden, so the winner never
-depends on capture order. Two equally valid sources are reported as a
-`Mapping ambiguities` entry naming the target, its parent, and both complete
-Maya paths instead of publishing one of them. Duplicate short names under their
-own mapped parents and sources matching no required bone stay unused branches.
+The current negotiator reserves exact-name targets against all Maya sources
+in each mapped parent scope before considering numeric or hash import renames.
+Same-parent, same-name Maya siblings fail with `SKELETON_MISMATCH` and a
+`Mapping ambiguities` entry naming the required target, parent and both
+published paths even if a suffixed target is free. Different mapped parents
+can still share short names; an unrelated exported branch stays unused.
+Accepted live and cached frames use the same frozen source-index projection.
 
-Post-fix evidence, all on stock UE 5.7.4:
-
-| Gate | Result |
+| Gate | Result on the corrected implementation |
 | --- | --- |
-| Reviewer's own reproductions `MtoULiveLink.Review55.SourceAmbiguity`, `Review55.ExactSourcePriority`, `Review55.AmbiguousSocket` | 3/3 Success against the fixed source; the same three failed against `279f1ac` in the reviewer's isolated host |
-| `Automation RunTests MtoULiveLink` (NullRHI, full suite) | 76 Success (9 with expected diagnostics), 0 failed, 0 not run |
-| New regressions | `Negotiation.RequiredBoneSources` covers same-parent normalized duplicates, an exact name against a suffix candidate in both capture orders, rename-versus-rename, and unrelated duplicates on their own mapped parents. `Workflow.CharacterPartSourceMapping` drives the public socket flow: `ready` with an empty remap list, the exact source moving the displayed part in live and Cached Playback, and `SKELETON_MISMATCH` with `Mapping ambiguities` when a second source matches one required bone. |
-| Real C01 Animation | `MtoULiveLink.Editor.Preview.CharacterAcceptance` on the owner's `Backups.uproject`: Success, 0 errors. Maya 2024 opened `111_MH_Backups.0002.ma`, published 1,854 nodes, and the character negotiated and drove **872 required bones** across baseline, 18-degree head, and 22-degree left-shoulder poses plus an explicit reconnect. Maximum world position error `3.9e-06 cm`, maximum displayed component error `3.77e-05 cm`, maximum axis error `5.4e-07`. The handshake reported exactly one bone remap, the existing `joints_grp/spine_04 -> spine_04_5d859dce24654c43b1b653def8d6278f`, so the new uniqueness rule neither rejected nor re-renamed the real character. |
-| Maya | Pure tests 140/140 and Maya 2024 host tests 23/23 (unchanged Maya code; re-run green) |
-| Repository | `tools/validate_repository.py` and the 22 repository tests pass |
+| `Negotiation.RequiredBoneSources` | Before correction, six added assertions failed. After correction, numeric and hash suffix collisions reject, the exact `joint1` reserves its target in both Maya sibling orders, and only `joint -> joint2` is remapped. |
+| `Workflow.CharacterPartSourceMapping` | Before correction, the new two-part socket assertion failed. After correction, the handshake rejects indistinguishable sources; exact-source live and Cached Playback poses remain correct. |
+| Stock UE 5.7.4 Automation | Full `MtoULiveLink` suite: 76 tests, including the existing character and lifecycle regressions; 9 report expected diagnostics. |
+| Repository gates | `tools/validate_repository.py` passed; 22 repository tests passed (1 PowerShell-dependent skip). |
+| Real C01 Animation/reconnect | Maya 2024 published 1,854 nodes; UE negotiated 872 required bones and accepted baseline, 18° head, 22° shoulder, and reconnect. Maximum world-position error was `3.914e-06 cm` and maximum displayed-component error `3.766e-05 cm`. The only importer remap remains `joints_grp/spine_04 -> spine_04_5d859dce24654c43b1b653def8d6278f`. The test succeeded with 0 errors and 122 existing empty-engine-version asset warnings. |
 
-The C01 re-verification used a transient Binding duplicate with Primary
-`SK_C01_CombineBody_Clothes_12` plus Head and Hair parts in a disposable
-`/Engine/Maps/Entry` world; the owner's project plugin was restored to its
-original source and DLL hashes afterwards (verified by checksum). Because the
-fixture has no Preview Static Mesh, the run took the Animation-and-reconnect
-path: the Model/Refresh and Cached Playback phases recorded in the table above
-were not repeated for this fix and remain the evidence for those paths, while
-the live/cache projection of the resolved source is covered by
-`Workflow.CharacterPartSourceMapping`.
+The 2026-09-23 C01 re-verification used a transient Binding duplicate with
+Primary Clothes_12 plus Head and Hair in a disposable world. The owner's
+project plugin was restored to its original source and DLL hashes afterward.
+The 2026-09-24 check instead compiled a standalone plugin copy in a temporary
+UE project with the owner's Content directory linked for loading only; no
+original plugin DLL or Content asset was replaced or saved. The temporary
+project initially lacked the character's KawaiiPhysics dependency and logged
+three unknown-structure errors. Adding an isolated copy of that plugin and
+rebuilding yielded the successful host run above. Maya still warns that
+ngSkinTools2 is unavailable while loading the original scene; the captured
+rig animation and skeleton comparison completed. The fixture has no Preview
+Static Mesh, so this run covered Animation and reconnect, not Model/Refresh.
+The real C01 Cached Playback/Model evidence remains from the earlier host run;
+the current source mapping's live/cache behavior is covered by the socket
+regression.

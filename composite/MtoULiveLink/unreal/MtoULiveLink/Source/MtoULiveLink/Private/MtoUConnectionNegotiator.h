@@ -21,9 +21,9 @@ struct FMtoUTargetDescription
     TArray<FName> MorphTargetNames;
     /**
      * Composition targets require every target bone, but allow unused Maya
-     * branches. An unused branch may not claim a required target: an exact Maya
-     * name outranks an import rename for it, and two equally valid Maya sources
-     * are reported as an ambiguity instead of letting the capture order choose.
+     * branches. Exact-name sources in a mapped parent scope reserve their
+     * targets before importer renames; indistinguishable same-parent siblings
+     * remain ambiguous even if a suffixed target is free.
      */
     bool bAllowUnusedSourceBones = false;
     TArray<FString> BoneOwners;

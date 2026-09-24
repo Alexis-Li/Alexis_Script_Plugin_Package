@@ -6,12 +6,13 @@ remain excluded. Unreal now negotiates the union of enabled meshes' positive
 skin influences across every LOD and their complete ancestors; the Primary need
 not contain other parts' secondary branches. Non-required exported branches do
 not block connection. Each required bone must map uniquely under an already
-mapped parent using the existing exact/numeric/hash rules. That uniqueness is
-established from every Maya source in the mapped parent's scope, not from the
-first candidate the capture listed: a required bone an exact Maya name owns is
-never taken by an import-rename candidate, and two equally valid sources block
-the connection with the target, its parent, and both Maya paths instead of
-letting the capture order pick the animation.
+mapped parent using the existing exact/numeric/hash rules. All exact-name
+sources under a mapped parent reserve their targets before considering import
+renames. Two Maya siblings with the same published short name are ambiguous
+even if a free suffixed target could absorb one; capture order cannot decide
+which animation drives either bone. A rename candidate cannot take a target
+owned by an exact-name source, and equal claims reject the connection with the
+target, its parent, and the competing Maya paths.
 
 The wire snapshot and cached frames remain complete (protocol v6 unchanged).
 Unreal freezes a source-index projection, target reference pose and target

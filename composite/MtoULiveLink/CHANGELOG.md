@@ -19,14 +19,14 @@
   reject the connection with part diagnostics. Binding and protocol v6 remain
   compatible; garment Preview data continues to come only from Primary.
 
-- Drive every required bone from exactly one Maya source (Issue #55 review).
-  A subset negotiation no longer keeps the first candidate it found and skips
-  the losers it never compared: an exact Maya name takes a required bone a
-  rename candidate claimed first, and a second source that could equally drive
-  it blocks the connection with `Mapping ambiguities` naming the target, its
-  parent, and both complete Maya paths. Duplicate short names under their own
-  mapped parents and unused exported branches stay supported, and the frozen
-  live/cached source projection carries the resolved source.
+- Resolve required-bone sources independently of Maya sibling capture order
+  (Issue #55 reviews). In each mapped parent scope, exact names reserve targets
+  before numeric/hash importer renames are considered; two indistinguishable
+  siblings cannot silently divide a plain and a free suffixed target. Equal
+  claims reject with `Mapping ambiguities` naming the target, parent, and Maya
+  paths. Unrelated branches and duplicate short names under different mapped
+  parents remain supported. Real-time and Cached Playback continue to use the
+  same frozen source-index projection.
 
 ## 0.5.0 - 2026-09-22
 
