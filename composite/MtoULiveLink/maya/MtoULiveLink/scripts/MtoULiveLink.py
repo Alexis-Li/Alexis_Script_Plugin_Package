@@ -15,8 +15,8 @@ import threading
 import time
 import uuid
 
-__version__ = "0.5.0"
-PROTOCOL_VERSION = 6
+__version__ = "0.6.0"
+PROTOCOL_VERSION = 7
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
@@ -185,8 +185,8 @@ DIAGNOSTICS = {
         "缓存播放需要已连接的 Unreal",
         "请先完成角色设置并连接 Unreal，再进入缓存播放。"),
     "CACHED_PLAYBACK_NO_CACHE": (
-        "没有可回放的缓存",
-        "请先捕获并回放当前 Maya Playback Range。"),
+        "没有可上传的缓存",
+        "请先捕获当前 Maya 播放范围或自定义范围。"),
     "CACHED_PLAYBACK_SPACE": (
         "临时磁盘空间不足",
         "请缩短 Playback Range 或清理当前用户的临时磁盘空间后重试。"),
@@ -207,7 +207,10 @@ DIAGNOSTICS = {
         "请缩短 Playback Range 或减少 BlendShape 数量后重新捕获。"),
     "CACHED_PLAYBACK_PERFORMANCE": (
         "缓存回放跟不上捕获帧率，已停止",
-        "已完整保留缓存；请关闭占用性能的程序后点击“再次回放”重试。"),
+        "已完整保留缓存；请关闭占用性能的程序后在 UE 中再次播放。"),
+    "CACHED_PLAYBACK_CAPTURE_RANGE": (
+        "捕获范围无效",
+        "请输入整数开始和结束帧，结束帧不得早于开始帧。"),
     "PREVIEW_NOT_READY": (
         "模型预览尚未生成，无法连接模型工作流",
         "请先在 UE 中对该 Binding Actor 执行 Refresh Preview 生成预览，再重新连接。"),
@@ -576,6 +579,7 @@ def validate_reply(reply):
             "revision": (int, float),
             "frame_count": (int, float),
         },
+        "cache_playing": {"upload_id": (int, float), "play_id": (int, float)},
         "cache_progress": {"play_id": (int, float), "applied": (int, float)},
         "cache_complete": {
             "play_id": (int, float),
@@ -1833,6 +1837,40 @@ class _MayaTimeline(object):
         cmds.currentTime(frame, edit=True)
 
 
+def _capture_frame_range(playback_range, custom_range=None):
+    """Freeze inclusive integer source frames without editing Maya's range."""
+    values = playback_range if custom_range is None else custom_range
+    try:
+        if len(values) != 2:
+            raise ValueError("capture range must have two endpoints")
+        if custom_range is None:
+            start, end = (int(round(float(value))) for value in values)
+        else:
+            if any(isinstance(value, bool) or not isinstance(value, int)
+                   for value in values):
+                raise ValueError("custom capture frames must be integers")
+            start, end = values
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _CachedPlaybackError(
+            "CACHED_PLAYBACK_CAPTURE_RANGE", "Capture frames must be finite integers.",
+            details=str(exc))
+    if (start < -(1 << 31) or start > (1 << 31) - 1
+            or end < -(1 << 31) or end > (1 << 31) - 1):
+        raise _CachedPlaybackError(
+            "CACHED_PLAYBACK_CAPTURE_RANGE", "Capture frames exceed the supported 32-bit range.")
+    if end < start:
+        raise _CachedPlaybackError(
+            "CACHED_PLAYBACK_CAPTURE_RANGE", "Capture end must not precede start.")
+    count = end - start + 1
+    if count > MAX_CACHE_FRAME_COUNT:
+        raise _CachedPlaybackError(
+            "CACHED_PLAYBACK_FRAME_LIMIT",
+            "The capture range spans {0} frames; the fixed cache limit is {1} frames.".format(
+                count, MAX_CACHE_FRAME_COUNT),
+            details="start {0}, end {1}, limit {2}".format(start, end, MAX_CACHE_FRAME_COUNT))
+    return start, end
+
+
 class _CachedPlaybackCacheSummary(object):
     __slots__ = ("_capture_start", "_capture_end", "_frame_count", "_scene_fps",
                  "_capture_time")
@@ -1870,20 +1908,19 @@ class _CachedPlaybackCacheSummary(object):
 class _CachedPlaybackView(object):
     __slots__ = (
         "_state", "_current", "_total", "_cache_summary", "_diagnostic",
-        "_can_capture", "_can_replay", "_can_stop", "_can_cancel", "_can_leave",
+        "_can_capture", "_can_upload", "_can_cancel", "_can_leave",
     )
 
     def __init__(self, state, current=0, total=0, cache_summary=None, diagnostic=None,
-                 can_capture=False, can_replay=False, can_stop=False,
-                 can_cancel=False, can_leave=False):
+                 can_capture=False, can_upload=False, can_cancel=False,
+                 can_leave=False):
         self._state = state
         self._current = int(current or 0)
         self._total = int(total or 0)
         self._cache_summary = cache_summary
         self._diagnostic = _copy_session_payload(diagnostic) if diagnostic else None
         self._can_capture = bool(can_capture)
-        self._can_replay = bool(can_replay)
-        self._can_stop = bool(can_stop)
+        self._can_upload = bool(can_upload)
         self._can_cancel = bool(can_cancel)
         self._can_leave = bool(can_leave)
 
@@ -1899,15 +1936,14 @@ class _CachedPlaybackView(object):
     diagnostic = property(
         lambda self: _copy_session_payload(self._diagnostic) if self._diagnostic else None)
     can_capture = property(lambda self: self._can_capture)
-    can_replay = property(lambda self: self._can_replay)
-    can_stop = property(lambda self: self._can_stop)
+    can_upload = property(lambda self: self._can_upload)
     can_cancel = property(lambda self: self._can_cancel)
     can_leave = property(lambda self: self._can_leave)
 
     def _values(self):
         diagnostic = tuple(sorted((self._diagnostic or {}).items()))
         return (self._state, self._current, self._total, self._cache_summary,
-                diagnostic, self._can_capture, self._can_replay, self._can_stop,
+                diagnostic, self._can_capture, self._can_upload,
                 self._can_cancel, self._can_leave)
 
     def __eq__(self, other):
@@ -2207,19 +2243,18 @@ class _CacheUpload(object):
 
 
 class _CachedPlayback(object):
-    """Owns cached capture, upload orchestration, and Unreal-driven replay control.
+    """Owns Maya capture and upload; observes Unreal's playback outcomes.
 
-    Capture stores every inclusive Playback Range display frame in the
-    temporary disk cache. Completion uploads the whole cache without a
-    real-time deadline, waits for Unreal's Ready reply, then only sends
-    playback controls: Unreal applies each buffered frame exactly once, in
-    order, on its own monotonic clock.
+    Capture stores an inclusive frozen range in a temporary disk cache.
+    Completion uploads the whole cache and waits for Unreal's Ready reply.
+    Only Unreal initiates playback of the accepted cache.
     """
 
     REALTIME = "REALTIME"
     CACHED_IDLE = "CACHED_IDLE"
     CAPTURING = "CAPTURING"
     UPLOADING = "UPLOADING"
+    READY = "READY"
     REPLAYING = "REPLAYING"
     STOPPING = "STOPPING"
     COMPLETED = "COMPLETED"
@@ -2255,6 +2290,8 @@ class _CachedPlayback(object):
         self._capture_estimated_size = None
         self._capture_encoded_bytes = 0
         self._capture_large_cache_confirmed = False
+        self._awaiting_clear = None
+        self._clear_wait_deadline = None
         self._replies = queue.Queue()
         self._poller_generation = 0
         self._poller_timer_id = None
@@ -2280,8 +2317,10 @@ class _CachedPlayback(object):
             return self.DETACHED
         if self._phase == "capturing":
             return self.CAPTURING
-        if self._phase in ("captured", "uploading", "ready_to_play"):
+        if self._phase in ("captured", "uploading"):
             return self.UPLOADING
+        if self._phase == "ready_to_play":
+            return self.READY
         if self._phase == "replaying":
             return self.REPLAYING
         if self._phase == "stopping":
@@ -2315,10 +2354,10 @@ class _CachedPlayback(object):
             state, self._progress_current, self._progress_total, summary, diagnostic,
             can_capture=(entered
                          and state not in (self.CAPTURING, self.STOPPING, self.DETACHED)),
-            can_replay=(entered and summary is not None
-                        and state not in (self.CAPTURING, self.UPLOADING,
-                                          self.REPLAYING, self.STOPPING)),
-            can_stop=state in (self.REPLAYING, self.STOPPING),
+            can_upload=(entered and self._cache is not None
+                        and self._cache.completed
+                        and self._uploaded_revision != self._cache.snapshot_revision
+                        and state not in (self.CAPTURING, self.UPLOADING)),
             can_cancel=state == self.CAPTURING,
             can_leave=entered and state not in (self.CAPTURING, self.DETACHED),
         )
@@ -2422,10 +2461,10 @@ class _CachedPlayback(object):
         if self._phase == "capturing":
             self._capture_failure(_CachedPlaybackError(
                 "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled."))
-        self.stop_replay()
         # Queue the Unreal cache clear while ordered delivery is active, then
         # resume streaming so live frames follow the clear in order.
         self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
+        self._uploaded_revision = None
         self._phase = "idle"
         self._publish(current=0, total=0)
 
@@ -2515,32 +2554,27 @@ class _CachedPlayback(object):
             pass
         self._capture_original_frame = None
 
-    def capture(self, scene_fps, confirm_large_cache=None):
+    def capture(self, scene_fps, confirm_large_cache=None, capture_range=None):
         if self._phase == "capturing":
             return self
         revision = self._ensure_ready()
-        start_frame, end_frame = self._timeline.playback_range()
-        start_frame = int(round(float(start_frame)))
-        end_frame = int(round(float(end_frame)))
-        if end_frame < start_frame:
-            raise _CachedPlaybackError(
-                "CACHED_PLAYBACK_CAPTURE_RANGE",
-                "Maya Playback Range must end at or after its start.")
-        if end_frame - start_frame + 1 > MAX_CACHE_FRAME_COUNT:
-            # Enforce the frozen frame limit before any capture work: a range
-            # that Unreal must reject never costs time or disk.
-            raise _CachedPlaybackError(
-                "CACHED_PLAYBACK_FRAME_LIMIT",
-                "The Playback Range spans {0} frames; the fixed cache limit"
-                " is {1} frames.".format(
-                    end_frame - start_frame + 1, MAX_CACHE_FRAME_COUNT),
-                details="start {0}, end {1}, limit {2}".format(
-                    start_frame, end_frame, MAX_CACHE_FRAME_COUNT))
+        playback_range = (self._timeline.playback_range()
+                          if capture_range is None else None)
+        start_frame, end_frame = _capture_frame_range(playback_range, capture_range)
         scene_fps = validate_frame_rate(scene_fps)
+        had_cached_ownership = self._paused_streaming
+        old_identity = (self._active_upload_id or 0, self._active_play_id or 0)
         self.enter()
-        if self._phase in ("replaying", "stopping"):
-            self.stop_replay()
-        self._remove_playback_poller()
+        if had_cached_ownership:
+            # UE must acknowledge dropping the old cache and ending any active
+            # playback before Maya samples the first frame of a new capture.
+            self._awaiting_clear = old_identity
+            self._clear_wait_deadline = time.monotonic() + UPLOAD_READY_TIMEOUT_SECONDS
+            self._send_clear_best_effort()
+            self._send_enter_best_effort()
+        else:
+            self._awaiting_clear = None
+            self._clear_wait_deadline = None
         if self._phase == "uploading":
             # Abort the in-flight transfer; the fresh cache_begin below resets
             # Unreal's buffer coherently, so stale frames cannot mix.
@@ -2548,6 +2582,7 @@ class _CachedPlayback(object):
         if self._cache is not None:
             self._cache.delete()
             self._cache = None
+        self._uploaded_revision = None
         original_frame = self._timeline.current_frame()
         self._capture_original_frame = original_frame
         if self._timeline.is_playing():
@@ -2574,6 +2609,7 @@ class _CachedPlayback(object):
         self._capture_large_cache_confirmed = False
         self._capture_cancel_requested = False
         self._phase = "capturing"
+        self._add_playback_poller()
         self._publish(current=0, total=total_frames)
         try:
             self._add_capture_timer()
@@ -2594,6 +2630,8 @@ class _CachedPlayback(object):
         first resumed live pose.
         """
         self._remove_capture_timer()
+        self._awaiting_clear = None
+        self._clear_wait_deadline = None
         self._remove_playback_poller()
         self._discard_upload()
         if send_clear:
@@ -2634,6 +2672,8 @@ class _CachedPlayback(object):
 
     def _capture_step(self):
         if self._phase != "capturing":
+            return False
+        if self._awaiting_clear is not None:
             return False
         try:
             session = self._streaming_session
@@ -2775,16 +2815,35 @@ class _CachedPlayback(object):
                             echoed_count, echoed_revision,
                             total_frames, self._active_upload_revision)))
             return
-        self._remove_playback_poller()
         self._uploaded_revision = self._cache.snapshot_revision
         self._phase = "ready_to_play"
         self._publish(current=total_frames, total=total_frames)
-        self._request_play()
 
     def _route_outcome(self, reply):
         """Identity-aware routing: late outcomes from older operations are
         dropped without touching current state."""
         reply_type = reply.get("type")
+        if reply_type == "cache_cleared":
+            if (self._phase == "capturing" and self._awaiting_clear is not None
+                    and (_exact_int(reply.get("upload_id")),
+                         _exact_int(reply.get("play_id"))) == self._awaiting_clear):
+                self._awaiting_clear = None
+                self._clear_wait_deadline = None
+            return
+        if reply_type == "cache_playing":
+            play_id = _exact_int(reply.get("play_id"))
+            upload_id = _exact_int(reply.get("upload_id"))
+            if (self._phase in ("ready_to_play", "stopped", "completed", "playback_failed")
+                    and self._cache is not None
+                    and self._uploaded_revision == self._cache.snapshot_revision
+                    and upload_id == self._active_upload_id
+                    and play_id is not None and play_id > self._play_id):
+                self._play_id = play_id
+                self._active_play_id = play_id
+                self._applied_frames = None
+                self._phase = "replaying"
+                self._publish(current=0, total=self._cache.frame_count)
+            return
         if reply_type == "error":
             play_id = _exact_int(reply.get("play_id"))
             upload_id = _exact_int(reply.get("upload_id"))
@@ -2818,7 +2877,8 @@ class _CachedPlayback(object):
             applied = _exact_int(reply.get("applied_frame_count"))
             elapsed = _finite_float(reply.get("elapsed_seconds"))
             if (total_frames is None or applied != total_frames
-                    or elapsed is None or elapsed <= 0.0):
+                    or elapsed is None or elapsed < 0.0
+                    or (total_frames > 1 and elapsed == 0.0)):
                 self._phase = "failed"
                 self._publish(diagnostic=make_diagnostic(
                     "INTERNAL_ERROR",
@@ -2833,15 +2893,13 @@ class _CachedPlayback(object):
             return
         if reply_type == "cache_stopped":
             play_id = _exact_int(reply.get("play_id"))
-            if self._phase == "stopping" and play_id == self._active_play_id:
+            if self._phase in ("replaying", "stopping") and play_id == self._active_play_id:
                 # Success is reported only once Unreal acknowledges this
                 # exact attempt; a late ack for an older attempt is dropped.
                 # The poller keeps running so completed and stopped states
                 # still observe transport termination.
                 self._phase = "stopped"
-                self._applied_frames = None
-                self._publish(current=0,
-                              total=self._cache.frame_count if self._cache else 0)
+                self._publish()
             return
         if reply_type == "cache_ready":
             # A late duplicate Ready can only belong to an older upload;
@@ -2849,7 +2907,7 @@ class _CachedPlayback(object):
             if self._phase == "uploading":
                 self._accept_cache_ready(reply)
             return
-        # cache_cleared and any unknown well-formed outcome are informational.
+        # Unknown well-formed outcomes are informational.
 
     def _handle_error_reply(self, reply):
         code = str(reply.get("code") or "")
@@ -2934,28 +2992,6 @@ class _CachedPlayback(object):
         self._active_upload_revision = revision
         self._add_playback_poller()
 
-    def _can_reuse_upload(self):
-        return (
-            self._phase in ("ready_to_play", "stopped", "stopping",
-                            "completed", "playback_failed")
-            and self._uploaded_revision is not None
-            and self._cache is not None
-            and int(self._uploaded_revision) == self._cache.snapshot_revision)
-
-    def _request_play(self):
-        self._play_id += 1
-        self._active_play_id = self._play_id
-        try:
-            self._submit_cached(make_cache_play_message(self._play_id))
-        except (_CachedPlaybackError, _StreamingSessionError,
-                RuntimeError, TypeError, ValueError) as exc:
-            self._handle_transport_failure(exc)
-            return
-        self._phase = "replaying"
-        self._applied_frames = None
-        self._publish(current=0, total=self._cache.frame_count)
-        self._add_playback_poller()
-
     def _playback_poll_interval(self):
         return 0.05
 
@@ -2990,6 +3026,11 @@ class _CachedPlayback(object):
         """
         processed = False
         self._stop_draining_this_round = False
+        if (self._awaiting_clear is not None and self._clear_wait_deadline is not None
+                and time.monotonic() > self._clear_wait_deadline):
+            self._capture_failure(_CachedPlaybackError(
+                "STREAM_INTERRUPTED", "Unreal did not acknowledge ending the old cache."))
+            return processed
         if self._phase == "uploading":
             session = self._streaming_session
             if session is None or not session.is_ready:
@@ -3103,8 +3144,8 @@ class _CachedPlayback(object):
             except (RuntimeError, TypeError):
                 pass
 
-    def replay(self):
-        """Upload the completed cache if needed, then ask Unreal to play it."""
+    def upload_retained_cache(self):
+        """Reupload a retained local cache after a new negotiated connection."""
         try:
             revision = self._ensure_ready()
         except _CachedPlaybackError as error:
@@ -3113,7 +3154,7 @@ class _CachedPlayback(object):
             raise
         if self._cache is None or not self._cache.completed:
             raise _CachedPlaybackError(
-                "CACHED_PLAYBACK_NO_CACHE", "There is no completed cache to replay.")
+                "CACHED_PLAYBACK_NO_CACHE", "There is no completed cache to upload.")
         if revision is not None and not self._cache.compatible_with(revision):
             error = _CachedPlaybackError(
                 "CACHED_PLAYBACK_INCOMPATIBLE",
@@ -3121,27 +3162,8 @@ class _CachedPlayback(object):
             self._invalidate_incompatible_cache(error)
             raise error
         self.enter()
-        if self._can_reuse_upload():
-            self._request_play()
-        else:
+        if self._uploaded_revision != self._cache.snapshot_revision:
             self._begin_upload()
-
-    def stop_replay(self):
-        if self._phase != "replaying":
-            return
-        # Stop reports success only after Unreal's identity-matched
-        # cache_stopped acknowledgement; the poller keeps draining outcomes.
-        self._phase = "stopping"
-        try:
-            self._submit_cached(make_cache_stop_message())
-        except (_CachedPlaybackError, _StreamingSessionError,
-                RuntimeError, TypeError, ValueError):
-            self._handle_transport_failure(make_diagnostic(
-                "STREAM_INTERRUPTED",
-                "The streaming connection ended while stopping playback."))
-            return
-        self._applied_frames = None
-        self._publish()
 
     def detach(self, outcome):
         if self._closed:
@@ -4006,9 +4028,12 @@ class _Controller(object):
         self._realtime_mode_button = None
         self._cached_mode_button = None
         self._capture_button = None
-        self._replay_button = None
-        self._stop_replay_button = None
+        self._upload_button = None
         self._cancel_capture_button = None
+        self._range_row = None
+        self._custom_range_checkbox = None
+        self._range_start_field = None
+        self._range_end_field = None
         self._cache_text = None
         self._cached_playback = None
         self._cached_view = None
@@ -4143,21 +4168,29 @@ class _Controller(object):
         # one of them is managed per workflow.
         self._grid_row([self._realtime_mode_button, self._cached_mode_button,
                         self._playback_cap_menu])
+        self._range_row = cmds.rowLayout(
+            numberOfColumns=5, columnWidth5=(156, 38, 72, 38, 72),
+            columnAttach5=("left", "left", "left", "left", "left"))
+        self._custom_range_checkbox = cmds.checkBox(
+            label="自定义捕获范围", value=False,
+            changeCommand=lambda *_: self._update_custom_range_controls())
+        cmds.text(label="开始")
+        self._range_start_field = cmds.intField(value=1, width=72)
+        cmds.text(label="结束")
+        self._range_end_field = cmds.intField(value=24, width=72)
+        cmds.setParent("..")
         self._cache_row = cmds.formLayout(width=CARD_CONTENT)
         self._capture_button = cmds.button(
-            label="捕获并回放", height=BUTTON_HEIGHT, enable=False,
+            label="捕获并上传", height=BUTTON_HEIGHT, enable=False,
             command=lambda *_: self._capture_cached_playback())
-        self._replay_button = cmds.button(
-            label="再次回放", height=BUTTON_HEIGHT, enable=False,
-            command=lambda *_: self._replay_cached_playback())
-        self._stop_replay_button = cmds.button(
-            label="停止回放", height=BUTTON_HEIGHT, enable=False,
-            command=lambda *_: self._stop_cached_replay())
+        self._upload_button = cmds.button(
+            label="上传保留缓存", height=BUTTON_HEIGHT, enable=False,
+            command=lambda *_: self._upload_retained_cache())
         self._cancel_capture_button = cmds.button(
             label="取消捕获", height=BUTTON_HEIGHT, enable=False,
             command=lambda *_: self._cancel_cached_capture())
-        self._grid_row([self._capture_button, self._replay_button,
-                        self._stop_replay_button, self._cancel_capture_button],
+        self._grid_row([self._capture_button, self._upload_button,
+                        self._cancel_capture_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.setParent("..")
         cmds.setParent("..")
@@ -4197,6 +4230,7 @@ class _Controller(object):
         cmds.setParent("..")
         cmds.setParent("..")
         self._refresh_fps()
+        self._update_custom_range_controls()
         self._update_mode_controls()
         self._update_workflow_controls()
         self._script_jobs.append(cmds.scriptJob(
@@ -4341,9 +4375,8 @@ class _Controller(object):
         if enabled:
             return ""
         reasons = {
-            "capture": "先连接 Unreal 并进入缓存播放，再捕获当前 Maya Playback Range。",
-            "replay": "需要 UE 已就绪的完整缓存；先捕获并等待上传完成。",
-            "stop": "仅在 UE 本地回放运行时可停止。",
+            "capture": "先连接 Unreal 并进入缓存播放，再捕获 Maya 播放范围或自定义范围。",
+            "upload": "仅在重连后有保留的完整本地缓存时可上传。",
             "cancel": "仅在捕获过程中可取消。",
         }
         return reasons.get(action, "")
@@ -4389,15 +4422,13 @@ class _Controller(object):
         realtime = self._mode == REALTIME_MODE
         view = self._cached_view
         can_capture = bool(view and view.can_capture)
-        can_replay = bool(view and view.can_replay)
-        can_stop = bool(view and view.can_stop)
+        can_upload = bool(view and view.can_upload)
         can_cancel = bool(view and view.can_cancel)
         can_leave = bool(view and view.can_leave)
         connected = self._session_ready()
         self._set_enabled(self._playback_cap_menu, realtime and not can_cancel)
         self._set_enabled(self._capture_button, not realtime and can_capture)
-        self._set_enabled(self._replay_button, not realtime and can_replay)
-        self._set_enabled(self._stop_replay_button, not realtime and can_stop)
+        self._set_enabled(self._upload_button, not realtime and can_upload)
         self._set_enabled(self._cancel_capture_button, not realtime and can_cancel)
         self._set_enabled(self._realtime_mode_button, realtime or can_leave)
         self._set_enabled(self._cached_mode_button, connected and not can_cancel)
@@ -4406,15 +4437,13 @@ class _Controller(object):
         self._set_tooltip(
             self._capture_button, self._disabled_reason(can_capture, "capture"))
         self._set_tooltip(
-            self._replay_button, self._disabled_reason(can_replay, "replay"))
-        self._set_tooltip(
-            self._stop_replay_button, self._disabled_reason(can_stop, "stop"))
+            self._upload_button, self._disabled_reason(can_upload, "upload"))
         self._set_tooltip(
             self._cancel_capture_button, self._disabled_reason(can_cancel, "cancel"))
         self._set_tooltip(
             self._cached_mode_button,
             "先设置角色并连接 Unreal。" if not connected else
-            ("等待捕获完成，或取消捕获。" if can_cancel else "捕获 Maya 播放范围，在 UE 本地回放。"))
+            ("等待捕获完成，或取消捕获。" if can_cancel else "捕获并上传范围，在 UE 开始播放。"))
         self._set_tooltip(
             self._realtime_mode_button,
             "在 Maya 摆姿或播放，实时更新 UE。" if realtime or can_leave
@@ -4424,7 +4453,27 @@ class _Controller(object):
             "限制实时预览的传输帧率，不改变 Maya 场景帧率。"
             if realtime and not can_cancel else "返回实时预览后可调整传输上限。")
         self._update_mode_selection()
+        self._update_custom_range_controls()
         self._update_context_layout()
+
+    def _update_custom_range_controls(self):
+        enabled = False
+        if self._control_exists(self._custom_range_checkbox):
+            enabled = bool(cmds.checkBox(
+                self._custom_range_checkbox, query=True, value=True))
+        editable = self._mode == CACHED_MODE and not (
+            self._cached_view and self._cached_view.state == _CachedPlayback.CAPTURING)
+        self._set_enabled(self._custom_range_checkbox, editable)
+        for field in (self._range_start_field, self._range_end_field):
+            self._set_enabled(field, editable and enabled)
+
+    def _selected_capture_range(self):
+        if not self._control_exists(self._custom_range_checkbox):
+            return None
+        if not cmds.checkBox(self._custom_range_checkbox, query=True, value=True):
+            return None
+        return (cmds.intField(self._range_start_field, query=True, value=True),
+                cmds.intField(self._range_end_field, query=True, value=True))
 
     def _update_workflow_controls(self):
         animation = self._workflow == WORKFLOW_ANIMATION
@@ -4447,14 +4496,14 @@ class _Controller(object):
 
     def _update_context_layout(self):
         visible = self._workflow == WORKFLOW_ANIMATION and self._mode == CACHED_MODE
-        layout = self._cache_row
-        if layout and cmds is not None and cmds.layout(layout, exists=True):
-            if cmds.layout(layout, query=True, manage=True) != visible:
-                cmds.layout(layout, edit=True, visible=visible, manage=visible)
-                if self._card_decorations and not self._resize_scheduled:
-                    from PySide2 import QtCore
-                    self._resize_scheduled = True
-                    QtCore.QTimer.singleShot(0, self._fit_panel_height)
+        for layout in (self._range_row, self._cache_row):
+            if layout and cmds is not None and cmds.layout(layout, exists=True):
+                if cmds.layout(layout, query=True, manage=True) != visible:
+                    cmds.layout(layout, edit=True, visible=visible, manage=visible)
+                    if self._card_decorations and not self._resize_scheduled:
+                        from PySide2 import QtCore
+                        self._resize_scheduled = True
+                        QtCore.QTimer.singleShot(0, self._fit_panel_height)
 
     def _fit_panel_height(self):
         self._resize_scheduled = False
@@ -4533,7 +4582,7 @@ class _Controller(object):
                 self._mode = CACHED_MODE
                 self._set_connected(
                     True,
-                    "缓存播放：实时采样已暂停，点击“捕获并回放”")
+                    "缓存播放：实时采样已暂停，点击“捕获并上传”")
             except _CachedPlaybackError as error:
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
@@ -4567,7 +4616,8 @@ class _Controller(object):
             cached = self._ensure_cached_playback()
             fps = validate_frame_rate(self._refresh_fps())
             self._set_text(self._status_text, "准备捕获缓存…")
-            cached.capture(fps, self._confirm_large_cache)
+            cached.capture(fps, self._confirm_large_cache,
+                           capture_range=self._selected_capture_range())
         except _CachedPlaybackError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
@@ -4582,12 +4632,12 @@ class _Controller(object):
             self._update_mode_controls()
 
 
-    def _replay_cached_playback(self):
+    def _upload_retained_cache(self):
         if self._mode != CACHED_MODE:
             return
         try:
             cached = self._ensure_cached_playback()
-            cached.replay()
+            cached.upload_retained_cache()
         except _CachedPlaybackError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
@@ -4596,12 +4646,6 @@ class _Controller(object):
             self._show_error(diagnostic)
         finally:
             self._update_mode_controls()
-
-    def _stop_cached_replay(self):
-        if self._mode != CACHED_MODE or self._cached_playback is None:
-            return
-        self._cached_playback.stop_replay()
-        self._update_mode_controls()
 
     def _cancel_cached_capture(self):
         if self._cached_playback is not None:
@@ -4621,7 +4665,7 @@ class _Controller(object):
                 "正在捕获缓存 {0}/{1}".format(view.current, view.total))
         elif (view.state == _CachedPlayback.UPLOADING and view.total
               and view.current == view.total):
-            self._set_connected(True, "缓存已上传，Unreal 正在本地回放")
+            self._set_connected(True, "缓存已发送，等待 Unreal 完整验证…")
         elif view.state == _CachedPlayback.UPLOADING and view.current == 0:
             self._set_text(self._status_text, "正在上传缓存…")
         elif view.state == _CachedPlayback.UPLOADING:
@@ -4629,6 +4673,8 @@ class _Controller(object):
                 self._status_text,
                 "正在上传缓存 {0}/{1}".format(
                     view.current, view.total))
+        elif view.state == _CachedPlayback.READY:
+            self._set_connected(True, "缓存已就绪，请在 Unreal 中开始播放")
         elif view.state == _CachedPlayback.REPLAYING and view.current == 0:
             self._set_connected(
                 True, "缓存回放中：Unreal 按捕获帧率本地播放 {0}/{1}".format(

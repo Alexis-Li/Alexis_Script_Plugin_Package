@@ -13,6 +13,12 @@ class FRunnableThread;
 class ILiveLinkClient;
 class FSocket;
 
+TSharedPtr<class FMtoULiveLinkSource> MtoUSetActiveSource(
+    TSharedPtr<class FMtoULiveLinkSource> Source);
+FMtoUCachePlaybackView MtoUGetActorCachePlaybackView(const AMtoULiveLinkActor& Actor);
+bool MtoUStartActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+bool MtoUStopActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+
 /**
  * The one idempotent session-termination boundary shared by the Live Link
  * source and the Binding actor. Any active streaming session ends when its
@@ -93,6 +99,9 @@ public:
 
     bool StartListener();
     void StopListener();
+    FMtoUCachePlaybackView GetActorCachePlaybackView(const AMtoULiveLinkActor& Actor) const;
+    bool StartActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+    bool StopActorCachedPlayback(const AMtoULiveLinkActor& Actor);
     // Admission intake gauge used by automation to prove a stalled Game Thread
     // cannot grow queued parsed-cache ownership beyond the frozen budget.
     int32 GetQueuedCacheFrameCount() const;
@@ -124,6 +133,7 @@ private:
         const FString& Message,
         const FString& Details = FString());
     bool IsCurrentSession(uint64 SessionId) const;
+    bool OwnsActorCache(const AMtoULiveLinkActor& Actor) const;
     // True only while the session still owns GameThread publication: the
     // worker still considers it current and no explicit refresh has ended it
     // since negotiation. A refresh increments the termination counter before

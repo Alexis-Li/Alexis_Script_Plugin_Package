@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Move Cached Playback preparation to Maya and playback control to the Unreal
+  Binding Actor (Issue #49). Maya can capture an inclusive custom integer range
+  or the current Playback Range, freezes range and scene rate at start, and
+  uploads without auto-play. UE shows source range, rate, last applied source
+  frame, and state; it starts, stops, and restarts only a fully validated
+  transient cache. Recapture waits for UE to clear the old playback before
+  sampling. Protocol v7 adds the identity-scoped `cache_playing` outcome;
+  both components now identify as 0.6.0.
+
 - Redesign both host panels without changing workflows (Issue #48). Maya uses
   a compact dark card layout with a blue two-tab workflow switch, connection
   controls and status, two-column Scene Info with spacing between its divider

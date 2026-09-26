@@ -37,6 +37,7 @@ public:
         WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddStatic(
             &MtoUNotifyEditorWorldCleanup);
         Source = MakeShared<FMtoULiveLinkSource>();
+        MtoUSetActiveSource(Source);
         Client.AddSource(Source);
     }
 
@@ -52,6 +53,7 @@ public:
             return;
         }
         Source->StopListener();
+        MtoUSetActiveSource(nullptr);
         IModularFeatures& Features = IModularFeatures::Get();
         if (Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
         {

@@ -77,6 +77,48 @@ FSlateColor SeverityColor(ESeverity Severity)
     }
 }
 
+FText CacheStateText(const FMtoUCachePlaybackView& View)
+{
+    if (!View.bConnected)
+    {
+        return LOCTEXT("CacheDisconnected", "未连接");
+    }
+    switch (View.State)
+    {
+    case EMtoUCacheState::Entered:
+        return LOCTEXT("CacheEntered", "等待 Maya 捕获");
+    case EMtoUCacheState::Receiving:
+        return LOCTEXT("CacheReceiving", "正在接收并验证");
+    case EMtoUCacheState::Ready:
+        return LOCTEXT("CacheReady", "已就绪，等待播放");
+    case EMtoUCacheState::Playing:
+        return LOCTEXT("CachePlaying", "正在播放");
+    case EMtoUCacheState::Stopped:
+        return LOCTEXT("CacheStopped", "已停止，缓存保留");
+    case EMtoUCacheState::Completed:
+        return LOCTEXT("CacheCompleted", "已结束，停在最后一帧");
+    case EMtoUCacheState::Failed:
+        return LOCTEXT("CacheFailed", "播放失败，缓存保留");
+    case EMtoUCacheState::Idle:
+    default:
+        return LOCTEXT("CacheIdle", "实时预览");
+    }
+}
+
+FText CacheSummaryText(const FMtoUCachePlaybackView& View)
+{
+    if (!View.bConnected || View.FrameCount <= 0)
+    {
+        return LOCTEXT("CacheNoFrames", "缓存：无。请在 Maya 捕获并上传。");
+    }
+    const FString Frame = View.CurrentSourceFrame == INDEX_NONE
+        ? TEXT("—") : FString::FromInt(View.CurrentSourceFrame);
+    return FText::FromString(FString::Printf(
+        TEXT("源帧 %d–%d · %g fps · 当前已应用帧 %s · %d/%d 帧"),
+        View.StartFrame, View.EndFrame, View.Fps, *Frame,
+        View.AppliedFrames, View.FrameCount));
+}
+
 EMtoUConnectionState ClassifyConnection(const FString& Status)
 {
     // The strings are the ones MtoULiveLinkSource publishes for the actor; a
@@ -532,6 +574,82 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     }
                     return FReply::Handled();
                 })
+            ]
+        ];
+
+    Controls.AddCustomRow(LOCTEXT("CacheStatusFilter", "缓存播放 帧范围 状态"))
+        .WholeRowContent()
+        [
+            SNew(SVerticalBox)
+            + SVerticalBox::Slot().AutoHeight()
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([Actor]()
+                {
+                    const FMtoUCachePlaybackView View = Actor.IsValid()
+                        ? Actor->GetCachePlaybackView() : FMtoUCachePlaybackView();
+                    return FText::Format(LOCTEXT("CacheStateLine", "缓存播放：{0}"),
+                        CacheStateText(View));
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .Text_Lambda([Actor]()
+                {
+                    return CacheSummaryText(Actor.IsValid()
+                        ? Actor->GetCachePlaybackView() : FMtoUCachePlaybackView());
+                })
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                [
+                    SNew(SButton)
+                    .Text_Lambda([Actor]()
+                    {
+                        const FMtoUCachePlaybackView View = Actor.IsValid()
+                            ? Actor->GetCachePlaybackView() : FMtoUCachePlaybackView();
+                        return View.State == EMtoUCacheState::Ready
+                            ? LOCTEXT("CachePlay", "播放")
+                            : LOCTEXT("CachePlayAgain", "再次播放");
+                    })
+                    .ToolTipText(LOCTEXT("CachePlayTip", "仅完整验证且匹配当前连接的缓存可播放；未就绪时请先在 Maya 捕获并上传。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanPlay();
+                    })
+                    .OnClicked_Lambda([Actor]()
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            Target->StartCachedPlayback();
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+                + SHorizontalBox::Slot().AutoWidth()
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("CacheStop", "停止"))
+                    .ToolTipText(LOCTEXT("CacheStopTip", "停止当前播放并保留完整缓存及最后已应用姿势。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanStop();
+                    })
+                    .OnClicked_Lambda([Actor]()
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            Target->StopCachedPlayback();
+                        }
+                        return FReply::Handled();
+                    })
+                ]
             ]
         ];
 

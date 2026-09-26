@@ -223,37 +223,31 @@ def main():
                         result["alias"] = name
                         result["alias_value"] = float(command["value"])
                         result["phase"] = "alias"
-                    elif action == "cache_play":
-                        # Production path: enter cached mode, capture the
-                        # Playback Range, upload it, and replay locally.
+                    elif action == "cache_upload":
+                        # Production path: Maya captures and uploads; UE owns
+                        # the subsequent play, stop and replay actions.
                         result.pop("cache_error", None)
                         controller._on_mode_changed(module.CACHED_MODE)
                         cached = controller._ensure_cached_playback()
                         started = time.time()
+                        selected_range = command.get("custom_range")
+                        controller._selected_capture_range = (
+                            lambda: tuple(selected_range) if selected_range else None)
                         controller._capture_cached_playback()
                         until(lambda: cached.view.state in (
-                            cached.COMPLETED, cached.FAILED, cached.REALTIME), "cache play")
+                            cached.READY, cached.FAILED, cached.REALTIME), "cache upload")
                         result["cache_capture_seconds"] = time.time() - started
                         result["cache_summary"] = cached.view.cache_summary._values()
                         result["cache_applied"] = cached.view.current
                         result["cache_state"] = cached.view.state
                         result["cache_upload_id"] = cached._upload_id
                         result["cache_play_id"] = cached._play_id
-                        result["phase"] = "cached"
-                    elif action == "cache_replay":
-                        cached = controller._cached_playback
-                        started = time.time()
-                        controller._replay_cached_playback()
-                        until(lambda: cached.view.state in (
-                            cached.COMPLETED, cached.FAILED), "cache replay")
-                        result["cache_replay_seconds"] = time.time() - started
-                        result["cache_applied"] = cached.view.current
-                        result["cache_state"] = cached.view.state
-                        result["phase"] = "replayed"
-                    elif action == "cache_stop":
-                        controller._stop_cached_replay()
+                        result["phase"] = "ready"
+                    elif action == "cache_observe":
                         result["cache_state"] = controller._cached_playback.view.state
-                        result["phase"] = "stopped"
+                        result["cache_applied"] = controller._cached_playback.view.current
+                        result["cache_play_id"] = controller._cached_playback._play_id
+                        result["phase"] = "observed"
                     elif action == "cache_live":
                         controller._on_mode_changed(module.REALTIME_MODE)
                         until(lambda: controller._cached_playback is None

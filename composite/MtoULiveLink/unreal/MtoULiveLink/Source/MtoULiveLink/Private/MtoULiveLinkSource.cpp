@@ -108,11 +108,47 @@ bool IsPlacedEditorActor(const AMtoULiveLinkActor& Actor)
 }
 
 TAtomic<uint64> GStreamingSessionEndRequests{0};
+TWeakPtr<FMtoULiveLinkSource> GActiveSource;
 #if WITH_DEV_AUTOMATION_TESTS
 // Test-only hold on worker disconnect cleanup (see header). Defaults off, so
 // production and ordinary automation never observe it.
 TAtomic<bool> GDeferStreamingSessionEndCleanup{false};
 #endif
+}
+
+TSharedPtr<FMtoULiveLinkSource> MtoUSetActiveSource(TSharedPtr<FMtoULiveLinkSource> Source)
+{
+    check(IsInGameThread());
+    TSharedPtr<FMtoULiveLinkSource> Previous = GActiveSource.Pin();
+    GActiveSource = Source;
+    return Previous;
+}
+
+FMtoUCachePlaybackView MtoUGetActorCachePlaybackView(const AMtoULiveLinkActor& Actor)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->GetActorCachePlaybackView(Actor);
+    }
+    return FMtoUCachePlaybackView();
+}
+
+bool MtoUStartActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->StartActorCachedPlayback(Actor);
+    }
+    return false;
+}
+
+bool MtoUStopActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->StopActorCachedPlayback(Actor);
+    }
+    return false;
 }
 
 void MtoURequestStreamingSessionEnd()
@@ -178,6 +214,57 @@ FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
 FMtoULiveLinkSource::~FMtoULiveLinkSource()
 {
     StopListener();
+}
+
+bool FMtoULiveLinkSource::OwnsActorCache(const AMtoULiveLinkActor& Actor) const
+{
+    check(IsInGameThread());
+    if (!IsSessionPublishableOnGameThread(GameThreadSession))
+    {
+        return false;
+    }
+    for (const TWeakObjectPtr<AMtoULiveLinkActor>& Participant : ParticipatingActors)
+    {
+        if (Participant.Get() == &Actor)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+FMtoUCachePlaybackView FMtoULiveLinkSource::GetActorCachePlaybackView(
+    const AMtoULiveLinkActor& Actor) const
+{
+    FMtoUCachePlaybackView View;
+    if (OwnsActorCache(Actor))
+    {
+        View = CacheSession.GetView();
+        View.bConnected = true;
+    }
+    return View;
+}
+
+bool FMtoULiveLinkSource::StartActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (!GetActorCachePlaybackView(Actor).CanPlay())
+    {
+        return false;
+    }
+    const FMtoUCacheTransition Transition = CacheSession.StartLocalPlayback();
+    ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    return Transition.bAccepted;
+}
+
+bool FMtoULiveLinkSource::StopActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (!GetActorCachePlaybackView(Actor).CanStop())
+    {
+        return false;
+    }
+    const FMtoUCacheTransition Transition = CacheSession.StopLocalPlayback();
+    ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    return Transition.bAccepted;
 }
 
 void FMtoULiveLinkSource::ReceiveClient(ILiveLinkClient* InClient, FGuid InSourceGuid)
@@ -1314,6 +1401,7 @@ void FMtoULiveLinkSource::ApplyCacheTransitionOnGameThread(
             break;
         case EKind::Playing:
             SetStatus(TEXT("Playing cached animation locally"));
+            Packet = FMtoUProtocol::EncodeCachePlaying(Transition.UploadId, Transition.PlayId);
             break;
         case EKind::Stopped:
             SetStatus(TEXT("Cached playback stopped; last applied frame held"));

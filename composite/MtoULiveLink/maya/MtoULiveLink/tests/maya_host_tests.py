@@ -476,7 +476,7 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(6, FakeWorker.instance.init_message["version"])
+        self.assertEqual(7, FakeWorker.instance.init_message["version"])
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
@@ -516,15 +516,18 @@ class MayaHostTests(unittest.TestCase):
 
                 def __init__(self):
                     self.resumed = 0
+                    self.reply_listener = None
 
                 def pause_for_cached(self, reply_listener=None):
-                    pass
+                    self.reply_listener = reply_listener
 
                 def resume_from_cached(self):
                     self.resumed += 1
 
-                def submit_cached(self, unused_frame):
-                    pass
+                def submit_cached(self, message):
+                    if message["type"] == "cache_clear" and self.reply_listener:
+                        self.reply_listener({"type": "cache_cleared",
+                                             "upload_id": 0, "play_id": 0})
 
                 def end_cached_replay(self):
                     pass
@@ -577,7 +580,7 @@ class MayaHostTests(unittest.TestCase):
                 self.assertEqual(1, stream.resumed)
                 self.assertIsNone(cached.view.cache_summary)
                 self.assertEqual(module._CachedPlayback.REALTIME, cached.view.state)
-                self.assertEqual([1, 2], timer.removed)
+                self.assertEqual([1, 2], sorted(timer.removed))
                 cached.discard()
             self.assertFalse(playing["value"])
 

@@ -31,7 +31,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
         bind_conflict_count,
     )
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v6.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v7.json")
     .read_text(encoding="utf-8")
 )
 
@@ -1935,6 +1935,8 @@ class CachedPlaybackTests(unittest.TestCase):
             self.resumed = 0
             self.stopped = 0
             self.drained = True
+            self.upload_id = 0
+            self.play_id = 0
 
         def pause_for_cached(self, listener=None):
             self.listener = listener
@@ -1947,6 +1949,15 @@ class CachedPlaybackTests(unittest.TestCase):
         def submit_cached(self, message):
             self.submitted.append(message)
             self.actions.append(message["type"])
+            if message["type"] == "cache_begin":
+                self.upload_id = message["upload_id"]
+                self.play_id = 0
+            elif message["type"] == "cache_clear":
+                if self.listener is not None:
+                    self.emit({"type": "cache_cleared", "upload_id": self.upload_id,
+                               "play_id": self.play_id})
+                self.upload_id = 0
+                self.play_id = 0
 
         def cached_delivery_drained(self):
             return self.drained
@@ -1958,6 +1969,8 @@ class CachedPlaybackTests(unittest.TestCase):
         def emit(self, message):
             if self.listener is None:
                 raise AssertionError("Cached Playback did not attach a reply listener")
+            if message["type"] == "cache_playing":
+                self.play_id = message["play_id"]
             self.listener(message)
 
     def setUp(self):
@@ -2001,15 +2014,13 @@ class CachedPlaybackTests(unittest.TestCase):
 
     @staticmethod
     def _capabilities(view):
-        return (view.can_capture, view.can_replay, view.can_stop,
-                view.can_cancel, view.can_leave)
+        return (view.can_capture, view.can_upload, view.can_cancel, view.can_leave)
 
     def _capture_to_upload(self, cached, stream):
-        cached.enter()
         cached.capture(2.0, lambda unused_size, unused_frames: True)
         self.timer.fire_until(lambda: "cache_end" in self._types(stream))
         self.assertEqual(MODULE._CachedPlayback.UPLOADING, cached.view.state)
-        self.assertEqual((True, False, False, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         return [message for message in stream.submitted
                 if message["type"] == "cache_begin"][-1]
@@ -2021,8 +2032,13 @@ class CachedPlaybackTests(unittest.TestCase):
             "revision": begin["revision"], "frame_count": begin["frame_count"],
         })
         self.timer.fire_until(
+            lambda: cached.view.state == MODULE._CachedPlayback.READY)
+        self.assertNotIn("cache_play", self._types(stream))
+        stream.emit({"type": "cache_playing", "upload_id": begin["upload_id"],
+                     "play_id": cached._play_id + 1})
+        self.timer.fire_until(
             lambda: cached.view.state == MODULE._CachedPlayback.REPLAYING)
-        self.assertEqual((True, False, True, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         return begin
 
@@ -2030,7 +2046,7 @@ class CachedPlaybackTests(unittest.TestCase):
         cached, stream = self._attached()
 
         self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
-        self.assertEqual((False, False, False, False, False),
+        self.assertEqual((False, False, False, False),
                          self._capabilities(cached.view))
         self.assertEqual(0, stream.paused)
         with self.assertRaises(AttributeError):
@@ -2044,7 +2060,7 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
 
         self.assertEqual(MODULE._CachedPlayback.CACHED_IDLE, cached.view.state)
-        self.assertEqual((True, False, False, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         self.assertEqual([MODULE._CachedPlayback.CACHED_IDLE], [view.state for view in changes])
         self.assertEqual(1, stream.paused)
@@ -2068,6 +2084,69 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertIn(MODULE._CachedPlayback.CAPTURING, [view.state for view in changes])
         self.assertIn(MODULE._CachedPlayback.UPLOADING, [view.state for view in changes])
 
+    def test_custom_range_freezes_negative_single_frame_without_editing_playback_range(self):
+        cached, stream = self._attached()
+        with mock.patch.object(self.timeline, "playback_range",
+                               side_effect=AssertionError("custom range must not query playback")):
+            cached.capture(30.0, lambda unused_size, unused_frames: True,
+                           capture_range=(-2, -2))
+        self.timeline.ranges = (100, 120)
+        self.timer.fire_until(lambda: "cache_end" in self._types(stream))
+        begin = [message for message in stream.submitted
+                 if message["type"] == "cache_begin"][-1]
+        self.assertEqual((-2, -2, 1, 30.0),
+                         (begin["start_frame"], begin["end_frame"],
+                          begin["frame_count"], begin["fps"]))
+        self.assertEqual([-2, 42], self.timeline.set_frames)
+        self.assertEqual((100, 120), self.timeline.ranges)
+        self.assertEqual((-2, -2), cached.view.cache_summary.capture_range)
+        stream.emit({"type": "cache_ready", "upload_id": begin["upload_id"],
+                     "revision": begin["revision"], "frame_count": 1})
+        self.timer.fire_until(lambda: cached.view.state == cached.READY)
+        stream.emit({"type": "cache_playing", "upload_id": begin["upload_id"],
+                     "play_id": 1})
+        stream.emit({"type": "cache_complete", "play_id": 1,
+                     "applied_frame_count": 1, "elapsed_seconds": 0.0})
+        self.timer.fire_until(lambda: cached.view.state == cached.COMPLETED)
+        self.assertEqual(1, cached.view.current)
+
+    def test_invalid_custom_range_fails_before_cache_or_scene_changes(self):
+        cached, stream = self._attached()
+        for selection, code in (((3, 2), "CACHED_PLAYBACK_CAPTURE_RANGE"),
+                                ((False, 1), "CACHED_PLAYBACK_CAPTURE_RANGE"),
+                                ((-20000, 1), "CACHED_PLAYBACK_FRAME_LIMIT")):
+            with self.assertRaises(MODULE._CachedPlaybackError) as caught:
+                cached.capture(24.0, capture_range=selection)
+            self.assertEqual(code, caught.exception.code)
+        self.assertEqual([], self.timeline.set_frames)
+        self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+        self.assertNotIn("cache_begin", self._types(stream))
+
+    def test_recapture_waits_for_unreal_to_end_old_playback(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        old_upload = cached._active_upload_id
+        old_play = cached._active_play_id
+        before = len(self.timeline.set_frames)
+        # Hold the clear acknowledgement while the old playback is active.
+        real_listener = stream.listener
+        queued = []
+        stream.listener = lambda reply: queued.append(reply)
+        cached.capture(24.0, capture_range=(-1, 0))
+        self.timer.fire()
+        self.assertEqual(before, len(self.timeline.set_frames))
+        self.assertEqual((old_upload, old_play), cached._awaiting_clear)
+        stream.listener = real_listener
+        real_listener({"type": "cache_cleared", "upload_id": old_upload,
+                       "play_id": old_play - 1})
+        self.timer.fire()
+        self.assertEqual(before, len(self.timeline.set_frames))
+        for reply in queued:
+            real_listener(reply)
+        self.timer.fire_until(lambda: len(self.timeline.set_frames) > before)
+        self.assertEqual(-1, self.timeline.set_frames[before])
+        self.assertNotIn("cache_play", self._types(stream))
+
     def test_cancel_restores_frame_deletes_partial_cache_and_clears_before_resume(self):
         changes = []
         cached, stream = self._attached(changes.append)
@@ -2075,7 +2154,7 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.capture(24.0, lambda unused_size, unused_frames: True)
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.CAPTURING, cached.view.state)
-        self.assertEqual((False, False, False, True, False),
+        self.assertEqual((False, False, True, False),
                          self._capabilities(cached.view))
 
         cached.cancel_capture()
@@ -2085,7 +2164,7 @@ class CachedPlaybackTests(unittest.TestCase):
         # completes that transition: a REALTIME view carrying the truthful
         # cancellation diagnostic, not a FAILED view implying disconnection.
         self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
-        self.assertEqual((False, False, False, False, False),
+        self.assertEqual((False, False, False, False),
                          self._capabilities(cached.view))
         self.assertEqual(42, self.timeline.current)
         self.assertIsNone(cached.view.cache_summary)
@@ -2150,7 +2229,7 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertEqual(MODULE._CachedPlayback.UPLOADING, cached.view.state)
         stream.drained = True
         self.timer.fire()
-        self.assertEqual(MODULE._CachedPlayback.REPLAYING, cached.view.state)
+        self.assertEqual(MODULE._CachedPlayback.READY, cached.view.state)
 
     def test_ready_rejects_non_exact_application_evidence(self):
         changes = []
@@ -2172,29 +2251,28 @@ class CachedPlaybackTests(unittest.TestCase):
         diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
         self.assertEqual("CACHED_UPLOAD_FAILED", diagnostic["code"])
 
-    def test_stop_waits_for_matching_ack_and_replay_again_reuses_upload(self):
+    def test_unreal_stop_and_replay_again_reuse_the_verified_upload(self):
         cached, stream = self._attached()
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
+        play_id = cached._active_play_id
 
-        cached.stop_replay()
-        self.assertEqual(MODULE._CachedPlayback.STOPPING, cached.view.state)
-        self.assertEqual((False, False, True, False, True),
-                         self._capabilities(cached.view))
-        stream.emit({"type": "cache_stopped", "play_id": play["play_id"] + 1})
+        stream.emit({"type": "cache_stopped", "play_id": play_id + 1})
         self.timer.fire()
-        self.assertEqual(MODULE._CachedPlayback.STOPPING, cached.view.state)
-        stream.emit({"type": "cache_stopped", "play_id": play["play_id"]})
+        self.assertEqual(MODULE._CachedPlayback.REPLAYING, cached.view.state)
+        stream.emit({"type": "cache_progress", "play_id": play_id, "applied": 2})
+        stream.emit({"type": "cache_stopped", "play_id": play_id})
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.STOPPED, cached.view.state)
-        self.assertEqual((True, True, False, False, True),
+        self.assertEqual(2, cached.view.current)
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
 
         begin_count = self._types(stream).count("cache_begin")
-        cached.replay()
+        stream.emit({"type": "cache_playing", "upload_id": cached._active_upload_id,
+                     "play_id": play_id + 1})
+        self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.REPLAYING, cached.view.state)
-        self.assertEqual((True, False, True, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         self.assertEqual(begin_count, self._types(stream).count("cache_begin"))
 
@@ -2202,24 +2280,23 @@ class CachedPlaybackTests(unittest.TestCase):
         changes = []
         cached, stream = self._attached(changes.append)
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
+        play_id = cached._active_play_id
         stream.emit({
-            "type": "cache_complete", "play_id": play["play_id"],
+            "type": "cache_complete", "play_id": play_id,
             "applied_frame_count": 4, "elapsed_seconds": 1.5,
         })
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.COMPLETED, cached.view.state)
-        self.assertEqual((True, True, False, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
 
-        cached.replay()
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
+        stream.emit({"type": "cache_playing", "upload_id": cached._active_upload_id,
+                     "play_id": play_id + 1})
+        self.timer.fire()
         stream.emit({
             "type": "error", "code": "CACHED_PLAYBACK_PERFORMANCE",
             "message": "Local playback fell behind.", "details": "frame 3",
-            "play_id": play["play_id"],
+            "play_id": play_id + 1,
         })
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
@@ -2254,7 +2331,7 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertTrue(next_cached.view.cache_summary.capture_time > 0.0)
         next_cached.enter()
         with mock.patch.object(MODULE, "UPLOAD_CHUNK_FRAMES", 2):
-            next_cached.replay()
+            next_cached.upload_retained_cache()
             self.timer.fire()
             self.assertNotIn("cache_begin", self._types(next_stream))
             self.timer.fire()
@@ -2347,7 +2424,8 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertEqual(MODULE._CachedPlayback.REALTIME, cached.view.state)
         self.assertIsNone(cached.view.cache_summary)
         self.assertTrue(CorruptFactory.cache.deleted)
-        self.assertEqual(["cache_enter", "cache_begin", "cache_clear"],
+        self.assertEqual(["cache_enter", "cache_clear", "cache_enter",
+                          "cache_begin", "cache_clear"],
                          self._types(stream))
         diagnostic = [view.diagnostic for view in changes if view.diagnostic][-1]
         self.assertEqual("CACHED_PLAYBACK_NO_CACHE", diagnostic["code"])
@@ -2366,7 +2444,7 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
         self.assertNotIn("cache_frame", self._types(stream))
         self.assertEqual(MODULE._CachedPlayback.CACHED_IDLE, cached.view.state)
-        self.assertEqual((True, False, False, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
 
     def test_capture_stops_as_soon_as_encoded_bytes_cross_the_payload_limit(self):
@@ -2426,10 +2504,8 @@ class CachedPlaybackTests(unittest.TestCase):
     def test_completed_and_stopped_states_keep_observing_the_connection(self):
         cached, stream = self._attached()
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
         stream.emit({
-            "type": "cache_complete", "play_id": play["play_id"],
+            "type": "cache_complete", "play_id": cached._active_play_id,
             "applied_frame_count": 4, "elapsed_seconds": 1.5,
         })
         self.timer.fire()
@@ -2443,10 +2519,7 @@ class CachedPlaybackTests(unittest.TestCase):
     def test_stopped_cached_state_observes_transport_termination(self):
         cached, stream = self._attached()
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
-        cached.stop_replay()
-        stream.emit({"type": "cache_stopped", "play_id": play["play_id"]})
+        stream.emit({"type": "cache_stopped", "play_id": cached._active_play_id})
         self.timer.fire()
         self.assertEqual(MODULE._CachedPlayback.STOPPED, cached.view.state)
 
@@ -2457,12 +2530,10 @@ class CachedPlaybackTests(unittest.TestCase):
     def test_runtime_playback_failure_stays_cached_with_leave_and_retry(self):
         cached, stream = self._attached()
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
         stream.emit({
             "type": "error", "code": "CACHED_PLAYBACK_PERFORMANCE",
             "message": "Local playback fell behind.", "details": "frame 3",
-            "play_id": play["play_id"],
+            "play_id": cached._active_play_id,
         })
 
         self.timer.fire()
@@ -2470,7 +2541,7 @@ class CachedPlaybackTests(unittest.TestCase):
         # A failure that keeps Unreal cache ownership stays cached and must
         # leave retrying and leaving possible, and the connection is real.
         self.assertEqual(MODULE._CachedPlayback.FAILED, cached.view.state)
-        self.assertEqual((True, True, False, False, True),
+        self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         self.assertIsNotNone(cached.view.cache_summary)
         self.assertEqual(0, stream.resumed)
@@ -2480,7 +2551,7 @@ class CachedPlaybackTests(unittest.TestCase):
     def test_discard_is_idempotent_and_rejected_actions_keep_stable_errors(self):
         cached, unused_stream = self._attached()
         with self.assertRaises(MODULE._CachedPlaybackError) as caught:
-            cached.replay()
+            cached.upload_retained_cache()
         self.assertEqual("CACHED_PLAYBACK_NO_CACHE", caught.exception.code)
 
         cached.discard()
@@ -2502,18 +2573,18 @@ class CachedPlaybackTests(unittest.TestCase):
         cached.enter()
         self.assertEqual(1, len(observed))
         self._capture_to_replay(cached, stream)
-        play = [message for message in stream.submitted
-                if message["type"] == "cache_play"][-1]
         stream.emit({
             "type": "error", "code": "CACHED_PLAYBACK_PERFORMANCE",
-            "message": "late", "details": "late", "play_id": play["play_id"],
+            "message": "late", "details": "late", "play_id": cached._active_play_id,
         })
         self.timer.fire()
         diagnostic_view = [view for view in observed if view.diagnostic][-1]
         copied = diagnostic_view.diagnostic
         copied["code"] = "MUTATED"
         self.assertEqual("CACHED_PLAYBACK_PERFORMANCE", diagnostic_view.diagnostic["code"])
-        cached.replay()
+        stream.emit({"type": "cache_playing", "upload_id": cached._active_upload_id,
+                     "play_id": cached._active_play_id + 1})
+        self.timer.fire()
         self.assertIsNone(observed[-1].diagnostic)
 
     def test_old_event_and_public_driving_interfaces_are_deleted(self):
@@ -2988,15 +3059,15 @@ class ControllerLifecycleTests(unittest.TestCase):
 
         controller._capture_cached_playback()
 
-        cached.capture.assert_called_once_with(24.0, controller._confirm_large_cache)
+        cached.capture.assert_called_once_with(
+            24.0, controller._confirm_large_cache, capture_range=None)
         self.assertFalse(hasattr(controller, "_cached_cache"))
 
         controller._set_enabled = mock.Mock()
         controller._set_tooltip = mock.Mock()
         controller._mode = MODULE.CACHED_MODE
         controller._capture_button = "capture"
-        controller._replay_button = "replay"
-        controller._stop_replay_button = "stop"
+        controller._upload_button = "upload"
         controller._cancel_capture_button = "cancel"
         controller._realtime_mode_button = "realtime"
         controller._cached_mode_button = "cached"
@@ -3004,22 +3075,20 @@ class ControllerLifecycleTests(unittest.TestCase):
         controller._disconnect_button = "disconnect"
         controller._playback_cap_menu = "cap"
         controller._cached_view = MODULE._CachedPlaybackView(
-            MODULE._CachedPlayback.REPLAYING, can_capture=True, can_stop=True,
+            MODULE._CachedPlayback.REPLAYING, can_capture=True,
             can_leave=True)
         controller._update_mode_selection = mock.Mock()
         MODULE._Controller._update_mode_controls(controller)
         enabled = {recorded_call[0][0]: recorded_call[0][1]
                    for recorded_call in controller._set_enabled.call_args_list}
         self.assertTrue(enabled["capture"])
-        self.assertFalse(enabled["replay"])
-        self.assertTrue(enabled["stop"])
+        self.assertFalse(enabled["upload"])
         self.assertFalse(enabled["cancel"])
         self.assertTrue(enabled["realtime"])
         tooltips = {recorded_call[0][0]: recorded_call[0][1]
                     for recorded_call in controller._set_tooltip.call_args_list}
         self.assertEqual("", tooltips["capture"])
-        self.assertNotEqual("", tooltips["replay"])
-        self.assertEqual("", tooltips["stop"])
+        self.assertNotEqual("", tooltips["upload"])
         self.assertNotEqual("", tooltips["cancel"])
 
     def test_same_warning_signature_does_not_interrupt_twice(self):
@@ -3448,7 +3517,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(MODULE.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v6_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v7_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
@@ -3491,7 +3560,7 @@ class WorkflowTests(unittest.TestCase):
             session.stop()
 
         init_message = captured["init"]
-        self.assertEqual(6, init_message["version"])
+        self.assertEqual(7, init_message["version"])
         self.assertEqual(MODULE.WORKFLOW_MODEL, init_message["workflow"])
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
@@ -3627,7 +3696,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(payload, actual)
             self.assertTrue(MODULE.encode_message(actual))
             return
-        if operation in ("ready", "error", "cache_ready", "cache_complete",
+        if operation in ("ready", "error", "cache_ready", "cache_playing", "cache_complete",
                          "cache_progress", "cache_stopped", "cache_cleared"):
             if expected["accepted"]:
                 self.assertEqual(case["payload"], MODULE.validate_reply(case["payload"]))
@@ -3689,10 +3758,10 @@ class ProtocolTests(unittest.TestCase):
             return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v6_init_and_structured_diagnostics(self):
+    def test_protocol_v7_init_and_structured_diagnostics(self):
         identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
         message = MODULE.make_init_message([["root", -1, identity]], ["Smile"], 7)
-        self.assertEqual(6, message["version"])
+        self.assertEqual(7, message["version"])
         self.assertEqual("animation", message["workflow"])
         self.assertTrue(message["blendshapes_enabled"])
         model_message = MODULE.make_init_message(

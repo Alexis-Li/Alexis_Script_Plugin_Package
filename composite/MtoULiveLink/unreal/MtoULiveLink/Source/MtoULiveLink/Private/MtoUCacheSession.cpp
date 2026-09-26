@@ -88,6 +88,42 @@ void FMtoUCacheSession::EndSession()
     ErrorDetails.Reset();
 }
 
+FMtoUCachePlaybackView FMtoUCacheSession::GetView() const
+{
+    FMtoUCachePlaybackView View;
+    View.State = State;
+    View.StartFrame = Begin.StartFrame;
+    View.EndFrame = Begin.EndFrame;
+    View.Fps = Begin.Fps;
+    View.FrameCount = Begin.FrameCount;
+    View.AppliedFrames = AppliedCount;
+    View.ErrorDetails = ErrorDetails;
+    if (LastAppliedIndex != INDEX_NONE)
+    {
+        View.CurrentSourceFrame = Begin.StartFrame + LastAppliedIndex;
+    }
+    return View;
+}
+
+FMtoUCacheTransition FMtoUCacheSession::StartLocalPlayback()
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Play;
+    Command.PlayId = LastSeenPlayId + 1;
+    return HandleCommand(Command);
+}
+
+FMtoUCacheTransition FMtoUCacheSession::StopLocalPlayback()
+{
+    if (State != EMtoUCacheState::Playing)
+    {
+        return FMtoUCacheTransition();
+    }
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Stop;
+    return HandleCommand(Command);
+}
+
 FMtoUCacheTransition FMtoUCacheSession::HandleCommand(const FMtoUCacheCommand& Command)
 {
     using EKind = FMtoUCacheTransition::EKind;
@@ -249,6 +285,7 @@ bool FMtoUCacheSession::HandleBegin(
     // Recapture always replaces the previous cache coherently; old and new
     // frames can never mix because Begin resets the buffer unconditionally.
     ActiveUploadId = Incoming.UploadId;
+    ActivePlayId = 0;
     Begin = Incoming;
     Frames.Reset(Begin.FrameCount);
     ActualPayloadBytes = 0;

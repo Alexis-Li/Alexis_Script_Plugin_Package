@@ -989,6 +989,15 @@ TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 UploadId, int32 NegotiatedRe
     return EncodeObject(Object);
 }
 
+TArray<uint8> FMtoUProtocol::EncodeCachePlaying(int32 UploadId, int32 PlayId)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_playing"));
+    Object->SetNumberField(TEXT("upload_id"), UploadId);
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    return EncodeObject(Object);
+}
+
 TArray<uint8> FMtoUProtocol::EncodeCacheProgress(int32 PlayId, int32 AppliedFrames)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();

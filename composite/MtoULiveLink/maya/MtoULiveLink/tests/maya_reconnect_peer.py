@@ -88,8 +88,15 @@ def main():
             controller._on_mode_changed(module.CACHED_MODE)
             return controller._cached_playback
 
+        def announce(phase):
+            result["phase"] = phase
+            Path(args.result).write_text(
+                json.dumps(result, indent=2, ensure_ascii=True), encoding="utf-8")
+
         first = connect()
         controller._capture_cached_playback()
+        pump_until(lambda: first.view.state == first.READY, "A upload ready")
+        announce("a_ready")
         pump_until(lambda: first.view.state == first.COMPLETED, "A capture/play complete")
         cache_path = Path(first._cache._frames_path)
         cache_digest = hashlib.sha256(cache_path.read_bytes()).hexdigest()
@@ -110,7 +117,9 @@ def main():
         assert Path(second._cache._frames_path) == cache_path
         # A different current animation makes an accidental recapture visible.
         cmds.setKeyframe(joints[0], attribute="translateX", time=4, value=999)
-        controller._replay_cached_playback()
+        controller._upload_retained_cache()
+        pump_until(lambda: second.view.state == second.READY, "B retained upload ready")
+        announce("b_ready")
         pump_until(lambda: second.view.state == second.COMPLETED,
                    "B retained-cache replay complete")
         assert hashlib.sha256(cache_path.read_bytes()).hexdigest() == cache_digest
@@ -120,10 +129,29 @@ def main():
                                    "play_id": second._play_id, "applied": second.view.current})
         result["same_completed_cache"] = True
         result["cache_sha256"] = cache_digest
-        result["capture_calls"] = 1
+        # Recapture on the connected session exercises clear acknowledgement
+        # and the enabled custom range, including a negative start frame.
+        cmds.setKeyframe(joints[0], attribute="translateX", time=-1, value=-10)
+        cmds.setKeyframe(joints[0], attribute="translateX", time=0, value=0)
+        controller._selected_capture_range = lambda: (-1, 1)
+        controller._capture_cached_playback()
+        pump_until(lambda: second.view.state == second.READY, "C custom upload ready")
+        assert second.view.cache_summary.capture_start == -1
+        assert second.view.cache_summary.capture_end == 1
+        assert second.view.cache_summary.frame_count == 3
+        assert not cache_path.exists()
+        custom_path = Path(second._cache._frames_path)
+        announce("c_ready")
+        pump_until(lambda: second.view.state == second.COMPLETED,
+                   "C custom-range replay complete")
+        assert second.view.current == 3
+        result["sessions"].append({"name": "C", "upload_id": second._upload_id,
+                                   "play_id": second._play_id, "applied": second.view.current,
+                                   "range": [-1, 1]})
+        result["capture_calls"] = 2
         controller.close()
         controller = None
-        assert not cache_path.exists()
+        assert not custom_path.exists()
         result["cache_cleaned"] = True
         result["ok"] = True
     except Exception:

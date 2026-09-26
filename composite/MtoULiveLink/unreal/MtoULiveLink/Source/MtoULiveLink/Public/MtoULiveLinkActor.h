@@ -2,6 +2,7 @@
 
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
+#include "MtoUCachePlayback.h"
 
 #include "MtoULiveLinkActor.generated.h"
 
@@ -127,6 +128,11 @@ public:
     USkeletalMeshComponent* GetSkeletalMeshComponent() const { return SkeletalMeshComponent; }
     UMtoULiveLinkBinding* GetBinding() const { return Binding; }
     const FString& GetConnectionStatus() const { return ConnectionStatus; }
+
+    /** Current negotiated session's transient cache; never serialized on the actor. */
+    FMtoUCachePlaybackView GetCachePlaybackView() const;
+    bool StartCachedPlayback();
+    bool StopCachedPlayback();
 
     /**
      * Enabled Additional Part components in canonical part order. They are a

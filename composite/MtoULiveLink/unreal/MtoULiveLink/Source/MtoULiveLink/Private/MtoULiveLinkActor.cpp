@@ -23,6 +23,21 @@ AMtoULiveLinkActor::AMtoULiveLinkActor()
     DriverMeshComponent->SetGenerateOverlapEvents(false);
 }
 
+FMtoUCachePlaybackView AMtoULiveLinkActor::GetCachePlaybackView() const
+{
+    return MtoUGetActorCachePlaybackView(*this);
+}
+
+bool AMtoULiveLinkActor::StartCachedPlayback()
+{
+    return MtoUStartActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::StopCachedPlayback()
+{
+    return MtoUStopActorCachedPlayback(*this);
+}
+
 void AMtoULiveLinkActor::OnConstruction(const FTransform& Transform)
 {
     Super::OnConstruction(Transform);

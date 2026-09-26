@@ -3464,7 +3464,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -3623,7 +3623,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -4533,7 +4533,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;

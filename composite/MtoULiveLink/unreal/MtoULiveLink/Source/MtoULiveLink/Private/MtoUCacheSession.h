@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MtoULiveLinkProtocol.h"
+#include "MtoUCachePlayback.h"
 
 // Game-thread owner of one negotiated connection's transient animation cache.
 // It buffers a fully validated, byte-metered upload, gates playback behind an
@@ -8,19 +9,6 @@
 // rate using an injectable monotonic clock: at most one pose per source-frame
 // position per update, and never a catch-up burst. It never touches packages
 // or disk.
-
-enum class EMtoUCacheState : uint8
-{
-    Idle,
-    // Cached ownership established by cache_enter before capture begins.
-    Entered,
-    Receiving,
-    Ready,
-    Playing,
-    Completed,
-    Stopped,
-    Failed,
-};
 
 struct FMtoUCacheCommand
 {
@@ -120,6 +108,13 @@ public:
     int32 GetAppliedFrameCount() const { return AppliedCount; }
     int32 GetLastAppliedIndex() const { return LastAppliedIndex; }
     int32 GetActiveUploadId() const { return ActiveUploadId; }
+    int32 GetActivePlayId() const { return ActivePlayId; }
+    FMtoUCachePlaybackView GetView() const;
+
+    // The Editor actor starts and stops a complete cache on the Game Thread.
+    // These use the same transition and identity checks as protocol commands.
+    FMtoUCacheTransition StartLocalPlayback();
+    FMtoUCacheTransition StopLocalPlayback();
 
     // Captures identities before destructive transitions; callers never need
     // to reconstruct an outcome from the command and post-transition getters.

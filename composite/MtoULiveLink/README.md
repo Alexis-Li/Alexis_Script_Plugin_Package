@@ -106,7 +106,7 @@ on the Binding. All enabled parts pose and display under one connection:
    its Binding Actor. Its Details panel opens **MtoU · 运行状态** (separate Preview
    and connection states plus the next step), **角色组成** (Primary and expandable
    Additional Parts), and **预览控制** (Binding and generated mesh asset fields,
-   Refresh and Delete). Expand **高级设置与诊断** for the full selectable and
+   Refresh, Delete, and cache playback). Expand **高级设置与诊断** for the full selectable and
    copyable raw error; an empty diagnostic does not occupy the daily view.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
@@ -125,16 +125,26 @@ on the Binding. All enabled parts pose and display under one connection:
 ## Animation preview
 
 Use **Animation** for real-time character preview. For a captured animation
-range, set the Maya playback range, choose **Cached Playback** (缓存播放), and click
-**Capture and Play** (捕获并回放). Playback starts after capture and upload finish.
-The cache action buttons appear inside Preview & Playback only in Cached
-Playback mode. The Diagnostics status line distinguishes capturing, uploading,
-replaying, completed on the last frame, stopped with the cache retained, and
-failed states.
+range, choose **Cached Playback** (缓存播放) in Maya. Leave **Custom Capture Range**
+(自定义捕获范围) off to use the current playback range, or turn it on and enter
+integer start and end frames. Click **Capture and Upload** (捕获并上传), then wait
+for **Ready**. The range includes both endpoints and the scene frame rate is
+fixed when capture starts; capture does not change Maya's playback range.
+Single frames and negative start frames are supported.
+
+In the Unreal Binding Actor's **预览控制**, check the source range, rate, current
+applied source frame, and cache state. Click **播放** to start, **停止** to hold the
+last applied pose, and **再次播放** to play the retained cache from its start.
+Natural completion holds the final frame. To prepare a new range in Maya, click
+**捕获并上传** again; the old UE playback ends before sampling begins. Switch Maya
+back to **实时预览** to clear the UE cache and resume live poses. After a connection
+loss, reconnect and use **上传保留缓存** if a compatible complete local cache remains.
+Maya's status line shows capture, upload, Ready, playback, stop, and failure.
 
 A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
-that limit. Capture or upload failures return to real-time preview and show the
-reason. If playback fails, you can retry the retained cache or leave cached mode.
+that limit. Invalid ranges fail before sampling. Sampling or upload failures
+return to real-time preview and show the reason. A playback failure retains
+the complete UE cache for another attempt.
 
 ## Garment model preview
 

@@ -70,12 +70,12 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 6;
+    static constexpr int32 Version = 7;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
     // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
     // frozen wire values; the single source of truth is the `limits` block of
-    // protocol/conformance-v6.json, and both host adapters assert their
+    // protocol/conformance-v7.json, and both host adapters assert their
     // constants against the corpus. Encoded bytes are metered from the framing
     // boundary; parsed transient memory is preflighted from the negotiated
     // transform and curve counts before any allocation.
@@ -138,6 +138,7 @@ public:
         int32 AcceptedMorphCount,
         int32 NegotiatedRevision);
     static TArray<uint8> EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount);
+    static TArray<uint8> EncodeCachePlaying(int32 UploadId, int32 PlayId);
     static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);
     static TArray<uint8> EncodeCacheComplete(int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds);
     static TArray<uint8> EncodeCacheStopped(int32 PlayId);

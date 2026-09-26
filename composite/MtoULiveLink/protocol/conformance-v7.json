@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "protocol_version": 6,
+  "protocol_version": 7,
   "cases": [
     {
       "id": "framing-partial-packet",
@@ -107,7 +107,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -163,7 +163,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": false,
@@ -203,7 +203,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": true,
@@ -241,7 +241,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -348,6 +348,26 @@
       }
     },
     {
+      "id": "init-v6-client-rejected",
+      "operation": "init",
+      "applies_to": ["unreal"],
+      "payload": {
+        "type": "init",
+        "version": 6,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": ["version"]
+      }
+    },
+    {
       "id": "init-v4-client-rejected",
       "operation": "init",
       "applies_to": [
@@ -433,7 +453,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "blendshapes_enabled": true,
         "bones": [
@@ -473,7 +493,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": 7,
         "blendshapes_enabled": true,
@@ -514,7 +534,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "preview",
         "blendshapes_enabled": true,
@@ -555,7 +575,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "model",
         "bones": [
@@ -595,7 +615,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": "true",
@@ -636,7 +656,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -676,7 +696,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 6,
+        "version": 7,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -2196,6 +2216,27 @@
           "play_id"
         ]
       }
+    },
+    {
+      "id": "cache-playing-basic",
+      "operation": "cache_playing",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_playing", "upload_id": 1, "play_id": 3},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-playing-missing-upload-id",
+      "operation": "cache_playing",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_playing", "play_id": 3},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["upload_id"]}
+    },
+    {
+      "id": "cache-playing-invalid-play-id",
+      "operation": "cache_playing",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_playing", "upload_id": 1, "play_id": "third"},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["play_id"]}
     },
     {
       "id": "cache-ready-basic",
