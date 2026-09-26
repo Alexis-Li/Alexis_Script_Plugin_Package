@@ -23,28 +23,34 @@ was accepted exactly once in order within the duration bound. It stops with
 `CACHED_PLAYBACK_PERFORMANCE` instead of skipping frames, bursting overdue
 frames, or stretching a completed review.
 
-Current protocol v7 binds `init`, each upload, each UE play attempt, and every
-outcome to authoritative Character, `upload_id`, and `play_id` identities. Unreal
-reports `cache_playing` before that attempt's progress, completion, or stop;
-Maya ignores older identities. Encoded bytes and predicted parsed
+Current protocol v8 binds `init`, each upload, each UE play attempt, and each
+clear request to authoritative Character, `upload_id`, `play_id`, and `clear_id`
+identities. Unreal reports `cache_playing` before that attempt's progress,
+completion, or stop; Maya ignores older identities. `cache_clear` carries a
+positive session-scoped `clear_id`; Unreal echoes it in `cache_cleared` and
+rejects reused clear IDs. Maya waits for that exact acknowledgement even when
+an earlier play notification has not yet reached it. New uploads reset only
+the active play identity; the session's increasing play-ID history remains.
+Encoded bytes and predicted parsed
 memory are preflighted against fixed bounds; validation and runtime cache errors
 discard only their attempt and keep the negotiated connection recoverable.
 Preparing a new capture clears and ends the old UE cache first; Maya waits for
-the matching `cache_cleared` acknowledgement before sampling. Returning to
+the matching `cache_cleared` acknowledgement before sampling and can cancel
+while waiting. Returning to
 Real-time Preview preserves ordered controls ahead of resumed live poses. Stop
 retains the last pose and cache for replay-again; clear, incompatible
 revision, disconnect, or teardown releases the transient cache, and no package
 or `.uasset` is created.
 
-Upload/play identity history belongs to one Streaming session: clearing a cache
+Upload/play/clear identity history belongs to one Streaming session: clearing a cache
 preserves that session's stale-ID rejection, while a new negotiated session
 starts fresh and accepts its own sequence from 1. Delayed commands and outcomes
 from an older session cannot advance the new one. See the
 [reconnect acceptance](../../../../docs/project-history/mtou-livelink/cached-playback-reconnect-acceptance.md)
 for the deterministic and real-host evidence.
 
-Both adapters require protocol v7. Its executable contract is
-[`conformance-v7.json`](../../protocol/conformance-v7.json), covering message
+Both adapters require protocol v8. Its executable contract is
+[`conformance-v8.json`](../../protocol/conformance-v8.json), covering message
 identities, application evidence, resource accounting, and mode transitions.
 The source tree retains protocol corpora only for versions with active
 consumers and corresponding tests. Superseded contracts are preserved in Git;

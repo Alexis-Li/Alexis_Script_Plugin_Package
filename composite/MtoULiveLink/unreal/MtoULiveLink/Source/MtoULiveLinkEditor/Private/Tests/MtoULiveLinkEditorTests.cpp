@@ -454,6 +454,52 @@ USkeletalMesh* MakeMorphDriver(UObject& Outer, bool bSplitMissingSurface = false
 // the actor's public state and its existing Refresh/Delete/Display actions.
 // The status vocabulary is asserted through that readout instead of through
 // control text snapshots.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsNegativeSourceFrameTest,
+    "MtoULiveLink.Editor.DetailsNegativeSourceFrame",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsNegativeSourceFrameTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUCachePlaybackView View;
+    View.bConnected = true;
+    View.State = EMtoUCacheState::Ready;
+    View.StartFrame = -1;
+    View.EndFrame = -1;
+    View.FrameCount = 1;
+    View.Fps = 24.0;
+    TestTrue(TEXT("unplayed single frame shows no applied frame"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 —")));
+    View.State = EMtoUCacheState::Completed;
+    View.bHasAppliedSourceFrame = true;
+    View.CurrentSourceFrame = -1;
+    View.AppliedFrames = 1;
+    TestTrue(TEXT("completed -1 source frame is displayed"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -1")));
+
+    View.StartFrame = -2;
+    View.EndFrame = 0;
+    View.FrameCount = 3;
+    View.State = EMtoUCacheState::Stopped;
+    View.CurrentSourceFrame = -2;
+    TestTrue(TEXT("stopped negative source frame is displayed"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("源帧 -2–0 · 24 fps · 当前已应用帧 -2")));
+    View.State = EMtoUCacheState::Playing;
+    View.AppliedFrames = 0;
+    TestTrue(TEXT("replay before a new tick still shows held pose"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -2")));
+    View.CurrentSourceFrame = -1;
+    View.AppliedFrames = 2;
+    TestTrue(TEXT("negative source frame -1 is displayed mid-range"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -1")));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
     "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -3464,7 +3510,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -3623,7 +3669,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -4533,7 +4579,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;

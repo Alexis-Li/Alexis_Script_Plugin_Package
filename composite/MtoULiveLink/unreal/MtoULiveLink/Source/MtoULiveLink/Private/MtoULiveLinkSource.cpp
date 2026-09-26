@@ -536,6 +536,7 @@ uint32 FMtoULiveLinkSource::Run()
     // unit and can never affect a newer attempt.
     int32 WorkerCacheUploadId = 0;
     bool bWorkerCacheUploadRejected = false;
+    int32 WorkerLastSeenClearId = 0;
     // One raw (never parsed) cache_frame held while the Game Thread drains
     // the bounded intake queue; the sender experiences TCP backpressure
     // until then, so queued parsed ownership stays inside the budget.
@@ -546,6 +547,7 @@ uint32 FMtoULiveLinkSource::Run()
         HeldCacheFrame.Reset();
         WorkerCacheUploadId = 0;
         bWorkerCacheUploadRejected = false;
+        WorkerLastSeenClearId = 0;
         if (ActiveSession != 0)
         {
             // Cancel every queued command of the dead session immediately so
@@ -977,7 +979,8 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                         else
                         {
-                            bValid = FMtoUProtocol::ParseCacheClear(Payload, CacheError);
+                            bValid = FMtoUProtocol::ParseCacheClear(
+                                Payload, Command.ClearId, CacheError);
                             Command.Kind = FMtoUCacheCommand::EKind::Clear;
                         }
                         if (!bValid)
@@ -985,8 +988,10 @@ uint32 FMtoULiveLinkSource::Run()
                             SendErrorAndDisconnect(TEXT("INVALID_MESSAGE"), CacheError);
                             break;
                         }
-                        if (Command.Kind == FMtoUCacheCommand::EKind::Clear)
+                        if (Command.Kind == FMtoUCacheCommand::EKind::Clear
+                            && Command.ClearId > WorkerLastSeenClearId)
                         {
+                            WorkerLastSeenClearId = Command.ClearId;
                             WorkerCacheUploadId = 0;
                             bWorkerCacheUploadRejected = false;
                         }
@@ -1412,7 +1417,8 @@ void FMtoULiveLinkSource::ApplyCacheTransitionOnGameThread(
             break;
         case EKind::Cleared:
             SetStatus(TEXT("Connected to Maya"));
-            Packet = FMtoUProtocol::EncodeCacheCleared(Transition.UploadId, Transition.PlayId);
+            Packet = FMtoUProtocol::EncodeCacheCleared(
+                Transition.UploadId, Transition.PlayId, Transition.ClearId);
             break;
         case EKind::Completed:
             SetStatus(TEXT("Cached playback complete; final frame held"));

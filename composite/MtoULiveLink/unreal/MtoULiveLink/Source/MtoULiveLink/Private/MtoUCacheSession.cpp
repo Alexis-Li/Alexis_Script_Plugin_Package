@@ -82,6 +82,7 @@ void FMtoUCacheSession::EndSession()
     ResetToIdle();
     LastSeenUploadId = 0;
     LastSeenPlayId = 0;
+    LastSeenClearId = 0;
     ExpectedTransformCount = INDEX_NONE;
     ExpectedCurveCount = INDEX_NONE;
     NegotiatedRevision = 0;
@@ -101,6 +102,7 @@ FMtoUCachePlaybackView FMtoUCacheSession::GetView() const
     if (LastAppliedIndex != INDEX_NONE)
     {
         View.CurrentSourceFrame = Begin.StartFrame + LastAppliedIndex;
+        View.bHasAppliedSourceFrame = true;
     }
     return View;
 }
@@ -181,6 +183,14 @@ FMtoUCacheTransition FMtoUCacheSession::HandleCommand(const FMtoUCacheCommand& C
             bAccepted = true;
             break;
         case FMtoUCacheCommand::EKind::Clear:
+            if (Command.ClearId <= LastSeenClearId)
+            {
+                Result.ErrorCode = TEXT("CACHE_METADATA_INVALID");
+                Result.Details = TEXT("Clear ID must increase within the session.");
+                break;
+            }
+            LastSeenClearId = Command.ClearId;
+            Result.ClearId = Command.ClearId;
             // The result owns the released identity; no caller has to read
             // cache state before clear or keep a second last-cleared record.
             Result.UploadId = ActiveUploadId;

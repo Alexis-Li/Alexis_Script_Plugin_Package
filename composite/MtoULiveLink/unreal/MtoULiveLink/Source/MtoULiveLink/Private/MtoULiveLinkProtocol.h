@@ -70,12 +70,12 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 7;
+    static constexpr int32 Version = 8;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
     // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
     // frozen wire values; the single source of truth is the `limits` block of
-    // protocol/conformance-v7.json, and both host adapters assert their
+    // protocol/conformance-v8.json, and both host adapters assert their
     // constants against the corpus. Encoded bytes are metered from the framing
     // boundary; parsed transient memory is preflighted from the negotiated
     // transform and curve counts before any allocation.
@@ -128,7 +128,7 @@ public:
         int32& OutPlayId,
         FString& OutError);
     static bool ParseCacheStop(const TArray<uint8>& Payload, FString& OutError);
-    static bool ParseCacheClear(const TArray<uint8>& Payload, FString& OutError);
+    static bool ParseCacheClear(const TArray<uint8>& Payload, int32& OutClearId, FString& OutError);
     static TArray<uint8> EncodeReady(
         const TArray<FName>& MissingInUnreal,
         const TArray<FName>& MissingInMaya,
@@ -144,7 +144,7 @@ public:
     static TArray<uint8> EncodeCacheStopped(int32 PlayId);
     // Cleared echoes the owning identity of the cache ownership that was
     // dropped so Maya can discard late outcomes from older operations.
-    static TArray<uint8> EncodeCacheCleared(int32 UploadId, int32 PlayId);
+    static TArray<uint8> EncodeCacheCleared(int32 UploadId, int32 PlayId, int32 ClearId);
     static TArray<uint8> EncodeError(
         const FString& Code,
         const FString& Message,

@@ -234,11 +234,13 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   [acceptance record](issue-48-ue-details-acceptance.md) owns the field map,
   verification evidence, and limits.
 
-- **2026-09-26:** Implemented Issue #49 in protocol v7 and both 0.6.0
+- **2026-09-26:** Implemented Issue #49 in protocol v8 and both 0.7.0
   components: Maya freezes and uploads the selected inclusive capture range;
   the UE Binding Actor owns play, stop, and play again after Ready. Maya 2024
   and UE 5.7 applied both default and negative-start custom ranges through
-  the real transport. The [development acceptance record](issue-49-cache-workflow-acceptance.md)
+  the real transport. Clear acknowledgements are correlated to their requests,
+  capture cancellation works while waiting, and source frame −1 displays as
+  applied. The [development acceptance record](issue-49-cache-workflow-acceptance.md)
   contains frame evidence and the remaining company-asset visual gate.
 
 ## Stable Records

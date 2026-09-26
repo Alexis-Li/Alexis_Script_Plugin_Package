@@ -29,6 +29,7 @@ struct FMtoUCacheCommand
     EKind Kind = EKind::Enter;
     int32 Index = 0;
     int32 PlayId = 0;
+    int32 ClearId = 0;
     // Owning upload identity stamped by the worker at intake so a rejected,
     // superseded, or cleared upload can drop all of its queued frame/end
     // commands together and can never affect a newer attempt.
@@ -69,6 +70,7 @@ struct FMtoUCacheTransition
     TOptional<bool> RealtimeOverride;
     int32 UploadId = INDEX_NONE;
     int32 PlayId = INDEX_NONE;
+    int32 ClearId = INDEX_NONE;
     int32 Revision = 0;
     int32 FrameCount = 0;
     int32 AppliedFramesThisTick = 0;
@@ -149,6 +151,7 @@ private:
     int32 NegotiatedRevision = 0;
     int32 LastSeenUploadId = 0;
     int32 LastSeenPlayId = 0;
+    int32 LastSeenClearId = 0;
     int32 ActiveUploadId = 0;
     int32 ActivePlayId = 0;
     int64 ActualPayloadBytes = 0;

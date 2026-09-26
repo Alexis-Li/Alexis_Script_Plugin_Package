@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "protocol_version": 7,
+  "protocol_version": 8,
   "cases": [
     {
       "id": "framing-partial-packet",
@@ -107,7 +107,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -163,7 +163,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": false,
@@ -203,7 +203,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": true,
@@ -241,7 +241,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -368,6 +368,21 @@
       }
     },
     {
+      "id": "init-v7-client-rejected",
+      "operation": "init",
+      "applies_to": ["unreal"],
+      "payload": {
+        "type": "init", "version": 7, "revision": 7,
+        "workflow": "animation", "blendshapes_enabled": true,
+        "bones": [["root", -1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false, "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true, "keywords": ["version"]
+      }
+    },
+    {
       "id": "init-v4-client-rejected",
       "operation": "init",
       "applies_to": [
@@ -453,7 +468,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "blendshapes_enabled": true,
         "bones": [
@@ -493,7 +508,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": 7,
         "blendshapes_enabled": true,
@@ -534,7 +549,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "preview",
         "blendshapes_enabled": true,
@@ -575,7 +590,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "model",
         "bones": [
@@ -615,7 +630,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": "true",
@@ -656,7 +671,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -696,7 +711,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 7,
+        "version": 8,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -1979,7 +1994,8 @@
         "unreal"
       ],
       "payload": {
-        "type": "cache_clear"
+        "type": "cache_clear",
+        "clear_id": 1
       },
       "expected": {
         "accepted": true,
@@ -1994,12 +2010,27 @@
       ],
       "payload": {
         "type": "cache_clear",
+        "clear_id": 2,
         "future": 1
       },
       "expected": {
         "accepted": true,
         "close": false
       }
+    },
+    {
+      "id": "cache-clear-missing-clear-id",
+      "operation": "cache_clear",
+      "applies_to": ["unreal"],
+      "payload": {"type": "cache_clear"},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["clear_id"]}
+    },
+    {
+      "id": "cache-clear-invalid-clear-id",
+      "operation": "cache_clear",
+      "applies_to": ["unreal"],
+      "payload": {"type": "cache_clear", "clear_id": 0},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["clear_id"]}
     },
     {
       "id": "cache-enter-basic",
@@ -2172,7 +2203,8 @@
       "payload": {
         "type": "cache_cleared",
         "upload_id": 1,
-        "play_id": 1
+        "play_id": 1,
+        "clear_id": 1
       },
       "expected": {
         "accepted": true,
@@ -2187,7 +2219,8 @@
       ],
       "payload": {
         "type": "cache_cleared",
-        "play_id": 1
+        "play_id": 1,
+        "clear_id": 1
       },
       "expected": {
         "accepted": false,
@@ -2199,6 +2232,20 @@
       }
     },
     {
+      "id": "cache-cleared-missing-clear-id",
+      "operation": "cache_cleared",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_cleared", "upload_id": 1, "play_id": 0},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["clear_id"]}
+    },
+    {
+      "id": "cache-cleared-invalid-clear-id",
+      "operation": "cache_cleared",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_cleared", "upload_id": 1, "play_id": 0, "clear_id": 0},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["clear_id"]}
+    },
+    {
       "id": "cache-cleared-missing-play-id",
       "operation": "cache_cleared",
       "applies_to": [
@@ -2206,7 +2253,8 @@
       ],
       "payload": {
         "type": "cache_cleared",
-        "upload_id": 1
+        "upload_id": 1,
+        "clear_id": 1
       },
       "expected": {
         "accepted": false,

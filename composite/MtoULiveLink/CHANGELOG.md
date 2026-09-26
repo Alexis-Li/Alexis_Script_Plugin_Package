@@ -7,9 +7,11 @@
   or the current Playback Range, freezes range and scene rate at start, and
   uploads without auto-play. UE shows source range, rate, last applied source
   frame, and state; it starts, stops, and restarts only a fully validated
-  transient cache. Recapture waits for UE to clear the old playback before
-  sampling. Protocol v7 adds the identity-scoped `cache_playing` outcome;
-  both components now identify as 0.6.0.
+  transient cache. Recapture waits for its own UE clear acknowledgement before
+  sampling and can be cancelled while waiting. The Details readout distinguishes
+  an applied source frame −1 from no applied pose. Protocol v8 binds each clear
+  request and acknowledgement with `clear_id`, alongside the identity-scoped
+  `cache_playing` outcome; both components now identify as 0.7.0.
 
 - Redesign both host panels without changing workflows (Issue #48). Maya uses
   a compact dark card layout with a blue two-tab workflow switch, connection

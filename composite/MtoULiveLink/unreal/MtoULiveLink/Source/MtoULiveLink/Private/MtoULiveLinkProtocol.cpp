@@ -866,9 +866,30 @@ bool FMtoUProtocol::ParseCacheStop(const TArray<uint8>& Payload, FString& OutErr
     return ParseCacheTypeOnly(Payload, TEXT("cache_stop"), OutError);
 }
 
-bool FMtoUProtocol::ParseCacheClear(const TArray<uint8>& Payload, FString& OutError)
+bool FMtoUProtocol::ParseCacheClear(
+    const TArray<uint8>& Payload, int32& OutClearId, FString& OutError)
 {
-    return ParseCacheTypeOnly(Payload, TEXT("cache_clear"), OutError);
+    OutClearId = INDEX_NONE;
+    OutError.Reset();
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_clear"))
+    {
+        OutError = TEXT("Message type must be 'cache_clear'.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> ClearIdValue;
+    if (!GetTypedField(Object, TEXT("clear_id"), EJson::Number, ClearIdValue, OutError)
+        || !GetExactInt(ClearIdValue, OutClearId) || OutClearId < 1)
+    {
+        OutError = TEXT("Field 'clear_id' must be a positive int32 JSON number.");
+        return false;
+    }
+    return true;
 }
 
 bool FMtoUProtocol::ValidateFrame(
@@ -1026,12 +1047,13 @@ TArray<uint8> FMtoUProtocol::EncodeCacheStopped(int32 PlayId)
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCacheCleared(int32 UploadId, int32 PlayId)
+TArray<uint8> FMtoUProtocol::EncodeCacheCleared(int32 UploadId, int32 PlayId, int32 ClearId)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_cleared"));
     Object->SetNumberField(TEXT("upload_id"), UploadId);
     Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("clear_id"), ClearId);
     return EncodeObject(Object);
 }
 

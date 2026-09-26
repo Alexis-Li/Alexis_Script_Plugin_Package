@@ -15,7 +15,7 @@ enum class EMtoUCacheState : uint8
     Failed,
 };
 
-/** Read-only actor view. CurrentSourceFrame is valid only after a pose was applied. */
+/** Read-only actor view. bHasAppliedSourceFrame distinguishes an applied -1 from no pose. */
 struct MTOULIVELINK_API FMtoUCachePlaybackView
 {
     EMtoUCacheState State = EMtoUCacheState::Idle;
@@ -25,6 +25,7 @@ struct MTOULIVELINK_API FMtoUCachePlaybackView
     double Fps = 0.0;
     int32 FrameCount = 0;
     int32 CurrentSourceFrame = INDEX_NONE;
+    bool bHasAppliedSourceFrame = false;
     int32 AppliedFrames = 0;
     FString ErrorDetails;
 

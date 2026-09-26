@@ -736,7 +736,8 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheCleared(
                     static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
-                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("clear_id"))));
             }
             else
             {
@@ -783,7 +784,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 }
                 else if (Operation == TEXT("cache_cleared"))
                 {
-                    RequiredFields = {TEXT("upload_id"), TEXT("play_id")};
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id"), TEXT("clear_id")};
                 }
                 else if (Operation == TEXT("cache_playing"))
                 {
@@ -886,7 +887,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             else if (Operation == TEXT("cache_clear"))
             {
                 Command.Kind = FMtoUCacheCommand::EKind::Clear;
-                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Error);
+                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Command.ClearId, Error);
             }
             else
             {
@@ -1243,6 +1244,75 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheNegativeSourceFrameTest,
+    "MtoULiveLink.CachedPlayback.NegativeSourceFrame",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheNegativeSourceFrameTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    double Clock = 10.0;
+    FMtoUCacheSession Session;
+    Session.SetClock([&Clock]() { return Clock; });
+    Session.SetPublish([](const FMtoUFrameMessage&) { return true; });
+    Session.BeginSession({1, 0, 7});
+
+    auto Upload = [this, &Session](int32 Start, int32 End, int32 UploadId)
+    {
+        FMtoUCacheCommand Begin = MakeCacheBeginCommand(7, End - Start + 1, 30.0, UploadId);
+        Begin.Begin.StartFrame = Start;
+        Begin.Begin.EndFrame = End;
+        TestTrue(TEXT("negative range begin accepted"), Session.HandleCommand(Begin).bAccepted);
+        for (int32 Index = 0; Index <= End - Start; ++Index)
+        {
+            TestTrue(TEXT("negative range frame accepted"), Session.HandleCommand(
+                MakeCachedFrameCommand(Index, static_cast<float>(Start + Index))).bAccepted);
+        }
+        TestTrue(TEXT("negative range ready"), Session.HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End)).bAccepted);
+    };
+
+    Upload(-1, -1, 1);
+    TestFalse(TEXT("ready single frame has no applied source frame"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("single frame play starts"), Session.StartLocalPlayback().bAccepted);
+    TestFalse(TEXT("play before first tick has no applied source frame"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("single negative frame completes"),
+        Session.Tick().Kind, FMtoUCacheTransition::EKind::Completed);
+    TestTrue(TEXT("applied -1 is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("completed source frame is -1"), Session.GetView().CurrentSourceFrame, -1);
+    TestTrue(TEXT("single frame can play again"), Session.StartLocalPlayback().bAccepted);
+    TestTrue(TEXT("replay retains the held -1 frame before its first tick"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("held frame remains -1"), Session.GetView().CurrentSourceFrame, -1);
+
+    Upload(-2, 0, 2);
+    TestFalse(TEXT("new upload clears previous applied-frame validity"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("three-frame play starts"), Session.StartLocalPlayback().bAccepted);
+    TestEqual(TEXT("first negative frame applies"),
+        Session.Tick().AppliedFramesThisTick, 1);
+    TestEqual(TEXT("first applied source frame"), Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("first applied frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("stop retains applied pose"), Session.StopLocalPlayback().bAccepted);
+    TestEqual(TEXT("stopped source frame"), Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("stopped source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("replay after stop starts"), Session.StartLocalPlayback().bAccepted);
+    TestEqual(TEXT("replay holds prior source frame before first tick"),
+        Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("replay held source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    Session.Tick();
+    Clock += 1.0 / 30.0;
+    Session.Tick();
+    Clock += 1.0 / 30.0;
+    TestEqual(TEXT("multi-frame negative range completes"),
+        Session.Tick().Kind, FMtoUCacheTransition::EKind::Completed);
+    TestEqual(TEXT("range ends on source frame zero"), Session.GetView().CurrentSourceFrame, 0);
+    TestTrue(TEXT("completed source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheTransitionTest,
     "MtoULiveLink.CachedPlayback.Transitions",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1325,8 +1395,11 @@ bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
     CheckDemand(TEXT("performance failure releases realtime"), Failed, false);
     TestEqual(TEXT("performance failure is emitted only once"), Session.Tick().Kind, EKind::None);
 
-    const auto Cleared = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::Clear));
+    auto Clear = MakeSimpleCacheCommand(ECommand::Clear);
+    Clear.ClearId = 1;
+    const auto Cleared = Session.HandleCommand(Clear);
     CheckDemand(TEXT("clear restores realtime"), Cleared, true);
+    TestEqual(TEXT("clear echoes its own request identity"), Cleared.ClearId, 1);
     TestEqual(TEXT("clear captures released upload"), Cleared.UploadId, 1);
     TestEqual(TEXT("clear captures released play"), Cleared.PlayId, 2);
     TestTrue(TEXT("clear permits live frames"), Session.AcceptsLiveFrames());
@@ -1377,6 +1450,31 @@ bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
     Session.EndSession();
     TestEqual(TEXT("teardown cannot emit old completion"), Session.Tick().Kind, EKind::None);
     TestEqual(TEXT("teardown releases frames"), Session.GetBufferedFrameCount(), 0);
+
+    FMtoUCacheSession ClearSession;
+    ClearSession.BeginSession({1, 0, 7});
+    const auto EmptyClear = ClearSession.HandleCommand(Clear);
+    TestTrue(TEXT("first clear works without a buffered upload"), EmptyClear.bAccepted);
+    TestEqual(TEXT("empty clear echoes request identity"), EmptyClear.ClearId, 1);
+    TestEqual(TEXT("new cache entry after clear"),
+        ClearSession.HandleCommand(MakeSimpleCacheCommand(ECommand::Enter)).Kind,
+        EKind::Entered);
+    TestTrue(TEXT("new cache enters after clear"),
+        ClearSession.HandleCommand(MakeCacheBeginCommand(7, 1, 30.0, 1)).bAccepted);
+    const auto StaleClear = ClearSession.HandleCommand(Clear);
+    TestFalse(TEXT("old clear identity cannot erase a new upload"), StaleClear.bAccepted);
+    TestEqual(TEXT("old clear is a metadata rejection"),
+        StaleClear.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
+    TestEqual(TEXT("new upload survives old clear"),
+        ClearSession.GetState(), EMtoUCacheState::Receiving);
+    Clear.ClearId = 2;
+    const auto NextClear = ClearSession.HandleCommand(Clear);
+    TestTrue(TEXT("new clear identity releases the upload"), NextClear.bAccepted);
+    TestEqual(TEXT("new clear echoes request identity"), NextClear.ClearId, 2);
+    ClearSession.BeginSession({1, 0, 7});
+    Clear.ClearId = 1;
+    TestTrue(TEXT("new session accepts fresh clear identity"),
+        ClearSession.HandleCommand(Clear).bAccepted);
     return true;
 }
 
@@ -1545,7 +1643,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
     FString ErrorCode;
@@ -1556,7 +1654,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
     TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":7"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":8"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
     TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     ErrorCode.Reset();
     TestFalse(TEXT("protocol-v3 clients are rejected"),
@@ -1564,7 +1662,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
     TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":7"), TEXT("\"version\":\"4\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":8"), TEXT("\"version\":\"4\""))), Message, Error));
     TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
         TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
     TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
@@ -1584,23 +1682,23 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     TestTrue(TEXT("tiny non-zero bind scale is accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -1617,28 +1715,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -2778,7 +2876,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -2816,7 +2914,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -3227,7 +3325,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     // Switching back to live preview clears the Unreal buffer first; the
     // cleared outcome arrives before the resumed live pose can be evaluated.
     TestTrue(TEXT("cache_clear is sent"),
-        SendLine(TEXT("{\"type\":\"cache_clear\"}")));
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), Primary && ReceivePacket(
         *Primary, Payload, [&]() { Source->Update(); }));
@@ -3257,7 +3355,37 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("live sampling resumes after the cached session clears"), bLiveResumed);
 
-
+    // An older clear cannot reset the worker's upload stamp before the Game
+    // Thread rejects it; subsequent frames still belong to this upload.
+    TestTrue(TEXT("new cache entry after clear is sent"),
+        SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("new two-frame upload begins"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":7,\"revision\":9,\"fps\":30,\"start_frame\":5001,\"end_frame\":5002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[11,12,13,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    TestTrue(TEXT("old clear identity is sent during the new upload"),
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
+    Payload.Reset();
+    TestTrue(TEXT("old clear identity is rejected"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("old clear rejection is a metadata error"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("new upload continues after stale clear"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("new upload reaches Ready after stale clear"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready belongs to upload seven"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":7")));
+    TestTrue(TEXT("fresh clear identity releases upload seven"),
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}")));
+    Payload.Reset();
+    TestTrue(TEXT("fresh clear is acknowledged"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("clear acknowledgement echoes its own identity"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\""))
+        && FromUtf8(Payload).Contains(TEXT("\"clear_id\":2")));
 
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
@@ -3597,7 +3725,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
         return false;
     }
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -3649,7 +3777,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
     TestTrue(TEXT("cached entry exposes the disabled base realtime"), EffectiveMatchesBase(false));
-    TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("leaving cached ownership restores live preview realtime"), HasOverride());
@@ -3661,7 +3789,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("second entry releases viewport realtime again"), HasNoOverride());
     TestTrue(TEXT("second entry exposes the disabled base realtime again"), EffectiveMatchesBase(false));
-    TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}")));
     TestTrue(TEXT("second clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("repeated clear restores live preview realtime again"), HasOverride());
@@ -3680,7 +3808,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("mismatched revision reports a recoverable error"),
         ReceiveText(Primary).Contains(TEXT("CACHE_REVISION_MISMATCH")));
     TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
-    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":3}")));
     TestTrue(TEXT("recovery clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());
@@ -3755,7 +3883,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("base-on entry releases the plugin viewport override"), HasNoOverride());
     TestTrue(TEXT("base-on entry keeps the enabled base realtime"), EffectiveMatchesBase(true));
-    TestTrue(TEXT("base-on cache clear is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("base-on cache clear is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("base-on clear is acknowledged"),
         ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("base-on clear restores live preview realtime"), HasOverride());
@@ -4004,7 +4132,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
         const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
         State->RootBoneId = TestSkeleton->GetBoneName(0);
         State->InitPacket = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
             *RootBoneName,
             *TransformJson(TestSkeleton->GetRefBonePose()[0]),
             *ChildBoneName,
@@ -4052,7 +4180,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
         FPlatformProcess::Sleep(0.02f);
         Source->Update();
         Self->TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
-        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}"));
         Self->TestTrue(TEXT("cache clear is sent"),
             SendBytes(*Client, ClearBytes.GetData(), ClearBytes.Num()));
         TArray<uint8> ClearPayload;
@@ -4184,7 +4312,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
             ReceivePacket(Client, ErrorPayload, [&]() { Source.Update(); })
             && FromUtf8(ErrorPayload).Contains(TEXT("CACHE_REVISION_MISMATCH")));
         Self->TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
-        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}"));
         Self->TestTrue(TEXT("recovery clear is sent"),
             SendBytes(Client, ClearBytes.GetData(), ClearBytes.Num()));
         TArray<uint8> ClearPayload;
@@ -4371,7 +4499,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -4576,7 +4704,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
             PlayToCompletion(Reconnect, 1, FVector(41.0, 42.0, 43.0), FVector(51.0, 52.0, 53.0), Completion));
     }
     TestTrue(TEXT("reconnected clear is sent"),
-        SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+        SendText(Reconnect, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("clear is acknowledged"),
         ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("duplicate upload after clear is sent"),
@@ -4887,7 +5015,7 @@ bool FMtoUCacheBackpressureSocketTest::RunTest(const FString& Parameters)
         return false;
     }
     const FString InitText = TEXT(
-        "{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\","
+        "{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\","
         "\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,"
         "[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     const TArray<uint8> InitBytes = Packet(InitText);
@@ -5200,7 +5328,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
         const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
         return Packet(FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
             *Workflow,
             bBlendshapes ? TEXT("true") : TEXT("false"),
             *RootBoneName,
@@ -6081,7 +6209,7 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -6248,7 +6376,7 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     // PIE is not supported: its duplicated Binding actor must not be treated
@@ -6398,7 +6526,7 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":7,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -6728,7 +6856,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("character part client connects"), Client);
     const FString Bones = ReferenceSkeletonBonesJson(MayaSkeleton);
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
         *Bones);
     const TArray<uint8> InitPacket = Packet(Init);
     TestTrue(TEXT("character part init is sent"), Client
@@ -6940,7 +7068,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
     });
     TestTrue(TEXT("cached playback completes"), bPlaybackCompleted);
-    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
         *Client, Payload, [&]() { Source->Update(); }));
@@ -7141,7 +7269,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
         *TransformJson(FTransform::Identity),
         *TransformJson(ClothBind));
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *MayaBones);
 
     FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
@@ -7264,7 +7392,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
         }
         return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
     }));
-    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
         *Client, Payload, [&]() { Source->Update(); }));
@@ -7278,7 +7406,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
     Client = ConnectLoopback(*SocketSubsystem, Port);
     const FString AmbiguousInit = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
         *PrimaryBones,
         *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
         *TransformJson(ClothBind),
@@ -7330,7 +7458,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
             && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
         Client = ConnectLoopback(*SocketSubsystem, Port);
         const FString TwoTargetInit = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
+            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
             *PrimaryBones, *TransformJson(ClothBind), *TransformJson(ClothBind));
         const TArray<uint8> TwoTargetPacket = Packet(TwoTargetInit);
         TestTrue(TEXT("two-target init is sent"),
@@ -7502,7 +7630,7 @@ bool FMtoUCharacterPartRenameProjectionTest::RunTest(const FString& Parameters)
     const auto InitText = [&](bool bNarrowFirst, int32 Revision)
     {
         return FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":%d,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"spare\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",2,%s],[\"%s\",0,%s],[\"%s\",0,%s]],\"curves\":[]}"),
+            TEXT("{\"type\":\"init\",\"revision\":%d,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"spare\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",2,%s],[\"%s\",0,%s],[\"%s\",0,%s]],\"curves\":[]}"),
             Revision,
             *PrimaryBones,
             *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
@@ -7651,7 +7779,7 @@ bool FMtoUCharacterPartRenameProjectionTest::RunTest(const FString& Parameters)
         }
         return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
     }));
-    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), ReceivePacket(
         *Client, Payload, [&]() { Source->Update(); }));
@@ -8129,7 +8257,7 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source reaches listening state"),
         WaitForStatus(Source, TEXT("Listening on")));
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(Primary->GetRefSkeleton()));
     const auto ConnectAndNegotiate = [&](FSocket*& OutClient)
     {
@@ -8682,7 +8810,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     // extra bone cannot be the reason for any failure below.
     const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":7,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *Bones);
     auto NegotiateCurrentBinding = [&](FString& OutReply)
     {

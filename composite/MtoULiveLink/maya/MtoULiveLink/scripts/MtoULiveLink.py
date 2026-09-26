@@ -15,8 +15,8 @@ import threading
 import time
 import uuid
 
-__version__ = "0.6.0"
-PROTOCOL_VERSION = 7
+__version__ = "0.7.0"
+PROTOCOL_VERSION = 8
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
@@ -502,8 +502,10 @@ def make_cache_stop_message():
     return {"type": "cache_stop"}
 
 
-def make_cache_clear_message():
-    return {"type": "cache_clear"}
+def make_cache_clear_message(clear_id):
+    if (_exact_int(clear_id) is None or clear_id < 1 or clear_id > 2147483647):
+        raise ValueError("cache clear id must be a positive int32")
+    return {"type": "cache_clear", "clear_id": clear_id}
 
 
 def cache_frame_wire_size(index, transforms, curves):
@@ -587,7 +589,8 @@ def validate_reply(reply):
             "elapsed_seconds": (int, float),
         },
         "cache_stopped": {"play_id": (int, float)},
-        "cache_cleared": {"upload_id": (int, float), "play_id": (int, float)},
+        "cache_cleared": {
+            "upload_id": (int, float), "play_id": (int, float), "clear_id": int},
     }
     fields = required.get(reply_type)
     if fields is None:
@@ -601,13 +604,16 @@ def validate_reply(reply):
         if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
             raise ValueError("protocol reply field '{0}' must contain strings".format(name))
     for name in ("revision", "target_morph_count", "accepted_morph_count",
-                 "upload_id", "play_id", "applied", "applied_frame_count"):
+                 "upload_id", "play_id", "clear_id", "applied",
+                 "applied_frame_count"):
         if name not in reply:
             continue
         value = reply[name]
         if isinstance(value, bool) or not float(value).is_integer():
             raise ValueError(
                 "protocol reply field '{0}' must be an integer count".format(name))
+    if "clear_id" in reply and not 1 <= reply["clear_id"] <= 2147483647:
+        raise ValueError("protocol reply field 'clear_id' must be a positive int32")
     if "elapsed_seconds" in reply and _finite_float(reply["elapsed_seconds"]) is None:
         raise ValueError(
             "protocol reply field 'elapsed_seconds' must be a finite number")
@@ -2299,6 +2305,7 @@ class _CachedPlayback(object):
         self._applied_frames = None
         self._upload_id = 0
         self._play_id = 0
+        self._clear_id = 0
         self._active_upload_id = None
         self._active_upload_revision = None
         self._active_play_id = None
@@ -2563,14 +2570,12 @@ class _CachedPlayback(object):
         start_frame, end_frame = _capture_frame_range(playback_range, capture_range)
         scene_fps = validate_frame_rate(scene_fps)
         had_cached_ownership = self._paused_streaming
-        old_identity = (self._active_upload_id or 0, self._active_play_id or 0)
         self.enter()
         if had_cached_ownership:
             # UE must acknowledge dropping the old cache and ending any active
             # playback before Maya samples the first frame of a new capture.
-            self._awaiting_clear = old_identity
+            self._awaiting_clear = self._send_clear_best_effort()
             self._clear_wait_deadline = time.monotonic() + UPLOAD_READY_TIMEOUT_SECONDS
-            self._send_clear_best_effort()
             self._send_enter_best_effort()
         else:
             self._awaiting_clear = None
@@ -2592,6 +2597,8 @@ class _CachedPlayback(object):
             cache = self._make_cache(
                 revision, start_frame, end_frame, scene_fps, time.time())
         except (_PlaybackCacheError, OSError, TypeError, ValueError) as exc:
+            self._awaiting_clear = None
+            self._clear_wait_deadline = None
             self._restore_capture_frame()
             self._resume_streaming()
             raise _CachedPlaybackError(
@@ -2673,19 +2680,19 @@ class _CachedPlayback(object):
     def _capture_step(self):
         if self._phase != "capturing":
             return False
-        if self._awaiting_clear is not None:
-            return False
         try:
+            if self._capture_cancel_requested:
+                error = _CachedPlaybackError(
+                    "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
+                self._capture_failure(error)
+                return True
+            if self._awaiting_clear is not None:
+                return False
             session = self._streaming_session
             if session is None or not session.is_ready:
                 self._handle_transport_failure(_CachedPlaybackError(
                     "STREAM_INTERRUPTED",
                     "The streaming connection ended during capture."))
-                return True
-            if self._capture_cancel_requested:
-                error = _CachedPlaybackError(
-                    "CACHED_PLAYBACK_CANCELLED", "Cached capture was cancelled.")
-                self._capture_failure(error)
                 return True
             frame_number = self._capture_next_frame
             self._timeline.set_frame(frame_number)
@@ -2825,8 +2832,7 @@ class _CachedPlayback(object):
         reply_type = reply.get("type")
         if reply_type == "cache_cleared":
             if (self._phase == "capturing" and self._awaiting_clear is not None
-                    and (_exact_int(reply.get("upload_id")),
-                         _exact_int(reply.get("play_id"))) == self._awaiting_clear):
+                    and _exact_int(reply.get("clear_id")) == self._awaiting_clear):
                 self._awaiting_clear = None
                 self._clear_wait_deadline = None
             return
@@ -2969,6 +2975,7 @@ class _CachedPlayback(object):
         total_frames = cache.frame_count
         self._upload_id += 1
         self._active_upload_id = self._upload_id
+        self._active_play_id = None
         self._phase = "uploading"
         self._publish(current=0, total=total_frames)
         # Ready arrives asynchronously: Unreal parses and buffers without any
@@ -3026,6 +3033,9 @@ class _CachedPlayback(object):
         """
         processed = False
         self._stop_draining_this_round = False
+        if self._phase == "capturing" and self._capture_cancel_requested:
+            self._capture_step()
+            return processed
         if (self._awaiting_clear is not None and self._clear_wait_deadline is not None
                 and time.monotonic() > self._clear_wait_deadline):
             self._capture_failure(_CachedPlaybackError(
@@ -3074,14 +3084,17 @@ class _CachedPlayback(object):
         return processed
 
     def _send_clear_best_effort(self):
+        self._clear_id += 1
+        clear_id = self._clear_id
         session = self._streaming_session
         if session is None or not session.is_ready:
-            return
+            return clear_id
         try:
-            session.submit_cached(make_cache_clear_message())
+            session.submit_cached(make_cache_clear_message(clear_id))
         except (_CachedPlaybackError, _StreamingSessionError,
                 RuntimeError, TypeError, ValueError):
             pass
+        return clear_id
 
     def _invalidate_incompatible_cache(self, error):
         self._remove_playback_poller()

@@ -10,6 +10,9 @@ class FMtoULiveLinkActorDetails final : public IDetailCustomization
 public:
     static TSharedRef<IDetailCustomization> MakeInstance();
 
+    /** Cache summary shown in Details, also used to verify source-frame display. */
+    static FText FormatCacheSummary(const FMtoUCachePlaybackView& View);
+
     virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
     /** How urgent the combined Preview and connection state is. */

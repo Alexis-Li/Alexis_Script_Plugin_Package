@@ -18,24 +18,27 @@ An incomplete upload cannot become Ready. Ready holds until the UE Binding
 Actor starts playback. The actor's transient view reports the source range,
 captured fps, current applied source frame, count, and state. Its play, stop,
 and play-again actions own local playback; stop and natural completion retain
-the cache and held pose. Recapture clears the old UE attempt and waits for its
-identity-matched acknowledgement before sampling. Protocol v7 reports
-`cache_playing` with upload/play identity, and both adapters reject prior
-versions. The implementation creates no persistent animation asset.
+the cache and held pose. Recapture clears the old UE attempt and waits for the
+acknowledgement carrying its own `clear_id` before sampling; cancellation works
+while that acknowledgement is pending. Protocol v8 reports `cache_playing` with
+upload/play identity and requires a monotonically increasing `clear_id` within
+each session. Details distinguishes an applied source frame −1 from no applied
+pose. Both adapters reject prior protocol versions. The implementation creates
+no persistent animation asset.
 
 ## Local verification
 
 | Check | Result |
 | --- | --- |
-| Maya pure Python tests | 138/138 passed |
+| Maya pure Python tests | 141/141 passed, including recapture and cancellation regression cases |
 | Maya 2024 mayapy host tests | 23/23 passed |
 | Stock UE 5.7 `Build.bat UnrealEditor Win64 Development`, `-NoUBA` | Succeeded, Runtime and Editor modules |
-| UE `Automation RunTests MtoULiveLink`, NullRHI | 78/78 passed: 69 without warnings, 9 with expected test or engine warnings; 0 failed/not run |
-| Focused `CacheSession`, `SocketFlow`, `MayaCacheReconnect` with Maya 2024 mayapy | 3/3 passed, including actor-initiated playback, stop, replay, single-frame completion, and real host transport |
-| Protocol generator `--check`, repository validator, repository unit tests | Current corpus; validator passed; 22/22 tests passed |
-| Maya and UE package dry runs | Both resolve to 0.6.0; no archives written |
+| UE `Automation RunTests MtoULiveLink`, NullRHI | 80/80 passed: 71 without warnings, 9 with expected test or engine warnings; 0 failed/not run. Includes source-frame validity, Details text, and stale clear during upload. |
+| Focused `MayaCacheReconnect` with Maya 2024 mayapy | 1/1 passed with real host transport, actor-initiated playback, stop, replay, and custom-range recapture |
+| Protocol generator `--check`, repository validator, repository unit tests | Current v8 corpus; validator passed; 22/22 tests passed |
+| Maya and UE package dry runs | Both resolve to 0.7.0; no archives written |
 
-The cross-host test used Maya 2024 mayapy with isolated preferences to create and sample a disposable
+The protocol v8 cross-host test used Maya 2024 mayapy with isolated preferences to create and sample a disposable
 skinned scene and UE 5.7 to receive, validate, and apply it to a transient
 Live Link subject. With the custom switch off, Playback Range 1–4 applied four
 poses. After an actual socket loss, a new session uploaded and replayed the
@@ -44,7 +47,10 @@ with custom range −1–1 applied three new poses. UE evaluation observed root 
 positions −10, 0, and 10 for source frames −1, 0, and 1. All 11 applied poses
 were evaluable; the prior cache file was removed on recapture and the final
 one on teardown. The test also verified that each upload waited at Ready for
-the Actor action.
+the Actor action. Maya unit tests exercised the two clear-ack race paths and
+cancel while waiting; UE Automation verified that a stale clear command cannot
+erase an in-flight newer upload and that applied source frame −1 remains visible
+in the Details summary.
 
 ## Remaining acceptance
 

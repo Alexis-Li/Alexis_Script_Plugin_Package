@@ -111,7 +111,7 @@ FText CacheSummaryText(const FMtoUCachePlaybackView& View)
     {
         return LOCTEXT("CacheNoFrames", "缓存：无。请在 Maya 捕获并上传。");
     }
-    const FString Frame = View.CurrentSourceFrame == INDEX_NONE
+    const FString Frame = !View.bHasAppliedSourceFrame
         ? TEXT("—") : FString::FromInt(View.CurrentSourceFrame);
     return FText::FromString(FString::Printf(
         TEXT("源帧 %d–%d · %g fps · 当前已应用帧 %s · %d/%d 帧"),
@@ -389,6 +389,11 @@ TSharedRef<IDetailCustomization> FMtoULiveLinkActorDetails::MakeInstance()
     return MakeShared<FMtoULiveLinkActorDetails>();
 }
 
+FText FMtoULiveLinkActorDetails::FormatCacheSummary(const FMtoUCachePlaybackView& View)
+{
+    return CacheSummaryText(View);
+}
+
 void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
     TArray<TWeakObjectPtr<UObject>> Objects;
@@ -600,7 +605,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                 .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                 .Text_Lambda([Actor]()
                 {
-                    return CacheSummaryText(Actor.IsValid()
+                    return FMtoULiveLinkActorDetails::FormatCacheSummary(Actor.IsValid()
                         ? Actor->GetCachePlaybackView() : FMtoUCachePlaybackView());
                 })
             ]

@@ -31,7 +31,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
         bind_conflict_count,
     )
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v7.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v8.json")
     .read_text(encoding="utf-8")
 )
 
@@ -1437,7 +1437,7 @@ class SenderLifecycleTests(unittest.TestCase):
 
         fake_socket = RecordingSocket()
         worker.begin_ordered()
-        worker.submit_ordered({"type": "cache_clear"})
+        worker.submit_ordered({"type": "cache_clear", "clear_id": 1})
         worker.submit_ordered({"type": "frame", "order": "first-live"})
         # Switch back to Latest mode without discarding queued controls, then
         # queue a fresh live pose that must follow them.
@@ -1955,7 +1955,8 @@ class CachedPlaybackTests(unittest.TestCase):
             elif message["type"] == "cache_clear":
                 if self.listener is not None:
                     self.emit({"type": "cache_cleared", "upload_id": self.upload_id,
-                               "play_id": self.play_id})
+                               "play_id": self.play_id,
+                               "clear_id": message["clear_id"]})
                 self.upload_id = 0
                 self.play_id = 0
 
@@ -2125,20 +2126,19 @@ class CachedPlaybackTests(unittest.TestCase):
     def test_recapture_waits_for_unreal_to_end_old_playback(self):
         cached, stream = self._attached()
         self._capture_to_replay(cached, stream)
-        old_upload = cached._active_upload_id
-        old_play = cached._active_play_id
         before = len(self.timeline.set_frames)
         # Hold the clear acknowledgement while the old playback is active.
         real_listener = stream.listener
         queued = []
         stream.listener = lambda reply: queued.append(reply)
         cached.capture(24.0, capture_range=(-1, 0))
+        clear_id = stream.submitted[-2]["clear_id"]
         self.timer.fire()
         self.assertEqual(before, len(self.timeline.set_frames))
-        self.assertEqual((old_upload, old_play), cached._awaiting_clear)
+        self.assertEqual(clear_id, cached._awaiting_clear)
         stream.listener = real_listener
-        real_listener({"type": "cache_cleared", "upload_id": old_upload,
-                       "play_id": old_play - 1})
+        real_listener({"type": "cache_cleared", "upload_id": 1,
+                       "play_id": 1, "clear_id": clear_id + 1})
         self.timer.fire()
         self.assertEqual(before, len(self.timeline.set_frames))
         for reply in queued:
@@ -2146,6 +2146,74 @@ class CachedPlaybackTests(unittest.TestCase):
         self.timer.fire_until(lambda: len(self.timeline.set_frames) > before)
         self.assertEqual(-1, self.timeline.set_frames[before])
         self.assertNotIn("cache_play", self._types(stream))
+
+    def test_ready_unplayed_upload_can_be_recaptured_after_old_play(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        cached.capture(24.0, capture_range=(-1, 0))
+        self.timer.fire_until(lambda: len([
+            message for message in stream.submitted
+            if message["type"] == "cache_end"]) == 2)
+        begin = [message for message in stream.submitted
+                 if message["type"] == "cache_begin"][-1]
+        stream.emit({"type": "cache_ready", "upload_id": begin["upload_id"],
+                     "revision": begin["revision"], "frame_count": 2})
+        self.timer.fire_until(lambda: cached.view.state == cached.READY)
+        self.assertIsNone(cached._active_play_id)
+        self.assertEqual(1, cached._play_id)
+
+        before = len(self.timeline.set_frames)
+        real_listener = stream.listener
+        held = []
+        stream.listener = held.append
+        cached.capture(24.0, capture_range=(5, 5))
+        self.assertEqual(2, cached._awaiting_clear)
+        real_listener({"type": "cache_cleared", "upload_id": 1,
+                       "play_id": 1, "clear_id": 1})
+        self.timer.fire()
+        self.assertEqual(before, len(self.timeline.set_frames))
+        stream.listener = real_listener
+        for reply in held:
+            real_listener(reply)
+        self.timer.fire_until(lambda: len(self.timeline.set_frames) > before)
+        self.assertEqual(5, self.timeline.set_frames[before])
+        self.assertIsNone(cached._awaiting_clear)
+
+    def test_queued_play_notification_cannot_mismatch_recapture_clear(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        stream.emit({"type": "cache_stopped", "play_id": 1})
+        self.timer.fire_until(lambda: cached.view.state == cached.STOPPED)
+        stream.emit({"type": "cache_playing", "upload_id": 1, "play_id": 2})
+        before = len(self.timeline.set_frames)
+        cached.capture(24.0, capture_range=(-1, -1))
+        self.assertEqual(1, cached._active_play_id)
+        self.timer.fire_until(lambda: len(self.timeline.set_frames) > before)
+        self.assertEqual(-1, self.timeline.set_frames[before])
+        self.assertIsNone(cached._awaiting_clear)
+
+    def test_cancel_during_clear_wait_ignores_late_ack(self):
+        cached, stream = self._attached()
+        self._capture_to_replay(cached, stream)
+        before = len(self.timeline.set_frames)
+        real_listener = stream.listener
+        held = []
+        stream.listener = held.append
+        cached.capture(24.0, capture_range=(-1, 1))
+        self.assertEqual(1, len(held))
+        cached.cancel_capture()
+        self.timer.fire()
+        self.assertEqual(cached.REALTIME, cached.view.state)
+        self.assertIsNone(cached._awaiting_clear)
+        self.assertEqual(before + 1, len(self.timeline.set_frames))
+        self.assertEqual(42, self.timeline.set_frames[-1])
+        self.assertEqual(1, stream.resumed)
+        self.assertEqual(1, len([message for message in stream.submitted
+                                  if message["type"] == "cache_begin"]))
+        real_listener(held[0])
+        self.timer.fire()
+        self.assertEqual(cached.REALTIME, cached.view.state)
+        self.assertEqual(before + 1, len(self.timeline.set_frames))
 
     def test_cancel_restores_frame_deletes_partial_cache_and_clears_before_resume(self):
         changes = []
@@ -3517,7 +3585,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(MODULE.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v7_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v8_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
@@ -3560,7 +3628,7 @@ class WorkflowTests(unittest.TestCase):
             session.stop()
 
         init_message = captured["init"]
-        self.assertEqual(7, init_message["version"])
+        self.assertEqual(8, init_message["version"])
         self.assertEqual(MODULE.WORKFLOW_MODEL, init_message["workflow"])
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
@@ -3751,17 +3819,19 @@ class ProtocolTests(unittest.TestCase):
                 "cache_clear": MODULE.make_cache_clear_message,
                 "cache_enter": MODULE.make_cache_enter_message,
             }[operation]
-            actual = builder()
-            actual.update({key: value for key, value in payload.items() if key != "type"})
+            actual = (builder(payload["clear_id"])
+                      if operation == "cache_clear" else builder())
+            actual.update({key: value for key, value in payload.items()
+                           if key not in ("type", "clear_id")})
             self.assertEqual(payload, actual)
             self.assertTrue(MODULE.encode_message(actual))
             return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v7_init_and_structured_diagnostics(self):
+    def test_protocol_v8_init_and_structured_diagnostics(self):
         identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
         message = MODULE.make_init_message([["root", -1, identity]], ["Smile"], 7)
-        self.assertEqual(7, message["version"])
+        self.assertEqual(8, message["version"])
         self.assertEqual("animation", message["workflow"])
         self.assertTrue(message["blendshapes_enabled"])
         model_message = MODULE.make_init_message(

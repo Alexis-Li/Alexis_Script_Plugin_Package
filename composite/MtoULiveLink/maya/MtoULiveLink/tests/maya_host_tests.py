@@ -476,7 +476,7 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(7, FakeWorker.instance.init_message["version"])
+        self.assertEqual(8, FakeWorker.instance.init_message["version"])
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
@@ -527,7 +527,8 @@ class MayaHostTests(unittest.TestCase):
                 def submit_cached(self, message):
                     if message["type"] == "cache_clear" and self.reply_listener:
                         self.reply_listener({"type": "cache_cleared",
-                                             "upload_id": 0, "play_id": 0})
+                                             "upload_id": 0, "play_id": 0,
+                                             "clear_id": message["clear_id"]})
 
                 def end_cached_replay(self):
                     pass
