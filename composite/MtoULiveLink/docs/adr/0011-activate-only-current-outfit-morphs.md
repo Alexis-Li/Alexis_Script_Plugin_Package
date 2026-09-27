@@ -4,7 +4,7 @@ Each Model preview binding uses one Driver Skeletal Mesh that contains exactly
 one current outfit, either as the production full-character mesh or as an
 equivalent garment-only mesh, and Maya
 continues to discover BlendShapes only from the effectively visible character
-and selected outfit context. Protocol v4 negotiates the Accepted Preview Morph
+and selected outfit context. Connection negotiation defines the Accepted Preview Morph
 set as the intersection of that Maya manifest and the Morph names displayed by
 the Generated Preview, Primary Driver, and enabled Additional Parts. A name
 owned by only one mesh still streams and drives that mesh; comparison between

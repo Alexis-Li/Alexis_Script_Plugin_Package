@@ -16,12 +16,26 @@ ranges are valid, subject to the same 20,000-frame and 1 GiB limits. A
 one-frame playback may complete with zero measured elapsed time.
 
 Ready waits for an explicit Unreal Binding Actor action; Maya has no play or
-stop action. Unreal alone drives playback on its monotonic clock at the captured
-scene rate. It applies at most one source pose per game-thread update, advances evidence
+stop action. In Cached Playback, Unreal alone drives playback on its monotonic
+clock at the captured scene rate. It applies at most one source pose per game-thread update, advances evidence
 only when Live Link accepts the pose, and reports success only after every frame
 was accepted exactly once in order within the duration bound. It stops with
 `CACHED_PLAYBACK_PERFORMANCE` instead of skipping frames, bursting overdue
 frames, or stretching a completed review.
+
+These timing and completion rules describe the implemented single sequential
+play attempt. [Issue #50](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/50)
+must revise this decision together with the protocol to define playback
+segments, paused time, seeks, and loop completion; those operations must not
+claim the existing whole-cache sequential completion evidence. Complete upload,
+bounded resources, stale-command isolation, and no silent frame dropping during
+sequential playback remain required.
+
+This clock ownership is scoped to Cached Playback, not all future preview modes.
+The [Issue #52 prototype](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52)
+may disable cached playback while validating explicit Sequencer time ownership
+and restoration. Production integration requires a decision on mutually
+exclusive time control; it is not established by this cache decision.
 
 Current protocol v8 binds `init`, each upload, each UE play attempt, and each
 clear request to authoritative Character, `upload_id`, `play_id`, and `clear_id`

@@ -361,8 +361,9 @@ Socket closure communicates transport or structural failure. Cache validation
 and playback-performance failures remain recoverable inside the negotiated
 connection and identify the upload or play attempt they belong to.
 
-The machine-authoritative conformance corpus is
-[`conformance-v6.json`](../../../composite/MtoULiveLink/protocol/conformance-v6.json).
+This historical cache baseline used `protocol/conformance-v6.json`, retained
+in Git history. The active contract is linked from
+[ADR 0013](../../../composite/MtoULiveLink/docs/adr/0013-upload-the-cache-before-local-replay.md).
 Maya repository tests read it directly, and a Python-standard-library generator
 projects the same cases into a checked-in, test-only Unreal `.inl`; repository
 validation fails if that projection is stale. Neither shipped host component
@@ -885,8 +886,11 @@ deletion interface to Controller. `_PlaybackCache` remains the disk module and
 Date: 2026-08-29
 
 Issue #25 deepened Preview readiness on the Binding Actor without changing
-ADR-0003 actor-owned, explicit, stale-safe readiness, ADR-0009 workflow
-negotiation, ADR-0010 transactional Preview Morph transfer, or ADR-0011
+actor-owned, explicit, stale-safe readiness (now consolidated in
+[ADR 0001](../../../composite/MtoULiveLink/docs/adr/0001-keep-preview-meshes-transient.md)),
+workflow negotiation (now consolidated in
+[ADR 0008](../../../composite/MtoULiveLink/docs/adr/0008-add-model-preview-to-the-existing-product.md)),
+ADR-0010 transactional Preview Morph transfer, or ADR-0011
 Accepted Preview Morph semantics.
 
 The actor exposes one coherent `FMtoUPreviewReadiness` snapshot (state, stage,

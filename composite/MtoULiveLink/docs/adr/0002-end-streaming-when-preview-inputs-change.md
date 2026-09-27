@@ -4,9 +4,10 @@ An Animation or Model streaming session ends when its Driver Skeletal Mesh, Prev
 Static Mesh, or their relevant imported data changes. The negotiated skeleton,
 reference pose, transferred weights, and displayed surface describe one coherent
 input revision; hot-swapping part of that revision would make the visible result
-ambiguous. MtoU_LiveLink therefore marks the preview dirty and requires a
-successful refresh and new connection instead of silently falling back to the
-Driver Skeletal Mesh or changing targets inside an accepted session.
+ambiguous. MtoU_LiveLink therefore marks the preview dirty and requires a new
+connection instead of changing targets inside an accepted session. Model preview
+also requires a successful explicit refresh of the current revision before
+reconnecting; Animation preview does not depend on Preview readiness.
 
 Explicit Preview refresh also ends the active session before releasing or
 replacing its display, even when the inputs have not changed. The synchronous
@@ -25,6 +26,7 @@ Primary Driver and the imported Preview Static Mesh still own garment
 resolution, weight transfer, and Preview Morph transfer, so a composition change
 keeps an already generated garment Preview and its readiness; only a Primary
 Driver, Preview Static Mesh, Garment Slot Override, or related imported-data
-change invalidates the revision and requires an explicit refresh. Pure
+change invalidates the revision and requires an explicit refresh before Model
+preview can reconnect. Pure
 presentation edits inside the composition, such as renaming a part or
 reordering the list, change neither the session nor the Preview.

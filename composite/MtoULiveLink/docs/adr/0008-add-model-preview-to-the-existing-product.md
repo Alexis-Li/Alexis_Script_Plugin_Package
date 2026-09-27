@@ -1,20 +1,29 @@
-# Add Model preview to the existing MtoU_LiveLink product
+# Select Animation or Model preview within one product and binding
 
-MtoU_LiveLink 0.4.0 adds a modeler-facing Model preview workflow beside the
-implemented animator-facing Animation preview workflow instead of creating a
-second plugin. The Unreal Binding gains one optional Preview Static Mesh field
-below its existing Skeletal Mesh field, and the Maya tool gains top-level `动画`
-and `模型` workflow controls. Animation preview remains the existing behavior;
-Model preview uses the same cross-host product and connection while preparing
-a Generated Preview Skeletal Mesh from both Unreal inputs. For a full-character
-Driver, the actor displays that generated garment over a second display of the
-same Driver with the resolved original garment material slots hidden. The
-second display follows the Generated Preview's complete skeleton through Leader
-Pose. Imported polygon-group identities map resolved geometry to final material
-slots, and Refresh rejects a slot shared by garment and visible non-garment
-groups. Model negotiation uses the union of both display meshes' Morph Targets;
-accepted curves are also applied to matching Driver Morph Targets because Unreal
-5.7 follower propagation is unreliable without material curves. Model preview
-therefore preserves body, face, hair, and other non-garment parts and Morphs
-without adding Binding inputs. Garment-only Drivers retain the same result
-because every visible Driver slot is replaced.
+Animation and Model preview share the MtoU_LiveLink product, Binding, and
+connection machinery instead of requiring separate plugins. Animation displays
+the Primary Driver and enabled Additional Parts. Model displays a generated
+garment with the remaining character, preserving body, face, hair, and parts;
+garment comparison may select the original garment without changing workflows.
+
+Maya selects the workflow during versioned connection negotiation. This changes
+target compatibility and display semantics, so it is a protocol contract rather
+than optional diagnostic metadata. Model requires the current Preview revision
+to be ready; Animation does not. Both components must come from the same release.
+The active protocol version, message fields, and rejection cases are maintained
+in the [protocol corpus](../../protocol/conformance-v8.json), not duplicated here.
+Morph acceptance is defined by [ADR 0011](0011-activate-only-current-outfit-morphs.md).
+
+The current product supports one streaming session and one `MtoU_Character`
+subject over localhost. This is the current single-character implementation
+boundary, not a permanent prohibition on multiple independent objects.
+[Issue #54](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54)
+validates independent pairing, subject routing, and session isolation before a
+production extension revises this decision. Additional Parts remain components
+of one character sharing a Skeleton asset; independent props or different
+skeleton targets must not bypass pairing by being classified as parts.
+
+Full-character display implementation and material-slot constraints are recorded
+in the [architecture history](../../../../docs/project-history/mtou-livelink/architecture.md).
+Generated mesh ownership and garment comparison invariants are defined by
+[ADR 0001](0001-keep-preview-meshes-transient.md).

@@ -9,8 +9,8 @@ Unreal 5.7.4 public APIs. Maya then streams only BlendShape names and values.
 MtoU_LiveLink does not stream garment vertices each frame or add a runtime
 surface-wrap/deformer path for V1.
 
-Preview Morph transfer is part of the Model preview acceptance contract: a
-bone-only result does not provide the required pose reference. Refresh checks
+Preview Morph transfer is part of the Model preview acceptance contract.
+Refresh checks
 the complete Driver Morph Target library and projects every Morph whose affected
 surface exists on the Preview because it runs before Maya supplies its selected
 outfit curve names.
@@ -18,17 +18,14 @@ outfit curve names.
 Refresh is all-or-nothing across non-empty Driver Morph projections: one failed
 projection or generated Morph build puts the Preview status in `Error`, discards
 the partial Generated Preview Skeletal Mesh, and restores the bound Driver for
-inspection without making Model preview ready. During connection, a non-empty
-Maya BlendShape manifest with no accepted Preview Morph is blocking; an
-intentionally empty manifest is Ready with an empty accepted set, as defined in
-[the current-outfit decision](0011-activate-only-current-outfit-morphs.md). A
-partial name intersection is a visible quality warning. Users may explicitly
-disable BS transmission for a labelled bone-only comparison, but that state is
-excluded from Model preview acceptance.
+inspection without making Model preview ready. Connection-time acceptance,
+including intentionally empty manifests and bone-only diagnostics, is defined
+solely by [ADR 0011](0011-activate-only-current-outfit-morphs.md).
 
 A Driver Morph whose affected local surface is absent from the Preview Static
 Mesh is not a failed projection: no Preview vertex can carry that deformation.
 Refresh omits that name from the Generated Preview Morph library, completes with
-a quality warning, and lets normal partial-coverage negotiation report the name
-as Maya-only when applicable. Malformed source Morphs and failures while writing
+a quality warning. Omission from the generated mesh does not remove a name
+owned by the Primary Driver or an enabled Additional Part from the negotiated
+display library. Malformed source Morphs and failures while writing
 any non-empty projected Morph remain transactional errors.
