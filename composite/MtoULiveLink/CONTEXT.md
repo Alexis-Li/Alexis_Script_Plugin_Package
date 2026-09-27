@@ -135,9 +135,11 @@ context and displays its modified surface through a Generated Preview Skeletal
 Mesh under the current pose. With a full-character Driver, the original Driver
 also remains visible behind it with the resolved garment material slots hidden,
 preserving body, face, hair, and other non-garment parts without extra inputs;
-enabled Additional Parts stay displayed beside them. Matching live curves drive
-Morph Targets on the Generated Preview, the hidden Driver, and every part that
-owns the name.
+enabled Additional Parts stay displayed beside them. Garment comparison can
+instead display the original outfit while hiding the Generated Preview, keeping
+the same Streaming session and Preview readiness. Matching live curves drive
+Morph Targets on the Generated Preview, the Primary Driver, and every part that
+owns the name in either display selection.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:

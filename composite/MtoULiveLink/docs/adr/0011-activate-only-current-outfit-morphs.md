@@ -18,8 +18,9 @@ An intentionally empty manifest is not a failed pairing: when the current
 outfit declares zero BlendShape names, the outfit is bone-driven by design, so
 the session is Ready with an empty Accepted Preview Morph set even with BS
 transmission enabled, and no placeholder curve or synthetic manifest entry is
-invented for it. Only a non-empty manifest whose intersection with the
-generated library is empty blocks BS transmission with `PREVIEW_MORPH_MISMATCH`.
+invented for it. Only a non-empty manifest whose intersection with the union of
+Morph names on the Generated Preview, Primary Driver, and enabled Additional
+Parts is empty blocks BS transmission with `PREVIEW_MORPH_MISMATCH`.
 Disabling BS transmission on an outfit that does declare BlendShapes remains
 the explicitly labelled bone-only diagnostic that is excluded from model
 acceptance.

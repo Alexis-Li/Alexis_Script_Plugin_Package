@@ -65,7 +65,9 @@ UE Binding Actor 的预览控制在 Ready Generated Preview 下切换原始 Driv
 身体与 Additional Parts 保持显示。模型模式已协商 Generated、Driver 和启用
 部件的 Morph 名称并集，协议仍为 v8。输入发生变化仍沿用
 [ADR 0002](adr/0002-end-streaming-when-preview-inputs-change.md) 的刷新／重连边界。
-源码与本机合成场景验收完成；真实角色的视觉比较留待 Issue #51 验收。
+源码已实现，本机定向回归通过；编辑器自然 tick 与部件 Morph 的自动化覆盖
+仍需补齐，真实角色视觉比较留待 Issue #51 验收。当前证据与限制见
+[验收记录](../../../docs/project-history/mtou-livelink/issue-51-garment-comparison-acceptance.md)。
 不做 UE 检查姿势、帧书签或问题区域可视化；检查动画由 Maya 提供。
 
 ## 保留并需验证的扩展
