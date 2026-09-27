@@ -3795,6 +3795,26 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("repeated clear restores live preview realtime again"), HasOverride());
     SendLiveAndExpect(Primary, FVector(61.0, 62.0, 63.0), TEXT("live frame after second clear is sent"));
 
+    // Recapture can clear cached ownership, re-enter, then fail before
+    // cache_begin while creating Maya's temporary file. The final clear must
+    // return UE to Idle so the next live pose reaches the display.
+    TestTrue(TEXT("recapture starts in cached mode"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("recapture sends its first clear"),
+        SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":3}")));
+    TestTrue(TEXT("recapture clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("recapture re-enters cached mode"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("cache creation failure starts from cached ownership"), HasNoOverride());
+    TestTrue(TEXT("cache creation failure sends final clear"),
+        SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":4}")));
+    TestTrue(TEXT("cache creation failure clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("cache creation failure restores live preview realtime"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(66.0, 67.0, 68.0),
+        TEXT("live frame after cache creation failure is sent"));
+
     // A recoverable upload validation failure drops to Idle and must restore
     // the same live preview behavior, with the ordered clear keeping the
     // Maya recovery path ahead of resumed live poses.
@@ -3808,7 +3828,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("mismatched revision reports a recoverable error"),
         ReceiveText(Primary).Contains(TEXT("CACHE_REVISION_MISMATCH")));
     TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
-    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":3}")));
+    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":5}")));
     TestTrue(TEXT("recovery clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());

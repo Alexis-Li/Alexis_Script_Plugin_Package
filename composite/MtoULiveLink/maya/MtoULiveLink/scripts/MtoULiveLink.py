@@ -2597,12 +2597,9 @@ class _CachedPlayback(object):
             cache = self._make_cache(
                 revision, start_frame, end_frame, scene_fps, time.time())
         except (_PlaybackCacheError, OSError, TypeError, ValueError) as exc:
-            self._awaiting_clear = None
-            self._clear_wait_deadline = None
-            self._restore_capture_frame()
-            self._resume_streaming()
-            raise _CachedPlaybackError(
+            error = _CachedPlaybackError(
                 "CACHED_PLAYBACK_SPACE", str(exc), details=str(exc))
+            raise self._capture_failure(error)
         self._capture_cache = cache
         self._capture_revision = revision
         self._capture_start = start_frame

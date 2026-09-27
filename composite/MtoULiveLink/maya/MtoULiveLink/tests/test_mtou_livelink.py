@@ -1737,6 +1737,15 @@ class PlaybackCacheTests(unittest.TestCase):
     def _frame(self, value):
         return {"type": "frame", "transforms": [[value] * 10], "curves": []}
 
+    def test_begin_metadata_write_failure_removes_partial_files(self):
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            with mock.patch.object(MODULE.json, "dump", side_effect=OSError("disk full")):
+                with self.assertRaises(MODULE._PlaybackCacheError):
+                    MODULE._PlaybackCache.begin(
+                        snapshot_revision=7, capture_start=0, capture_end=1,
+                        scene_fps=24.0, temp_dir=directory, capture_time=123.0)
+            self.assertEqual([], list(pathlib.Path(directory).iterdir()))
+
     def test_incremental_cache_finalizes_atomically_and_replays_in_order(self):
         with __import__("tempfile").TemporaryDirectory() as directory:
             cache = MODULE._PlaybackCache.begin(
@@ -2042,6 +2051,67 @@ class CachedPlaybackTests(unittest.TestCase):
         self.assertEqual((True, False, False, True),
                          self._capabilities(cached.view))
         return begin
+
+    def _assert_cache_creation_failure_recovers_live(self, prior_state, failure):
+        changes = []
+        scene = self._scene()
+        cached, stream = self._attached(changes.append, scene=scene)
+        if prior_state == "entered":
+            cached.enter()
+        elif prior_state == "replaying":
+            self._capture_to_replay(cached, stream)
+        self.timeline.current = 17
+        samples_before = scene.sample.call_count
+        begins_before = self._types(stream).count("cache_begin")
+        clear_ids_before = [message["clear_id"] for message in stream.submitted
+                            if message["type"] == "cache_clear"]
+        cached._cache_factory = mock.Mock()
+        cached._cache_factory.begin.side_effect = failure
+
+        with self.assertRaises(MODULE._CachedPlaybackError) as caught:
+            cached.capture(24.0)
+
+        self.assertEqual("CACHED_PLAYBACK_SPACE", caught.exception.code)
+        self.assertEqual(1, cached._cache_factory.begin.call_count)
+        self.assertEqual(samples_before, scene.sample.call_count)
+        self.assertEqual(begins_before, self._types(stream).count("cache_begin"))
+        self.assertEqual(17, self.timeline.current)
+        self.assertEqual(17, self.timeline.set_frames[-1])
+        self.assertEqual("failed", cached._phase)
+        self.assertEqual(cached.REALTIME, cached.view.state)
+        self.assertEqual("CACHED_PLAYBACK_SPACE", changes[-1].diagnostic["code"])
+        self.assertEqual(cached.REALTIME, changes[-1].state)
+        self.assertEqual((False, False, False, False), self._capabilities(cached.view))
+        self.assertEqual(1, stream.resumed)
+        self.assertEqual(["cache_clear", "resume"], stream.actions[-2:])
+        self.assertLess(max(index for index, action in enumerate(stream.actions)
+                            if action == "cache_enter"), len(stream.actions) - 2)
+        clear_ids_after = [message["clear_id"] for message in stream.submitted
+                           if message["type"] == "cache_clear"]
+        expected_new_clears = 2 if prior_state in ("entered", "replaying") else 1
+        self.assertEqual(len(clear_ids_before) + expected_new_clears,
+                         len(clear_ids_after))
+        self.assertEqual(clear_ids_after, sorted(set(clear_ids_after)))
+        self.assertIsNone(cached._awaiting_clear)
+        self.assertIsNone(cached._capture_timer_id)
+        self.assertIsNone(cached._poller_timer_id)
+        self.assertIsNone(cached._capture_cache)
+        self.assertIsNone(cached._cache)
+        self.assertIsNone(cached._upload)
+        self.assertEqual({}, self.timer.callbacks)
+        self.assertEqual([], list(pathlib.Path(self.temp.name).iterdir()))
+
+    def test_first_capture_cache_creation_failure_recovers_live(self):
+        self._assert_cache_creation_failure_recovers_live(
+            "first", OSError("temporary cache directory is unavailable"))
+
+    def test_entered_capture_cache_creation_failure_recovers_live(self):
+        self._assert_cache_creation_failure_recovers_live(
+            "entered", MODULE._PlaybackCacheError("cache file cannot be created"))
+
+    def test_replaying_recapture_cache_creation_failure_recovers_live(self):
+        self._assert_cache_creation_failure_recovers_live(
+            "replaying", OSError("temporary disk is full"))
 
     def test_ready_attachment_exposes_immutable_realtime_view_without_pausing(self):
         cached, stream = self._attached()

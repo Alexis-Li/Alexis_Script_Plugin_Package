@@ -11,7 +11,8 @@
   sampling and can be cancelled while waiting. The Details readout distinguishes
   an applied source frame −1 from no applied pose. Protocol v8 binds each clear
   request and acknowledgement with `clear_id`, alongside the identity-scoped
-  `cache_playing` outcome; both components now identify as 0.7.0.
+  `cache_playing` outcome; both components now identify as 0.7.0. Temporary
+  cache creation failures clear UE cached ownership before live poses resume.
 
 - Redesign both host panels without changing workflows (Issue #48). Maya uses
   a compact dark card layout with a blue two-tab workflow switch, connection
