@@ -56,7 +56,8 @@ enum class EMtoUDisplayTarget : uint8
 {
     Hidden,
     Driver,
-    GeneratedPreview
+    GeneratedPreview,
+    OriginalGarment
 };
 
 /**
@@ -116,6 +117,8 @@ class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
 public:
     AMtoULiveLinkActor();
 
+    virtual void Tick(float DeltaSeconds) override;
+    virtual bool ShouldTickIfViewportsOnly() const override;
     virtual void OnConstruction(const FTransform& Transform) override;
     virtual void PostRegisterAllComponents() override;
     virtual void PostLoad() override;
@@ -160,6 +163,10 @@ public:
     /** Display selection is a separate concern that consumes readiness. */
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+    /** Compare the two garments without changing the Model session or Preview readiness. */
+    bool CanCompareGarments() const;
+    bool ShowOriginalGarment();
+    bool RestoreGeneratedGarment();
 
     /**
      * Connection-time Model diagnostics are separate evidence; they never
@@ -209,6 +216,8 @@ private:
 
     void RefreshBinding();
     void ReapplyDisplayTarget();
+    void ApplyGarmentVisibility();
+    void RefreshComparisonPose();
     void ApplyModelMorphCurves(
         const TArray<FName>& CurveNames, const TArray<float>& CurveValues);
     void RebindInputNotifications();
@@ -237,7 +246,7 @@ private:
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
 
-    /** Original Driver display used behind the generated garment in Model preview. */
+    /** Original Driver display following the generated garment in Model preview. */
     UPROPERTY()
     TObjectPtr<USkeletalMeshComponent> DriverMeshComponent;
 

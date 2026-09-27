@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add an Unreal Binding Actor garment comparison control (Issue #51). The
+  original outfit and Generated Preview alternate in the same Model session,
+  retaining the pose, Morph values, body, enabled Additional Parts, and actor
+  placement. Comparison does not regenerate or invalidate Preview readiness;
+  invalidated or failed previews still follow their existing cleanup rules.
+  The existing Model Morph negotiation already covers the Generated Preview,
+  Primary Driver, and enabled parts, so the wire protocol remains v8. Both host
+  components identify as 0.8.0.
+
 - Move Cached Playback preparation to Maya and playback control to the Unreal
   Binding Actor (Issue #49). Maya can capture an inclusive custom integer range
   or the current Playback Range, freezes range and scene rate at start, and

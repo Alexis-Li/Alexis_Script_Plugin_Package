@@ -3,7 +3,8 @@
 2026-09-22 用户确认的产品方向；各功能以对应 Issue 和验收记录的状态为准。
 已接受的基线为 `composite-mtou-livelink-v0.5.0`；开发分支为
 `codex/mtou-preview-workflow`。Issue #49 的单角色范围捕获、上传和 UE
-播放／停止／再次播放已在 0.7.0 源码中实现，真实项目资产验收仍待进行。
+播放／停止／再次播放已在 0.7.0 源码中实现。Issue #51 的服装对比已在
+0.8.0 源码中实现；两项真实项目资产验收仍待进行。
 
 ## 执行跟踪
 
@@ -58,13 +59,13 @@ Issue #49 已同步 [ADR 0013](adr/0013-upload-the-cache-before-local-replay.md)
 
 ### 原始服装／预览服装一键切换
 
-UE 内切换原始 Driver 服装与 Generated Preview，保持相同角色姿势、Actor
-位置、相机和光照。切换只改变比较显示，不等同于 Delete Preview、修改输入、
-切换动画／模型工作流或重新生成；身体与 Additional Parts 保持正确显示。
-
-实现前验证模型模式协商的 Morph 集合能否同时满足两个显示结果，不能仅隐藏
-组件却让原始服装缺失当前应有的变形。输入发生变化仍沿用
+UE Binding Actor 的预览控制在 Ready Generated Preview 下切换原始 Driver
+服装与 Generated Preview，保持相同 Streaming session、角色姿势、Actor 位置、
+相机和光照。切换只改变显示，不等同于 Delete Preview、修改输入或重新生成；
+身体与 Additional Parts 保持显示。模型模式已协商 Generated、Driver 和启用
+部件的 Morph 名称并集，协议仍为 v8。输入发生变化仍沿用
 [ADR 0002](adr/0002-end-streaming-when-preview-inputs-change.md) 的刷新／重连边界。
+源码与本机合成场景验收完成；真实角色的视觉比较留待 Issue #51 验收。
 不做 UE 检查姿势、帧书签或问题区域可视化；检查动画由 Maya 提供。
 
 ## 保留并需验证的扩展

@@ -88,6 +88,9 @@ public:
     /** True while the "Delete Preview" action can remove a usable Generated Preview. */
     static bool CanDeletePreview(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
 
+    /** The same garment comparison action invoked by the Details button. */
+    static FReply HandleGarmentComparisonClicked(TWeakObjectPtr<AMtoULiveLinkActor> Actor);
+
     /**
      * Exact body of the Details "Refresh Preview" button click: scoped slow
      * task plus the public RefreshActor path with per-stage progress.

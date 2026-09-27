@@ -5,10 +5,12 @@ one current outfit, either as the production full-character mesh or as an
 equivalent garment-only mesh, and Maya
 continues to discover BlendShapes only from the effectively visible character
 and selected outfit context. Protocol v4 negotiates the Accepted Preview Morph
-set as the intersection of that Maya manifest and the garment-surface generated
-Driver
-Morph library. Only accepted names receive streamed values; every other
-generated Morph remains at zero. No outfit-name or node-prefix filter is added.
+set as the intersection of that Maya manifest and the Morph names displayed by
+the Generated Preview, Primary Driver, and enabled Additional Parts. A name
+owned by only one mesh still streams and drives that mesh; comparison between
+the original and generated garments does not renegotiate the accepted set.
+Only accepted names receive streamed values; every other generated Morph
+remains at zero. No outfit-name or node-prefix filter is added.
 A partial intersection is a visible warning with Maya-only and Unreal-only
 names and counts.
 

@@ -276,8 +276,10 @@ FText DisplayText(EMtoUDisplayTarget Target)
     {
     case EMtoUDisplayTarget::GeneratedPreview:
         return LOCTEXT("DisplayGeneratedPreview", "当前显示：生成的预览网格");
+    case EMtoUDisplayTarget::OriginalGarment:
+        return LOCTEXT("DisplayOriginalGarment", "当前显示：原始服装与角色其他部分");
     case EMtoUDisplayTarget::Driver:
-        return LOCTEXT("DisplayDriver", "当前显示：主体网格（Driver）");
+        return LOCTEXT("DisplayDriver", "当前显示：原始主体网格（Driver，非模型对比）");
     case EMtoUDisplayTarget::Hidden:
     default:
         return LOCTEXT("DisplayHidden", "当前未显示网格");
@@ -300,6 +302,37 @@ FText DeletePreviewTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
             "删除生成的预览，改为显示主体网格。")
         : LOCTEXT("DeletePreviewUnavailable",
             "生成可用预览后才能删除。");
+}
+
+FText GarmentComparisonTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    const AMtoULiveLinkActor* Target = Actor.Get();
+    if (!Target)
+    {
+        return LOCTEXT("ComparisonNoActor", "选择绑定 Actor 后比较服装。");
+    }
+    const FMtoUPreviewReadiness Readiness = Target->GetPreviewReadiness();
+    if (!Readiness.IsUsable())
+    {
+        switch (Readiness.State)
+        {
+        case EMtoUPreviewState::Error:
+            return LOCTEXT("ComparisonFailed", "预览生成失败；查看错误详情，修正输入后刷新预览。");
+        case EMtoUPreviewState::Dirty:
+            return LOCTEXT("ComparisonDirty", "当前输入尚无可用预览；先刷新预览。");
+        case EMtoUPreviewState::Building:
+            return LOCTEXT("ComparisonBuilding", "正在生成预览，请等待完成。");
+        default:
+            return LOCTEXT("ComparisonUnconfigured", "配置主体和预览网格，再刷新预览。");
+        }
+    }
+    if (!Target->CanCompareGarments())
+    {
+        return LOCTEXT("ComparisonWrongDisplay", "先显示当前生成预览；动画工作流中的原始主体不属于模型对比。");
+    }
+    return Target->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+        ? LOCTEXT("ComparisonShowGenerated", "显示生成服装；保持当前会话、姿势和角色部件。")
+        : LOCTEXT("ComparisonShowOriginal", "显示原始服装；保持当前会话、姿势和角色部件。");
 }
 
 /** Builds the one status view from an already-read axis snapshot. */
@@ -552,6 +585,21 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             .AutoWrapText(true)
             .ColorAndOpacity(FSlateColor::UseSubduedForeground())
             .Text_Lambda([Status]() { return Status->Get().Display; })
+        ];
+    Controls.AddCustomRow(LOCTEXT("GarmentComparisonFilter", "服装对比"))
+        .WholeRowContent()
+        [
+            SNew(SButton)
+            .Text_Lambda([Actor]()
+            {
+                return Actor.IsValid()
+                    && Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+                    ? LOCTEXT("ShowGeneratedGarment", "显示生成服装")
+                    : LOCTEXT("ShowOriginalGarment", "显示原始服装");
+            })
+            .ToolTipText_Lambda([Actor]() { return GarmentComparisonTooltip(Actor); })
+            .IsEnabled_Lambda([Actor]() { return Actor.IsValid() && Actor->CanCompareGarments(); })
+            .OnClicked_Lambda([Actor]() { return HandleGarmentComparisonClicked(Actor); })
         ];
     Controls.AddCustomRow(LOCTEXT("PreviewActionsFilter", "预览操作"))
         .WholeRowContent()
@@ -850,6 +898,23 @@ const FMtoULiveLinkActorDetails::FStatusView& FMtoULiveLinkActorDetails::FStatus
 bool FMtoULiveLinkActorDetails::CanDeletePreview(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
 {
     return Actor.IsValid() && Actor->GetPreviewReadiness().IsUsable();
+}
+
+FReply FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(
+    TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    if (AMtoULiveLinkActor* Target = Actor.Get())
+    {
+        if (Target->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment)
+        {
+            Target->RestoreGeneratedGarment();
+        }
+        else
+        {
+            Target->ShowOriginalGarment();
+        }
+    }
+    return FReply::Handled();
 }
 
 FReply FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(TWeakObjectPtr<AMtoULiveLinkActor> Actor)

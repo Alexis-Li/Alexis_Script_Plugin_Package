@@ -243,6 +243,12 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   applied. The [development acceptance record](issue-49-cache-workflow-acceptance.md)
   contains frame evidence and the remaining company-asset visual gate.
 
+- **2026-09-27:** Implemented Issue #51 in both 0.8.0 components. The UE Binding
+  Actor Details switches original and Generated garments within one Model
+  session while retaining the pose and character parts. The
+  [development acceptance record](issue-51-garment-comparison-acceptance.md)
+  holds local checks and the remaining company-asset visual gate.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -261,6 +267,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Character-part composition acceptance](character-parts-acceptance.md)
 - [Issue #48 UE Details acceptance](issue-48-ue-details-acceptance.md)
 - [Issue #49 Cached Playback development acceptance](issue-49-cache-workflow-acceptance.md)
+- [Issue #51 garment comparison development acceptance](issue-51-garment-comparison-acceptance.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project

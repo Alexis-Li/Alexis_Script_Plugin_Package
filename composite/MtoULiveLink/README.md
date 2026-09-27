@@ -156,6 +156,12 @@ the complete UE cache for another attempt.
 3. In Maya, select **Model** (模型), confirm the outfit and **Transfer BS**
    setting, then click **Connect**.
 4. Pose the character in Maya to inspect garment deformation in Unreal.
+5. In the Binding Actor's **预览控制**, click **显示原始服装** and **显示生成服装**
+   to compare the same pose under the same actor transform, camera, and light.
+   The body and enabled Additional Parts remain visible. This control requires
+   a ready Generated Preview; if disabled, read the Preview status or hover the
+   button for the next step. A displayed Driver after a failed or invalidated
+   Preview is for inspection and is not a Model comparison result.
 
 ## Common problems
 

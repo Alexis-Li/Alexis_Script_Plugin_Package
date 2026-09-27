@@ -1832,6 +1832,47 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
             DriverDisplay && DriverDisplay->IsMaterialSectionShown(HiddenSlot, 0));
     }
 
+    const FTransform ComparisonTransform = Actor->GetActorTransform();
+    TestTrue(TEXT("ready Generated Preview enables garment comparison"),
+        Actor->CanCompareGarments());
+    for (int32 Switch = 0; Switch < 3; ++Switch)
+    {
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details switches to the original garment without replacing the Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == RefreshResult.GeneratedPreview
+            && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver
+            && Actor->GetPreviewReadiness().GeneratedPreview == RefreshResult.GeneratedPreview
+            && Actor->GetPreviewReadiness().State == RefreshResult.State
+            && Actor->GetActorTransform().Equals(ComparisonTransform));
+        for (int32 Slot = 0; Slot < GeneratedMaterials.Num(); ++Slot)
+        {
+            TestFalse(TEXT("Generated garment is hidden during original comparison"),
+                Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(Slot, 0));
+        }
+        for (const int32 Slot : {0, 1, 2, 3, 4, 5, 6})
+        {
+            TestTrue(TEXT("original garment and body remain visible"),
+                DriverDisplay && DriverDisplay->IsMaterialSectionShown(Slot, 0));
+        }
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details restores the same Generated Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetPreviewReadiness().GeneratedPreview == RefreshResult.GeneratedPreview);
+        for (int32 Slot = 0; Slot < GeneratedMaterials.Num(); ++Slot)
+        {
+            TestTrue(TEXT("Generated garment is visible again"),
+                Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(Slot, 0));
+        }
+        for (const int32 Slot : {3, 4, 5})
+        {
+            TestFalse(TEXT("only resolved original garment slots hide again"),
+                DriverDisplay && DriverDisplay->IsMaterialSectionShown(Slot, 0));
+        }
+    }
+
+    TestTrue(TEXT("original garment can be selected before an input invalidation"),
+        Actor->ShowOriginalGarment());
     // Reimport invalidates and requires explicit Refresh again.
     if (GEditor)
     {
@@ -1842,6 +1883,19 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
         && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == nullptr);
+    TestFalse(TEXT("dirty Preview cannot compare or restore stale geometry"),
+        Actor->CanCompareGarments() || Actor->ShowOriginalGarment()
+        || Actor->RestoreGeneratedGarment());
+    TestTrue(TEXT("Refresh restores comparison after input invalidation"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable()
+        && Actor->ShowOriginalGarment());
+    Actor->NotifyGeneratedPreviewDeleted();
+    TestTrue(TEXT("deleting Preview during original comparison clears both displays"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver
+        && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == nullptr
+        && !Actor->CanCompareGarments());
     TestFalse(TEXT("normal Refresh creates no .uasset on the filesystem"),
         IFileManager::Get().FileExists(*PackageFilename));
 
@@ -3695,6 +3749,54 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             LiveLinkClient.ForceTick();
             return EvaluateRoot(ModelRoot) && ModelRoot.Equals(FVector(41.0, 42.0, 43.0));
         }));
+    TArray<USkeletalMeshComponent*> ModelDisplayMeshes;
+    Actor->GetComponents(ModelDisplayMeshes);
+    USkeletalMeshComponent** ModelDriverEntry = ModelDisplayMeshes.FindByPredicate(
+        [Actor](const USkeletalMeshComponent* Component)
+        {
+            return Component != Actor->GetSkeletalMeshComponent();
+        });
+    USkeletalMeshComponent* ModelDriverDisplay = ModelDriverEntry ? *ModelDriverEntry : nullptr;
+    const uint64 ComparisonSession = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+    UAnimInstance* ComparisonAnimInstance = Actor->GetSkeletalMeshComponent()->GetAnimInstance();
+    TestTrue(TEXT("accepted nonzero Morph reaches the original Driver follower"),
+        ModelDriverDisplay
+        && FMath::IsNearlyEqual(ModelDriverDisplay->GetMorphTarget(FName(TEXT("Corrective"))), 0.5f));
+    for (int32 Switch = 0; Switch < 2; ++Switch)
+    {
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details comparison preserves the Model session and animation instance"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession
+            && Actor->GetSkeletalMeshComponent()->GetAnimInstance() == ComparisonAnimInstance
+            && Actor->GetPreviewReadiness().GeneratedPreview == AnimRefreshedMesh
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details restores Generated Preview in the same session"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession);
+    }
+    FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+    const TArray<uint8> ComparedFrame = PacketFor(FrameJsonFor(
+        *TestSkeleton, FVector(44.0, 45.0, 46.0), TEXT("[0.75]")));
+    TestTrue(TEXT("model frame is sent while the original garment is displayed"),
+        ModelClient && SendBytes(*ModelClient, ComparedFrame.GetData(), ComparedFrame.Num()));
+    FVector ComparedRoot = FVector::ZeroVector;
+    TestTrue(TEXT("original comparison still receives pose and nonzero Morph"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return EvaluateRoot(ComparedRoot)
+                && ComparedRoot.Equals(FVector(44.0, 45.0, 46.0))
+                && ModelDriverDisplay
+                && FMath::IsNearlyEqual(ModelDriverDisplay->GetMorphTarget(
+                    FName(TEXT("Corrective"))), 0.75f);
+        }));
+    TestTrue(TEXT("new frame did not replace the comparison session or Preview revision"),
+        FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession
+        && Actor->GetPreviewReadiness().GeneratedPreview == AnimRefreshedMesh);
+    FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
     // Critical window W2: an in-flight cached playback must freeze at the
     // refresh boundary. Drive a real upload to Ready, then to Playing, while
     // the session is still live.
@@ -4741,6 +4843,14 @@ bool FMtoUCharacterPartsPreviewTest::RunTest(const FString& Parameters)
         && PartComponents[0]->GetSkeletalMeshAsset() == Head
         && PartComponents[0]->GetSkeletalMeshAsset()->GetSkeleton()
             == Fixtures.FullDriver->GetSkeleton());
+    TestTrue(TEXT("original comparison keeps the separated part displayed"),
+        Actor->ShowOriginalGarment()
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head);
+    TestTrue(TEXT("Generated comparison restores without changing the part"),
+        Actor->RestoreGeneratedGarment()
+        && Actor->GetPreviewReadiness().GeneratedPreview == Generated
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head);
 
     // A composition change is not a Preview revision change: the generated
     // garment survives while the character composition resynchronizes.

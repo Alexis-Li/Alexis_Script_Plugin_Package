@@ -5697,6 +5697,47 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("Driver-only Morph value applies to the complete character display"),
         bDriverValueApplied);
+    const FMtoUPreviewReadiness ComparisonReadiness = Actor->GetPreviewReadiness();
+    UAnimInstance* ComparisonAnimInstance = SkeletalMeshComponent->GetAnimInstance();
+    TestTrue(TEXT("original garment comparison keeps the Generated pose driver and Driver follower"),
+        Actor->ShowOriginalGarment()
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+        && Actor->GetPreviewReadiness().GeneratedPreview == ComparisonReadiness.GeneratedPreview
+        && Actor->GetPreviewReadiness().State == ComparisonReadiness.State
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetAnimInstance() == ComparisonAnimInstance
+        && !SkeletalMeshComponent->IsMaterialSectionShown(0, 0)
+        && DriverDisplay && DriverDisplay->IsVisible()
+        && DriverDisplay->IsMaterialSectionShown(0, 0));
+    const TArray<uint8> ComparedFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[2,3,4,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.5,0.25,0.4]}"));
+    TestTrue(TEXT("new Morph frame is sent while the original garment is visible"),
+        PartialClient && SendBytes(*PartialClient, ComparedFrame.GetData(), ComparedFrame.Num()));
+    const bool bComparedDriverUpdated = PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+            Actor->Tick(0.0f); // Headless world has no editor viewport tick.
+            return DriverDisplay
+                && DriverDisplay->GetBoneTransform(0).GetTranslation().Equals(FVector(2.0, 3.0, 4.0))
+                && FMath::IsNearlyEqual(
+                    DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.4f);
+        });
+    TestTrue(TEXT("visible original garment receives the new pose and Morph"),
+        bComparedDriverUpdated);
+    float ComparedGeneratedValue = 0.0f;
+    TestTrue(TEXT("restore shows Generated without replacing the session or Morph values"),
+        Actor->RestoreGeneratedGarment()
+        && Actor->GetPreviewReadiness().GeneratedPreview == ComparisonReadiness.GeneratedPreview
+        && SkeletalMeshComponent->GetAnimInstance() == ComparisonAnimInstance
+        && SkeletalMeshComponent->IsMaterialSectionShown(0, 0)
+        && SkeletalMeshComponent->GetBoneTransform(0).GetTranslation().Equals(FVector(2.0, 3.0, 4.0))
+        && SkeletalMeshComponent->GetCurveValue(
+            FName(TEXT("Accepted")), 0.0f, ComparedGeneratedValue)
+        && FMath::IsNearlyEqual(ComparedGeneratedValue, 0.5f)
+        && DriverDisplay && !DriverDisplay->IsMaterialSectionShown(0, 0)
+        && FMath::IsNearlyEqual(DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.4f));
     float NeverAcceptedValue = 0.0f;
     TestTrue(TEXT("non-accepted Generated Morph remains zero"),
         !SkeletalMeshComponent->GetCurveValue(

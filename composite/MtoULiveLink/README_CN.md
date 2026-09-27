@@ -129,6 +129,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
    复制原始错误。Driver 角色的其他部分仍会显示。
 3. 在 Maya 中选择“模型”，确认服装和“传递 BS”设置，再点击“连接”。
 4. 在 Maya 中给角色摆姿，检查 Unreal 中的服装变形。
+5. 在 Binding Actor 的 **预览控制** 中点击 **显示原始服装**、**显示生成服装**，
+   在相同姿势、Actor 变换、镜头和光照下比较；身体与启用的附加部件保持显示。
+   此操作需要已就绪的 Generated Preview。按钮不可用时查看预览状态或悬停提示，
+   按提示刷新或修正输入。失败或失效后显示的 Driver 仅供检查，不是模型对比结果。
 
 ## 常见问题
 

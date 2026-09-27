@@ -20,3 +20,16 @@ leaving the actor empty; seeing the Driver never makes Model preview ready.
 A disconnected actor may retain an unchanged generated mesh in
 reference pose for reuse, but a new revision, actor destruction, world unload,
 or editor shutdown ends that lifetime.
+
+For garment comparison, the Generated Preview remains the Live Link pose driver
+and the original Driver follows its bones. While the original garment is shown,
+the actor explicitly evaluates its generated pose driver in the editor viewport,
+because a mesh with all render sections hidden may be skipped by ordinary
+animation updates. The display selection changes only material-section
+visibility: the original garment is fully shown while the Generated garment is
+hidden, or only the resolved original garment slots are hidden while the
+Generated garment is shown. This leaves the body and
+enabled Additional Parts in place and never changes Preview readiness or the
+Streaming session. An invalidated Preview releases the generated mesh in either
+display selection; the restored Driver is an inspection view, not a successful
+Model comparison.

@@ -12,6 +12,7 @@
 
 AMtoULiveLinkActor::AMtoULiveLinkActor()
 {
+    PrimaryActorTick.bCanEverTick = true;
     SkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SkeletalMeshComponent"));
     SetRootComponent(SkeletalMeshComponent);
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
@@ -21,6 +22,20 @@ AMtoULiveLinkActor::AMtoULiveLinkActor()
     DriverMeshComponent->SetDisablePostProcessBlueprint(true);
     DriverMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     DriverMeshComponent->SetGenerateOverlapEvents(false);
+}
+
+void AMtoULiveLinkActor::Tick(float DeltaSeconds)
+{
+    Super::Tick(DeltaSeconds);
+    if (DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
+    {
+        RefreshComparisonPose();
+    }
+}
+
+bool AMtoULiveLinkActor::ShouldTickIfViewportsOnly() const
+{
+    return DisplayTarget == EMtoUDisplayTarget::OriginalGarment;
 }
 
 FMtoUCachePlaybackView AMtoULiveLinkActor::GetCachePlaybackView() const
@@ -280,7 +295,8 @@ void AMtoULiveLinkActor::ReleaseGeneratedPreview()
     }
     GeneratedPreviewMesh = nullptr;
     DriverGarmentMaterialSlots.Reset();
-    if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
+    if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview
+        || DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
     {
         HideDisplay();
     }
@@ -305,6 +321,42 @@ void AMtoULiveLinkActor::ShowGeneratedPreview(bool bBoneOnlyDiagnostic)
     {
         ConnectionStatus = TEXT("Connected: bone-only diagnostic; not valid for model acceptance");
     }
+}
+
+bool AMtoULiveLinkActor::CanCompareGarments() const
+{
+    return GetPreviewReadiness().IsUsable()
+        && (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview
+            || DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
+        && Binding && Binding->SkeletalMesh
+        && SkeletalMeshComponent && DriverMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreviewMesh
+        && DriverMeshComponent->GetSkeletalMeshAsset() == Binding->SkeletalMesh
+        && !DriverGarmentMaterialSlots.IsEmpty();
+}
+
+bool AMtoULiveLinkActor::ShowOriginalGarment()
+{
+    if (!CanCompareGarments())
+    {
+        return false;
+    }
+    DisplayTarget = EMtoUDisplayTarget::OriginalGarment;
+    ApplyGarmentVisibility();
+    RefreshComparisonPose();
+    return true;
+}
+
+bool AMtoULiveLinkActor::RestoreGeneratedGarment()
+{
+    if (!CanCompareGarments())
+    {
+        return false;
+    }
+    RefreshComparisonPose();
+    DisplayTarget = EMtoUDisplayTarget::GeneratedPreview;
+    ApplyGarmentVisibility();
+    return true;
 }
 
 void AMtoULiveLinkActor::SetModelDiagnostics(
@@ -391,6 +443,7 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
     DriverMeshComponent->SetForcedLOD(0);
     DriverMeshComponent->ShowAllMaterialSections(0);
     DriverMeshComponent->SetSkeletalMeshAsset(nullptr);
+    DriverMeshComponent->ClearMorphTargets();
     InheritPrimaryDisplaySettings(*DriverMeshComponent);
 
     switch (DisplayTarget)
@@ -399,17 +452,13 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         SkeletalMeshComponent->SetSkeletalMeshAsset(Binding ? Binding->SkeletalMesh : nullptr);
         break;
     case EMtoUDisplayTarget::GeneratedPreview:
+    case EMtoUDisplayTarget::OriginalGarment:
         SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
         if (Binding && Binding->SkeletalMesh && !DriverGarmentMaterialSlots.IsEmpty())
         {
             DriverMeshComponent->SetSkeletalMeshAsset(Binding->SkeletalMesh);
             DriverMeshComponent->SetForcedLOD(1);
             DriverMeshComponent->SetLeaderPoseComponent(SkeletalMeshComponent);
-            for (const int32 MaterialSlot : DriverGarmentMaterialSlots)
-            {
-                DriverMeshComponent->ShowMaterialSection(
-                    MaterialSlot, INDEX_NONE, false, 0);
-            }
         }
         break;
     case EMtoUDisplayTarget::Hidden:
@@ -418,7 +467,51 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         break;
     }
     ConfigureLiveLinkInstance(*SkeletalMeshComponent);
+    ApplyGarmentVisibility();
     ApplyCharacterPartDisplay();
+}
+
+void AMtoULiveLinkActor::ApplyGarmentVisibility()
+{
+    // Hide only the generated material sections, not its component: the
+    // original Driver and enabled parts stay attached and visible.
+    SkeletalMeshComponent->ShowAllMaterialSections(0);
+    DriverMeshComponent->ShowAllMaterialSections(0);
+    if (DisplayTarget == EMtoUDisplayTarget::OriginalGarment && GeneratedPreviewMesh)
+    {
+        for (int32 Slot = 0; Slot < GeneratedPreviewMesh->GetMaterials().Num(); ++Slot)
+        {
+            SkeletalMeshComponent->ShowMaterialSection(Slot, INDEX_NONE, false, 0);
+        }
+    }
+    else if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
+    {
+        for (const int32 Slot : DriverGarmentMaterialSlots)
+        {
+            DriverMeshComponent->ShowMaterialSection(Slot, INDEX_NONE, false, 0);
+        }
+    }
+}
+
+void AMtoULiveLinkActor::RefreshComparisonPose()
+{
+    if (!SkeletalMeshComponent || !GeneratedPreviewMesh)
+    {
+        return;
+    }
+    // A mesh with every render section hidden can be skipped by the editor's
+    // normal animation evaluation. Keep the pose driver current while the
+    // original garment is shown; the Driver follower shares these bones.
+    SkeletalMeshComponent->TickAnimation(0.0f, false);
+    SkeletalMeshComponent->RefreshBoneTransforms();
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        if (Part && Part->GetSkeletalMeshAsset())
+        {
+            Part->TickAnimation(0.0f, false);
+            Part->RefreshBoneTransforms();
+        }
+    }
 }
 
 void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Component)
@@ -585,7 +678,8 @@ void AMtoULiveLinkActor::ApplyModelMorphCurves(
     USkeletalMesh* DriverMesh = DriverMeshComponent
         ? DriverMeshComponent->GetSkeletalMeshAsset()
         : nullptr;
-    if (DisplayTarget != EMtoUDisplayTarget::GeneratedPreview || !DriverMesh)
+    if ((DisplayTarget != EMtoUDisplayTarget::GeneratedPreview
+            && DisplayTarget != EMtoUDisplayTarget::OriginalGarment) || !DriverMesh)
     {
         return;
     }
