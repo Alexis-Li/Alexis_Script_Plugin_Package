@@ -17,10 +17,12 @@ public class MtoUCameraSyncPrototypeEditor : ModuleRules
 			"Json",
 			"JsonUtilities",
 			"LevelSequence",
+			"LevelSequenceEditor",
 			"MovieScene",
 			"MovieSceneTracks",
 			"Networking",
 			"Sockets",
+			"Sequencer",
 			"UnrealEd",
 		});
 	}

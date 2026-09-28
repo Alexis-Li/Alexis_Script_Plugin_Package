@@ -11,15 +11,20 @@
 #include "Dom/JsonValue.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Editor.h"
+#include "ILevelSequenceEditorToolkit.h"
+#include "ISequencer.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "LevelSequence.h"
+#include "LevelSequenceEditorBlueprintLibrary.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "MtoUCameraSyncCapture.h"
 #include "MtoUCameraSyncSession.h"
 #include "MovieScene.h"
@@ -31,6 +36,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Tracks/MovieSceneSubTrack.h"
 
@@ -590,6 +596,122 @@ bool FMtoUCameraSyncSubsequenceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncTrailingByteTest,
+	"MtoUCameraSyncPrototype.TrailingByteCount",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncTrailingByteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FMtoUCameraSyncSession Session;
+	Session.HandleClientLine(TEXT("{\"type\":\"bye\"}\u00E9"));
+	TestEqual(TEXT("one anomalous client line"), Session.GetClientLineAnomalyCount(), 1ll);
+	TestEqual(TEXT("the trailing character is two UTF-8 bytes"),
+		Session.GetClientTrailingByteCount(), 2ll);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncEditorSequencerTest,
+	"MtoUCameraSyncPrototype.EditorSequencer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncEditorSequencerTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("editor world"), World)) { return false; }
+	ULevelSequence* Sequence = MakeSequence(FFrameRate(24, 1), FFrameRate(24000, 1),
+		1001 * 1000, 1051 * 1000);
+	ACineCameraActor* CameraA = SpawnCamera(*World, FVector(0, 0, 100),
+		FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+	ACineCameraActor* CameraB = SpawnCamera(*World, FVector(300, 200, 150),
+		FRotator::ZeroRotator, 85.0f, 4.0f, 800.0f);
+	if (!TestNotNull(TEXT("camera A"), CameraA) || !TestNotNull(TEXT("camera B"), CameraB))
+	{
+		return false;
+	}
+	AddCut(*Sequence, BindActor(*Sequence, *World, *CameraA, TEXT("CamA")),
+		1001 * 1000, 1026 * 1000);
+	AddCut(*Sequence, BindActor(*Sequence, *World, *CameraB, TEXT("CamB")),
+		1026 * 1000, 1051 * 1000);
+	ULevelSequence* Shot = MakeSequence(FFrameRate(24, 1), FFrameRate(24000, 1),
+		0, 20 * 1000);
+	UMovieSceneSubTrack* SubTrack = Sequence->GetMovieScene()->AddTrack<UMovieSceneSubTrack>();
+	UMovieSceneSubSection* SubSection = SubTrack->AddSequence(
+		Shot, FFrameNumber(1020 * 1000), 20 * 1000);
+
+	const bool bOpened = ULevelSequenceEditorBlueprintLibrary::OpenLevelSequence(Sequence);
+	TestTrue(TEXT("the real Level Sequence editor opens"), bOpened);
+	TestEqual(TEXT("the editor exposes the opened root sequence"),
+		ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence(), Sequence);
+	IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+		->FindEditorForAsset(Sequence, false);
+	TSharedPtr<ISequencer> Sequencer = AssetEditor
+		&& AssetEditor->GetEditorName() == FName(TEXT("LevelSequenceEditor"))
+		? static_cast<ILevelSequenceEditorToolkit*>(AssetEditor)->GetSequencer() : nullptr;
+	if (!TestTrue(TEXT("the open toolkit exposes Sequencer"), Sequencer.IsValid()))
+	{
+		if (bOpened) { ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence(); }
+		CameraA->Destroy();
+		CameraB->Destroy();
+		return false;
+	}
+
+	Sequencer->SetGlobalTime(FFrameTime(1001 * 1000));
+	Sequencer->ForceEvaluate();
+	FMtoUCameraSyncSession Session;
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	FString Error;
+	const bool bStarted = Session.StartFromEditor(*World, Sequencer.ToSharedRef(), Config, Error);
+	TestTrue(TEXT("session follows the open Sequencer"), bStarted);
+	if (bStarted)
+	{
+		TestTrue(TEXT("editor source creates no second player"), Session.IsEditorSource());
+		Session.Pump(0.0);
+		FMtoUCameraSyncFrameSample Frame;
+		if (TestTrue(TEXT("first editor frame builds"), Session.BuildCurrentFrame(Frame, Error)))
+		{
+			TestEqual(TEXT("first editor camera cut"), Frame.Camera.FocalLengthMm, 50.0);
+			TestEqual(TEXT("first editor root display frame"), Frame.Time.DisplayFrame, 1001.0);
+		}
+		Sequencer->SetGlobalTime(FFrameTime(1030 * 1000));
+		Sequencer->ForceEvaluate();
+		Session.Pump(0.0);
+		if (TestTrue(TEXT("second editor frame builds"), Session.BuildCurrentFrame(Frame, Error)))
+		{
+			TestEqual(TEXT("second editor camera cut"), Frame.Camera.FocalLengthMm, 85.0);
+			TestEqual(TEXT("second editor root display frame"), Frame.Time.DisplayFrame, 1030.0);
+		}
+		ULevelSequenceEditorBlueprintLibrary::FocusLevelSequence(SubSection);
+		Session.Pump(0.0);
+		if (TestTrue(TEXT("focused shot frame builds"), Session.BuildCurrentFrame(Frame, Error)))
+		{
+			TestEqual(TEXT("focus changed to the shot"),
+				ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence(), Shot);
+			TestEqual(TEXT("focused shot still publishes root time"),
+				Frame.Time.DisplayFrame, 1030.0);
+			TestEqual(TEXT("focused shot preserves the evaluated root cut"),
+				Frame.Camera.FocalLengthMm, 85.0);
+		}
+		ULevelSequenceEditorBlueprintLibrary::FocusParentSequence();
+		Session.SetDisplayFrame(1010.0);
+		Session.Pump(0.0);
+		TestEqual(TEXT("the prototype cannot override the editor playhead"),
+			Session.GetDisplayFrame(), 1030.0);
+		Session.Stop(TEXT("editor test finished"));
+		TestEqual(TEXT("stopping follow leaves the editor playhead alone"),
+			Sequencer->GetGlobalTime().Time.AsDecimal(), 1030.0 * 1000.0);
+	}
+	else { AddError(Error); }
+	ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence();
+	CameraA->Destroy();
+	CameraB->Destroy();
+	return true;
+}
+
 // Opt-in real Maya peer: drives the publisher over a real socket and applies every frame
 // in Maya 2024. Requires -MtoUCameraSyncMayapy=, -MtoUCameraSyncPeer= and -MtoUEvidence=.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -621,19 +743,31 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	FPrototypeWorld Fixture;
-	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("real editor world"), World))
 	{
 		return false;
 	}
+	TArray<TWeakObjectPtr<AActor>> OwnedActors;
+	bool bEditorOpened = false;
+	ON_SCOPE_EXIT
+	{
+		if (bEditorOpened) { ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence(); }
+		for (const TWeakObjectPtr<AActor>& Actor : OwnedActors)
+		{
+			if (Actor.IsValid()) { Actor->Destroy(); }
+		}
+	};
 
 	const FFrameRate DisplayRate(24, 1);
 	const FFrameRate TickResolution(24000, 1);
 	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
 	ACineCameraActor* CameraA = SpawnCamera(
-		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 50.0f, 2.0f, 400.0f);
+		*World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 50.0f, 2.0f, 400.0f);
 	ACineCameraActor* CameraB = SpawnCamera(
-		*Fixture.World, FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+		*World, FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+	if (CameraA) { OwnedActors.Add(CameraA); }
+	if (CameraB) { OwnedActors.Add(CameraB); }
 	if (!TestNotNull(TEXT("camera A"), CameraA) || !TestNotNull(TEXT("camera B"), CameraB))
 	{
 		return false;
@@ -646,14 +780,30 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		Component->Filmback.SensorHeight = 18.72f;
 		Component->Filmback.SensorAspectRatio = 1.333333f;
 	}
-	SpawnMarker(*Fixture.World, TEXT("m_center"), FVector(900.0, 0.0, 100.0));
-	SpawnMarker(*Fixture.World, TEXT("m_upper_left"), FVector(1400.0, -500.0, 300.0));
-	SpawnMarker(*Fixture.World, TEXT("m_lower_right"), FVector(1600.0, 420.0, -120.0));
+	OwnedActors.Add(SpawnMarker(*World, TEXT("m_center"), FVector(900.0, 0.0, 100.0)));
+	OwnedActors.Add(SpawnMarker(*World, TEXT("m_upper_left"), FVector(1400.0, -500.0, 300.0)));
+	OwnedActors.Add(SpawnMarker(*World, TEXT("m_lower_right"), FVector(1600.0, 420.0, -120.0)));
+	AActor* PoseWitness = SpawnMarker(*World, TEXT("pose_witness"), FVector::ZeroVector);
+	if (PoseWitness)
+	{
+		PoseWitness->Tags.Remove(FName(MarkerTagName));
+		OwnedActors.Add(PoseWitness);
+	}
 
-	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraA, TEXT("CamA")),
+	AddCut(*Sequence, BindActor(*Sequence, *World, *CameraA, TEXT("CamA")),
 		1001 * 1000, 1026 * 1000);
-	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraB, TEXT("CamB")),
+	AddCut(*Sequence, BindActor(*Sequence, *World, *CameraB, TEXT("CamB")),
 		1026 * 1000, 1051 * 1000);
+	bEditorOpened = ULevelSequenceEditorBlueprintLibrary::OpenLevelSequence(Sequence);
+	if (!TestTrue(TEXT("real Level Sequence editor opens"), bEditorOpened)) { return false; }
+	IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+		->FindEditorForAsset(Sequence, false);
+	TSharedPtr<ISequencer> Sequencer = AssetEditor
+		&& AssetEditor->GetEditorName() == FName(TEXT("LevelSequenceEditor"))
+		? static_cast<ILevelSequenceEditorToolkit*>(AssetEditor)->GetSequencer() : nullptr;
+	if (!TestTrue(TEXT("real Sequencer is available"), Sequencer.IsValid())) { return false; }
+	Sequencer->SetGlobalTime(FFrameTime(1001 * 1000));
+	Sequencer->ForceEvaluate();
 
 	FMtoUCameraSyncSession::FConfig Config;
 	Config.Port = ReserveLoopbackPort();
@@ -665,11 +815,13 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 
 	FMtoUCameraSyncSession Session;
 	FString Error;
-	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	if (!TestTrue(TEXT("session follows real editor"),
+		Session.StartFromEditor(*World, Sequencer.ToSharedRef(), Config, Error)))
 	{
 		AddError(Error);
 		return false;
 	}
+	Session.SetPoseWitnessTarget(PoseWitness);
 
 	const FString FixturePath = FPaths::Combine(Evidence, TEXT("camera-sync-fixture.json"));
 	const FString ResultPath = FPaths::Combine(Evidence, TEXT("camera-sync-result.json"));
@@ -717,7 +869,7 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	}
 
 	TArray<TSharedPtr<FJsonObject>> PublishedFrames;
-	Session.SetDisplayFrame(1001.0);
+	TestTrue(TEXT("the session has no second sequence player"), Session.IsEditorSource());
 	int32 AppliedReports = 0;
 	int32 AppliedCuts = 0;
 	int64 LastRecordedPublish = 0;
@@ -740,7 +892,8 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		const int32 PublishedSoFar = static_cast<int32>(Session.GetPublishedFrameCount());
 		if (PublishedSoFar == 2 && !bSwitchedToSecondCut)
 		{
-			Session.SetDisplayFrame(1030.0);
+			Sequencer->SetGlobalTime(FFrameTime(1030 * 1000));
+			Sequencer->ForceEvaluate();
 			bSwitchedToSecondCut = true;
 		}
 		Session.Pump(Delta);
@@ -793,8 +946,94 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	PeerOutput += FPlatformProcess::ReadPipe(PeerPipeRead);
 	SaveJson(PeerLogPath, PeerOutput);
 	FPlatformProcess::ClosePipe(PeerPipeRead, PeerPipeWrite);
-
+	Session.Pump(0.0);
+	const int32 PeerAppliedReports = Session.GetAppliedReports().Num();
+	const int64 PairedBeforeReplay = Session.GetPairedPoseCount();
+	const double WitnessBeforeReplay = PoseWitness ? PoseWitness->GetActorLocation().Y : 0.0;
+	FString PairedReportJson;
+	for (const FMtoUCameraSyncSession::FAppliedReport& Applied : Session.GetAppliedReports())
+	{
+		if (Applied.bPosePaired)
+		{
+			PairedReportJson = Applied.RawJson;
+			break;
+		}
+	}
+	if (!PairedReportJson.IsEmpty()) { Session.HandleClientLine(PairedReportJson); }
+	TestTrue(TEXT("Maya joint pose was paired with a current editor camera frame"),
+		PairedBeforeReplay >= 1);
+	if (PairedBeforeReplay >= 1)
+	{
+		TestEqual(TEXT("duplicate or stale pose does not pair again"),
+			Session.GetPairedPoseCount(), PairedBeforeReplay);
+		TestTrue(TEXT("duplicate or stale pose does not overwrite the UE witness"),
+			PoseWitness && FMath::IsNearlyEqual(PoseWitness->GetActorLocation().Y,
+				WitnessBeforeReplay, 1e-6));
+	}
+	// Reconnect the transport and replay a valid pose from the first connection.
+	// A new connection gets a new session identity even when it uses the same port.
+	for (int32 Attempt = 0; Attempt < 20 && Session.HasClient(); ++Attempt)
+	{
+		Session.Pump(0.0);
+		FPlatformProcess::Sleep(0.005f);
+	}
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	FSocket* ReconnectedClient = Sockets
+		? Sockets->CreateSocket(NAME_Stream, TEXT("MtoU camera reconnect test")) : nullptr;
+	bool bConnectedAgain = false;
+	if (ReconnectedClient)
+	{
+		const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+		bool bValidAddress = false;
+		Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
+		Address->SetPort(Config.Port);
+		bConnectedAgain = bValidAddress && ReconnectedClient->Connect(*Address);
+	}
+	TestTrue(TEXT("a second client reconnects after Maya exits"), bConnectedAgain);
+	if (bConnectedAgain)
+	{
+		const FString Hello = TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\","
+			"\"version\":1,\"host\":\"reconnect-test\",\"scene_fps\":24,"
+			"\"time_unit\":\"film\"}\n");
+		const FTCHARToUTF8 HelloBytes(*Hello);
+		int32 Sent = 0;
+		ReconnectedClient->Send(reinterpret_cast<const uint8*>(HelloBytes.Get()),
+			HelloBytes.Length(), Sent);
+		const int64 PublishedBeforeReconnect = Session.GetPublishedFrameCount();
+		for (int32 Attempt = 0; Attempt < 30
+			&& (!Session.IsGreeted() || Session.GetPublishedFrameCount() == PublishedBeforeReconnect);
+			++Attempt)
+		{
+			Session.Pump(0.1);
+			FPlatformProcess::Sleep(0.005f);
+		}
+		TestEqual(TEXT("reconnection has a new identity"),
+			Session.GetConnectionSessionId(), 2ll);
+		TestTrue(TEXT("reconnection publishes its own evaluated frame"),
+			Session.GetPublishedFrameCount() > PublishedBeforeReconnect);
+		const int64 RejectedBeforeOldSession = Session.GetRejectedPoseCount();
+		const FString OldPoseLine = PairedReportJson + TEXT("\n");
+		const FTCHARToUTF8 OldPoseBytes(*OldPoseLine);
+		ReconnectedClient->Send(reinterpret_cast<const uint8*>(OldPoseBytes.Get()),
+			OldPoseBytes.Length(), Sent);
+		for (int32 Attempt = 0; Attempt < 30
+			&& Session.GetRejectedPoseCount() == RejectedBeforeOldSession; ++Attempt)
+		{
+			Session.Pump(0.0);
+			FPlatformProcess::Sleep(0.005f);
+		}
+		TestEqual(TEXT("an old-session pose is refused after reconnect"),
+			Session.GetRejectedPoseCount(), RejectedBeforeOldSession + 1);
+		TestTrue(TEXT("old-session pose cannot overwrite the UE witness"),
+			PoseWitness && FMath::IsNearlyEqual(PoseWitness->GetActorLocation().Y,
+				WitnessBeforeReplay, 1e-6));
+	}
 	Session.Stop(TEXT("peer session finished"));
+	if (ReconnectedClient)
+	{
+		ReconnectedClient->Close();
+		Sockets->DestroySocket(ReconnectedClient);
+	}
 
 	TSharedPtr<FJsonObject> PeerResult;
 	const bool bResultLoaded = LoadJson(ResultPath, PeerResult);
@@ -805,10 +1044,14 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		&& PeerResult->GetBoolField(TEXT("ok")));
 	TestTrue(TEXT("peer applied several frames"), AppliedReports >= 3);
 	TestTrue(TEXT("peer applied frames from both camera cuts"), AppliedCuts >= 1);
+	TestEqual(TEXT("every Maya application report reached UE intact"),
+		PeerAppliedReports, AppliedReports);
 	TestTrue(TEXT("Unreal recorded the applied reports"),
 		Session.GetAppliedReports().Num() >= 1);
 	TestEqual(TEXT("client never sent a time or camera command"),
 		Session.GetRejectedCommandTypes().Num(), 0);
+	TestEqual(TEXT("client JSON lines have no discarded suffix"),
+		Session.GetClientLineAnomalyCount(), 0ll);
 
 	// Per-frame comparison between the published payload and what Maya actually applied.
 	double MaxMarkerDelta = 0.0;
@@ -898,7 +1141,9 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 
 	const TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
 	Report->SetNumberField(TEXT("published_frames"), Session.GetPublishedFrameCount());
-	Report->SetNumberField(TEXT("applied_reports"), Session.GetAppliedReports().Num());
+	Report->SetNumberField(TEXT("applied_reports"), PeerAppliedReports);
+	Report->SetNumberField(TEXT("synthetic_stale_replays"),
+		Session.GetAppliedReports().Num() - PeerAppliedReports);
 	Report->SetNumberField(TEXT("max_marker_ndc_delta"), MaxMarkerDelta);
 	Report->SetNumberField(TEXT("peer_exit_code"), ReturnCode);
 	Report->SetStringField(TEXT("session_last_error"), Session.GetLastError());
@@ -907,6 +1152,9 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	Report->SetStringField(TEXT("last_client_line_anomaly"), Session.GetLastClientLineAnomaly());
 	Report->SetStringField(TEXT("peer_output_tail"), PeerOutput.Right(4000));
 	Report->SetNumberField(TEXT("failed_sends"), Session.GetFailedSendCount());
+	Report->SetNumberField(TEXT("paired_poses"), Session.GetPairedPoseCount());
+	Report->SetNumberField(TEXT("rejected_poses"), Session.GetRejectedPoseCount());
+	Report->SetNumberField(TEXT("pose_witness_ue_y"), WitnessBeforeReplay);
 	TArray<TSharedPtr<FJsonValue>> AppliedValues;
 	for (const FMtoUCameraSyncSession::FAppliedReport& Applied : Session.GetAppliedReports())
 	{
@@ -914,6 +1162,8 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Applied.RawJson), AppliedObject)
 			&& AppliedObject.IsValid())
 		{
+			AppliedObject->SetBoolField(TEXT("ue_pose_paired"), Applied.bPosePaired);
+			AppliedObject->SetStringField(TEXT("ue_pairing_error"), Applied.PairingError);
 			AppliedValues.Add(MakeShared<FJsonValueObject>(AppliedObject));
 		}
 	}
@@ -930,7 +1180,7 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("report written"), SaveJson(ReportPath, JsonToText(Report)));
 	TestTrue(TEXT("the publisher reported no transport problem"),
-		Session.GetLastError().IsEmpty() || Session.GetClientLineAnomalyCount() > 0);
+		Session.GetLastError().IsEmpty());
 	AddInfo(FString::Printf(
 		TEXT("client lines with trailing bytes: %lld (%lld bytes discarded)"),
 		Session.GetClientLineAnomalyCount(), Session.GetClientTrailingByteCount()));

@@ -231,7 +231,7 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
             "markers": frame_markers,
         }
         frames.append(frame)
-        maya_time, quantized = mapping.maya_time_for_frame(
+        maya_time, subframe = mapping.maya_time_for_frame(
             display_frame, playback_start, {"numerator": display_numerator,
                                             "denominator": display_denominator},
             scene_fps, maya_start_frame)
@@ -242,8 +242,8 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
             "frame_serial": frame["frame_serial"],
             "unreal_display_frame": display_frame,
             "maya_time": maya_time,
-            "maya_frame": mapping.applied_maya_time(maya_time, quantized),
-            "quantized": quantized,
+            "maya_frame": mapping.applied_maya_time(maya_time, subframe),
+            "subframe": subframe,
             "focal_length_mm": frame_camera["focal_length_mm"],
             "horizontal_film_aperture_in": attributes["horizontalFilmAperture"],
             "vertical_film_aperture_in": attributes["verticalFilmAperture"],
@@ -265,6 +265,7 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
         "port": port,
         "scene_fps": scene_fps,
         "maya_start_frame": maya_start_frame,
+        "maya_origin_frame": maya_start_frame,
         "playback_range": {"start": float(playback_start), "end": float(playback_start) + 100.0},
         "camera_name": camera_name,
         "frames_to_apply": frames_to_apply,

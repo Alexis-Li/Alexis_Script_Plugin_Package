@@ -107,6 +107,14 @@ def main(argv=None):
                          time=playback["start"], value=1.0)
         cmds.setKeyframe(witness, attribute="translateX",
                          time=playback["end"], value=5.0)
+        subframe_joint = cmds.createNode("joint", name="MtoUSubframeJoint")
+        subframe_before = int(fixture["expected"][2]["maya_frame"])
+        cmds.setKeyframe(subframe_joint, attribute="translateX",
+                         time=subframe_before, value=0.0)
+        cmds.setKeyframe(subframe_joint, attribute="translateX",
+                         time=subframe_before + 1, value=10.0)
+        cmds.keyTangent(subframe_joint, attribute="translateX",
+                        inTangentType="linear", outTangentType="linear")
 
         check = checks.check
         check("scene linear unit is centimetres",
@@ -121,7 +129,9 @@ def main(argv=None):
         frame["type"] = "frame"
         frame["session"] = fixture["session"]["sequence"]
         frame["sequence"] = 1
-        follower = applier.CameraSyncFollower(port=1, camera_name=fixture["camera_name"])
+        follower = applier.CameraSyncFollower(
+            port=1, camera_name=fixture["camera_name"],
+            maya_origin_frame=fixture["maya_start_frame"])
         follower._scene_fps = 24.0
         follower._start_time = float(cmds.currentTime(query=True))
         follower._undo_state = bool(cmds.undoInfo(query=True, state=True))
@@ -131,10 +141,10 @@ def main(argv=None):
         applied = follower.apply_frame(frame, follower.session)
         transform, shape = follower.camera_nodes
 
-        check("frame was applied", applied["status"] in ("applied", "applied_quantized"),
+        check("frame was applied", applied["status"] == "applied",
               str(applied["status"]) + " " + str(applied["detail"]))
-        check("time was quantized as the contract says",
-              applied["status"] == "applied_quantized" and applied["camera"]["quantized"],
+        check("subframe was applied without quantization",
+              applied["camera"]["subframe"],
               "display frame {0}".format(frame["time"]["display_frame"]))
 
         expected_camera = frame["camera"]
@@ -198,15 +208,16 @@ def main(argv=None):
 
         applied_time = float(cmds.currentTime(query=True))
         checks.close("applied time", applied_time, applied["maya_frame"])
+        checks.close("Maya joint evaluates the exact subframe",
+                     float(cmds.getAttr(subframe_joint + ".translateX")), 5.0)
         expected_sample = fixture["expected"][2]
         checks.close("applied time follows the contract",
                      applied["maya_frame"], expected_sample["maya_frame"])
-        checks.close("the applied frame is the quantized contract value",
-                     applied["maya_frame"], round(expected_sample["maya_time"]))
+        checks.close("the applied frame retains the contract subframe",
+                     applied["maya_frame"], expected_sample["maya_time"])
         check("the raw contract time is sub-frame",
-              abs(expected_sample["maya_time"] - expected_sample["maya_frame"]) > 0.4,
-              "maya_time {0} applied as {1}".format(expected_sample["maya_time"],
-                                                    expected_sample["maya_frame"]))
+              not float(expected_sample["maya_time"]).is_integer(),
+              "maya_time {0}".format(expected_sample["maya_time"]))
 
         # ------------------------------------------------------- marker NDC
         markers = applied["markers"]
@@ -262,10 +273,12 @@ def main(argv=None):
 
         # ------------------------------------------------- socket session
         report["phase"] = "socket"
-        cmds.currentTime(fixture["maya_start_frame"])
+        socket_initial_time = fixture["maya_start_frame"] - 11.0
+        cmds.currentTime(socket_initial_time)
         publisher = mock.MockPublisher(fixture, host="127.0.0.1", port=0)
         port = publisher.start()
-        driver = applier.CameraSyncFollower(port=port)
+        driver = applier.CameraSyncFollower(
+            port=port, maya_origin_frame=fixture["maya_origin_frame"])
         session = driver.connect()
         check("handshake returned the session", session["protocol"] == mock.PROTOCOL_NAME,
               str(session.get("protocol")))
@@ -334,6 +347,8 @@ def main(argv=None):
         check("socket marker deltas stay inside tolerance",
               socket_worst is not None and socket_worst <= 1e-6, str(socket_worst))
         socket_stop = driver.stop()
+        checks.close("session restores its unrelated connection frame",
+                     float(cmds.currentTime(query=True)), socket_initial_time)
         check("socket session removed its camera",
               not cmds.objExists(applier.DEFAULT_CAMERA_NAME), str(socket_stop))
         publisher.stop()
@@ -341,6 +356,7 @@ def main(argv=None):
         check("the publisher received one applied report per frame sent",
               len(publisher.applied) == args.frames * 2,
               "{0} reports for {1} frames".format(len(publisher.applied), args.frames))
+        cmds.currentTime(fixture["maya_start_frame"])
 
         # ------------------------------------------------- lost connection
         report["phase"] = "transport"

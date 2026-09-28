@@ -5,8 +5,8 @@ Follower for the bounded Unreal -> Maya camera sync prototype described in
 resolution; this side applies each received frame to one disposable Maya
 camera, moves Maya's current time to the reported position, and answers with
 the values it actually holds plus Maya's own marker NDC for comparison.
-`protocol.md` is the frozen contract; this folder implements the Maya half of
-it and never changes it.
+`protocol.md` describes this bounded contract; the product's v9 protocol is
+separate.
 
 Nothing here imports or depends on the product's `MtoULiveLink.py`.
 
@@ -59,6 +59,8 @@ path for a live viewport session:
 "$MAYAPY" .../scripts/MtoUCameraSyncPrototype.py --host 127.0.0.1 --port 54330 \
   --duration 30 --camera-name MtoU_UE_Camera --result session.json
 #    --idle-pump drives the session from Maya's idle event (interactive Maya)
+#    --maya-origin-frame 1001 explicitly maps UE's playback start to Maya 1001
+#    --pose-node MyJoint optionally returns its keyed translateX as a witness
 ```
 
 ## What the Maya side accepts and sends
@@ -93,15 +95,18 @@ frame is applied.
   follower records such an `error` line and keeps following.
 
 `applied` carries `session`, `sequence`, `frame_serial`, `maya_frame`,
-`status` (`applied`, `applied_quantized` or `rejected`), `detail`,
+the explicit Maya origin, Unreal display frame and camera path,
+`status` (`applied` or `rejected`), `detail`,
 `markers[{name, unreal_ndc, maya_ndc, delta}]` and `camera`, whose keys are the
 Maya attribute names read back from the node (`focalLength`,
 `horizontalFilmAperture`, `verticalFilmAperture`, `horizontalFilmOffset`,
 `verticalFilmOffset`, `filmFit`, `lensSqueezeRatio`, `fStop`, `focusDistance`,
 `depthOfField`, `nearClipPlane`, `farClipPlane`, `displayResolution`,
 `displayGateMask`, `defaultResolution`), plus `transform`, `shape`,
-`maya_time`, `applied_time`, `quantized`, `far_clip_substituted`,
+`maya_time`, `applied_time`, `subframe`, `far_clip_substituted`,
 `far_clip_source`, `film_fit`, `lens_squeeze_ratio` and `world_matrix`.
+When `--pose-node` is set, `pose` carries the sampled Maya time and joint
+`translateX`; the Unreal test only uses it after identity and time checks.
 
 The peer's result JSON renames those to the Unreal side's vocabulary
 (`focal_length_mm`, `horizontal_film_aperture_in`, `film_fit`,
@@ -127,10 +132,11 @@ The peer's result JSON renames those to the Unreal side's vocabulary
   `Fill` branch was corrected against rendered images: Maya inscribes the
   resolution gate in the film gate, so with a gate wider than the sensor the
   horizontal aperture is exact, otherwise the vertical one is.
-* Time: `maya_time = maya_start_frame + (display_frame - playback_start) *
-  scene_fps / display_rate`. A non-integral result is reported as
-  `quantized: true` and applied at the nearest integer frame; Maya never
-  silently keeps a stale frame.
+* Time: `maya_time = maya_origin_frame + (display_frame - playback_start) *
+  scene_fps / display_rate`. By default the origin is the Unreal playback
+  start, so equal rates keep the same frame number regardless of Maya's frame
+  when it connected. Use `--maya-origin-frame` for another explicit alignment.
+  Maya 2024 evaluates non-integral results directly and reports `subframe: true`.
 * Far clip: Unreal has none. Maya takes the payload's `far_clip_cm`, else the
   session's `far_clip_fallback_cm`, else a documented prototype default
   (`100000.0` cm), and reports the substitution in `detail` and in
@@ -158,63 +164,13 @@ The peer's result JSON renames those to the Unreal side's vocabulary
   reused, never deleted), detaches the idle pump and reports a summary. A lost
   connection reports the reason and leaves Maya usable.
 
-## Environment notes from this machine
+## Host notes and limits
 
-Verified with Maya 2024 (mayapy 3.10.8) and Arnold/mtoa 5.3.4.1.
+Batch mayapy has no idle events; call `pump()` there. The interactive Maya
+follower can use `--idle-pump`. The disposable camera and previous current frame
+are restored on stop, and the scene is never saved by this prototype.
 
-* `cmds.scriptJob(idleEvent=...)` returns `None` in batch mayapy: batch Maya
-  has no UI and delivers no idle events. The follower therefore attaches an
-  idle pump only when Maya reports a UI, reports the reason when it cannot, and
-  `pump()` is the headless path. `tests/maya_host_camera_tests.py` verifies the
-  callback body itself and that no scriptJob survives `stop()`.
-* `MImage.pixels()` and `MImage.floatPixels()` return raw pointers (an `int`)
-  in this Maya build rather than a Python sequence, so the render check decodes
-  Maya's Targa output with the standard library instead: no third party decoder
-  is installed (no numpy, no PIL), and the format is selected from
-  `defaultRenderGlobals.imageFormat`, whose enum entries can carry explicit
-  values (`PNG=32`), so the names are parsed rather than indexed.
-
-## Evidence
-
-`tests/maya_host_camera_tests.py` (56 checks) asserts, on a disposable scene
-with a non-zero playback range: the axes and units, every mapped camera
-attribute and its units, the film fit, the resolution gate, the world matrix
-read back with `cmds.xform(query=True, worldSpace=True, matrix=True)`, the
-applied time (including quantization), that the marker NDC agrees with the
-Unreal NDC the payload carried, that no keys appear and the playback range is
-unchanged, that a frame missing a field is rejected without touching the
-camera, that `stop()` restores the time and removes the camera, a full socket
-session against the mock publisher (including a refused second connection and a
-refused client-controlled time message), that a lost connection reports its
-reason while leaving Maya usable, and -- with `--render` -- the Arnold framing
-check.
-
-The render check renders the synced camera at the declared output resolution
-with emissive marker spheres on black, locates each marker's centroid in the
-image, and compares it with Maya's own projection and with the Unreal NDC. On
-this machine it passes for the payload's `Horizontal` fit (0.15 px) and for
-`Fill` and `Vertical` variant configurations (0.09 px, 0.13 px, 0.20 px), well
-inside the 2 px tolerance; markers the variant framings push out of the image
-are reported as skipped rather than matched.
-
-## Real cross-host outcome
-
-The Unreal publisher drove this follower over a real socket with two camera
-cuts, a non-zero playback start, and six published frames. All six applied with
-status `applied`, none was rejected or quantized, the read-back focal length,
-film aperture, film fit, f-stop, focus distance, and gate matched the payload,
-Maya's marker NDC differed from Unreal's by at most `1.09e-07`, `stop()` restored
-the previous current time, removed the created camera, and left the playback
-range and every existing key unchanged.
-
-Two client lines carried extra bytes after a complete message in that session
-(28112 bytes discarded, recorded by the publisher). The follower's own output is
-byte-clean against a plain Python server, so the anomaly is attributed to the
-Maya process on this host rather than to the wire format, and it never changed
-an applied value.
-
-Also measured: the resolution gate must follow the payload's
-`aperture_resolution` rather than its full `output_resolution`. Maya derives the
-axis it does not keep from the gate aspect, so a 4:3 aperture in a 16:9 gate
-framed 0.25–0.38 NDC away from Unreal until the gate was set to the aperture
-extent.
+The keyed-joint witness verifies one sampled value and its time identity. It
+does not use the MtoULiveLink product's pose channel or prove full-character
+streaming or continuous playback. See the [Issue 52 acceptance record](../../../../../../docs/project-history/mtou-livelink/issue-52-camera-sync-acceptance.md)
+for measured host results and remaining scope.

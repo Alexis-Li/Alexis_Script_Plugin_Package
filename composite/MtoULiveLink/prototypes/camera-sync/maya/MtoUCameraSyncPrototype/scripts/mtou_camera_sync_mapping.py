@@ -323,28 +323,26 @@ def display_rate_value(display_rate):
 
 
 def maya_time_for_frame(display_frame, playback_start, display_rate,
-                        scene_fps, maya_start_frame):
-    """Maya time for an Unreal display frame. Returns ``(maya_time, quantized)``.
+                        scene_fps, maya_origin_frame):
+    """Map two explicit range origins, retaining the fractional Maya frame.
 
-    ``maya_time`` is the exact value of the contract's formula; ``quantized`` is
-    true when it is not an integer, in which case the applier moves Maya to
-    ``round(maya_time)`` and reports the quantization.
+    The second return value says whether the mapped time has a subframe. Maya
+    2024 evaluates that time directly, including animated scene nodes.
     """
     rate = display_rate_value(display_rate)
     if rate <= 0.0:
         raise ValueError("display_rate must be positive")
     if float(scene_fps) <= 0.0:
         raise ValueError("scene_fps must be positive")
-    time_value = (float(maya_start_frame)
+    time_value = (float(maya_origin_frame)
                   + (float(display_frame) - float(playback_start))
                   * float(scene_fps) / rate)
-    quantized = not float(time_value).is_integer()
-    return (time_value, quantized)
+    return (time_value, not float(time_value).is_integer())
 
 
-def applied_maya_time(maya_time, quantized):
-    """The frame Maya is actually moved to, per the contract (nearest integer)."""
-    return float(round(maya_time)) if quantized else float(maya_time)
+def applied_maya_time(maya_time, subframe):
+    """The frame Maya is actually moved to; subframes are not rounded."""
+    return float(maya_time)
 
 
 # --------------------------------------------------------------------------

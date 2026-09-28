@@ -10,6 +10,7 @@ class AActor;
 struct FIPv4Endpoint;
 class FSocket;
 class FTcpListener;
+class ISequencer;
 class UCameraComponent;
 class ULevelSequence;
 class ULevelSequencePlayer;
@@ -29,6 +30,9 @@ public:
 		int64 Serial = 0;
 		FString Status;
 		double MayaFrame = 0.0;
+		bool bPosePaired = false;
+		FString PairingError;
+		double PoseTranslateX = 0.0;
 		FString RawJson;
 	};
 
@@ -45,6 +49,9 @@ public:
 	~FMtoUCameraSyncSession();
 
 	bool Start(UWorld& World, ULevelSequence& Sequence, const FConfig& InConfig, FString& OutError);
+	/** Follow the already open editor Sequencer; never create or control another player. */
+	bool StartFromEditor(UWorld& World, const TSharedRef<ISequencer>& Sequencer,
+		const FConfig& InConfig, FString& OutError);
 	void Stop(const FString& Reason);
 
 	/** Accepts the client, reads its messages, advances time and publishes the current frame. */
@@ -59,10 +66,13 @@ public:
 	void Pause();
 	void SetPlayRate(double InPlayRate);
 	void SetLoop(bool bInLoop);
-	bool IsPlaying() const { return bPlaying; }
+	bool IsPlaying() const;
+	bool IsEditorSource() const { return bEditorSource; }
 	double GetDisplayFrame() const { return CurrentDisplayFrame; }
 
 	void SetFallbackCamera(UCameraComponent* Camera);
+	/** A disposable witness actor used only by the cross-host pose pairing test. */
+	void SetPoseWitnessTarget(AActor* Actor) { PoseWitnessTarget = Actor; }
 	bool HasClient() const;
 	bool IsGreeted() const { return bGreeted; }
 	int64 GetPublishedFrameCount() const { return PublishedFrames; }
@@ -71,6 +81,9 @@ public:
 	int64 GetClientTrailingByteCount() const { return ClientTrailingBytes; }
 	const FString& GetLastClientLineAnomaly() const { return LastClientLineAnomaly; }
 	const TArray<FAppliedReport>& GetAppliedReports() const { return AppliedReports; }
+	int64 GetPairedPoseCount() const { return PairedPoses; }
+	int64 GetRejectedPoseCount() const { return RejectedPoses; }
+	int64 GetConnectionSessionId() const { return ConnectionSessionId; }
 	const TArray<FString>& GetRejectedCommandTypes() const { return RejectedCommandTypes; }
 	const FString& GetLastError() const { return LastError; }
 	const TSharedPtr<FJsonObject>& GetLastPublishedFrame() const { return LastPublishedFrame; }
@@ -80,6 +93,8 @@ public:
 	void HandleClientLine(const FString& Line);
 
 private:
+	bool Prepare(UWorld& InWorld, ULevelSequence& InSequence, const FConfig& InConfig, FString& OutError);
+	bool StartListener(FString& OutError);
 	void ApplyTimeToPlayer();
 	bool BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FString& OutError);
 	bool PublishCurrentFrame();
@@ -94,14 +109,16 @@ private:
 	TWeakObjectPtr<UWorld> World;
 	TWeakObjectPtr<ULevelSequence> Sequence;
 	TWeakObjectPtr<ULevelSequencePlayer> Player;
+	TWeakPtr<ISequencer> EditorSequencer;
+	bool bEditorSource = false;
 	TWeakObjectPtr<AActor> SequenceActor;
 	TWeakObjectPtr<UCameraComponent> FallbackCamera;
+	TWeakObjectPtr<AActor> PoseWitnessTarget;
 
 	FConfig Config;
 	TUniquePtr<FTcpListener> Listener;
 	FSocket* ClientSocket = nullptr;
 	TArray<uint8> ReceiveBytes;
-	TArray<uint8> RawLineBytes;
 	FString ClientHost;
 	double ClientSceneFps = 0.0;
 	FString ClientTimeUnit;
@@ -117,10 +134,14 @@ private:
 
 	double SecondsSincePublish = 0.0;
 	int64 FrameSerial = 0;
+	int64 ConnectionSessionId = 0;
 	int64 PublishedFrames = 0;
 	int64 FailedSends = 0;
 	int64 ClientLineAnomalies = 0;
 	int64 ClientTrailingBytes = 0;
+	int64 PairedPoses = 0;
+	int64 RejectedPoses = 0;
+	int64 LastPairedSerial = 0;
 	FString LastClientLineAnomaly;
 	bool bCameraMissingReported = false;
 

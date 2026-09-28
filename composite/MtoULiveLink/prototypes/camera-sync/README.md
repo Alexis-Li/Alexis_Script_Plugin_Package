@@ -2,8 +2,10 @@
 
 Bounded two-host prototype: Unreal evaluates the current camera (including
 camera cuts and subsequence shots), Maya applies it to one camera and follows
-the Unreal time. It exists to answer whether Unreal's shot can drive Maya's
-framing and timeline, and what cannot be expressed on the Maya side.
+the Unreal time. The editor mode follows the user's open Sequencer. An opt-in
+test peer samples one keyed Maya joint and returns a pose witness with the
+camera frame identity; Unreal only applies a matching witness to a disposable
+actor. This verifies a small paused-frame loop, not product pose streaming.
 
 This is verification scaffolding, not a product. It does not change the
 MtoULiveLink product, its protocol (v9), its packages, or its supported
@@ -29,17 +31,16 @@ sequenceDiagram
     UE->>MA: session (sequence, rates, playback range, gate, markers)
     loop every change or 10 Hz heartbeat
         UE->>MA: frame (time, resolved camera, markers with Unreal NDC)
-        MA->>UE: applied (frame serial, Maya time, read-back values, NDC deltas)
+        MA->>UE: applied (frame serial, Maya time, read-back values, optional joint witness)
     end
     MA->>UE: bye
     UE->>MA: end (reason)
 ```
 
-Unreal owns the sequence time, the camera and the output resolution. Maya owns
-nothing but the application of what it received; it restores its previous
-current time when the session ends. The prototype never writes animation
-assets, keys, or playback ranges on either side, and no client message can move
-the Unreal time.
+Unreal owns the sequence time, the camera and the output resolution. Maya
+follows an explicit time-origin mapping and restores its previous current time
+when the session ends. The prototype never writes animation assets, keys, or
+playback ranges on either side, and no client message can move the Unreal time.
 
 ## Reproduce
 
@@ -49,13 +50,20 @@ the Unreal time.
    <Engine>/Engine/Build/BatchFiles/Build.bat UnrealEditor Win64 Development <repo>/unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE
    ```
 
-2. Run the Unreal-only checks:
+2. Open a Level Sequence in the Unreal editor and run
+   `MtoUCameraSyncPrototype.StartEditor [Port] [Width] [Height]` in the console.
+   Scrubbing, pausing, camera cuts and shot focus now use that Sequencer's
+   evaluated time and camera. `MtoUCameraSyncPrototype.Stop` ends follow.
+   `MtoUCameraSyncPrototype.Start <SequenceAssetPath>` remains an isolated
+   sequence-player fixture for comparison.
+
+3. Run the Unreal-only checks:
 
    ```
    <Engine>/Engine/Binaries/Win64/UnrealEditor-Cmd.exe <repo>/unreal/ToolsLab.uproject -unattended -nop4 -nosplash -NullRHI -DDC-ForceMemoryCache -ExecCmds="Automation RunTests MtoUCameraSyncPrototype" -TestExit="Automation Test Queue Empty"
    ```
 
-3. Run the Maya-side checks and the cross-host session:
+4. Run the Maya-side checks and the cross-host session:
 
    ```
    <mayapy> -m unittest discover -s composite/MtoULiveLink/prototypes/camera-sync/maya/MtoUCameraSyncPrototype/tests -t composite/MtoULiveLink/prototypes/camera-sync/maya/MtoUCameraSyncPrototype
@@ -78,9 +86,13 @@ the Unreal time.
 
 - One perspective cinematic camera per session, resolved through the engine's
   camera cut evaluation, in a root sequence or in a subsequence shot.
-- Unreal-driven timeline: play, pause, seek by display frame, play rate and
-  looping, with Maya following frame offsets across differing frame rates and
-  non-zero playback start frames.
+- Unreal-driven timeline: editor playhead follow for paused seeks and cuts;
+  isolated-player tests additionally cover play, pause, play rate and looping.
+  Maya follows explicit origins across differing rates and non-zero starts,
+  evaluating subframes without rounding.
+- An opt-in keyed-joint pose witness returned to Unreal with the same session,
+  serial, camera and time identity. Old, duplicate and mismatched reports cannot
+  move the disposable Unreal witness actor; reconnects receive a new identity.
 - World transform, focal length, film back, film offsets, film fit, f-stop,
   focus distance, depth-of-field enablement, near clip, and the Maya resolution
   gate, which follows the film aperture's pixel extent rather than the full
@@ -102,16 +114,17 @@ the Unreal time.
 - Output resolution discovery from Movie Render Pipeline settings; the
   resolution is a prototype input and its source is reported.
 - PIE, packaged builds, and any product packaging or installation.
+- Product MtoULiveLink pose streaming, continuous editor playback latency and
+  drop policy, and full-character same-frame application.
 
-## Known host limit
+## Transport check
 
-In the cross-host sessions on this machine the Maya client appended extra bytes
-after two of its messages (28112 bytes in the recorded run). The publisher reads
-the first complete JSON object per line, counts and reports the discarded bytes
-(`client_line_anomalies`, `client_trailing_bytes`), and no applied value was
-affected. The same client is byte-clean against a plain Python server, and a
-non-Maya client is byte-clean against this publisher; the cause was not isolated
-further and is recorded rather than papered over.
+The earlier apparent trailing data came from the Unreal receiver constructing
+an unbounded string from a length-delimited UTF-8 conversion. The receiver now
+uses the converter's explicit length. The real editor/Maya test requires zero
+`client_line_anomalies`, zero `client_trailing_bytes`, every application report
+intact, and zero failed sends. A deliberately malformed multibyte suffix is
+also checked for an exact UTF-8 byte count.
 
 ## Related records
 

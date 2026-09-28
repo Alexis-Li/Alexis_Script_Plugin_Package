@@ -38,7 +38,6 @@ STATE_STOPPED = "stopped"
 STATE_FAILED = "failed"
 
 STATUS_APPLIED = "applied"
-STATUS_APPLIED_QUANTIZED = "applied_quantized"
 STATUS_REJECTED = "rejected"
 
 CATEGORY_UNSUPPORTED_SCENE_UNIT = "UNSUPPORTED_SCENE_LINEAR_UNIT"
@@ -165,11 +164,15 @@ class CameraSyncFollower(object):
     """Applies Unreal camera frames to one disposable Maya camera."""
 
     def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT,
-                 camera_name=DEFAULT_CAMERA_NAME, connect_timeout=10.0):
+                 camera_name=DEFAULT_CAMERA_NAME, connect_timeout=10.0,
+                 maya_origin_frame=None, pose_node=None):
         self.host = host
         self.port = int(port)
         self.camera_name = camera_name
         self.connect_timeout = float(connect_timeout)
+        self.maya_origin_frame = (None if maya_origin_frame is None
+                                  else float(maya_origin_frame))
+        self.pose_node = pose_node
         self.state = STATE_STOPPED
         self.detail = ""
         self.error = None
@@ -177,7 +180,7 @@ class CameraSyncFollower(object):
         self.marker_names = []
         self.frames_applied = 0
         self.frames_rejected = 0
-        self.frames_quantized = 0
+        self.frames_subframe = 0
         self.frames_unchanged = 0
         self.last_report = None
         self.last_frame_serial = None
@@ -220,6 +223,7 @@ class CameraSyncFollower(object):
             "host": self.host,
             "scene_fps": self._scene_fps,
             "time_unit": self._time_unit,
+            "maya_origin_frame": self.maya_origin_frame,
         }
 
     def connect(self):
@@ -298,6 +302,8 @@ class CameraSyncFollower(object):
 
     def _accept_session(self, message):
         self.session = message
+        if self.maya_origin_frame is None:
+            self.maya_origin_frame = float(message["playback_range"]["start"])
         self.marker_names = list(message.get("marker_names") or [])
         self.state = STATE_FOLLOWING
         self.detail = "following on port {0}".format(self.port)
@@ -517,15 +523,18 @@ class CameraSyncFollower(object):
                             or session.get("display_rate"))
             playback_range = session.get("playback_range") or {}
             playback_start = float(playback_range.get("start", 0.0))
-            maya_time, quantized = mapping_module.maya_time_for_frame(
+            maya_time, subframe = mapping_module.maya_time_for_frame(
                 time_payload["display_frame"], playback_start, display_rate,
-                self._scene_fps, self._start_time)
-            applied_time = mapping_module.applied_maya_time(maya_time, quantized)
+                self._scene_fps, self.maya_origin_frame if self.maya_origin_frame is not None
+                else playback_start)
+            applied_time = mapping_module.applied_maya_time(maya_time, subframe)
+            if self.pose_node and not cmds().objExists(self.pose_node):
+                raise SyncRefused("POSE_NODE_MISSING", self.pose_node)
         except mapping_module.PayloadError as error:
             self.frames_rejected += 1
             detail.append("rejected: {0}: {1}".format(error.category, error.detail))
             return self._report_rejection(report, detail, frame_serial)
-        except (ValueError, TypeError, KeyError) as error:
+        except (ValueError, TypeError, KeyError, SyncRefused) as error:
             self.frames_rejected += 1
             detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
             return self._report_rejection(report, detail, frame_serial)
@@ -542,11 +551,10 @@ class CameraSyncFollower(object):
                 "far clip plane is not representable in Unreal: Maya far clip set to "
                 "{0:.3f} cm from the {1} fallback".format(
                     notes["far_clip_cm"], notes["far_clip_source"]))
-        if quantized:
+        if subframe:
             detail.append(
-                "display frame {0} maps to maya time {1} which is not an integer "
-                "frame; applied at {2}".format(
-                    time_payload["display_frame"], maya_time, applied_time))
+                "display frame {0} maps to Maya subframe {1}".format(
+                    time_payload["display_frame"], maya_time))
 
         transform = None
         if heartbeat:
@@ -586,7 +594,17 @@ class CameraSyncFollower(object):
         transform = self._camera_transform
         shape = self._camera_shape
         report["camera"] = self._read_back(transform, shape, applied_time,
-                                           quantized, notes)
+                                           subframe, notes)
+        report["unreal_display_frame"] = time_payload["display_frame"]
+        report["unreal_camera_path"] = camera_payload.get("path")
+        report["maya_origin_frame"] = (self.maya_origin_frame if self.maya_origin_frame
+                                        is not None else playback_start)
+        if self.pose_node:
+            report["pose"] = {
+                "node": self.pose_node,
+                "sampled_maya_frame": float(cmds().currentTime(query=True)),
+                "translate_x": float(cmds().getAttr(self.pose_node + ".translateX")),
+            }
         report["markers"] = mapping_module.marker_report(
             frame["markers"], matrix, notes, resolution)
         for marker in report["markers"]:
@@ -595,13 +613,13 @@ class CameraSyncFollower(object):
             largest = max(abs(marker["delta"][0]), abs(marker["delta"][1]))
             if self.max_marker_delta is None or largest > self.max_marker_delta:
                 self.max_marker_delta = largest
-        report["status"] = STATUS_APPLIED_QUANTIZED if quantized else STATUS_APPLIED
+        report["status"] = STATUS_APPLIED
         if heartbeat:
             self.frames_unchanged += 1
         else:
             self.frames_applied += 1
-            if quantized:
-                self.frames_quantized += 1
+            if subframe:
+                self.frames_subframe += 1
         self.last_frame_serial = frame_serial
         self.last_report = report
         self.reports.append(report)
@@ -647,14 +665,14 @@ class CameraSyncFollower(object):
             _unlock(plug)
             cmds().setAttr(plug, True)
 
-    def _read_back(self, transform, shape, applied_time, quantized, notes):
+    def _read_back(self, transform, shape, applied_time, subframe, notes):
         values = {}
         for attribute in MANAGED_ATTRIBUTES:
             plug = "{0}.{1}".format(shape, attribute)
             values[attribute] = cmds().getAttr(plug)
         values["maya_time"] = float(cmds().currentTime(query=True))
         values["applied_time"] = applied_time
-        values["quantized"] = bool(quantized)
+        values["subframe"] = bool(subframe)
         values["far_clip_substituted"] = bool(notes["far_clip_substituted"])
         values["far_clip_source"] = notes["far_clip_source"]
         values["film_fit"] = notes["film_fit"]
@@ -729,7 +747,7 @@ class CameraSyncFollower(object):
             "time_unit": self._time_unit,
             "frames_applied": self.frames_applied,
             "frames_rejected": self.frames_rejected,
-            "frames_quantized": self.frames_quantized,
+            "frames_subframe": self.frames_subframe,
             "frames_unchanged": self.frames_unchanged,
             "far_clip_substitutions": self.far_clip_substitutions,
             "last_frame_serial": self.last_frame_serial,
@@ -741,13 +759,16 @@ class CameraSyncFollower(object):
 
 
 def run(host=DEFAULT_HOST, port=DEFAULT_PORT, duration=None, camera_name=DEFAULT_CAMERA_NAME,
-        idle_pump=False, poll=0.005, on_frame=None):
+        idle_pump=False, poll=0.005, on_frame=None, maya_origin_frame=None,
+        pose_node=None):
     """Connect, follow until the publisher stops or ``duration`` elapses, stop.
 
     With ``idle_pump`` the follower is driven by Maya's idle event; otherwise
     this loop pumps explicitly, which is what headless mayapy needs.
     """
-    follower = CameraSyncFollower(host=host, port=port, camera_name=camera_name)
+    follower = CameraSyncFollower(host=host, port=port, camera_name=camera_name,
+                                  maya_origin_frame=maya_origin_frame,
+                                  pose_node=pose_node)
     follower.connect()
     if idle_pump:
         follower.attach_idle_pump()
@@ -777,6 +798,10 @@ def main(argv=None):
     parser.add_argument("--duration", type=float, default=None,
                         help="seconds to follow; default is until the publisher ends")
     parser.add_argument("--camera-name", default=DEFAULT_CAMERA_NAME)
+    parser.add_argument("--maya-origin-frame", type=float, default=None,
+                        help="Maya frame mapped to the Unreal playback start; defaults to that start")
+    parser.add_argument("--pose-node", default=None,
+                        help="optional keyed Maya joint/transform whose translateX is returned as a witness")
     parser.add_argument("--idle-pump", action="store_true",
                         help="drive the session from Maya's idle event")
     parser.add_argument("--result", default=None,
@@ -789,7 +814,8 @@ def main(argv=None):
             import maya.standalone
             maya.standalone.initialize(name="python")
     follower = run(args.host, args.port, args.duration, args.camera_name,
-                   args.idle_pump)
+                   args.idle_pump, maya_origin_frame=args.maya_origin_frame,
+                   pose_node=args.pose_node)
     summary = follower.summary()
     print(json.dumps(summary, indent=2, ensure_ascii=True))
     if args.result:

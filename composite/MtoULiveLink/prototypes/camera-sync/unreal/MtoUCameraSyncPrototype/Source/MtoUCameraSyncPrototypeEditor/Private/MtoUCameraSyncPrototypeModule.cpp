@@ -4,10 +4,14 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "ILevelSequenceEditorToolkit.h"
+#include "ISequencer.h"
 #include "LevelSequence.h"
+#include "LevelSequenceEditorBlueprintLibrary.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "MtoUCameraSyncSession.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/StrongObjectPtr.h"
 
 /**
@@ -27,6 +31,9 @@ public:
 		ULevelSequence& Sequence,
 		const FMtoUCameraSyncSession::FConfig& Config,
 		FString& OutError);
+	FMtoUCameraSyncSession* StartEditorSession(
+		UWorld& World, const TSharedRef<ISequencer>& Sequencer,
+		const FMtoUCameraSyncSession::FConfig& Config, FString& OutError);
 	void StopSession(const FString& Reason);
 	FMtoUCameraSyncSession* GetSession() const { return Session.Get(); }
 
@@ -73,6 +80,22 @@ FMtoUCameraSyncSession* FMtoUCameraSyncPrototypeModule::StartSession(
 
 	TSharedPtr<FMtoUCameraSyncSession> NewSession = MakeShared<FMtoUCameraSyncSession>();
 	if (!NewSession->Start(World, Sequence, Config, OutError))
+	{
+		return nullptr;
+	}
+	Session = NewSession;
+	return Session.Get();
+}
+
+FMtoUCameraSyncSession* FMtoUCameraSyncPrototypeModule::StartEditorSession(
+	UWorld& World,
+	const TSharedRef<ISequencer>& Sequencer,
+	const FMtoUCameraSyncSession::FConfig& Config,
+	FString& OutError)
+{
+	StopSession(TEXT("restart"));
+	TSharedPtr<FMtoUCameraSyncSession> NewSession = MakeShared<FMtoUCameraSyncSession>();
+	if (!NewSession->StartFromEditor(World, Sequencer, Config, OutError))
 	{
 		return nullptr;
 	}
@@ -146,6 +169,47 @@ void FMtoUCameraSyncPrototypeModule::RegisterConsoleCommands()
 					Config.OutputResolution.X, Config.OutputResolution.Y);
 			}),
 		ECVF_Default));
+
+	ConsoleCommands.Add(Console.RegisterConsoleCommand(
+		TEXT("MtoUCameraSyncPrototype.StartEditor"),
+		TEXT("MtoUCameraSyncPrototype.StartEditor [Port] [Width] [Height] - follow the open Level Sequence editor"),
+		FConsoleCommandWithArgsDelegate::CreateLambda(
+			[this](const TArray<FString>& Args)
+			{
+				ULevelSequence* Sequence = ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence();
+				UWorld* World = PrototypeEditorWorld();
+				if (!Sequence || !World || !GEditor)
+				{
+					UE_LOG(LogTemp, Error, TEXT("[MtoUCameraSyncPrototype] open a Level Sequence in the editor first"));
+					return;
+				}
+				IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+					->FindEditorForAsset(Sequence, false);
+				if (!AssetEditor || AssetEditor->GetEditorName() != FName(TEXT("LevelSequenceEditor")))
+				{
+					UE_LOG(LogTemp, Error, TEXT("[MtoUCameraSyncPrototype] the current sequence has no open editor toolkit"));
+					return;
+				}
+				const TSharedPtr<ISequencer> Sequencer =
+					static_cast<ILevelSequenceEditorToolkit*>(AssetEditor)->GetSequencer();
+				if (!Sequencer.IsValid())
+				{
+					UE_LOG(LogTemp, Error, TEXT("[MtoUCameraSyncPrototype] Sequencer is unavailable"));
+					return;
+				}
+				FMtoUCameraSyncSession::FConfig Config;
+				if (Args.IsValidIndex(0)) { Config.Port = static_cast<uint16>(FCString::Atoi(*Args[0])); }
+				if (Args.IsValidIndex(1)) { Config.OutputResolution.X = FCString::Atoi(*Args[1]); }
+				if (Args.IsValidIndex(2)) { Config.OutputResolution.Y = FCString::Atoi(*Args[2]); }
+				FString Error;
+				if (!StartEditorSession(*World, Sequencer.ToSharedRef(), Config, Error))
+				{
+					UE_LOG(LogTemp, Error, TEXT("[MtoUCameraSyncPrototype] editor start failed: %s"), *Error);
+					return;
+				}
+				UE_LOG(LogTemp, Display, TEXT("[MtoUCameraSyncPrototype] following editor Sequencer %s on 127.0.0.1:%u"),
+					*Sequence->GetName(), Config.Port);
+			}), ECVF_Default));
 
 	ConsoleCommands.Add(Console.RegisterConsoleCommand(
 		TEXT("MtoUCameraSyncPrototype.Stop"),

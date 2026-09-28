@@ -272,18 +272,18 @@ class TimeModelTest(unittest.TestCase):
         self.assertTrue(quantized)
         close(self, time_value, 2.6)
 
-    def test_sub_frame_result_is_quantized(self):
-        time_value, quantized = mapping.maya_time_for_frame(
+    def test_sub_frame_result_is_preserved(self):
+        time_value, subframe = mapping.maya_time_for_frame(
             101.0, 100.0, {"numerator": 24, "denominator": 1}, 30.0, 1.0)
-        self.assertTrue(quantized)
+        self.assertTrue(subframe)
         close(self, time_value, 2.25)
-        close(self, mapping.applied_maya_time(time_value, quantized), 2.0)
+        close(self, mapping.applied_maya_time(time_value, subframe), 2.25)
 
-    def test_quantization_rounds_to_nearest(self):
-        time_value, quantized = mapping.maya_time_for_frame(
+    def test_fractional_display_frame_is_preserved(self):
+        time_value, subframe = mapping.maya_time_for_frame(
             101.5, 100.0, {"numerator": 24, "denominator": 1}, 30.0, 1.0)
         close(self, time_value, 2.875)
-        close(self, mapping.applied_maya_time(time_value, quantized), 3.0)
+        close(self, mapping.applied_maya_time(time_value, subframe), 2.875)
         time_value, quantized = mapping.maya_time_for_frame(
             101.0, 100.0, {"numerator": 1, "denominator": 1}, 30.0, 0.0)
         close(self, time_value, 30.0)
@@ -306,6 +306,12 @@ class TimeModelTest(unittest.TestCase):
             -5.0, -5.0, {"numerator": 30, "denominator": 1}, 30.0, -5.0)
         close(self, time_value, -5.0)
         self.assertFalse(quantized)
+
+    def test_explicit_origin_does_not_depend_on_connection_frame(self):
+        time_value, _ = mapping.maya_time_for_frame(
+            1030.5, 1001.0, {"numerator": 30, "denominator": 1},
+            24.0, 1001.0)
+        close(self, time_value, 1024.6)
 
     def test_rejects_bad_rates(self):
         with self.assertRaises(mapping.PayloadError):

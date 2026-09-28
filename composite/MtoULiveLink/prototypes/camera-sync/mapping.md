@@ -10,8 +10,10 @@ Maya. Nothing in this table is copied from documentation.
 - Level Sequence at 24 fps with a non-zero playback start (1001), two camera
   cuts (a 50 mm f/2.0 camera, then an 85 mm f/4.0 camera from frame 1026), three
   tagged markers, and an output resolution of 1920×1080.
-- Maya scene in centimetres at 24 fps, starting on frame 1001.
-- Six frames published, six applied, zero rejected, zero quantized.
+- Maya scene in centimetres at 24 fps; the explicit Maya origin is frame 1001.
+- Six camera frames published and applied. The editor mode uses the open
+  Sequencer's root time and evaluated cut; the Maya peer returns a keyed-joint
+  pose witness at each applied time. A stale witness is refused after a cut.
 
 ## Per-parameter result
 
@@ -29,6 +31,7 @@ Maya. Nothing in this table is copied from documentation.
 | Near clip | resolved engine default 10 cm (`near_clip_source: engine_default`) | `nearClipPlane` 10 cm | direct | 0 |
 | Far clip | none in Unreal | 100000 cm, marked `far_clip_substituted`, source reported | not representable | substituted |
 | Playback time | display frame 1001 → 1030 | Maya frame 1001 → 1030 | direct at equal rates | 0 |
+| Differing-rate subframe | fixture maps a fractional display time to Maya 1002.5 | Maya `currentTime` reads 1002.5; keyed joint between 1002 and 1003 evaluates to 5.0 | adapted (explicit origins) | no rounding |
 | Marker framing | Unreal NDC from the evaluated projection | Maya NDC from its own film-aperture projection | checked | ≤ 1.09e-07 NDC |
 
 Marker comparison in the last session: centre `(0, 0)`, lower right
@@ -45,7 +48,7 @@ Marker comparison in the last session: centre `(0, 0)`, lower right
   0.25 px of the position both hosts predict, against a 2 px tolerance, for the
   `Horizontal`, `Vertical`, and both `Fill` gate configurations. Markers a
   variant framing pushes out of frame are reported as skipped, not matched.
-- Maya host checks: 57 checks pass, including the read-back world matrix, the
+- Maya host checks: 54 headless checks pass, including the read-back world matrix, the
   resolution gate, the applied time, that no keys appear, that the playback
   range is untouched, that a frame missing a field is rejected without touching
   the camera and still reaches the report queue, and that `stop()` restores the
@@ -60,7 +63,7 @@ Marker comparison in the last session: centre `(0, 0)`, lower right
 | Unreal overscan (uniform, asymmetric, resolution fraction) has no Maya camera equivalent. |
 | Extra depth-of-field shaping (blade count, Petzval bokeh, blur radius/amount, transition regions, occlusion) has no Maya camera equivalent. Parameter equality was checked; image equality was not, and no claim is made. |
 | Unreal's unbounded `CropSettings` and `OffCenterProjectionOffset` survive only through the gate aspect and the film offsets; the prototype reports both rather than approximating. |
-| On this host, the Maya client appended extra bytes after 2 of its messages (28 KB total, recorded as `client_line_anomalies`). The publisher reads the first complete JSON object, counts the discarded bytes, and reports the sample; the anomaly never changed an applied value. The same client is byte-clean against a plain Python server, and a non-Maya client is byte-clean against this publisher, so it is recorded as a host-side limit of the prototype. |
+| The earlier apparent client suffix was caused by the Unreal receiver reading beyond a length-delimited UTF-8 conversion. Explicit-length string construction eliminates it: the later real editor/Maya session records zero anomalous lines, zero discarded bytes and zero failed sends. The former `28112` was a character count mislabeled as bytes; its exact raw byte count was not recorded. |
 | Maya cannot express camera cuts or shot selection; only the resolved camera crosses the wire, and `camera_cut.stage` tells whether the engine took it from the root sequence or a subsequence. |
 
 ## What was not verified
@@ -71,4 +74,7 @@ Marker comparison in the last session: centre `(0, 0)`, lower right
   no pixel equivalence is claimed.
 - Multi-camera sessions, nested subsequences inside a subsequence, orthographic
   cameras, and Movie Render Pipeline output-resolution discovery.
+- Product MtoULiveLink pose-channel integration, full-character pose application,
+  continuous editor playback latency, and a deliberate drop policy. The keyed
+  joint witness exercises identity matching on the prototype channel only.
 - Any Autodesk or Epic plugin installation; the prototype depends on neither.

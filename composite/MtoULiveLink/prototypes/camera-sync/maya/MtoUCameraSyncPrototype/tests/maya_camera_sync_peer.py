@@ -82,7 +82,7 @@ def camera_summary(read_back):
         "far_clip_substituted": read_back.get("far_clip_substituted"),
         "far_clip_source": read_back.get("far_clip_source"),
         "maya_time": read_back.get("maya_time"),
-        "quantized": read_back.get("quantized"),
+        "subframe": read_back.get("subframe"),
         "world_matrix": read_back.get("world_matrix"),
         "default_resolution": {"width": gate.get("width"), "height": gate.get("height"),
                                "pixel_aspect": gate.get("pixelAspect")},
@@ -113,6 +113,7 @@ def applied_entry(report, frame, expected):
                  "display_resolution": read_back.get("displayResolution"),
                  "display_gate_mask": read_back.get("displayGateMask")},
         "markers": marker_summary(report.get("markers") or []),
+        "pose": report.get("pose"),
     }
 
 
@@ -195,7 +196,7 @@ def main(argv=None):
 
         # A keyed witness node proves the follower creates no keys and that the
         # playback range is untouched.
-        witness = cmds.createNode("transform", name="MtoUCameraSyncWitness")
+        witness = cmds.createNode("joint", name="MtoUCameraSyncWitness")
         for frame, value in ((start_frame - 5.0, 1.0), (start_frame + 5.0, 9.0)):
             cmds.setKeyframe(witness, attribute="translateX", time=frame, value=value)
         witness_keys_before = int(cmds.keyframe(witness, query=True, keyframeCount=True) or 0)
@@ -232,7 +233,8 @@ def main(argv=None):
         write_json(args.result, result)
         follower = applier.CameraSyncFollower(
             host=fixture.get("host", "127.0.0.1"), port=port,
-            camera_name=fixture.get("camera_name", applier.DEFAULT_CAMERA_NAME))
+            camera_name=fixture.get("camera_name", applier.DEFAULT_CAMERA_NAME),
+            maya_origin_frame=fixture.get("maya_origin_frame"), pose_node=witness)
         follower.connect()
         result["session"] = {key: value for key, value in follower.session.items()
                              if key != "type"}
@@ -275,9 +277,22 @@ def main(argv=None):
                 else:
                     result["applied"].append(entry)
                 seen[serial] = report
-                if report.get("status") != "applied" and report.get("status") != "applied_quantized":
+                if report.get("status") != "applied":
                     problems.append("frame {0} was {1}: {2}".format(
                         serial, report.get("status"), report.get("detail")))
+                else:
+                    pose = report.get("pose") or {}
+                    sampled = pose.get("sampled_maya_frame")
+                    if sampled is None or abs(float(sampled) - report["maya_frame"]) > 1e-6:
+                        problems.append("frame {0}: pose was not sampled at the applied Maya time"
+                                        .format(serial))
+                    else:
+                        t = max(0.0, min(1.0, (float(sampled) - start_frame + 5.0) / 10.0))
+                        expected_pose = 1.0 + 8.0 * t
+                        if abs(float(pose.get("translate_x", float("nan")))
+                               - expected_pose) > 1e-5:
+                            problems.append("frame {0}: joint pose differs from keyed evaluation"
+                                            .format(serial))
                 for marker in entry["markers"]:
                     if marker["delta"] is None:
                         problems.append("frame {0} marker {1} could not be projected in "
@@ -377,7 +392,7 @@ def main(argv=None):
             "frames_applied": follower.frames_applied,
             "frames_unchanged": follower.frames_unchanged,
             "frames_rejected": follower.frames_rejected,
-            "frames_quantized": follower.frames_quantized,
+            "frames_subframe": follower.frames_subframe,
             "far_clip_substitutions": follower.far_clip_substitutions,
             "max_marker_delta": follower.max_marker_delta,
             "state": follower.state,

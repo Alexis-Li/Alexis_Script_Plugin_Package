@@ -12,8 +12,9 @@ touched by the prototype.
   place markers on screen.
 - **Maya** is the follower. It applies the received camera to one disposable
   scene camera and moves its current time to the reported position.
-- Maya never sends camera or time data back. Its only messages are the
-  handshake, one application report per frame, and the closing notice.
+- Maya never sends camera or time commands back. Its application report can
+  include a keyed joint pose witness sampled at the applied time; Unreal pairs
+  that witness with the published camera frame before moving a disposable test actor.
 
 ## Channel
 
@@ -38,7 +39,7 @@ touched by the prototype.
 | `type` | Purpose |
 | --- | --- |
 | `hello` | `protocol`, `version`, `host`, `scene_fps`, `time_unit` |
-| `applied` | `session`, `sequence`, `frame_serial`, `maya_frame`, `status`, `detail`, `camera`, `gate`, `markers` |
+| `applied` | `session`, `sequence`, `frame_serial`, `maya_frame`, `maya_origin_frame`, `unreal_display_frame`, `unreal_camera_path`, `status`, `detail`, `camera`, `gate`, `markers`; the opt-in test peer also sends `pose{sampled_maya_frame,translate_x}` |
 | `bye` | leave the session |
 
 Any other client message is answered with
@@ -47,11 +48,22 @@ Unreal state. This is the prototype's structural guarantee that there is no
 feedback loop: the `time` field is server-owned, and the test asserts that the
 rejection list stays empty for a well-behaved client.
 
-The contract is one JSON object per line. The publisher reads the first
-complete object of a client line and, when a client appends anything after it,
-counts and reports the discarded bytes (`client_line_anomalies`,
-`client_trailing_bytes`, `last_client_line_anomaly`) instead of failing the
-session or hiding the extra data.
+The contract is one JSON object per line. A malformed line with a complete
+initial object is recorded with its discarded UTF-8 byte count
+(`client_line_anomalies`, `client_trailing_bytes`,
+`last_client_line_anomaly`). The initial object may still be used as a camera
+application report, but its pose is never paired. A new TCP connection gets a
+new `session` identity, so a report from a former connection cannot be paired.
+
+A keyed-joint witness is paired only when its report answers the latest `frame`
+message: `session`, `frame_serial`, `sequence`, `unreal_display_frame`,
+`unreal_camera_path`, `maya_frame` and `pose.sampled_maya_frame` must all match
+that publication. Every publication carries a new `frame_serial`, so a report
+superseded by the next one — after a camera cut or a time change — is refused
+and counted instead of moving the witness. The cross-host test observed that
+refusal for a pose in flight across a camera cut and for deliberately replayed
+reports; after a reconnect the former connection's report is refused because
+the session identity changed.
 
 ## Time model
 
@@ -64,14 +76,14 @@ session or hiding the extra data.
   `tick` (evaluation tick), plus the two rates again for convenience.
 - Maya's applied time is
 
-  `maya_time = maya_start_frame + (display_frame - playback_range.start) *
+  `maya_time = maya_origin_frame + (display_frame - playback_range.start) *
   scene_fps / display_rate`
 
-  where `maya_start_frame` is the frame the Maya scene showed when the follow
-  session started. With equal rates and a non-zero start, both hosts show the
-  same frame numbers; with different rates the offset from the range start is
-  preserved. Sub-frame results are reported as `applied_quantized` and applied
-  at the nearest integer frame; Maya never silently keeps a stale frame.
+  where `maya_origin_frame` is an explicit follower setting, defaulting to the
+  published range start. It never depends on Maya's current frame at connect.
+  Equal rates therefore keep frame numbers aligned by default. Differing rates
+  preserve elapsed time from the two origins. Maya 2024 evaluates fractional
+  frames directly; `subframe` reports them without rounding.
 - Exiting the session restores the Maya current time captured at start and
   releases the timeline. Neither host writes animation assets, keys, or
   playback ranges.
@@ -157,9 +169,10 @@ than the recorded tolerance is a prototype failure, not a note.
 
 ## Camera cuts and subsequences
 
-- The camera is whatever the engine reports as the active camera cut camera for
-  the current sequence time (`ULevelSequencePlayer::GetActiveCameraComponent`),
-  so the prototype never reimplements cut resolution.
+- The independent-player test uses `ULevelSequencePlayer::GetActiveCameraComponent`.
+  The editor mode reads the open Sequencer's root time and
+  `ISequencer::GetLastEvaluatedCameraCut()`, including when a shot is focused.
+  Neither mode reimplements cut resolution.
 - `camera_cut.stage` reports `root` when the active cut belongs to the root
   sequence, `subsequence` when the engine took it from a subsequence instance,
   and `pending` before the first frame.

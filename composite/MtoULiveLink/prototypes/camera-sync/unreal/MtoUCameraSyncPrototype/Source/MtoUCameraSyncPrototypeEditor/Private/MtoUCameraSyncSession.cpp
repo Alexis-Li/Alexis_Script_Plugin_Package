@@ -6,8 +6,10 @@
 #include "Common/TcpListener.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "ISequencer.h"
 #include "LevelSequence.h"
 #include "LevelSequenceActor.h"
+#include "LevelSequenceEditorBlueprintLibrary.h"
 #include "LevelSequencePlayer.h"
 #include "MtoUCameraSyncCapture.h"
 #include "MovieScene.h"
@@ -113,6 +115,78 @@ bool FMtoUCameraSyncSession::Start(
 	const FConfig& InConfig,
 	FString& OutError)
 {
+	if (!Prepare(InWorld, InSequence, InConfig, OutError))
+	{
+		return false;
+	}
+
+	FMovieSceneSequencePlaybackSettings Settings;
+	Settings.bAutoPlay = false;
+	Settings.FinishCompletionStateOverride = EMovieSceneCompletionModeOverride::ForceRestoreState;
+	Settings.bDisableCameraCuts = false;
+	Settings.bPauseAtEnd = true;
+
+	ALevelSequenceActor* SpawnedActor = nullptr;
+	ULevelSequencePlayer* NewPlayer = ULevelSequencePlayer::CreateLevelSequencePlayer(
+		&InWorld, &InSequence, Settings, SpawnedActor);
+	if (!NewPlayer)
+	{
+		OutError = TEXT("could not create a level sequence player");
+		return false;
+	}
+	if (SpawnedActor)
+	{
+		SpawnedActor->SetFlags(RF_Transient);
+	}
+	Player = NewPlayer;
+	SequenceActor = SpawnedActor;
+	if (!StartListener(OutError))
+	{
+		NewPlayer->Stop();
+		if (SpawnedActor) { SpawnedActor->Destroy(); }
+		Player = nullptr;
+		SequenceActor = nullptr;
+		return false;
+	}
+	ApplyTimeToPlayer();
+	return true;
+}
+
+bool FMtoUCameraSyncSession::StartFromEditor(
+	UWorld& InWorld,
+	const TSharedRef<ISequencer>& Sequencer,
+	const FConfig& InConfig,
+	FString& OutError)
+{
+	ULevelSequence* Root = Cast<ULevelSequence>(Sequencer->GetRootMovieSceneSequence());
+	if (!Root)
+	{
+		OutError = TEXT("the open editor Sequencer has no root Level Sequence");
+		return false;
+	}
+	if (!Prepare(InWorld, *Root, InConfig, OutError))
+	{
+		return false;
+	}
+	bEditorSource = true;
+	EditorSequencer = Sequencer;
+	const FQualifiedFrameTime Global = Sequencer->GetGlobalTime();
+	CurrentDisplayFrame = FFrameRate::TransformTime(Global.Time, Global.Rate, DisplayRate).AsDecimal();
+	if (!StartListener(OutError))
+	{
+		EditorSequencer.Reset();
+		bEditorSource = false;
+		return false;
+	}
+	return true;
+}
+
+bool FMtoUCameraSyncSession::Prepare(
+	UWorld& InWorld,
+	ULevelSequence& InSequence,
+	const FConfig& InConfig,
+	FString& OutError)
+{
 	if (bRunning)
 	{
 		OutError = TEXT("session already running");
@@ -135,28 +209,11 @@ bool FMtoUCameraSyncSession::Start(
 	PlaybackStartTick = Range.HasLowerBound() ? Range.GetLowerBoundValue() : FFrameNumber(0);
 	PlaybackEndTick = Range.HasUpperBound() ? Range.GetUpperBoundValue() : FFrameNumber(0);
 	CurrentDisplayFrame = PlaybackStartDisplayFrame();
+	return true;
+}
 
-	FMovieSceneSequencePlaybackSettings Settings;
-	Settings.bAutoPlay = false;
-	Settings.FinishCompletionStateOverride = EMovieSceneCompletionModeOverride::ForceRestoreState;
-	Settings.bDisableCameraCuts = false;
-	Settings.bPauseAtEnd = true;
-
-	ALevelSequenceActor* SpawnedActor = nullptr;
-	ULevelSequencePlayer* NewPlayer = ULevelSequencePlayer::CreateLevelSequencePlayer(
-		&InWorld, &InSequence, Settings, SpawnedActor);
-	if (!NewPlayer)
-	{
-		OutError = TEXT("could not create a level sequence player");
-		return false;
-	}
-	if (SpawnedActor)
-	{
-		SpawnedActor->SetFlags(RF_Transient);
-	}
-	Player = NewPlayer;
-	SequenceActor = SpawnedActor;
-
+bool FMtoUCameraSyncSession::StartListener(FString& OutError)
+{
 	const TSharedRef<FIPv4Endpoint> Endpoint =
 		MakeShared<FIPv4Endpoint>(FIPv4Address(127, 0, 0, 1), Config.Port);
 	Listener = MakeUnique<FTcpListener>(*Endpoint);
@@ -170,7 +227,6 @@ bool FMtoUCameraSyncSession::Start(
 
 	bRunning = true;
 	LastError.Reset();
-	ApplyTimeToPlayer();
 	return true;
 }
 
@@ -208,6 +264,8 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 	}
 	SequenceActor = nullptr;
 	Player = nullptr;
+	EditorSequencer.Reset();
+	bEditorSource = false;
 	bRunning = false;
 	bPlaying = false;
 	bGreeted = false;
@@ -227,7 +285,18 @@ void FMtoUCameraSyncSession::Pump(double DeltaSeconds)
 
 	ReadClientLines();
 
-	if (bPlaying)
+	if (bEditorSource)
+	{
+		const TSharedPtr<ISequencer> Sequencer = EditorSequencer.Pin();
+		if (!Sequencer.IsValid() || Sequencer->GetRootMovieSceneSequence() != Sequence.Get())
+		{
+			Stop(TEXT("editor Sequencer closed or changed sequence"));
+			return;
+		}
+		const FQualifiedFrameTime Global = Sequencer->GetGlobalTime();
+		CurrentDisplayFrame = FFrameRate::TransformTime(Global.Time, Global.Rate, DisplayRate).AsDecimal();
+	}
+	else if (bPlaying)
 	{
 		const double End = PlaybackEndDisplayFrame();
 		CurrentDisplayFrame += DeltaSeconds * DisplayRate.AsDecimal() * PlayRate;
@@ -262,6 +331,7 @@ void FMtoUCameraSyncSession::Pump(double DeltaSeconds)
 
 void FMtoUCameraSyncSession::ApplyTimeToPlayer()
 {
+	if (bEditorSource) { return; }
 	ULevelSequencePlayer* ResolvedPlayer = Player.Get();
 	if (!ResolvedPlayer)
 	{
@@ -278,12 +348,14 @@ void FMtoUCameraSyncSession::ApplyTimeToPlayer()
 
 void FMtoUCameraSyncSession::SetDisplayFrame(double DisplayFrame)
 {
+	if (bEditorSource) { return; }
 	CurrentDisplayFrame = DisplayFrame;
 	bPlaying = false;
 }
 
 void FMtoUCameraSyncSession::Play()
 {
+	if (bEditorSource) { return; }
 	if (IsPlaying())
 	{
 		return;
@@ -298,16 +370,24 @@ void FMtoUCameraSyncSession::Play()
 
 void FMtoUCameraSyncSession::Pause()
 {
+	if (bEditorSource) { return; }
 	bPlaying = false;
+}
+
+bool FMtoUCameraSyncSession::IsPlaying() const
+{
+	return bEditorSource ? ULevelSequenceEditorBlueprintLibrary::IsPlaying() : bPlaying;
 }
 
 void FMtoUCameraSyncSession::SetPlayRate(double InPlayRate)
 {
+	if (bEditorSource) { return; }
 	PlayRate = InPlayRate;
 }
 
 void FMtoUCameraSyncSession::SetLoop(bool bInLoop)
 {
+	if (bEditorSource) { return; }
 	bLoop = bInLoop;
 }
 
@@ -341,6 +421,9 @@ bool FMtoUCameraSyncSession::AcceptClient(FSocket* Socket, const FIPv4Endpoint& 
 		return false;
 	}
 	ClientSocket = Socket;
+	++ConnectionSessionId;
+	LastPairedSerial = 0;
+	LastPublishedFrame.Reset();
 	ClientHost = Endpoint.ToString();
 	ReceiveBytes.Reset();
 	bGreeted = false;
@@ -388,11 +471,12 @@ void FMtoUCameraSyncSession::ReadClientLines()
 			const int32 Length = Index - LineStart;
 			if (Length > 0)
 			{
-				RawLineBytes.Reset();
-				RawLineBytes.Append(ReceiveBytes.GetData() + LineStart, Length);
-				FString Line(FUTF8ToTCHAR(
-					reinterpret_cast<const ANSICHAR*>(ReceiveBytes.GetData() + LineStart), Length).Get());
-				Line.TrimStartAndEndInline();
+				const FUTF8ToTCHAR Converted(
+					reinterpret_cast<const ANSICHAR*>(ReceiveBytes.GetData() + LineStart), Length);
+				// The converter's buffer is length-delimited, not a C string.
+				FString Line(Converted.Length(), Converted.Get());
+				Line.TrimStartInline();
+				if (Line.EndsWith(TEXT("\r"))) { Line.LeftChopInline(1); }
 				if (!Line.IsEmpty())
 				{
 					HandleClientLine(Line);
@@ -410,6 +494,8 @@ void FMtoUCameraSyncSession::ReadClientLines()
 void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 {
 	TSharedPtr<FJsonObject> Object;
+	FString AcceptedJson = Line;
+	bool bLineAnomaly = false;
 	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Line);
 	if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
 	{
@@ -417,18 +503,22 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 		// bytes after a complete object is tolerated, but every discarded byte is
 		// counted and reported: silently ignoring them would hide a broken client.
 		FString ObjectText;
-		if (ExtractFirstJsonObject(Line, ObjectText))
+		if (Line.StartsWith(TEXT("{")) && ExtractFirstJsonObject(Line, ObjectText))
 		{
 			TSharedPtr<FJsonObject> Tolerated;
 			if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ObjectText), Tolerated)
 				&& Tolerated.IsValid())
 			{
 				++ClientLineAnomalies;
-				ClientTrailingBytes += Line.Len() - ObjectText.Len();
+				bLineAnomaly = true;
+				const FString Trailing = Line.Mid(ObjectText.Len());
+				const int32 TrailingByteCount = FTCHARToUTF8(*Trailing).Length();
+				ClientTrailingBytes += TrailingByteCount;
 				LastClientLineAnomaly = FString::Printf(
-					TEXT("discarded %d characters after a complete client message: '%s'"),
-					Line.Len() - ObjectText.Len(), *Line.Mid(ObjectText.Len()).Left(64));
+					TEXT("discarded %d UTF-8 bytes after a complete client message: '%s'"),
+					TrailingByteCount, *Trailing.Left(64));
 				Object = Tolerated;
+				AcceptedJson = ObjectText;
 			}
 		}
 		if (!Object.IsValid())
@@ -502,7 +592,73 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 		Report.Serial = static_cast<int64>(Serial);
 		Object->TryGetStringField(TEXT("status"), Report.Status);
 		Object->TryGetNumberField(TEXT("maya_frame"), Report.MayaFrame);
-		Report.RawJson = Line;
+		Report.RawJson = AcceptedJson;
+		const TSharedPtr<FJsonObject>* Pose = nullptr;
+		if (Object->TryGetObjectField(TEXT("pose"), Pose) && Pose && Pose->IsValid())
+		{
+			double SessionId = 0.0;
+			double UnrealFrame = 0.0;
+			double MayaOrigin = 0.0;
+			double SampledMayaFrame = 0.0;
+			double PoseValue = 0.0;
+			FString SequenceName;
+			FString CameraPath;
+			const TSharedPtr<FJsonObject>* PublishedTime = nullptr;
+			const TSharedPtr<FJsonObject>* PublishedCamera = nullptr;
+			const bool bHasFields = Object->TryGetNumberField(TEXT("session"), SessionId)
+				&& Object->TryGetNumberField(TEXT("unreal_display_frame"), UnrealFrame)
+				&& Object->TryGetNumberField(TEXT("maya_origin_frame"), MayaOrigin)
+				&& Object->TryGetStringField(TEXT("sequence"), SequenceName)
+				&& Object->TryGetStringField(TEXT("unreal_camera_path"), CameraPath)
+				&& (*Pose)->TryGetNumberField(TEXT("sampled_maya_frame"), SampledMayaFrame)
+				&& (*Pose)->TryGetNumberField(TEXT("translate_x"), PoseValue)
+				&& LastPublishedFrame.IsValid()
+				&& LastPublishedFrame->TryGetObjectField(TEXT("time"), PublishedTime)
+				&& LastPublishedFrame->TryGetObjectField(TEXT("camera"), PublishedCamera);
+			if (!bHasFields)
+			{
+				Report.PairingError = TEXT("pose report or published frame lacks an identity field");
+			}
+			else
+			{
+				const double PublishedDisplayFrame = (*PublishedTime)->GetNumberField(TEXT("display_frame"));
+				const double ExpectedMayaFrame = MayaOrigin
+					+ (PublishedDisplayFrame - PlaybackStartDisplayFrame())
+					* ClientSceneFps / DisplayRate.AsDecimal();
+				if (bLineAnomaly || Report.Status != TEXT("applied")
+					|| Serial != static_cast<double>(Report.Serial)
+					|| !FMath::IsFinite(ClientSceneFps) || ClientSceneFps <= 0.0
+					|| !FMath::IsFinite(MayaOrigin) || !FMath::IsFinite(UnrealFrame)
+					|| !FMath::IsFinite(Report.MayaFrame) || !FMath::IsFinite(SampledMayaFrame)
+					|| SessionId != static_cast<double>(ConnectionSessionId)
+					|| !Sequence.IsValid() || SequenceName != Sequence->GetName()
+					|| CameraPath != (*PublishedCamera)->GetStringField(TEXT("path"))
+					|| Report.Serial != FrameSerial || Report.Serial <= LastPairedSerial
+					|| !FMath::IsNearlyEqual(UnrealFrame, PublishedDisplayFrame, 1e-5)
+					|| !FMath::IsNearlyEqual(Report.MayaFrame, ExpectedMayaFrame, 1e-5)
+					|| !FMath::IsNearlyEqual(SampledMayaFrame, ExpectedMayaFrame, 1e-5)
+					|| !FMath::IsFinite(PoseValue))
+				{
+					Report.PairingError = TEXT("stale, mismatched, or unevaluated pose report");
+				}
+			}
+			if (Report.PairingError.IsEmpty())
+			{
+				Report.bPosePaired = true;
+				Report.PoseTranslateX = PoseValue;
+				LastPairedSerial = Report.Serial;
+				++PairedPoses;
+				if (AActor* Target = PoseWitnessTarget.Get())
+				{
+					// Maya +X is Unreal +Y; only the disposable test actor is changed.
+					Target->SetActorLocation(FVector(0.0, PoseValue, 0.0));
+				}
+			}
+			else
+			{
+				++RejectedPoses;
+			}
+		}
 		AppliedReports.Add(Report);
 		return;
 	}
@@ -572,14 +728,17 @@ FMtoUCameraSyncCutSample FMtoUCameraSyncSession::DescribeCut(double DisplayFrame
 bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FString& OutError)
 {
 	ULevelSequencePlayer* ResolvedPlayer = Player.Get();
+	const TSharedPtr<ISequencer> Sequencer = EditorSequencer.Pin();
 	UWorld* ResolvedWorld = World.Get();
-	if (!ResolvedPlayer || !ResolvedWorld || !Sequence.IsValid())
+	if ((!ResolvedPlayer && !Sequencer.IsValid()) || !ResolvedWorld || !Sequence.IsValid())
 	{
 		OutError = TEXT("session is not started");
 		return false;
 	}
 
-	UCameraComponent* CutCamera = ResolvedPlayer->GetActiveCameraComponent();
+	UCameraComponent* CutCamera = Sequencer.IsValid()
+		? Sequencer->GetLastEvaluatedCameraCut().Get()
+		: ResolvedPlayer->GetActiveCameraComponent();
 	UCameraComponent* Camera = CutCamera ? CutCamera : FallbackCamera.Get();
 	if (!Camera)
 	{
@@ -594,16 +753,18 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 	Frame.OutputResolution = Config.OutputResolution;
 	Frame.ResolutionSource = Config.ResolutionSource;
 
-	const FQualifiedFrameTime Current = ResolvedPlayer->GetCurrentTime();
+	const FQualifiedFrameTime Current = Sequencer.IsValid()
+		? Sequencer->GetGlobalTime() : ResolvedPlayer->GetCurrentTime();
+	const FFrameTime DisplayTime = FFrameRate::TransformTime(Current.Time, Current.Rate, DisplayRate);
 	Frame.Time.DisplayRate = DisplayRate;
 	Frame.Time.TickResolution = TickResolution;
 	Frame.Time.PlaybackStart = FMath::FloorToInt32(PlaybackStartDisplayFrame());
 	Frame.Time.PlaybackEnd = FMath::FloorToInt32(PlaybackEndDisplayFrame());
-	Frame.Time.DisplayFrame = Current.Time.AsDecimal();
+	Frame.Time.DisplayFrame = DisplayTime.AsDecimal();
 	Frame.Time.SourceFrame = FMath::FloorToInt32(Frame.Time.DisplayFrame);
 	Frame.Time.Seconds = (Frame.Time.DisplayFrame - PlaybackStartDisplayFrame())
 		/ FMath::Max(DisplayRate.AsDecimal(), 1.0);
-	const FFrameTime TickTime = FFrameRate::TransformTime(Current.Time, DisplayRate, TickResolution);
+	const FFrameTime TickTime = FFrameRate::TransformTime(Current.Time, Current.Rate, TickResolution);
 	Frame.Time.Tick = TickTime.FrameNumber.Value;
 
 	Frame.Cut = DescribeCut(Frame.Time.DisplayFrame);
@@ -686,7 +847,7 @@ void FMtoUCameraSyncSession::SendJson(const TSharedRef<FJsonObject>& Object)
 	}
 	Object->SetStringField(TEXT("protocol"), ProtocolName);
 	Object->SetNumberField(TEXT("version"), ProtocolVersion);
-	Object->SetNumberField(TEXT("session"), 1);
+	Object->SetNumberField(TEXT("session"), static_cast<double>(ConnectionSessionId));
 	const FString Line = FrameTimeToJsonLine(Object);
 	const FTCHARToUTF8 Utf8(*Line);
 	// The accepted socket is non-blocking, so a send can be refused or partially

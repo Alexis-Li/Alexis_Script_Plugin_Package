@@ -6,19 +6,20 @@ product and ships with nothing.
 
 ## What it does
 
-- Owns one `ULevelSequencePlayer` for the sequence under test and drives its
-  time: `Play`, `Pause`, `Seek <display frame>`, play rate, looping. Unreal is
-  the only writer of that time.
-- Reads the evaluated camera from the engine
-  (`ULevelSequencePlayer::GetActiveCameraComponent`), so camera cuts and
-  subsequence shots are resolved by the engine, not by the prototype.
+- In editor mode, reads the open Sequencer's root time and last evaluated
+  camera cut. Scrubbing, pausing, camera cuts and focused shots use the actual
+  editor evaluation; the prototype never creates a second player in this mode.
+- Keeps an isolated `ULevelSequencePlayer` mode for play, pause, seek, play rate
+  and loop tests. Both modes use the engine's evaluated camera cut.
 - Reads the camera exactly as it renders: `UCameraComponent::GetCameraView`
   plus the view-projection matrix at the configured output resolution, the
   aperture rectangle inside that resolution, and the projected positions of
   every actor tagged `MtoUCameraSyncMarker`.
 - Serves one Maya client on `127.0.0.1:54330` with the schema in
   `../protocol.md`, refuses any message that tries to control time or camera,
-  and keeps every `applied` report for the verification evidence.
+  and keeps every `applied` report for the verification evidence. An opt-in
+  keyed-joint witness from Maya is paired by session, serial, camera and time
+  before moving a disposable test actor; stale reports are refused.
 
 ## Build and run
 
@@ -34,13 +35,15 @@ The prototype is loaded by the repository's Unreal test project
 In an interactive editor session:
 
 ```
-MtoUCameraSyncPrototype.Start /Game/Cinematics/LS_Shot 54330 1920 1080
+MtoUCameraSyncPrototype.StartEditor 54330 1920 1080
 MtoUCameraSyncPrototype.Status
-MtoUCameraSyncPrototype.Seek 1030
-MtoUCameraSyncPrototype.Play 1.0
-MtoUCameraSyncPrototype.Pause
 MtoUCameraSyncPrototype.Stop
 ```
+
+Open the Level Sequence editor first, then use its own playhead and transport.
+`MtoUCameraSyncPrototype.Start /Game/Cinematics/LS_Shot 54330 1920 1080`
+starts the isolated-player fixture instead; `Seek`, `Play` and `Pause` control
+that fixture only.
 
 ## Automation tests
 
@@ -49,7 +52,9 @@ MtoUCameraSyncPrototype.Stop
 | `MtoUCameraSyncPrototype.CameraPayload` | Evaluated camera fields, film aperture and sensor offsets, evaluated depth of field values, the aperture rectangle inside the output resolution, marker projection and pixel mapping |
 | `MtoUCameraSyncPrototype.CameraCutsAndTime` | Two camera cuts, non-zero playback start, reported seconds, a rejected client time request, playback and looping inside the range |
 | `MtoUCameraSyncPrototype.SubsequenceTime` | A master sequence with a subsequence shot, evaluated through the engine while the master time stays authoritative |
-| `MtoUCameraSyncPrototype.RealMayaPeer` | Opt-in: drives the Maya peer over a real socket. Requires `-MtoUCameraSyncMayapy=`, `-MtoUCameraSyncPeer=` and `-MtoUEvidence=` |
+| `MtoUCameraSyncPrototype.EditorSequencer` | An open editor Sequence, two camera cuts, focused shot with root time, and no second time writer |
+| `MtoUCameraSyncPrototype.RealMayaPeer` | Opt-in: follows the real editor with Maya over a socket, pairs one keyed-joint pose witness, rejects stale/reconnected reports and checks intact JSON lines. Requires `-MtoUCameraSyncMayapy=`, `-MtoUCameraSyncPeer=` and `-MtoUEvidence=` |
+| `MtoUCameraSyncPrototype.TrailingByteCount` | A deliberately malformed UTF-8 line is counted in bytes, not characters |
 
 Run them with:
 
@@ -63,7 +68,9 @@ Run them with:
   refused with a message.
 - The output resolution is a prototype input; wiring it to Movie Render
   Pipeline settings is not implemented.
-- The prototype never touches the level or the sequence asset: it spawns a
-  transient sequence player, and stopping the session destroys it and restores
-  any pre-animated state.
+- The editor mode only observes the user's Sequencer, including its playhead;
+  stopping follow leaves that editor time alone. The isolated-player mode
+  destroys its transient player and restores pre-animated state.
+- The joint witness does not use the MtoULiveLink product's pose channel, and
+  continuous editor playback latency and a drop policy are not verified.
 - Nothing here is packaged, versioned or documented as a product feature.
