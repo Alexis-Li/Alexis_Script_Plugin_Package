@@ -19,6 +19,9 @@ public:
      */
     static FText FormatCacheState(const FMtoUCachePlaybackView& View);
 
+    /** Parse the exact integer accepted by the Details source-frame seek field. */
+    static bool ParseSeekSourceFrame(const FString& Input, int32& OutFrame);
+
     virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
     /** How urgent the combined Preview and connection state is. */

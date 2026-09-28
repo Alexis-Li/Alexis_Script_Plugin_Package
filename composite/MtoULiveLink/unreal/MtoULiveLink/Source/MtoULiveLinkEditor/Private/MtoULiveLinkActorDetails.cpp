@@ -535,6 +535,40 @@ FText FMtoULiveLinkActorDetails::FormatCacheState(const FMtoUCachePlaybackView& 
     return CacheStateText(View);
 }
 
+bool FMtoULiveLinkActorDetails::ParseSeekSourceFrame(const FString& Input, int32& OutFrame)
+{
+    const FString Text = Input.TrimStartAndEnd();
+    int32 Index = 0;
+    const bool bNegative = !Text.IsEmpty() && Text[0] == TEXT('-');
+    if (!Text.IsEmpty() && (bNegative || Text[0] == TEXT('+')))
+    {
+        ++Index;
+    }
+    if (Index == Text.Len())
+    {
+        return false;
+    }
+
+    const int64 Limit = bNegative ? -(static_cast<int64>(MIN_int32)) : MAX_int32;
+    int64 Value = 0;
+    for (; Index < Text.Len(); ++Index)
+    {
+        const TCHAR Character = Text[Index];
+        if (Character < TEXT('0') || Character > TEXT('9'))
+        {
+            return false;
+        }
+        const int64 Digit = Character - TEXT('0');
+        if (Value > (Limit - Digit) / 10)
+        {
+            return false;
+        }
+        Value = Value * 10 + Digit;
+    }
+    OutFrame = static_cast<int32>(bNegative ? -Value : Value);
+    return true;
+}
+
 void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
     TArray<TWeakObjectPtr<UObject>> Objects;
@@ -925,11 +959,10 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                         {
                             return FReply::Handled();
                         }
-                        const FString Text = SeekInput->TrimStartAndEnd();
                         int32 SourceFrame = 0;
-                        if (Text.IsEmpty() || !LexTryParseString(SourceFrame, *Text))
+                        if (!FMtoULiveLinkActorDetails::ParseSeekSourceFrame(*SeekInput, SourceFrame))
                         {
-                            *SeekMessage = LOCTEXT("CacheSeekNotInteger", "请输入整数 Maya 源帧。");
+                            *SeekMessage = LOCTEXT("CacheSeekNotInteger", "请输入有效范围内的整数 Maya 源帧。");
                             return FReply::Handled();
                         }
                         *SeekMessage = FText::GetEmpty();

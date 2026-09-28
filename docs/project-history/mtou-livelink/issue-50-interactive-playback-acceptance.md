@@ -1,8 +1,8 @@
 # Issue #50: interactive cached playback (pause, seek, loop)
 
-Accepted on 2026-09-28 on `codex/mtou-preview-workflow`, based on
-`29beaa88bd2907fb1c5b7e79dd3b490095a94c22`. Issue #49 (range capture, upload, and
-UE-owned first playback) is closed, which was this issue's only blocker.
+Accepted on 2026-09-28 on `codex/mtou-preview-workflow`, after a focused fix
+for the Unreal Details source-frame input. Issue #49 (range capture, upload,
+and UE-owned first playback) is closed, which was this issue's only blocker.
 
 ## Current contract
 
@@ -20,7 +20,9 @@ interval, and a loop round continues the same schedule instead of restarting it.
   it, and holds it paused. An out-of-range frame is refused with
   `CACHE_SEEK_INVALID` naming the requested frame and the sampled range; it is
   neither clamped nor reported to Maya, because the action exists only in
-  Unreal.
+  Unreal. The Details field accepts a complete signed decimal int32 after
+  trimming outer whitespace; malformed or overflowing input shows an error
+  before any seek, leaving the pose and playback state untouched.
 - Loop wraps from the accepted last frame to the first frame on the same
   continuous schedule, so rounds neither burst nor double-complete. Turning it
   off completes the current round, and a one-frame cache advances one round per
@@ -53,13 +55,25 @@ transport from `mayapy`, and drove Unreal through the public actor operations.
 | Maya pure Python `test_mtou_livelink.py` | 158/158 passed |
 | Maya 2024 `maya_host_tests.py` | 23/23 passed |
 | UE `Build.bat UnrealEditor Win64 Development -NoUBA` | Succeeded |
-| UE `Automation RunTests MtoULiveLink`, NullRHI | 83/83 passed, 0 failed or unrun |
+| UE `Automation RunTests MtoULiveLink`, NullRHI, before the Details input fix | 84/84 passed, 0 failed or unrun |
 | `MtoULiveLink.CachedPlayback.Segments` (deterministic clock) | Passed; pause/resume with a 120s held interval, seek refusals and positions, two loop rounds, single-frame looping, stop from pause, and recapture isolation |
 | `MtoULiveLink.Editor.DetailsInteractiveStateText` | Passed; pause, seek, loop round, stop, completion, and failure stay distinguishable |
 | `MtoULiveLink.Protocol.ConformanceCorpus` | Passed over the v9 corpus, including every new outcome and rejected payload |
 | `MtoULiveLink.Source.MayaInteractivePlayback` | Passed through the real mayapy peer and its wire outcomes |
 | `MtoULiveLink.Source.MayaCacheReconnect` | Passed; reconnect, retained-cache upload, and stale-identity isolation with the v9 shape |
 | Protocol corpus generator `--check`, repository validator, repository unit tests | Current v9 corpus; validator passed; 22/22 tests passed |
+
+The independent review repeated the listed Maya, UE, protocol, and repository
+checks before the Details input fix. They were not repeated for this editor-only
+change. The fix was compiled with UE 5.7.4
+`Build.bat UnrealEditor Win64 Development -NoUBA -MaxParallelActions=2`, which
+succeeded. `MtoULiveLink.Editor.DetailsSeekInput` then passed 1/1 in ToolsLab
+under NullRHI with no warnings or errors. It exercises the parser called by the
+Details seek button: `5.5`, `5abc`, empty and sign-only input, int32 overflow,
+and `0x5` are rejected without changing the output frame; signed integer
+values, whitespace, and both int32 endpoints parse exactly. The button returns
+on parse failure before calling `SeekCachedPlayback`, while valid integers
+continue to the cache's sampled-frame check.
 
 ## Interactive playback through the real transport
 
@@ -100,9 +114,10 @@ the Maya peer recorded what it received and rendered.
 - Verification used disposable synthetic Maya characters over the real
   transport, not a company production scene; the controller, capture, upload,
   cache files, commands, and pose values are the production ones.
-- The Unreal controls were exercised through the public actor API and the
-  exported Details text functions; the Details row itself was not clicked by a
-  human, and no viewport screenshots were taken for this issue.
+- The Unreal controls were exercised through the public actor API, the
+  exported Details text functions, and the seek button's shared input parser.
+  The Details row itself was not clicked by a human, and no viewport
+  screenshots were taken for this issue.
 - Cached playback remains the only time owner in this workflow. Hosting it under
   an external time driver such as Sequencer is the separate Issue #52
   validation and is not established here.

@@ -139,9 +139,10 @@ applied source frame, and cache state. **播放** starts from the first frame, a
 **再次播放** replays a cache retained by a stop or a completed run. **暂停** holds
 the current pose and the cache for as long as you need, and **继续** carries on
 from that pose without replaying the paused time. **停止** ends the attempt and
-keeps both the cache and the held pose. To inspect one frame, type a Maya source
-frame beside **定位** and click it: Unreal displays that frame and holds it
-paused. Only frames this capture sampled are accepted; an unsampled frame is
+keeps both the cache and the held pose. To inspect one frame, type an integer
+Maya source frame beside **定位** and click it: Unreal displays that frame and
+holds it paused. Invalid or overflowing integers are rejected in the row.
+Only frames this capture sampled are accepted; an unsampled frame is
 refused, and the row names the requested frame and the sampled range. **循环**
 wraps from the last frame back to the first and shows the current round; turning
 it off completes the current round. Locating and looping reuse the uploaded

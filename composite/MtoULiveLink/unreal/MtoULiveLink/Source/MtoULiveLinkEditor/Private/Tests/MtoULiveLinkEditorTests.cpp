@@ -569,6 +569,40 @@ bool FMtoUDetailsInteractiveStateTextTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSeekInputTest,
+    "MtoULiveLink.Editor.DetailsSeekInput",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsSeekInputTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TCHAR* InvalidInputs[] = {
+        TEXT("5.5"), TEXT("5abc"), TEXT(""), TEXT("  "), TEXT("+"), TEXT("-"),
+        TEXT("2147483648"), TEXT("-2147483649"), TEXT("0x5")
+    };
+    for (const TCHAR* Input : InvalidInputs)
+    {
+        int32 Frame = 123;
+        TestFalse(*FString::Printf(TEXT("reject invalid seek input '%s'"), Input),
+            FMtoULiveLinkActorDetails::ParseSeekSourceFrame(Input, Frame));
+        TestEqual(TEXT("rejected input leaves the frame untouched"), Frame, 123);
+    }
+
+    struct FValidInput { const TCHAR* Text; int32 Frame; };
+    const FValidInput ValidInputs[] = {
+        {TEXT("  +5 \t"), 5}, {TEXT("-1"), -1}, {TEXT("0"), 0},
+        {TEXT("2147483647"), MAX_int32}, {TEXT("-2147483648"), MIN_int32}
+    };
+    for (const FValidInput& Input : ValidInputs)
+    {
+        int32 Frame = 123;
+        TestTrue(*FString::Printf(TEXT("accept integer seek input '%s'"), Input.Text),
+            FMtoULiveLinkActorDetails::ParseSeekSourceFrame(Input.Text, Frame));
+        TestEqual(TEXT("accepted input preserves its exact frame"), Frame, Input.Frame);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
     "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

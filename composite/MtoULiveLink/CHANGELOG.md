@@ -20,7 +20,8 @@
   renders pause, seek, loop round, stop, and completion from those outcomes
   without a re-upload. Recapture, clear, disconnect, and character or Preview
   input changes drop the attempt's loop selection, positioned pose, and segment
-  state. Both components identify as 0.9.0.
+  state. The UE Details seek field rejects malformed and overflowing integers
+  before applying a frame. Both components identify as 0.9.0.
 - Add an Unreal Binding Actor garment comparison control (Issue #51). The
   original outfit and Generated Preview alternate in the same Model session,
   retaining the pose, Morph values, body, enabled Additional Parts, and actor
