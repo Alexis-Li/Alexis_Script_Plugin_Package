@@ -116,6 +116,13 @@ Actor 的配对，在同一预览时间下更新。道具优先复用 Maya 已�
 
 官方能力与待验证部分见 [技术调研](next-stage-research.md)。
 
+Issue #52 的有界验证已完成：双宿主原型从 UE 取得求值相机、切换 Camera Cuts、
+按子序列映射时间并驱动 Maya 时间；标记投影在分析上一致到 1.09e-07 NDC，Maya
+Arnold 渲染的标记位置在 2 px 容差内偏差不超过 0.25 px。结论、差异清单、支持与
+不支持范围，以及需要修订的决策和待用户决定事项见
+[验收记录](../../../docs/project-history/mtou-livelink/issue-52-camera-sync-acceptance.md)。
+该验证不构成相机产品承诺，也不改变协议 v9 与现有工作流。
+
 ## 本轮排除与暂缓
 
 - 暂缓刷新响应／性能优化：当前等待时间可接受。

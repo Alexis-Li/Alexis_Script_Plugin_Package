@@ -7,9 +7,14 @@
     {
       "Name": "MtoULiveLink",
       "Enabled": true
+    },
+    {
+      "Name": "MtoUCameraSyncPrototype",
+      "Enabled": true
     }
   ],
   "AdditionalPluginDirectories": [
-    "../composite/MtoULiveLink/unreal"
+    "../composite/MtoULiveLink/unreal",
+    "../composite/MtoULiveLink/prototypes/camera-sync/unreal"
   ]
 }

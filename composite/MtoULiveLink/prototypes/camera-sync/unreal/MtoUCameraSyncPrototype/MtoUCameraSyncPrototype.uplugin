@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0-prototype",
+	"FriendlyName": "MtoU Camera Sync Prototype",
+	"Description": "Bounded UE to Maya camera sync prototype used by the Issue 52 verification. Editor-only, standalone from the MtoULiveLink product.",
+	"Category": "Other",
+	"CreatedBy": "Alexis Script Plugin Package",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "MtoUCameraSyncPrototypeEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		}
+	]
+}

@@ -1,0 +1,940 @@
+// MtoU camera sync prototype (Issue 52 verification). Editor-only prototype code.
+
+#include "Misc/AutomationTest.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
+#include "CineCameraSettings.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "Components/SceneComponent.h"
+#include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
+#include "Interfaces/IPv4/IPv4Address.h"
+#include "LevelSequence.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "MtoUCameraSyncCapture.h"
+#include "MtoUCameraSyncSession.h"
+#include "MovieScene.h"
+#include "MovieSceneTrack.h"
+#include "Sections/MovieSceneCameraCutSection.h"
+#include "Sections/MovieSceneSubSection.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Sockets.h"
+#include "SocketSubsystem.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieSceneSubTrack.h"
+
+namespace
+{
+const TCHAR* MarkerTagName = TEXT("MtoUCameraSyncMarker");
+
+struct FPrototypeWorld
+{
+	UWorld* World = nullptr;
+	FWorldContext* Context = nullptr;
+
+	bool Create()
+	{
+		World = UWorld::CreateWorld(EWorldType::Editor, false);
+		if (!World)
+		{
+			return false;
+		}
+		Context = &GEngine->CreateNewWorldContext(EWorldType::Editor);
+		Context->SetCurrentWorld(World);
+		World->InitializeActorsForPlay(FURL());
+		return true;
+	}
+
+	~FPrototypeWorld()
+	{
+		if (World)
+		{
+			World->DestroyWorld(false);
+			if (GEngine && Context)
+			{
+				GEngine->DestroyWorldContext(World);
+			}
+		}
+	}
+};
+
+ULevelSequence* MakeSequence(
+	const FFrameRate& DisplayRate,
+	const FFrameRate& TickResolution,
+	int32 StartTick,
+	int32 EndTick)
+{
+	ULevelSequence* Sequence = NewObject<ULevelSequence>(GetTransientPackage(), NAME_None, RF_Transient);
+	Sequence->Initialize();
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	MovieScene->SetDisplayRate(DisplayRate);
+	MovieScene->SetTickResolutionDirectly(TickResolution);
+	MovieScene->SetPlaybackRange(TRange<FFrameNumber>(
+		TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+		TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(EndTick))));
+	return Sequence;
+}
+
+ACineCameraActor* SpawnCamera(
+	UWorld& World,
+	const FVector& Location,
+	const FRotator& Rotation,
+	float FocalLengthMm,
+	float Aperture,
+	float FocusDistanceCm)
+{
+	FActorSpawnParameters Params;
+	Params.ObjectFlags |= RF_Transient;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ACineCameraActor* Actor = World.SpawnActor<ACineCameraActor>(Location, Rotation, Params);
+	if (!Actor)
+	{
+		return nullptr;
+	}
+	UCineCameraComponent* Camera = Actor->GetCineCameraComponent();
+	Camera->SetCurrentFocalLength(FocalLengthMm);
+	Camera->SetCurrentAperture(Aperture);
+	Camera->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+	Camera->FocusSettings.ManualFocusDistance = FocusDistanceCm;
+	return Actor;
+}
+
+AActor* SpawnMarker(UWorld& World, const FString& Name, const FVector& Location)
+{
+	FActorSpawnParameters Params;
+	Params.ObjectFlags |= RF_Transient;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Marker = World.SpawnActor<AActor>(Location, FRotator::ZeroRotator, Params);
+	if (Marker)
+	{
+		// A plain AActor has no root component, so it would report a zero location.
+		USceneComponent* Root = NewObject<USceneComponent>(Marker, TEXT("MarkerRoot"));
+		Marker->SetRootComponent(Root);
+		Root->RegisterComponent();
+		Marker->SetActorLocation(Location);
+		Marker->SetActorLabel(Name);
+		Marker->Tags.Add(FName(MarkerTagName));
+	}
+	return Marker;
+}
+
+FGuid BindActor(ULevelSequence& Sequence, UWorld& World, UObject& Object, const FString& Name)
+{
+	UMovieScene* MovieScene = Sequence.GetMovieScene();
+	const FGuid Guid = MovieScene->AddPossessable(Name, Object.GetClass());
+	Sequence.BindPossessableObject(Guid, Object, &World);
+	return Guid;
+}
+
+UMovieSceneCameraCutTrack* EnsureCutTrack(ULevelSequence& Sequence)
+{
+	UMovieScene* MovieScene = Sequence.GetMovieScene();
+	UMovieSceneTrack* Track = MovieScene->GetCameraCutTrack();
+	if (!Track)
+	{
+		Track = MovieScene->AddCameraCutTrack(UMovieSceneCameraCutTrack::StaticClass());
+	}
+	return Cast<UMovieSceneCameraCutTrack>(Track);
+}
+
+UMovieSceneCameraCutSection* AddCut(
+	ULevelSequence& Sequence,
+	const FGuid& BindingGuid,
+	int32 StartTick,
+	int32 EndTick)
+{
+	UMovieSceneCameraCutTrack* Track = EnsureCutTrack(Sequence);
+	UMovieSceneCameraCutSection* Section =
+		Cast<UMovieSceneCameraCutSection>(Track->CreateNewSection());
+	Section->SetRange(TRange<FFrameNumber>(
+		TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+		TRangeBound<FFrameNumber>::Exclusive(FFrameNumber(EndTick))));
+	Section->SetCameraGuid(BindingGuid);
+	Track->AddSection(*Section);
+	return Section;
+}
+
+uint16 ReserveLoopbackPort()
+{
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	if (!Sockets)
+	{
+		return 0;
+	}
+	FSocket* Socket = Sockets->CreateSocket(NAME_Stream, TEXT("MtoU camera sync port probe"));
+	if (!Socket)
+	{
+		return 0;
+	}
+	const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+	bool bValidAddress = false;
+	Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
+	Address->SetPort(0);
+	uint16 Port = 0;
+	if (Socket->Bind(*Address))
+	{
+		Socket->GetAddress(*Address);
+		Port = static_cast<uint16>(Address->GetPort());
+	}
+	Socket->Close();
+	Sockets->DestroySocket(Socket);
+	return Port;
+}
+
+bool SaveJson(const FString& Path, const FString& Text)
+{
+	// Force UTF-8: the evidence carries Maya diagnostics that may be non-ASCII, and the
+	// default auto-detected encoding would write UTF-16.
+	return FFileHelper::SaveStringToFile(
+		Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+
+FString JsonToText(const TSharedRef<FJsonObject>& Object)
+{
+	FString Text;
+	const TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Text);
+	FJsonSerializer::Serialize(Object, Writer);
+	return Text;
+}
+
+bool LoadJson(const FString& Path, TSharedPtr<FJsonObject>& OutObject)
+{
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *Path))
+	{
+		return false;
+	}
+	return FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), OutObject)
+		&& OutObject.IsValid();
+}
+
+/** Returns the named double field of a nested object, or Def when absent. */
+double GetNumber(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, double Def)
+{
+	double Value = Def;
+	if (Object.IsValid())
+	{
+		Object->TryGetNumberField(Field, Value);
+	}
+	return Value;
+}
+
+TSharedPtr<FJsonObject> GetObject(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
+{
+	const TSharedPtr<FJsonObject>* Found = nullptr;
+	if (Object.IsValid() && Object->TryGetObjectField(Field, Found) && Found)
+	{
+		return *Found;
+	}
+	return nullptr;
+}
+}  // namespace
+
+// The evaluated camera is read through public engine API and reported with the units the
+// Maya side consumes: focal length mm, sensor mm, apertures inches, distances cm.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncPayloadTest,
+	"MtoUCameraSyncPrototype.CameraPayload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncPayloadTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	ACineCameraActor* CameraActor = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 35.0f, 2.8f, 500.0f);
+	TestNotNull(TEXT("cine camera"), CameraActor);
+	if (!CameraActor)
+	{
+		return false;
+	}
+	UCineCameraComponent* Camera = CameraActor->GetCineCameraComponent();
+	Camera->Filmback.SensorWidth = 36.0f;
+	Camera->Filmback.SensorHeight = 24.0f;
+	Camera->Filmback.SensorAspectRatio = 1.5f;
+	Camera->Filmback.SensorHorizontalOffset = 5.0f;
+	Camera->Filmback.SensorVerticalOffset = -3.0f;
+	Camera->LensSettings.SqueezeFactor = 1.0f;
+	Camera->CropSettings.AspectRatio = 0.0f;
+
+	SpawnMarker(*Fixture.World, TEXT("m_center"), CameraActor->GetActorLocation() + FVector(1000.0, 0.0, 0.0));
+	SpawnMarker(*Fixture.World, TEXT("m_left"), CameraActor->GetActorLocation() + FVector(1000.0, -200.0, 120.0));
+	SpawnMarker(*Fixture.World, TEXT("m_right"), CameraActor->GetActorLocation() + FVector(1200.0, 400.0, -160.0));
+
+	const FIntPoint Resolution(1920, 1080);
+	FMtoUCameraSyncCameraSample CameraSample;
+	FMtoUCameraSyncViewSample ViewSample;
+	FMtoUCameraSyncProjectionSample ProjectionSample;
+	FString Error;
+	if (!TestTrue(TEXT("capture succeeds"),
+		FMtoUCameraSyncCapture::CaptureCamera(
+			*Camera, Resolution, CameraSample, ViewSample, ProjectionSample, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	TestEqual(TEXT("focal length mm"), CameraSample.FocalLengthMm, 35.0);
+	TestEqual(TEXT("f-stop"), CameraSample.FStop, 2.8);
+	TestEqual(TEXT("sensor width mm"), CameraSample.SensorWidthMm, 36.0);
+	TestEqual(TEXT("sensor height mm"), CameraSample.SensorHeightMm, 24.0);
+	TestEqual(TEXT("sensor horizontal offset mm"), CameraSample.SensorHorizontalOffsetMm, 5.0);
+	TestEqual(TEXT("sensor vertical offset mm"), CameraSample.SensorVerticalOffsetMm, -3.0);
+	const double ExpectedHorizontalFov =
+		FMath::RadiansToDegrees(2.0 * FMath::Atan(36.0 / (2.0 * 35.0)));
+	TestTrue(TEXT("horizontal fov from focal length and sensor width"),
+		FMath::IsNearlyEqual(CameraSample.HorizontalFovDeg, ExpectedHorizontalFov, 0.01));
+	TestEqual(TEXT("focus method"), CameraSample.FocusMethod, FString(TEXT("Manual")));
+	TestTrue(TEXT("depth of field enabled for a manual focus camera"), CameraSample.bDepthOfField);
+	TestTrue(TEXT("view transform matches the component transform"),
+		!CameraSample.bViewTransformDiffers);
+	// Maya rejects a zero clip plane, so the resolved engine value has to be transferred.
+	TestTrue(TEXT("near clip plane is resolved to a positive value"), CameraSample.NearClipCm > 0.0);
+	TestEqual(TEXT("near clip reports the engine default source"),
+		CameraSample.NearClipSource, FString(TEXT("engine_default")));
+	// A Cine Camera always constrains the image to its filmback (or plate crop) aspect,
+	// so the rendered aspect is the sensor aspect, not the output resolution aspect.
+	TestEqual(TEXT("rendered aspect ratio follows the filmback"),
+		ViewSample.AspectRatio, 1.5);
+	TestEqual(TEXT("constrained view rectangle is letterboxed inside the output resolution"),
+		ProjectionSample.ViewRect.Width(), 1620);
+	TestEqual(TEXT("constrained view rectangle keeps the full height"),
+		ProjectionSample.ViewRect.Height(), 1080);
+
+	// The evaluated depth of field values are what the renderer receives, not the authored ones.
+	TestTrue(TEXT("evaluated f-stop override is present"), CameraSample.Dof.bOverrideFStop);
+	TestEqual(TEXT("evaluated dof f-stop"), CameraSample.Dof.FStop, 2.8);
+	TestTrue(TEXT("evaluated dof focal distance override is present"),
+		CameraSample.Dof.bOverrideFocalDistance);
+	TestEqual(TEXT("evaluated dof focal distance cm"), CameraSample.Dof.FocalDistanceCm, 500.0);
+
+	TArray<FMtoUCameraSyncMarkerSample> Markers;
+	FMtoUCameraSyncCapture::CollectMarkers(*Fixture.World, Markers);
+	TestEqual(TEXT("marker count"), Markers.Num(), 3);
+	TestEqual(TEXT("markers are sorted by name"), Markers[0].Name, FString(TEXT("m_center")));
+
+	for (FMtoUCameraSyncMarkerSample& Marker : Markers)
+	{
+		FVector2D Ndc;
+		const FVector4 Clip = ProjectionSample.ViewProjection.TransformFVector4(
+			FVector4(Marker.LocationCm.X, Marker.LocationCm.Y, Marker.LocationCm.Z, 1.0));
+		AddInfo(FString::Printf(
+			TEXT("marker %s world=(%.0f, %.0f, %.0f) cm ndc=(%.4f, %.4f) clip_w=%.1f aperture=[%d,%d,%d,%d]"),
+			*Marker.Name, Marker.LocationCm.X, Marker.LocationCm.Y, Marker.LocationCm.Z,
+			Clip.W > 0.0 ? Clip.X / Clip.W : 0.0, Clip.W > 0.0 ? Clip.Y / Clip.W : 0.0, Clip.W,
+			ProjectionSample.ViewRect.Min.X, ProjectionSample.ViewRect.Min.Y,
+			ProjectionSample.ViewRect.Max.X, ProjectionSample.ViewRect.Max.Y));
+		if (!TestTrue(TEXT("marker projects in front of the camera"),
+			FMtoUCameraSyncCapture::ProjectToNdc(ProjectionSample.ViewProjection, Marker.LocationCm, Ndc)))
+		{
+			continue;
+		}
+		const FVector2D Pixel = FMtoUCameraSyncCapture::NdcToPixel(Ndc, ProjectionSample.ViewRect);
+		TestTrue(TEXT("marker inside the frame"),
+			FMath::Abs(Ndc.X) <= 1.0 && FMath::Abs(Ndc.Y) <= 1.0);
+		TestTrue(TEXT("marker pixel x matches the normalized position"),
+			FMath::IsNearlyEqual(Pixel.X,
+				ProjectionSample.ViewRect.Min.X + (Ndc.X * 0.5 + 0.5) * ProjectionSample.ViewRect.Width(),
+				0.01));
+		TestTrue(TEXT("marker pixel y is measured from the top row"),
+			FMath::IsNearlyEqual(Pixel.Y,
+				ProjectionSample.ViewRect.Min.Y + (0.5 - Ndc.Y * 0.5) * ProjectionSample.ViewRect.Height(),
+				0.01));
+	}
+
+	// The film offset moves the projection, so the centered marker must not stay centered.
+	const FMtoUCameraSyncMarkerSample* Center = Markers.FindByPredicate(
+		[](const FMtoUCameraSyncMarkerSample& Marker)
+		{
+			return Marker.Name == TEXT("m_center");
+		});
+	if (Center)
+	{
+		FVector2D Ndc;
+		FMtoUCameraSyncCapture::ProjectToNdc(ProjectionSample.ViewProjection, Center->LocationCm, Ndc);
+		TestTrue(TEXT("sensor horizontal offset shifts the image horizontally"), Ndc.X < -0.01);
+	}
+	return true;
+}
+
+// Camera Cuts, a non-zero playback start and the one-way time rule.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncCameraCutTest,
+	"MtoUCameraSyncPrototype.CameraCutsAndTime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncCameraCutTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	const int32 StartTick = 1001 * 1000;
+	const int32 EndTick = 1051 * 1000;
+	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, StartTick, EndTick);
+
+	ACineCameraActor* CameraA = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 50.0f, 2.0f, 400.0f);
+	ACineCameraActor* CameraB = SpawnCamera(
+		*Fixture.World, FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+	TestNotNull(TEXT("camera A"), CameraA);
+	TestNotNull(TEXT("camera B"), CameraB);
+	if (!CameraA || !CameraB)
+	{
+		return false;
+	}
+	CameraA->GetCineCameraComponent()->Filmback.SensorWidth = 36.0f;
+	CameraA->GetCineCameraComponent()->Filmback.SensorHeight = 24.0f;
+	CameraB->GetCineCameraComponent()->Filmback.SensorWidth = 24.96f;
+	CameraB->GetCineCameraComponent()->Filmback.SensorHeight = 18.72f;
+
+	SpawnMarker(*Fixture.World, TEXT("m_a"), FVector(1000.0, 0.0, 100.0));
+	SpawnMarker(*Fixture.World, TEXT("m_b"), FVector(1800.0, 400.0, 260.0));
+
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraA, TEXT("CamA")),
+		StartTick, 1026 * 1000);
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraB, TEXT("CamB")),
+		1026 * 1000, EndTick);
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	TestTrue(TEXT("loopback port reserved"), Config.Port != 0);
+	Config.OutputResolution = FIntPoint(1920, 1080);
+
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	FMtoUCameraSyncFrameSample Frame;
+	Session.SetDisplayFrame(1001.0);
+	Session.Pump(0.0);
+	if (!TestTrue(TEXT("frame builds at the range start"), Session.BuildCurrentFrame(Frame, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestEqual(TEXT("playback range start is the non-zero display frame"),
+		Frame.Time.PlaybackStart, 1001);
+	TestEqual(TEXT("playback range end"), Frame.Time.PlaybackEnd, 1051);
+	TestEqual(TEXT("reported display frame"), Frame.Time.DisplayFrame, 1001.0);
+	TestEqual(TEXT("seconds are measured from the range start"), Frame.Time.Seconds, 0.0);
+	TestEqual(TEXT("first camera cut is active"), Frame.Cut.ActiveIndex, 0);
+	TestEqual(TEXT("cut stage is the root sequence"), Frame.Cut.Stage, FString(TEXT("root")));
+	TestEqual(TEXT("camera A focal length"), Frame.Camera.FocalLengthMm, 50.0);
+	TestEqual(TEXT("camera A f-stop"), Frame.Camera.FStop, 2.0);
+	TestEqual(TEXT("markers are published"), Frame.Markers.Num(), 2);
+
+	Session.SetDisplayFrame(1030.0);
+	Session.Pump(0.0);
+	if (!TestTrue(TEXT("frame builds inside the second cut"), Session.BuildCurrentFrame(Frame, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestEqual(TEXT("second camera cut is active"), Frame.Cut.ActiveIndex, 1);
+	TestEqual(TEXT("camera B focal length"), Frame.Camera.FocalLengthMm, 85.0);
+	TestEqual(TEXT("camera B f-stop"), Frame.Camera.FStop, 4.0);
+	TestEqual(TEXT("reported display frame advances"), Frame.Time.DisplayFrame, 1030.0);
+	TestTrue(TEXT("seconds follow the display frame"),
+		FMath::IsNearlyEqual(Frame.Time.Seconds, (1030.0 - 1001.0) / 24.0, 1e-9));
+	TestTrue(TEXT("camera B location is reported"),
+		FMath::IsNearlyEqual(Frame.Camera.LocationCm.X, 300.0, 0.01));
+
+	// Unreal owns time: a client time request is refused and changes nothing.
+	const double Before = Session.GetDisplayFrame();
+	Session.HandleClientLine(TEXT("{\"type\":\"seek\",\"display_frame\":1001}"));
+	TestEqual(TEXT("client time request is recorded as rejected"),
+		Session.GetRejectedCommandTypes().Num(), 1);
+	TestEqual(TEXT("client time request does not move Unreal time"),
+		Session.GetDisplayFrame(), Before);
+
+	// Playback stays inside the range and then pauses.
+	Session.SetDisplayFrame(1049.0);
+	Session.Play();
+	Session.Pump(1.0);
+	TestTrue(TEXT("playback advances the display frame"), Session.GetDisplayFrame() > 1049.0);
+	TestTrue(TEXT("playback stops at the end of the range"),
+		FMath::IsNearlyEqual(Session.GetDisplayFrame(), 1051.0, 0.5));
+
+	// Looping wraps inside the range instead of leaving it.
+	Session.SetLoop(true);
+	Session.SetDisplayFrame(1050.0);
+	Session.Play();
+	Session.Pump(0.5);
+	TestTrue(TEXT("looping stays inside the range"),
+		Session.GetDisplayFrame() >= 1001.0 && Session.GetDisplayFrame() < 1051.0);
+
+	Session.Stop(TEXT("test finished"));
+	return true;
+}
+
+// A master sequence drives a subsequence; the engine must map the master time into the
+// shot's own time before evaluating the shot content.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncSubsequenceTest,
+	"MtoUCameraSyncPrototype.SubsequenceTime",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncSubsequenceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	ULevelSequence* Master = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+	ULevelSequence* Shot = MakeSequence(DisplayRate, TickResolution, 0, 20 * 1000);
+
+	ACineCameraActor* CameraA = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 50.0f, 2.0f, 400.0f);
+	TestNotNull(TEXT("camera A"), CameraA);
+	if (!CameraA)
+	{
+		return false;
+	}
+	AddCut(*Master, BindActor(*Master, *Fixture.World, *CameraA, TEXT("CamA")),
+		1001 * 1000, 1051 * 1000);
+
+	// The shot owns a marker actor that the master does not reference directly.
+	AActor* ShotMarker = SpawnMarker(*Fixture.World, TEXT("m_shot"), FVector(0.0, 0.0, 0.0));
+	TestNotNull(TEXT("shot marker"), ShotMarker);
+	if (!ShotMarker)
+	{
+		return false;
+	}
+
+	UMovieScene* MasterScene = Master->GetMovieScene();
+	UMovieSceneSubTrack* SubTrack = MasterScene->AddTrack<UMovieSceneSubTrack>();
+	TestNotNull(TEXT("sub track"), SubTrack);
+	if (!SubTrack)
+	{
+		return false;
+	}
+	UMovieSceneSubSection* SubSection = SubTrack->AddSequence(
+		Shot, FFrameNumber(1020 * 1000), 20 * 1000);
+	TestNotNull(TEXT("sub section"), SubSection);
+	if (!SubSection)
+	{
+		return false;
+	}
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Master, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// Inside the shot range the engine evaluates the shot's own content.
+	Session.SetDisplayFrame(1030.0);
+	Session.Pump(0.0);
+	FMtoUCameraSyncFrameSample Frame;
+	if (!TestTrue(TEXT("frame builds inside the subsequence"), Session.BuildCurrentFrame(Frame, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestEqual(TEXT("the root cut remains the active camera"), Frame.Camera.FocalLengthMm, 50.0);
+	TestEqual(TEXT("reported display frame is the master frame"), Frame.Time.DisplayFrame, 1030.0);
+	TestEqual(TEXT("the shot marker is visible in the master sequence"), Frame.Markers.Num(), 1);
+	TestEqual(TEXT("the evaluable shot content is reported with its unrealized master mapping"),
+		Frame.Cut.SectionCount, 1);
+
+	// Outside the shot range the master continues on its own.
+	Session.SetDisplayFrame(1010.0);
+	Session.Pump(0.0);
+	if (!TestTrue(TEXT("frame builds before the subsequence"), Session.BuildCurrentFrame(Frame, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestEqual(TEXT("the master timeline is still authoritative"), Frame.Time.DisplayFrame, 1010.0);
+	TestTrue(TEXT("the shot marker is not part of the master evaluation earlier"),
+		Frame.Markers.Num() == 1);
+
+	Session.Stop(TEXT("test finished"));
+	return true;
+}
+
+// Opt-in real Maya peer: drives the publisher over a real socket and applies every frame
+// in Maya 2024. Requires -MtoUCameraSyncMayapy=, -MtoUCameraSyncPeer= and -MtoUEvidence=.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncMayaPeerTest,
+	"MtoUCameraSyncPrototype.RealMayaPeer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FString MayapyPath;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCameraSyncMayapy="), MayapyPath))
+	{
+		AddInfo(TEXT("Host check not requested; supply MtoUCameraSyncMayapy, MtoUCameraSyncPeer and MtoUEvidence."));
+		return true;
+	}
+	FString PeerPath;
+	FString Evidence;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCameraSyncPeer="), PeerPath)
+		|| !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+		|| !FPaths::FileExists(MayapyPath) || !FPaths::FileExists(PeerPath))
+	{
+		AddError(TEXT("host check requires existing mayapy/peer paths and an evidence directory"));
+		return false;
+	}
+	if (!TestTrue(TEXT("evidence directory"), IFileManager::Get().MakeDirectory(*Evidence, true)
+		|| IFileManager::Get().DirectoryExists(*Evidence)))
+	{
+		return false;
+	}
+
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+	ACineCameraActor* CameraA = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator(0.0, 0.0, 0.0), 50.0f, 2.0f, 400.0f);
+	ACineCameraActor* CameraB = SpawnCamera(
+		*Fixture.World, FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+	if (!TestNotNull(TEXT("camera A"), CameraA) || !TestNotNull(TEXT("camera B"), CameraB))
+	{
+		return false;
+	}
+	ACineCameraActor* Cameras[] = {CameraA, CameraB};
+	for (ACineCameraActor* Camera : Cameras)
+	{
+		UCineCameraComponent* Component = Camera->GetCineCameraComponent();
+		Component->Filmback.SensorWidth = 24.96f;
+		Component->Filmback.SensorHeight = 18.72f;
+		Component->Filmback.SensorAspectRatio = 1.333333f;
+	}
+	SpawnMarker(*Fixture.World, TEXT("m_center"), FVector(900.0, 0.0, 100.0));
+	SpawnMarker(*Fixture.World, TEXT("m_upper_left"), FVector(1400.0, -500.0, 300.0));
+	SpawnMarker(*Fixture.World, TEXT("m_lower_right"), FVector(1600.0, 420.0, -120.0));
+
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraA, TEXT("CamA")),
+		1001 * 1000, 1026 * 1000);
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraB, TEXT("CamB")),
+		1026 * 1000, 1051 * 1000);
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	if (!TestTrue(TEXT("loopback port reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	const FString FixturePath = FPaths::Combine(Evidence, TEXT("camera-sync-fixture.json"));
+	const FString ResultPath = FPaths::Combine(Evidence, TEXT("camera-sync-result.json"));
+	const FString ReportPath = FPaths::Combine(Evidence, TEXT("camera-sync-ue-report.json"));
+	IFileManager::Get().Delete(*ResultPath);
+	const FString FixtureJson = FString::Printf(
+		TEXT("{\"host\":\"127.0.0.1\",\"port\":%u,\"scene_fps\":24.0,\"maya_start_frame\":1001.0,"
+			"\"camera_name\":\"MtoU_UE_Camera\",\"frames_to_apply\":6,\"render\":false,"
+			"\"evidence_dir\":\"%s\",\"protocol\":{\"name\":\"MtoUCameraSync\",\"version\":1}}"),
+		static_cast<uint32>(Config.Port), *Evidence.Replace(TEXT("\\"), TEXT("/")));
+	if (!TestTrue(TEXT("fixture written"), SaveJson(FixturePath, FixtureJson)))
+	{
+		return false;
+	}
+
+	// The peer runs through a small command file so the exact launch is reproducible, and
+	// its output is captured through a pipe this test owns: a child that inherits the
+	// editor's handles can otherwise write its console output into the prototype socket.
+	const FString PeerLogPath = FPaths::Combine(Evidence, TEXT("camera-sync-peer.log"));
+	const FString CommandPath = FPaths::Combine(Evidence, TEXT("camera-sync-peer.cmd"));
+	const FString CommandText = FString::Printf(
+		TEXT("@echo off\r\n\"%s\" \"%s\" --fixture \"%s\" --result \"%s\"\r\nexit /b %%ERRORLEVEL%%\r\n"),
+		*MayapyPath, *PeerPath, *FixturePath, *ResultPath);
+	if (!TestTrue(TEXT("peer command written"), SaveJson(CommandPath, CommandText)))
+	{
+		return false;
+	}
+	void* PeerPipeRead = nullptr;
+	void* PeerPipeWrite = nullptr;
+	FPlatformProcess::CreatePipe(PeerPipeRead, PeerPipeWrite);
+	// Launch the interpreter directly with an owned pipe: going through a shell lets an
+	// inherited console handle reach Maya's own output, which then lands in the socket.
+	const FString ProcessArgs = FString::Printf(
+		TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
+		*PeerPath, *FixturePath, *ResultPath);
+	// Only the child's output pipe is inherited; passing an input pipe as well makes the
+	// engine warn that the read end is not inheritable.
+	FProcHandle Process = FPlatformProcess::CreateProc(
+		*MayapyPath, *ProcessArgs, false, true, true, nullptr, 0, nullptr,
+		PeerPipeWrite, nullptr);
+	FString PeerOutput;
+	if (!TestTrue(TEXT("real Maya process starts"), Process.IsValid()))
+	{
+		return false;
+	}
+
+	TArray<TSharedPtr<FJsonObject>> PublishedFrames;
+	Session.SetDisplayFrame(1001.0);
+	int32 AppliedReports = 0;
+	int32 AppliedCuts = 0;
+	int64 LastRecordedPublish = 0;
+	bool bSwitchedToSecondCut = false;
+	double LastLoopTime = FPlatformTime::Seconds();
+	const double Deadline = LastLoopTime + 180.0;
+	while (Process.IsValid() && FPlatformProcess::IsProcRunning(Process)
+		&& FPlatformTime::Seconds() < Deadline)
+	{
+		// Real time drives the publisher so the Maya side sees a realistic rate, and the
+		// loop is paced instead of spinning: an unpaced loop drowns the client.
+		FPlatformProcess::Sleep(0.01f);
+		PeerOutput += FPlatformProcess::ReadPipe(PeerPipeRead);
+		const double Now = FPlatformTime::Seconds();
+		const double Delta = FMath::Clamp(Now - LastLoopTime, 0.001, 0.5);
+		LastLoopTime = Now;
+
+		// The first two published frames come from the first camera cut, the rest from
+		// the second one, so the peer has to follow a real cut.
+		const int32 PublishedSoFar = static_cast<int32>(Session.GetPublishedFrameCount());
+		if (PublishedSoFar == 2 && !bSwitchedToSecondCut)
+		{
+			Session.SetDisplayFrame(1030.0);
+			bSwitchedToSecondCut = true;
+		}
+		Session.Pump(Delta);
+
+		if (Session.GetPublishedFrameCount() > LastRecordedPublish
+			&& PublishedFrames.Num() < 24)
+		{
+			LastRecordedPublish = Session.GetPublishedFrameCount();
+			if (const TSharedPtr<FJsonObject>& Latest = Session.GetLastPublishedFrame())
+			{
+				PublishedFrames.Add(Latest);
+			}
+		}
+
+		TSharedPtr<FJsonObject> PeerResult;
+		if (LoadJson(ResultPath, PeerResult))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Applied = nullptr;
+			if (PeerResult->TryGetArrayField(TEXT("applied"), Applied) && Applied)
+			{
+				AppliedReports = Applied->Num();
+				AppliedCuts = 0;
+				for (const TSharedPtr<FJsonValue>& Entry : *Applied)
+				{
+					const TSharedPtr<FJsonObject> Object = Entry->AsObject();
+					const TSharedPtr<FJsonObject> EntryCamera = GetObject(Object, TEXT("camera"));
+					if (GetNumber(EntryCamera, TEXT("focal_length_mm"), 0.0) > 60.0)
+					{
+						++AppliedCuts;
+					}
+				}
+			}
+			FString Phase;
+			PeerResult->TryGetStringField(TEXT("phase"), Phase);
+			if (Phase == TEXT("done") || Phase == TEXT("failed"))
+			{
+				break;
+			}
+		}
+	}
+
+	int32 ReturnCode = 0;
+	if (Process.IsValid())
+	{
+		FPlatformProcess::WaitForProc(Process);
+		FPlatformProcess::GetProcReturnCode(Process, &ReturnCode);
+		FPlatformProcess::CloseProc(Process);
+	}
+	// Drain whatever the peer printed before it exited, then release the pipe.
+	PeerOutput += FPlatformProcess::ReadPipe(PeerPipeRead);
+	SaveJson(PeerLogPath, PeerOutput);
+	FPlatformProcess::ClosePipe(PeerPipeRead, PeerPipeWrite);
+
+	Session.Stop(TEXT("peer session finished"));
+
+	TSharedPtr<FJsonObject> PeerResult;
+	const bool bResultLoaded = LoadJson(ResultPath, PeerResult);
+	TestTrue(TEXT("peer wrote a result file"), bResultLoaded);
+	TestEqual(TEXT("peer exit code"), ReturnCode, 0);
+	TestTrue(TEXT("peer reported success"), bResultLoaded
+		&& PeerResult->HasTypedField<EJson::Boolean>(TEXT("ok"))
+		&& PeerResult->GetBoolField(TEXT("ok")));
+	TestTrue(TEXT("peer applied several frames"), AppliedReports >= 3);
+	TestTrue(TEXT("peer applied frames from both camera cuts"), AppliedCuts >= 1);
+	TestTrue(TEXT("Unreal recorded the applied reports"),
+		Session.GetAppliedReports().Num() >= 1);
+	TestEqual(TEXT("client never sent a time or camera command"),
+		Session.GetRejectedCommandTypes().Num(), 0);
+
+	// Per-frame comparison between the published payload and what Maya actually applied.
+	double MaxMarkerDelta = 0.0;
+	if (bResultLoaded && PeerResult.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Applied = nullptr;
+		const bool bHasApplied = PeerResult->TryGetArrayField(TEXT("applied"), Applied) && Applied;
+		TestTrue(TEXT("peer result carries applied frames"), bHasApplied);
+		if (bHasApplied)
+		{
+			for (const TSharedPtr<FJsonValue>& Entry : *Applied)
+			{
+				const TSharedPtr<FJsonObject> Object = Entry->AsObject();
+				const double Serial = GetNumber(Object, TEXT("frame_serial"), 0.0);
+				const TSharedPtr<FJsonObject>* Matching = nullptr;
+				for (const TSharedPtr<FJsonObject>& Frame : PublishedFrames)
+				{
+					if (FMath::IsNearlyEqual(GetNumber(Frame, TEXT("frame_serial"), -1.0), Serial))
+					{
+						Matching = &Frame;
+						break;
+					}
+				}
+				if (!Matching)
+				{
+					continue;
+				}
+				const TSharedPtr<FJsonObject> Camera = GetObject(*Matching, TEXT("camera"));
+				const TSharedPtr<FJsonObject> Dof = GetObject(Camera, TEXT("dof"));
+				const TSharedPtr<FJsonObject> AppliedCamera = GetObject(Object, TEXT("camera"));
+				const TSharedPtr<FJsonObject> AppliedGate = GetObject(Object, TEXT("gate"));
+				const TSharedPtr<FJsonObject> Aperture = GetObject(*Matching, TEXT("aperture_resolution"));
+				TestEqual(TEXT("applied focal length matches the payload"),
+					GetNumber(AppliedCamera, TEXT("focal_length_mm"), 0.0),
+					GetNumber(Camera, TEXT("focal_length_mm"), 0.0));
+				TestEqual(TEXT("applied film aperture matches the sensor width"),
+					GetNumber(AppliedCamera, TEXT("horizontal_film_aperture_in"), 0.0),
+					GetNumber(Camera, TEXT("sensor_width_mm"), 0.0) / 25.4);
+				TestEqual(TEXT("applied film aperture matches the sensor height"),
+					GetNumber(AppliedCamera, TEXT("vertical_film_aperture_in"), 0.0),
+					GetNumber(Camera, TEXT("sensor_height_mm"), 0.0) / 25.4);
+				TestTrue(TEXT("applied near clip matches the resolved payload value"),
+					FMath::IsNearlyEqual(GetNumber(AppliedCamera, TEXT("near_clip_cm"), 0.0),
+						GetNumber(Camera, TEXT("near_clip_cm"), -1.0), 1e-6));
+				TestEqual(TEXT("applied f-stop matches the payload"),
+					GetNumber(AppliedCamera, TEXT("f_stop"), 0.0),
+					GetNumber(Camera, TEXT("f_stop"), 0.0));
+				TestEqual(TEXT("applied f-stop matches the evaluated post process value"),
+					GetNumber(AppliedCamera, TEXT("f_stop"), 0.0),
+					GetNumber(Dof, TEXT("fstop"), 0.0));
+				TestEqual(TEXT("applied focus distance matches the payload"),
+					GetNumber(AppliedCamera, TEXT("focus_distance_cm"), 0.0),
+					GetNumber(Camera, TEXT("focus_distance_cm"), 0.0));
+				TestEqual(TEXT("applied resolution gate is the payload aperture extent"),
+					GetNumber(AppliedGate, TEXT("width"), 0.0),
+					GetNumber(Aperture, TEXT("x"), 0.0));
+				TestEqual(TEXT("applied resolution gate height is the payload aperture height"),
+					GetNumber(AppliedGate, TEXT("height"), 0.0),
+					GetNumber(Aperture, TEXT("y"), 0.0));
+				const TSharedPtr<FJsonObject> PayloadTime = GetObject(*Matching, TEXT("time"));
+				TestTrue(TEXT("applied Maya frame equals the published display frame"),
+					FMath::IsNearlyEqual(
+						GetNumber(Object, TEXT("maya_frame"), -1.0),
+						GetNumber(PayloadTime, TEXT("display_frame"), -2.0), 1e-6));
+
+				const TArray<TSharedPtr<FJsonValue>>* Markers = nullptr;
+				if (Object->TryGetArrayField(TEXT("markers"), Markers) && Markers)
+				{
+					for (const TSharedPtr<FJsonValue>& MarkerValue : *Markers)
+					{
+						const TSharedPtr<FJsonObject> Marker = MarkerValue->AsObject();
+						const TArray<TSharedPtr<FJsonValue>>* Delta = nullptr;
+						if (Marker->TryGetArrayField(TEXT("delta"), Delta) && Delta
+							&& Delta->Num() == 2 && (*Delta)[0].IsValid() && (*Delta)[1].IsValid())
+						{
+							MaxMarkerDelta = FMath::Max(MaxMarkerDelta,
+								FMath::Max(FMath::Abs((*Delta)[0]->AsNumber()),
+									FMath::Abs((*Delta)[1]->AsNumber())));
+						}
+					}
+				}
+			}
+		}
+	}
+	AddInfo(FString::Printf(TEXT("largest Maya-versus-Unreal marker NDC delta: %.9f"), MaxMarkerDelta));
+	TestTrue(TEXT("Maya and Unreal agree on the projected marker position"), MaxMarkerDelta < 1e-6);
+
+	const TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
+	Report->SetNumberField(TEXT("published_frames"), Session.GetPublishedFrameCount());
+	Report->SetNumberField(TEXT("applied_reports"), Session.GetAppliedReports().Num());
+	Report->SetNumberField(TEXT("max_marker_ndc_delta"), MaxMarkerDelta);
+	Report->SetNumberField(TEXT("peer_exit_code"), ReturnCode);
+	Report->SetStringField(TEXT("session_last_error"), Session.GetLastError());
+	Report->SetNumberField(TEXT("client_line_anomalies"), Session.GetClientLineAnomalyCount());
+	Report->SetNumberField(TEXT("client_trailing_bytes"), Session.GetClientTrailingByteCount());
+	Report->SetStringField(TEXT("last_client_line_anomaly"), Session.GetLastClientLineAnomaly());
+	Report->SetStringField(TEXT("peer_output_tail"), PeerOutput.Right(4000));
+	Report->SetNumberField(TEXT("failed_sends"), Session.GetFailedSendCount());
+	TArray<TSharedPtr<FJsonValue>> AppliedValues;
+	for (const FMtoUCameraSyncSession::FAppliedReport& Applied : Session.GetAppliedReports())
+	{
+		TSharedPtr<FJsonObject> AppliedObject;
+		if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Applied.RawJson), AppliedObject)
+			&& AppliedObject.IsValid())
+		{
+			AppliedValues.Add(MakeShared<FJsonValueObject>(AppliedObject));
+		}
+	}
+	Report->SetArrayField(TEXT("applied_reports_raw"), AppliedValues);
+	TArray<TSharedPtr<FJsonValue>> PayloadValues;
+	for (const TSharedPtr<FJsonObject>& Frame : PublishedFrames)
+	{
+		PayloadValues.Add(MakeShared<FJsonValueObject>(Frame));
+	}
+	Report->SetArrayField(TEXT("published_frame_payloads"), PayloadValues);
+	if (PeerResult.IsValid())
+	{
+		Report->SetObjectField(TEXT("peer_result"), PeerResult);
+	}
+	TestTrue(TEXT("report written"), SaveJson(ReportPath, JsonToText(Report)));
+	TestTrue(TEXT("the publisher reported no transport problem"),
+		Session.GetLastError().IsEmpty() || Session.GetClientLineAnomalyCount() > 0);
+	AddInfo(FString::Printf(
+		TEXT("client lines with trailing bytes: %lld (%lld bytes discarded)"),
+		Session.GetClientLineAnomalyCount(), Session.GetClientTrailingByteCount()));
+	return true;
+}
+
+#endif  // WITH_DEV_AUTOMATION_TESTS

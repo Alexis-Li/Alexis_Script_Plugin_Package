@@ -1,0 +1,802 @@
+"""Maya side of the camera sync prototype: follower and entry point.
+
+The Unreal publisher owns the camera, the time and the output resolution. This
+module connects to it, applies each frame to one disposable Maya camera, moves
+Maya's current time to the reported position and answers with the values it
+actually holds, plus Maya's own marker NDC for comparison.
+
+Safety contract (see the prototype README):
+
+* the scene is never saved; no keys, no playback range and no frame rate change;
+* every camera edit and the time move happen inside one undo chunk, and a failed
+  frame is undone, so a frame is never partially applied;
+* ``stop()`` restores the Maya current time captured at session start, removes
+  the camera this session created and detaches any scriptJob it added.
+
+Maya's API is reached through ``maya.cmds`` only, imported lazily so the module
+can be inspected without a running Maya.
+"""
+
+import argparse
+import importlib.util
+import json
+import os
+import select
+import socket
+import sys
+import time
+import traceback
+from pathlib import Path
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 54330
+DEFAULT_CAMERA_NAME = "MtoU_UE_Camera"
+
+STATE_CONNECTING = "connecting"
+STATE_FOLLOWING = "following"
+STATE_STOPPED = "stopped"
+STATE_FAILED = "failed"
+
+STATUS_APPLIED = "applied"
+STATUS_APPLIED_QUANTIZED = "applied_quantized"
+STATUS_REJECTED = "rejected"
+
+CATEGORY_UNSUPPORTED_SCENE_UNIT = "UNSUPPORTED_SCENE_LINEAR_UNIT"
+CATEGORY_UNSUPPORTED_TIME_UNIT = "UNSUPPORTED_SCENE_TIME_UNIT"
+CATEGORY_CAMERA_NAME_CONFLICT = "CAMERA_NAME_CONFLICT"
+CATEGORY_TRANSPORT = "TRANSPORT_ERROR"
+CATEGORY_HANDSHAKE = "HANDSHAKE_FAILED"
+
+# Maya time units that are frame rates, and the frames per second they mean.
+TIME_UNIT_FPS = {
+    "game": 30.0,
+    "film": 24.0,
+    "pal": 25.0,
+    "ntsc": 30.0,
+    "show": 48.0,
+    "palf": 50.0,
+    "ntscf": 60.0,
+}
+
+# Attributes this prototype owns on the synced camera shape.
+MANAGED_ATTRIBUTES = (
+    "focalLength",
+    "horizontalFilmAperture",
+    "verticalFilmAperture",
+    "horizontalFilmOffset",
+    "verticalFilmOffset",
+    "filmFit",
+    "lensSqueezeRatio",
+    "fStop",
+    "focusDistance",
+    "depthOfField",
+    "nearClipPlane",
+    "farClipPlane",
+    "displayResolution",
+    "displayGateMask",
+)
+
+_cmds_module = None
+_mapping_module = None
+
+
+def cmds():
+    """``maya.cmds``, imported on first use."""
+    global _cmds_module
+    if _cmds_module is None:
+        import maya.cmds as maya_cmds
+        _cmds_module = maya_cmds
+    return _cmds_module
+
+
+def mapping():
+    """The pure mapping module, loaded from this script's directory."""
+    global _mapping_module
+    if _mapping_module is None:
+        path = Path(__file__).resolve().parent / "mtou_camera_sync_mapping.py"
+        spec = importlib.util.spec_from_file_location(
+            "mtou_camera_sync_mapping_loaded", str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _mapping_module = module
+    return _mapping_module
+
+
+class SyncRefused(RuntimeError):
+    """A configuration the prototype refuses instead of guessing."""
+
+    def __init__(self, category, detail):
+        RuntimeError.__init__(self, "{0}: {1}".format(category, detail))
+        self.category = category
+        self.detail = detail
+
+
+def time_unit_for_fps(fps):
+    """Maya time unit name for a frames per second value."""
+    fps = float(fps)
+    for unit, unit_fps in TIME_UNIT_FPS.items():
+        if abs(unit_fps - fps) < 1e-9:
+            return unit
+    return "{0}fps".format(fps)
+
+
+def scene_time_unit():
+    """(unit name, frames per second) of the current Maya scene.
+
+    Refuses units that are not frame rates (seconds, minutes, hours) so the
+    prototype never has to guess what a Maya frame means.
+    """
+    unit = str(cmds().currentUnit(query=True, time=True))
+    key = unit.strip().lower()
+    if key in TIME_UNIT_FPS:
+        return (unit, TIME_UNIT_FPS[key])
+    if key.endswith("fps"):
+        try:
+            fps = float(key[:-3])
+        except ValueError:
+            fps = 0.0
+        if fps > 0.0:
+            return (unit, fps)
+    raise SyncRefused(
+        CATEGORY_UNSUPPORTED_TIME_UNIT,
+        "scene time unit {0!r} is not a frame rate; set a frame rate (film, "
+        "pal, ntsc, game, show, palf, ntscf or <n>fps) before following".format(unit))
+
+
+def scene_linear_unit():
+    """Maya scene linear unit, refused unless it is centimetres."""
+    unit = str(cmds().currentUnit(query=True, linear=True))
+    if unit.strip().lower() != "cm":
+        raise SyncRefused(
+            CATEGORY_UNSUPPORTED_SCENE_UNIT,
+            "scene linear unit is {0!r}; Unreal sends centimetres and the "
+            "prototype does not rescale".format(unit))
+    return unit
+
+
+def _unlock(plug):
+    try:
+        cmds().setAttr(plug, lock=False)
+    except RuntimeError:
+        pass
+
+
+class CameraSyncFollower(object):
+    """Applies Unreal camera frames to one disposable Maya camera."""
+
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT,
+                 camera_name=DEFAULT_CAMERA_NAME, connect_timeout=10.0):
+        self.host = host
+        self.port = int(port)
+        self.camera_name = camera_name
+        self.connect_timeout = float(connect_timeout)
+        self.state = STATE_STOPPED
+        self.detail = ""
+        self.error = None
+        self.session = None
+        self.marker_names = []
+        self.frames_applied = 0
+        self.frames_rejected = 0
+        self.frames_quantized = 0
+        self.frames_unchanged = 0
+        self.last_report = None
+        self.last_frame_serial = None
+        self.reports = []
+        self.max_reports = 64
+        self.max_marker_delta = None
+        self.far_clip_substitutions = 0
+        self._last_signature = None
+        self._socket = None
+        self._buffer = b""
+        self._pending = []
+        self._start_time = None
+        self._scene_fps = None
+        self._time_unit = None
+        self._camera_transform = None
+        self._camera_shape = None
+        self._created_camera = False
+        self._script_job = None
+        self.idle_pump_note = ""
+        self.server_errors = []
+        self._undo_state = None
+        self._idle_errors = []
+
+    # ---------------------------------------------------------------- session
+
+    @property
+    def connected(self):
+        return self._socket is not None
+
+    @property
+    def camera_nodes(self):
+        """The session camera ``(transform, shape)``, or ``(None, None)``."""
+        return (self._camera_transform, self._camera_shape)
+
+    def hello_message(self):
+        return {
+            "type": "hello",
+            "protocol": mapping().PROTOCOL_NAME,
+            "version": mapping().PROTOCOL_VERSION,
+            "host": self.host,
+            "scene_fps": self._scene_fps,
+            "time_unit": self._time_unit,
+        }
+
+    def connect(self):
+        """Check the scene, connect, send ``hello`` and read the session."""
+        if self.connected:
+            return self.session
+        self.state = STATE_CONNECTING
+        self.detail = ""
+        self.error = None
+        unit = scene_linear_unit()
+        time_unit, fps = scene_time_unit()
+        self._time_unit = time_unit
+        self._scene_fps = fps
+        self._start_time = float(cmds().currentTime(query=True))
+        self._undo_state = bool(cmds().undoInfo(query=True, state=True))
+        if not self._undo_state:
+            # The frame transaction needs undo; the previous state is restored
+            # by stop().
+            cmds().undoInfo(state=True)
+        try:
+            self._socket = socket.create_connection(
+                (self.host, self.port), timeout=self.connect_timeout)
+            self._socket.setblocking(False)
+        except OSError as error:
+            self._socket = None
+            self._fail("{0}: {1}".format(CATEGORY_TRANSPORT, error))
+            raise SyncRefused(CATEGORY_TRANSPORT,
+                              "cannot connect to {0}:{1}: {2}".format(
+                                  self.host, self.port, error))
+        self._buffer = b""
+        self._send(self.hello_message())
+        deadline = time.time() + self.connect_timeout
+        while time.time() < deadline:
+            try:
+                messages = self._receive(0.05)
+            except mapping().PayloadError as error:
+                self._fail("{0}: {1}".format(CATEGORY_HANDSHAKE, error))
+                self.stop()
+                raise SyncRefused(CATEGORY_HANDSHAKE,
+                                  "undecodable server line: {0}".format(error))
+            if messages:
+                # Frames may share a batch with the session; they are applied
+                # here rather than dropped.
+                self._ingest(messages)
+            if self.state == STATE_FOLLOWING:
+                return self.session
+            if self.state == STATE_FAILED:
+                detail = self.error
+                self.stop()
+                raise SyncRefused(CATEGORY_HANDSHAKE, detail)
+        self._fail("{0}: no session message within {1}s".format(
+            CATEGORY_HANDSHAKE, self.connect_timeout))
+        self.stop()
+        raise SyncRefused(CATEGORY_HANDSHAKE,
+                          "no session message within {0}s".format(self.connect_timeout))
+
+    def _ingest(self, messages):
+        """Handle decoded messages; the session may arrive after a frame."""
+        for message in messages:
+            if self.state == STATE_CONNECTING:
+                if message["type"] == "session":
+                    self._accept_session(message)
+                    continue
+                if message["type"] == "frame":
+                    self._pending.append(message)
+                    continue
+                if message["type"] in ("error", "end"):
+                    self._handle(message)
+                    if message["type"] == "end":
+                        self._fail("the publisher ended the session before it "
+                                   "started: {0}".format(message.get("reason")))
+                    continue
+            self._handle(message)
+        while self.state == STATE_FOLLOWING and self._pending:
+            self._handle(self._pending.pop(0))
+
+    def _accept_session(self, message):
+        self.session = message
+        self.marker_names = list(message.get("marker_names") or [])
+        self.state = STATE_FOLLOWING
+        self.detail = "following on port {0}".format(self.port)
+
+    def pump(self, max_messages=16):
+        """Process pending server messages. Safe to call from an idle event."""
+        if not self.connected:
+            return 0
+        try:
+            messages = self._receive(0.0, max_messages)
+        except mapping().PayloadError as error:
+            self._reject_undecodable(error)
+            return 1
+        except OSError as error:
+            self._fail("{0}: {1}".format(CATEGORY_TRANSPORT, error))
+            return 0
+        if messages:
+            self._ingest(messages)
+        return len(messages)
+
+    def _reject_undecodable(self, error):
+        """A line the validator refused: report it, keep the session usable."""
+        self.frames_rejected += 1
+        report = {
+            "type": "applied",
+            "session": (self.session or {}).get("sequence"),
+            "sequence": None,
+            "frame_serial": None,
+            "maya_frame": None,
+            "camera": {},
+            "status": STATUS_REJECTED,
+            "detail": ["rejected: {0}".format(error)],
+            "markers": [],
+        }
+        self.last_report = report
+        self.reports.append(report)
+        if len(self.reports) > self.max_reports:
+            del self.reports[0:len(self.reports) - self.max_reports]
+        try:
+            self._send(report)
+        except OSError:
+            pass
+
+    def stop(self, reason="client stopped"):
+        """Restore the timeline and remove everything this session created."""
+        summary = {"reason": reason}
+        if self.connected:
+            try:
+                self._send({"type": "bye"})
+            except OSError:
+                pass
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+        self._socket = None
+        self._buffer = b""
+        self._pending = []
+        self.detach_idle_pump()
+        if self._start_time is not None:
+            try:
+                cmds().currentTime(self._start_time)
+                summary["restored_time"] = self._start_time
+            except RuntimeError as error:
+                summary["restore_error"] = str(error)
+            self._start_time = None
+        if self._created_camera and self._camera_transform:
+            if cmds().objExists(self._camera_transform):
+                try:
+                    cmds().delete(self._camera_transform)
+                    summary["camera_removed"] = self._camera_transform
+                except RuntimeError as error:
+                    summary["camera_remove_error"] = str(error)
+        self._camera_transform = None
+        self._camera_shape = None
+        if self._undo_state is False:
+            try:
+                cmds().undoInfo(state=False)
+            except RuntimeError:
+                pass
+        self._undo_state = None
+        self.session = None
+        self._last_signature = None
+        if self.state != STATE_FAILED:
+            self.state = STATE_STOPPED
+            self.detail = reason
+        return summary
+
+    def _fail(self, detail):
+        self.state = STATE_FAILED
+        self.error = detail
+        self.detail = detail
+
+    # ------------------------------------------------------------- transport
+
+    def _receive(self, timeout, max_messages=64):
+        """Decode complete lines. Raises OSError on a lost connection."""
+        messages = []
+        if self._socket is None:
+            return messages
+        deadline = time.time() + timeout
+        while len(messages) < max_messages:
+            while b"\n" in self._buffer:
+                line, self._buffer = self._buffer.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                messages.append(mapping().decode_message(line.decode("utf-8")))
+                if len(messages) >= max_messages:
+                    return messages
+            remaining = max(0.0, deadline - time.time())
+            readable, _, _ = select.select([self._socket], [], [], remaining)
+            if not readable:
+                return messages
+            chunk = self._socket.recv(65536)
+            if not chunk:
+                raise OSError("publisher closed the connection")
+            self._buffer += chunk
+            deadline = time.time() + timeout
+        return messages
+
+    def _send(self, message):
+        if self._socket is None:
+            raise OSError("not connected")
+        self._socket.setblocking(True)
+        try:
+            self._socket.sendall(
+                (json.dumps(message, ensure_ascii=True) + "\n").encode("utf-8"))
+        finally:
+            if self._socket is not None:
+                self._socket.setblocking(False)
+
+    # ---------------------------------------------------------------- frames
+
+    def _handle(self, message):
+        kind = message["type"]
+        if kind == "frame":
+            report = self.apply_frame(message)
+            self._send(report)
+        elif kind == "end":
+            self.detail = "publisher ended the session: {0}".format(
+                message.get("reason"))
+            self.stop(self.detail)
+            self.state = STATE_STOPPED
+        elif kind == "error":
+            # protocol.md: the publisher answers a refused client message with an
+            # error line and keeps the session; it is a report, not a failure.
+            entry = {"category": message.get("category"), "detail": message.get("detail")}
+            self.server_errors.append(entry)
+            self.detail = "publisher refused a message: {0}: {1}".format(
+                entry["category"], entry["detail"])
+        elif kind == "session":
+            self.session = message
+            self.marker_names = list(message.get("marker_names") or [])
+
+    def ensure_camera(self):
+        """The session camera transform and shape, created once and reused."""
+        if self._camera_transform and cmds().objExists(self._camera_transform):
+            return (self._camera_transform, self._camera_shape)
+        name = self.camera_name
+        if cmds().objExists(name):
+            shapes = cmds().listRelatives(name, shapes=True, type="camera") or []
+            if not shapes:
+                raise SyncRefused(
+                    CATEGORY_CAMERA_NAME_CONFLICT,
+                    "{0!r} exists and is not a camera; refusing to reuse it".format(name))
+            self._camera_transform = name
+            self._camera_shape = shapes[0]
+            self._created_camera = False
+        else:
+            self._camera_transform = cmds().createNode("transform", name=name)
+            self._camera_shape = cmds().createNode(
+                "camera", name=name + "Shape", parent=self._camera_transform)
+            self._created_camera = True
+        return (self._camera_transform, self._camera_shape)
+
+    def apply_frame(self, frame, session=None):
+        """Apply one frame atomically. Returns the ``applied`` report payload.
+
+        A frame that fails validation or application is reported as
+        ``rejected`` and leaves the camera untouched: all Maya writes and the
+        time move share one undo chunk that is undone on failure, so a frame is
+        never partially applied. A frame whose state is identical to the last
+        applied one (the publisher's heartbeat) leaves Maya untouched as well.
+        """
+        mapping_module = mapping()
+        frame_serial = frame.get("frame_serial") if isinstance(frame, dict) else None
+        report = {
+            "type": "applied",
+            "session": frame.get("session") if isinstance(frame, dict) else None,
+            "sequence": frame.get("sequence") if isinstance(frame, dict) else None,
+            "frame_serial": frame_serial,
+            "maya_frame": None,
+            "camera": {},
+            "status": STATUS_REJECTED,
+            "detail": [],
+            "markers": [],
+        }
+        detail = report["detail"]
+        try:
+            frame = mapping_module.validate_message(frame, expected_type="frame")
+            session = session if session is not None else (self.session or {})
+            # Maya has a single gate, while Unreal renders the film aperture inside the
+            # output resolution and leaves bars where the two aspects differ. The gate
+            # therefore follows the aperture pixels the publisher reports, which is what
+            # makes Maya's derived axis match Unreal's rendered extent.
+            gate = frame.get("aperture_resolution") or frame["output_resolution"]
+            resolution = (float(gate["x"]), float(gate["y"]))
+            camera_payload = frame["camera"]
+            basis = mapping_module.payload_basis(camera_payload)
+            location = mapping_module.payload_location(camera_payload)
+            matrix = mapping_module.ue_basis_to_maya_matrix(
+                basis[0], basis[1], basis[2], location)
+            attributes, notes = mapping_module.camera_parameters(
+                camera_payload, session, resolution, frame)
+            time_payload = frame["time"]
+            display_rate = (time_payload.get("display_rate")
+                            or session.get("display_rate"))
+            playback_range = session.get("playback_range") or {}
+            playback_start = float(playback_range.get("start", 0.0))
+            maya_time, quantized = mapping_module.maya_time_for_frame(
+                time_payload["display_frame"], playback_start, display_rate,
+                self._scene_fps, self._start_time)
+            applied_time = mapping_module.applied_maya_time(maya_time, quantized)
+        except mapping_module.PayloadError as error:
+            self.frames_rejected += 1
+            detail.append("rejected: {0}: {1}".format(error.category, error.detail))
+            return self._report_rejection(report, detail, frame_serial)
+        except (ValueError, TypeError, KeyError) as error:
+            self.frames_rejected += 1
+            detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
+            return self._report_rejection(report, detail, frame_serial)
+
+        report["maya_frame"] = applied_time
+        signature = (tuple(matrix), tuple(sorted(attributes.items())),
+                     resolution, applied_time)
+        heartbeat = signature == self._last_signature
+        detail.append(notes["film_fit_reason"])
+        if notes["far_clip_substituted"]:
+            if not heartbeat:
+                self.far_clip_substitutions += 1
+            detail.append(
+                "far clip plane is not representable in Unreal: Maya far clip set to "
+                "{0:.3f} cm from the {1} fallback".format(
+                    notes["far_clip_cm"], notes["far_clip_source"]))
+        if quantized:
+            detail.append(
+                "display frame {0} maps to maya time {1} which is not an integer "
+                "frame; applied at {2}".format(
+                    time_payload["display_frame"], maya_time, applied_time))
+
+        transform = None
+        if heartbeat:
+            detail.append("heartbeat: identical state, Maya untouched")
+        else:
+            try:
+                transform, shape = self.ensure_camera()
+            except Exception as error:
+                self.frames_rejected += 1
+                detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
+                return self._report_rejection(report, detail, frame_serial)
+            try:
+                cmds().undoInfo(openChunk=True)
+                try:
+                    cmds().xform(transform, worldSpace=True, matrix=list(matrix))
+                    for attribute, value in sorted(attributes.items()):
+                        plug = "{0}.{1}".format(shape, attribute)
+                        _unlock(plug)
+                        cmds().setAttr(plug, value)
+                    self._apply_resolution_gate(shape, resolution)
+                    cmds().currentTime(applied_time)
+                except Exception:
+                    cmds().undoInfo(closeChunk=True)
+                    try:
+                        cmds().undo()
+                    except RuntimeError as undo_error:
+                        detail.append("frame rollback failed: {0}".format(undo_error))
+                    raise
+                else:
+                    cmds().undoInfo(closeChunk=True)
+            except Exception as error:
+                self.frames_rejected += 1
+                detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
+                return self._report_rejection(report, detail, frame_serial)
+            self._last_signature = signature
+
+        transform = self._camera_transform
+        shape = self._camera_shape
+        report["camera"] = self._read_back(transform, shape, applied_time,
+                                           quantized, notes)
+        report["markers"] = mapping_module.marker_report(
+            frame["markers"], matrix, notes, resolution)
+        for marker in report["markers"]:
+            if marker["delta"] is None:
+                continue
+            largest = max(abs(marker["delta"][0]), abs(marker["delta"][1]))
+            if self.max_marker_delta is None or largest > self.max_marker_delta:
+                self.max_marker_delta = largest
+        report["status"] = STATUS_APPLIED_QUANTIZED if quantized else STATUS_APPLIED
+        if heartbeat:
+            self.frames_unchanged += 1
+        else:
+            self.frames_applied += 1
+            if quantized:
+                self.frames_quantized += 1
+        self.last_frame_serial = frame_serial
+        self.last_report = report
+        self.reports.append(report)
+        if len(self.reports) > self.max_reports:
+            del self.reports[0:len(self.reports) - self.max_reports]
+        return report
+
+    def _report_rejection(self, report, detail, frame_serial):
+        """Publish a rejected frame like any other report.
+
+        A rejected frame has to reach the caller: swallowing it would let a peer
+        report a clean session while every frame failed to apply.
+        """
+        report["detail"] = detail
+        self.last_report = report
+        self.last_frame_serial = frame_serial
+        self.reports.append(report)
+        if len(self.reports) > self.max_reports:
+            del self.reports[0:len(self.reports) - self.max_reports]
+        return report
+
+    def drain_reports(self):
+        """Reports produced since the last drain (peers and tests)."""
+        reports, self.reports = self.reports, []
+        return reports
+
+    def _apply_resolution_gate(self, shape, resolution):
+        """Set the rendered pixel extent and the device aspect Maya derives from it.
+
+        Maya's film fit uses ``defaultResolution.deviceAspectRatio``, which does
+        not follow ``width``/``height`` when they are set through the API, so
+        the prototype writes it as well; otherwise a non-16:9 gate would keep
+        framing with the previous aspect.
+        """
+        for plug, value in (("defaultResolution.width", int(round(resolution[0]))),
+                            ("defaultResolution.height", int(round(resolution[1]))),
+                            ("defaultResolution.pixelAspect", 1.0),
+                            ("defaultResolution.deviceAspectRatio",
+                             resolution[0] / resolution[1])):
+            _unlock(plug)
+            cmds().setAttr(plug, value)
+        for plug in (shape + ".displayResolution", shape + ".displayGateMask"):
+            _unlock(plug)
+            cmds().setAttr(plug, True)
+
+    def _read_back(self, transform, shape, applied_time, quantized, notes):
+        values = {}
+        for attribute in MANAGED_ATTRIBUTES:
+            plug = "{0}.{1}".format(shape, attribute)
+            values[attribute] = cmds().getAttr(plug)
+        values["maya_time"] = float(cmds().currentTime(query=True))
+        values["applied_time"] = applied_time
+        values["quantized"] = bool(quantized)
+        values["far_clip_substituted"] = bool(notes["far_clip_substituted"])
+        values["far_clip_source"] = notes["far_clip_source"]
+        values["film_fit"] = notes["film_fit"]
+        values["lens_squeeze_ratio"] = notes["lens_squeeze_ratio"]
+        values["world_matrix"] = [float(value) for value in
+                                  cmds().xform(transform, query=True,
+                                               worldSpace=True, matrix=True)]
+        values["transform"] = transform
+        values["shape"] = shape
+        values["defaultResolution"] = {
+            "width": int(cmds().getAttr("defaultResolution.width")),
+            "height": int(cmds().getAttr("defaultResolution.height")),
+            "pixelAspect": float(cmds().getAttr("defaultResolution.pixelAspect")),
+            "deviceAspectRatio": float(
+                cmds().getAttr("defaultResolution.deviceAspectRatio")),
+        }
+        return values
+
+    # ------------------------------------------------------------- idle pump
+
+    def attach_idle_pump(self, force=False):
+        """Follow from Maya's idle event, when this Maya session has one.
+
+        Batch sessions (mayapy) do not deliver idle events and return no
+        scriptJob id, so the note says so and ``pump()`` is the headless path.
+        """
+        maya_cmds = cmds()
+        if self._script_job is not None:
+            return self._script_job
+        if maya_cmds.about(batch=True) and not force:
+            self.idle_pump_note = ("batch session: idle events are not delivered, "
+                                   "call pump() instead")
+            return None
+        job = maya_cmds.scriptJob(idleEvent=self._idle_tick, protected=False)
+        if job is None:
+            self.idle_pump_note = ("this Maya session returned no scriptJob for "
+                                   "idleEvent; the idle pump is unavailable, call "
+                                   "pump() instead")
+            return None
+        self._script_job = job
+        self.idle_pump_note = "idle pump attached as scriptJob {0}".format(job)
+        return job
+
+    def detach_idle_pump(self):
+        if self._script_job is None:
+            return
+        try:
+            if cmds().scriptJob(exists=self._script_job):
+                cmds().scriptJob(kill=self._script_job, force=True)
+        except (RuntimeError, TypeError):
+            pass
+        self._script_job = None
+
+    def _idle_tick(self):
+        try:
+            self.pump()
+        except Exception as error:  # never break Maya's idle loop
+            self._idle_errors.append("{0}: {1}".format(type(error).__name__, error))
+            self.detach_idle_pump()
+
+    # --------------------------------------------------------------- reports
+
+    def summary(self):
+        return {
+            "state": self.state,
+            "detail": self.detail,
+            "error": self.error,
+            "host": self.host,
+            "port": self.port,
+            "camera": self._camera_transform,
+            "scene_fps": self._scene_fps,
+            "time_unit": self._time_unit,
+            "frames_applied": self.frames_applied,
+            "frames_rejected": self.frames_rejected,
+            "frames_quantized": self.frames_quantized,
+            "frames_unchanged": self.frames_unchanged,
+            "far_clip_substitutions": self.far_clip_substitutions,
+            "last_frame_serial": self.last_frame_serial,
+            "max_marker_delta": self.max_marker_delta,
+            "idle_pump": self.idle_pump_note,
+            "server_errors": list(self.server_errors),
+            "idle_errors": list(self._idle_errors),
+        }
+
+
+def run(host=DEFAULT_HOST, port=DEFAULT_PORT, duration=None, camera_name=DEFAULT_CAMERA_NAME,
+        idle_pump=False, poll=0.005, on_frame=None):
+    """Connect, follow until the publisher stops or ``duration`` elapses, stop.
+
+    With ``idle_pump`` the follower is driven by Maya's idle event; otherwise
+    this loop pumps explicitly, which is what headless mayapy needs.
+    """
+    follower = CameraSyncFollower(host=host, port=port, camera_name=camera_name)
+    follower.connect()
+    if idle_pump:
+        follower.attach_idle_pump()
+    deadline = None if duration is None else time.time() + float(duration)
+    try:
+        while follower.state == STATE_FOLLOWING:
+            follower.pump()
+            if on_frame is not None and follower.last_report is not None:
+                on_frame(follower.last_report)
+            if deadline is not None and time.time() >= deadline:
+                follower.stop("duration elapsed")
+                break
+            if not idle_pump:
+                time.sleep(poll)
+    except KeyboardInterrupt:
+        follower.stop("interrupted")
+    finally:
+        if follower.state == STATE_FOLLOWING:
+            follower.stop()
+    return follower
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--duration", type=float, default=None,
+                        help="seconds to follow; default is until the publisher ends")
+    parser.add_argument("--camera-name", default=DEFAULT_CAMERA_NAME)
+    parser.add_argument("--idle-pump", action="store_true",
+                        help="drive the session from Maya's idle event")
+    parser.add_argument("--result", default=None,
+                        help="optional path for the session summary JSON")
+    args = parser.parse_args(argv)
+    if _cmds_module is None:
+        try:
+            import maya.cmds  # noqa: F401
+        except ImportError:
+            import maya.standalone
+            maya.standalone.initialize(name="python")
+    follower = run(args.host, args.port, args.duration, args.camera_name,
+                   args.idle_pump)
+    summary = follower.summary()
+    print(json.dumps(summary, indent=2, ensure_ascii=True))
+    if args.result:
+        Path(args.result).write_text(
+            json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8")
+    return 0 if summary["state"] in (STATE_STOPPED,) and not summary["error"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -259,6 +259,18 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   The [acceptance record](issue-50-interactive-playback-acceptance.md) holds
   the deterministic and real-peer evidence.
 
+- **2026-09-28:** Verified Issue #52 with a bounded Unreal 5.7.4 to Maya 2024
+  camera prototype. Unreal evaluates the camera through its own level sequence
+  player and publishes it with the sequence time; Maya applies one disposable
+  camera, its resolution gate, and the followed frame, and restores its own time
+  on exit. Six frames across two camera cuts applied with zero rejections and
+  marker agreement within `1.09e-07` NDC; the Maya Arnold render check places
+  markers within `0.25 px` of the projection both hosts predict. The
+  [acceptance record](issue-52-camera-sync-acceptance.md) owns the measured
+  differences, the official-capability review, the supported and unsupported
+  lists, and the pending product decisions. No product code, protocol, or
+  package changed, and Issue #52 remains open pending those decisions.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -279,6 +291,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Issue #49 Cached Playback development acceptance](issue-49-cache-workflow-acceptance.md)
 - [Issue #50 interactive playback acceptance](issue-50-interactive-playback-acceptance.md)
 - [Issue #51 garment comparison development acceptance](issue-51-garment-comparison-acceptance.md)
+- [Issue #52 Unreal to Maya camera verification](issue-52-camera-sync-acceptance.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project
