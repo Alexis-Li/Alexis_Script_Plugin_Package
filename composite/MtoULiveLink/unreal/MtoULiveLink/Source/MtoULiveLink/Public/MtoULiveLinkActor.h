@@ -61,6 +61,23 @@ enum class EMtoUDisplayTarget : uint8
 };
 
 /**
+ * Local session lifecycle of one Binding actor, owned by the actor and the
+ * source that streams to it. The connection status string cannot express it:
+ * an actor that never streamed and one whose session ended both report
+ * "Disconnected". Never serialized and never sent on the wire.
+ */
+UENUM()
+enum class EMtoULinkSessionState : uint8
+{
+    /** No session has reached streaming on this actor yet. */
+    Idle,
+    /** A negotiated session is streaming to this actor. */
+    Streaming,
+    /** A session that was Streaming has ended. */
+    Ended
+};
+
+/**
  * Display component of one enabled Additional Part. Each part evaluates the
  * one character Live Link subject itself, so the whole character poses from the
  * same session, while the Primary Driver stays the only source of garment
@@ -131,6 +148,17 @@ public:
     USkeletalMeshComponent* GetSkeletalMeshComponent() const { return SkeletalMeshComponent; }
     UMtoULiveLinkBinding* GetBinding() const { return Binding; }
     const FString& GetConnectionStatus() const { return ConnectionStatus; }
+
+    /** Whether this actor is idle, streaming, or past a session that ended. */
+    EMtoULinkSessionState GetLinkSessionState() const { return LinkSessionState; }
+
+    /** A negotiated session started streaming to this actor. */
+    void NoteSessionStreaming();
+    /**
+     * A streaming session ended, whether the peer closed the socket or this
+     * editor requested the end. An actor that never streamed stays Idle.
+     */
+    void NoteSessionEnded();
 
     /** Current negotiated session's transient cache; never serialized on the actor. */
     FMtoUCachePlaybackView GetCachePlaybackView() const;
@@ -281,6 +309,14 @@ private:
 
     UPROPERTY(VisibleAnywhere, Transient, Category = "MtoU_LiveLink")
     FString ConnectionStatus = TEXT("Disconnected");
+
+    /**
+     * Session bookkeeping kept off the wire and off the saved actor, so a
+     * reloaded or PIE-duplicated actor starts Idle instead of inheriting the
+     * previous session's ending.
+     */
+    UPROPERTY(Transient, DuplicateTransient)
+    EMtoULinkSessionState LinkSessionState = EMtoULinkSessionState::Idle;
 
     /**
      * Display components of the enabled Additional Parts, in canonical part

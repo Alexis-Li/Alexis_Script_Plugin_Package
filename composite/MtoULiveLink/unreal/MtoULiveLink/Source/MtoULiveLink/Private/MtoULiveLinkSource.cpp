@@ -303,6 +303,7 @@ void FMtoULiveLinkSource::Update()
                 {
                     Actor->ReapplyDisplayTarget();
                     Actor->SetConnectionStatus(TEXT("Disconnected"));
+                    Actor->NoteSessionEnded();
                 }
             }
             GameThreadSession = 0;
@@ -437,6 +438,7 @@ void FMtoULiveLinkSource::StopListener()
             {
                 Actor->ReapplyDisplayTarget();
                 Actor->SetConnectionStatus(TEXT("Disconnected"));
+                Actor->NoteSessionEnded();
             }
         }
     }
@@ -1314,6 +1316,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         : bPartialMorphCoverage
             ? TEXT("Connected: partial Morph coverage")
             : TEXT("Connected"));
+    Actor->NoteSessionStreaming();
     SetEditorViewportRealtimeOverride(true);
 
     Client->PushSubjectStaticData_AnyThread(

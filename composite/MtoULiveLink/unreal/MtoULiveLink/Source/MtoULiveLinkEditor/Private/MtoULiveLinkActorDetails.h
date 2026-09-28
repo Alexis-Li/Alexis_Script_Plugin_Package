@@ -74,6 +74,7 @@ public:
             FString PreviewDiagnostics;
             FString PreviewSummary;
             FString Connection;
+            EMtoULinkSessionState Session = EMtoULinkSessionState::Idle;
             FString ModelDiagnostics;
             FString CharacterDiagnostics;
             EMtoUDisplayTarget Display = EMtoUDisplayTarget::Hidden;

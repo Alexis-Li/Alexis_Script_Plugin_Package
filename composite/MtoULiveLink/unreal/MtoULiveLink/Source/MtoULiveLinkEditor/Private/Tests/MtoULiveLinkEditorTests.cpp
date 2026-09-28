@@ -655,6 +655,111 @@ bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("a new build does not retain the previous Preview error"),
         BuildingView.RawDiagnostics.ToString().Contains(Ambiguous.Diagnostics));
 
+    // A session that ends and a session that never started publish the same
+    // "Disconnected" string; the actor's session lifecycle separates them. The
+    // transitions below are the ones MtoULiveLinkSource itself performs.
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    TestEqual(TEXT("a link that never streamed reads as not connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("未连接")));
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    ReadoutActor->NoteSessionStreaming();
+    TestEqual(TEXT("a negotiated session reads as connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("已连接")));
+
+    // The cached presenter is built while streaming, so it has to follow the
+    // same actor through the interruption instead of serving the old headline.
+    FMtoULiveLinkActorDetails::FStatusPresenter InterruptPresenter(ReadoutActor);
+    TestEqual(TEXT("the cached presenter starts on the connected headline"),
+        InterruptPresenter.Get().Connection.ToString(), FString(TEXT("已连接")));
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    ReadoutActor->NoteSessionEnded();
+    const FMtoULiveLinkActorDetails::FStatusView InterruptedView =
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor);
+    TestEqual(TEXT("an ended session reads as interrupted"),
+        InterruptedView.Connection.ToString(), FString(TEXT("连接已中断")));
+    TestFalse(TEXT("an interrupted link never reads as a link that was never used"),
+        InterruptedView.State.ToString().Contains(TEXT("未连接")));
+    TestTrue(TEXT("an interruption is not a failure, so the row stays neutral"),
+        InterruptedView.Severity == FMtoULiveLinkActorDetails::ESeverity::Neutral
+            && InterruptedView.ConnectionSeverity == FMtoULiveLinkActorDetails::ESeverity::Neutral);
+    TestTrue(TEXT("the cached presenter follows the session ending"),
+        InterruptPresenter.Get().Connection.ToString() == FString(TEXT("连接已中断"))
+            && InterruptPresenter.Get().State.ToString() == InterruptedView.State.ToString());
+
+    // Reconnecting the same actor reports a live session again.
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    ReadoutActor->NoteSessionStreaming();
+    TestEqual(TEXT("a reconnected session reads as connected again"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("已连接")));
+
+    // A session that ends before it ever streamed is not an interruption.
+    AMtoULiveLinkActor* NeverStreamedActor = ReadoutWorld
+        ? ReadoutWorld->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    TestNotNull(TEXT("a second status actor is created"), NeverStreamedActor);
+    if (NeverStreamedActor)
+    {
+        NeverStreamedActor->SetConnectionStatus(TEXT("Disconnected"));
+        NeverStreamedActor->NoteSessionEnded();
+        TestEqual(TEXT("a session that never streamed leaves the actor idle"),
+            FMtoULiveLinkActorDetails::MakeStatusView(NeverStreamedActor).Connection.ToString(),
+            FString(TEXT("未连接")));
+    }
+
+    // A usable Preview with quality warnings and a blocking connection failure
+    // can both be true at once. The first line and the detailed group must name
+    // the same problem, so the blocking one wins in the summary and the step.
+    FMtoUPreviewReadiness QualityWarning;
+    QualityWarning.State = EMtoUPreviewState::Warning;
+    struct FLadderCase
+    {
+        const TCHAR* Status;
+        EMtoUPreviewState Preview;
+        const TCHAR* NextStep;
+        const TCHAR* Summary;
+    };
+    const FLadderCase LadderCases[] = {
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            EMtoUPreviewState::Warning, TEXT("检查连接诊断，然后在 Maya 中重新连接。"),
+            TEXT("连接出错") },
+        { TEXT("Preview morph mismatch"), EMtoUPreviewState::Warning,
+            TEXT("检查连接诊断，然后在 Maya 中重新连接。"), TEXT("连接出错") },
+        { TEXT("Connected"), EMtoUPreviewState::Warning,
+            TEXT("预览可用；请先检查高级诊断中的质量警告。"), TEXT("质量警告") },
+        { TEXT("Validating"), EMtoUPreviewState::Warning,
+            TEXT("预览可用；请先检查高级诊断中的质量警告。"), TEXT("质量警告") },
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            EMtoUPreviewState::Error, TEXT("查看错误详情，修正输入后重新刷新预览。"),
+            TEXT("预览生成失败") },
+    };
+    for (const FLadderCase& Case : LadderCases)
+    {
+        ReadoutActor->SetConnectionStatus(Case.Status);
+        FMtoUPreviewReadiness LadderReadiness = QualityWarning;
+        LadderReadiness.State = Case.Preview;
+        const FMtoULiveLinkActorDetails::FStatusView LadderView =
+            FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+                ReadoutActor, LadderReadiness);
+        TestEqual(
+            FString::Printf(TEXT("'%s' names the blocking problem in the next step"), Case.Status),
+            LadderView.NextStep.ToString(), FString(Case.NextStep));
+        TestTrue(FString::Printf(TEXT("'%s' names the same problem in the summary"), Case.Status),
+            LadderView.Summary.ToString().Contains(Case.Summary));
+    }
+
+    // Both axes stay visible under one blocking problem, and the row takes its
+    // severity from the blocker rather than from the quality warning.
+    ReadoutActor->SetConnectionStatus(TEXT("Error: the Maya and Unreal skeletons do not match."));
+    const FMtoULiveLinkActorDetails::FStatusView WarningErrorView =
+        FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(ReadoutActor, QualityWarning);
+    TestTrue(TEXT("the Preview warning and the connection failure stay independent"),
+        WarningErrorView.State.ToString().Contains(TEXT("预览已就绪（有警告）"))
+            && WarningErrorView.State.ToString().Contains(TEXT("连接出错")));
+    TestTrue(TEXT("the blocking problem sets the row severity"),
+        WarningErrorView.Severity == FMtoULiveLinkActorDetails::ESeverity::Error);
+
     if (ReadoutWorld)
     {
         ReadoutWorld->DestroyWorld(false);
@@ -4550,6 +4655,11 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         return false;
     }
     Actor->SetBinding(Binding);
+    // Nothing has streamed to this actor yet, so it reads as not connected
+    // rather than as a link that was lost.
+    TestEqual(TEXT("a fresh actor reads as not connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("未连接")));
     const FReferenceSkeleton* TestSkeleton = &Driver->GetRefSkeleton();
     const FString BonesJson = BonesJsonFor(*TestSkeleton);
     auto Loopback = [&](uint16 Port)
@@ -4690,6 +4800,9 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
             && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+    TestEqual(TEXT("a negotiated session reads as connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("已连接")));
     const TArray<uint8> AnimFrame = PacketFor(FrameJsonFor(*TestSkeleton, FVector(11.0, 12.0, 13.0)));
     TestTrue(TEXT("animation frame is sent"), AnimClient && SendBytes(*AnimClient, AnimFrame.GetData(), AnimFrame.Num()));
     TestTrue(TEXT("animation frame reaches Live Link"),
@@ -4729,6 +4842,11 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
                 && Actor->GetPreviewReadiness().GeneratedPreview != nullptr
                 && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Actor->GetPreviewReadiness().GeneratedPreview;
         }));
+    // The session that just ended is the real Source termination path, so the
+    // panel reports an interruption instead of a link that never connected.
+    TestEqual(TEXT("the terminated session reads as interrupted"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("连接已中断")));
     TestTrue(TEXT("the cached Details status follows the refreshed actor"),
         StatusPresenter.Get().State.ToString() != StatusBeforeRefresh
             && StatusPresenter.Get().State.ToString()
@@ -4744,7 +4862,21 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
             && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+    TestEqual(TEXT("the reconnected session reads as connected again"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("已连接")));
+    // A peer that simply closes the socket is the same interruption, produced
+    // by the worker's own disconnect detection.
     DestroySocket(ReconnectClient);
+    TestTrue(TEXT("a peer disconnect ends the session"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Actor->GetConnectionStatus().Contains(TEXT("Disconnected"));
+        }));
+    TestEqual(TEXT("a peer disconnect reads as interrupted"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("连接已中断")));
     return true;
 }
 

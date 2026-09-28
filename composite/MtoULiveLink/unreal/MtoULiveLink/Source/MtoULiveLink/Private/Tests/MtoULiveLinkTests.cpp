@@ -6257,6 +6257,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     MakeReadyRevision(FirstGenerated);
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
         Actor && Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("an actor that never streamed starts idle"),
+        Actor && Actor->GetLinkSessionState() == EMtoULinkSessionState::Idle);
 
     // Earlier automation worlds are only pending destruction at this point;
     // collect them so global actor discovery sees exactly this test's actor.
@@ -6294,7 +6296,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready Model revision negotiates a streaming session"),
         NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
     TestTrue(TEXT("connected actor reports the live session"),
-        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+            && Actor->GetLinkSessionState() == EMtoULinkSessionState::Streaming);
 
     // ADR-0002 boundary: a relevant reimport of a Preview input ends the
     // active session without implicitly generating a new Preview.
@@ -6309,7 +6312,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("source returns to listening after the boundary termination"), bReturnedToListening);
     TestTrue(TEXT("terminated actor shows the true disconnected state"),
-        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected"))
+            && Actor->GetLinkSessionState() == EMtoULinkSessionState::Ended);
     const FMtoUPreviewReadiness AfterReimport = Actor->GetPreviewReadiness();
     TestTrue(TEXT("reimport invalidates the previous revision without a new Preview"),
         AfterReimport.State == EMtoUPreviewState::Dirty
@@ -6336,6 +6340,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("second model client connects"), Second);
     TestTrue(TEXT("refreshed revision negotiates ready again"),
         NegotiateModelReady(Second).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("a new session replaces the ended one"),
+        Actor && Actor->GetLinkSessionState() == EMtoULinkSessionState::Streaming);
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
     Actor->Destroy();
     TestTrue(TEXT("actor destruction ends the live session on the wire"),

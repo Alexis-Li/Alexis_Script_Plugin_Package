@@ -33,7 +33,12 @@
   collapsed Advanced Settings and Diagnostics keeps one selectable, copyable raw
   error, actual garment-slot override values, and dynamic section candidates.
   Repeated same-session warnings interrupt once; new warnings and blocking
-  errors still interrupt. No protocol, cache, or recovery change.
+  errors still interrupt. The connection row now separates an actor that never
+  streamed from one whose session ended, which the wire status cannot express,
+  so a lost session reads as 连接已中断 instead of 未连接. The summary and the
+  next step follow one priority order, in which a blocking connection error
+  outranks a non-blocking Preview quality warning. No protocol, cache, or
+  recovery change.
 
 - Negotiate the required skinning bones and ancestors of every enabled part
   (Issue #55). Ignore unrelated exported branches and stream part-only secondary

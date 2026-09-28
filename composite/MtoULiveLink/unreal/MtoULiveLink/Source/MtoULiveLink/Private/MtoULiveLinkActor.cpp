@@ -128,6 +128,21 @@ void AMtoULiveLinkActor::SetConnectionStatus(const FString& InStatus)
     ConnectionStatus = InStatus;
 }
 
+void AMtoULiveLinkActor::NoteSessionStreaming()
+{
+    LinkSessionState = EMtoULinkSessionState::Streaming;
+}
+
+void AMtoULiveLinkActor::NoteSessionEnded()
+{
+    // A session that never reached streaming leaves the actor idle: it was
+    // never connected, so it cannot be reported as interrupted.
+    if (LinkSessionState == EMtoULinkSessionState::Streaming)
+    {
+        LinkSessionState = EMtoULinkSessionState::Ended;
+    }
+}
+
 FMtoUPreviewReadiness AMtoULiveLinkActor::GetPreviewReadiness() const
 {
     FMtoUPreviewReadiness Readiness;

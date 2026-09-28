@@ -108,6 +108,8 @@ on the Binding. All enabled parts pose and display under one connection:
    Additional Parts), and **预览控制** (Binding and generated mesh asset fields,
    Refresh, Delete, and cache playback). Expand **高级设置与诊断** for the full selectable and
    copyable raw error; an empty diagnostic does not occupy the daily view.
+   The connection reads 未连接 before the first session, 已连接 while streaming,
+   and 连接已中断 after a session ends; reconnect in Maya after an interruption.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
    (模型) at the top. Below are Connection Controls (set character, connect,
