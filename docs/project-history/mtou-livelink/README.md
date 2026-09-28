@@ -249,6 +249,16 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   [development acceptance record](issue-51-garment-comparison-acceptance.md)
   holds local checks and the remaining company-asset visual gate.
 
+- **2026-09-28:** Implemented Issue #50 in protocol v9 and both 0.9.0
+  components: the UE Binding Actor pauses and resumes (the schedule continues
+  from the held pose), seeks to a sampled Maya source frame (unsampled frames
+  are refused, never clamped), and loops the cache (a round wraps on the same
+  schedule, and turning loop off completes it). Completion evidence is scoped
+  to a whole-cache run or to a segment after a seek or loop round, and paused
+  time is excluded. Maya renders each state and loop round without a re-upload.
+  The [acceptance record](issue-50-interactive-playback-acceptance.md) holds
+  the deterministic and real-peer evidence.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -267,6 +277,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Character-part composition acceptance](character-parts-acceptance.md)
 - [Issue #48 UE Details acceptance](issue-48-ue-details-acceptance.md)
 - [Issue #49 Cached Playback development acceptance](issue-49-cache-workflow-acceptance.md)
+- [Issue #50 interactive playback acceptance](issue-50-interactive-playback-acceptance.md)
 - [Issue #51 garment comparison development acceptance](issue-51-garment-comparison-acceptance.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 

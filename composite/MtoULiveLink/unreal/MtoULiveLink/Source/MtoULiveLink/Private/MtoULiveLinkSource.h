@@ -18,6 +18,10 @@ TSharedPtr<class FMtoULiveLinkSource> MtoUSetActiveSource(
 FMtoUCachePlaybackView MtoUGetActorCachePlaybackView(const AMtoULiveLinkActor& Actor);
 bool MtoUStartActorCachedPlayback(const AMtoULiveLinkActor& Actor);
 bool MtoUStopActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+bool MtoUPauseActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+bool MtoUResumeActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+bool MtoUSeekActorCachedPlayback(const AMtoULiveLinkActor& Actor, int32 SourceFrame);
+bool MtoUSetActorCachedLoop(const AMtoULiveLinkActor& Actor, bool bEnabled);
 
 /**
  * The one idempotent session-termination boundary shared by the Live Link
@@ -102,6 +106,10 @@ public:
     FMtoUCachePlaybackView GetActorCachePlaybackView(const AMtoULiveLinkActor& Actor) const;
     bool StartActorCachedPlayback(const AMtoULiveLinkActor& Actor);
     bool StopActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+    bool PauseActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+    bool ResumeActorCachedPlayback(const AMtoULiveLinkActor& Actor);
+    bool SeekActorCachedPlayback(const AMtoULiveLinkActor& Actor, int32 SourceFrame);
+    bool SetActorCachedLoop(const AMtoULiveLinkActor& Actor, bool bEnabled);
     // Admission intake gauge used by automation to prove a stalled Game Thread
     // cannot grow queued parsed-cache ownership beyond the frozen budget.
     int32 GetQueuedCacheFrameCount() const;

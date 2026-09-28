@@ -15,6 +15,8 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/SBoxPanel.h"
@@ -92,7 +94,27 @@ FText CacheStateText(const FMtoUCachePlaybackView& View)
     case EMtoUCacheState::Ready:
         return LOCTEXT("CacheReady", "已就绪，等待播放");
     case EMtoUCacheState::Playing:
-        return LOCTEXT("CachePlaying", "正在播放");
+        return View.bLoopEnabled
+            ? FText::Format(
+                LOCTEXT("CachePlayingLoop", "正在循环播放（第 {0} 轮）"),
+                FText::AsNumber(View.LoopRound + 1))
+            : LOCTEXT("CachePlaying", "正在播放");
+    case EMtoUCacheState::Paused:
+        // A seek shows where it positioned; a pause shows the held pose, and
+        // a pause before the first pose names neither.
+        if (View.bPositionedBySeek)
+        {
+            return View.bHasAppliedSourceFrame
+                ? FText::Format(
+                    LOCTEXT("CacheSeeked", "已定位到源帧 {0}，已暂停"),
+                    FText::FromString(FString::FromInt(View.CurrentSourceFrame)))
+                : LOCTEXT("CacheSeekedUnknown", "已定位，已暂停");
+        }
+        return View.bHasAppliedSourceFrame
+            ? FText::Format(
+                LOCTEXT("CachePaused", "已暂停于源帧 {0}，姿势保留"),
+                FText::FromString(FString::FromInt(View.CurrentSourceFrame)))
+            : LOCTEXT("CachePausedNoPose", "已暂停，姿势保留");
     case EMtoUCacheState::Stopped:
         return LOCTEXT("CacheStopped", "已停止，缓存保留");
     case EMtoUCacheState::Completed:
@@ -508,6 +530,11 @@ FText FMtoULiveLinkActorDetails::FormatCacheSummary(const FMtoUCachePlaybackView
     return CacheSummaryText(View);
 }
 
+FText FMtoULiveLinkActorDetails::FormatCacheState(const FMtoUCachePlaybackView& View)
+{
+    return CacheStateText(View);
+}
+
 void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
     TArray<TWeakObjectPtr<UObject>> Objects;
@@ -716,6 +743,11 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             ]
         ];
 
+    // The seek box and its prompt live as long as the customized widget row;
+    // the prompt only reports refusals in the user's terms, the session stays
+    // the authority that accepted or refused the frame.
+    const TSharedPtr<FString> SeekInput = MakeShared<FString>();
+    const TSharedPtr<FText> SeekMessage = MakeShared<FText>();
     Controls.AddCustomRow(LOCTEXT("CacheStatusFilter", "缓存播放 帧范围 状态"))
         .WholeRowContent()
         [
@@ -762,11 +794,50 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     {
                         return Actor.IsValid() && Actor->GetCachePlaybackView().CanPlay();
                     })
-                    .OnClicked_Lambda([Actor]()
+                    .OnClicked_Lambda([Actor, SeekMessage]()
                     {
                         if (AMtoULiveLinkActor* Target = Actor.Get())
                         {
+                            *SeekMessage = FText::GetEmpty();
                             Target->StartCachedPlayback();
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+                + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("CachePause", "暂停"))
+                    .ToolTipText(LOCTEXT("CachePauseTip", "保留当前姿势与缓存；等待任意时长都不会触发播放性能失败。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanPause();
+                    })
+                    .OnClicked_Lambda([Actor, SeekMessage]()
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            *SeekMessage = FText::GetEmpty();
+                            Target->PauseCachedPlayback();
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+                + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("CacheResume", "继续"))
+                    .ToolTipText(LOCTEXT("CacheResumeTip", "从当前位置继续，并重建计时基准；暂停期间的帧不会补发。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanResume();
+                    })
+                    .OnClicked_Lambda([Actor, SeekMessage]()
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            *SeekMessage = FText::GetEmpty();
+                            Target->ResumeCachedPlayback();
                         }
                         return FReply::Handled();
                     })
@@ -775,20 +846,125 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                 [
                     SNew(SButton)
                     .Text(LOCTEXT("CacheStop", "停止"))
-                    .ToolTipText(LOCTEXT("CacheStopTip", "停止当前播放并保留完整缓存及最后已应用姿势。"))
+                    .ToolTipText(LOCTEXT("CacheStopTip", "停止播放或暂停并保留完整缓存及最后已应用姿势。"))
                     .IsEnabled_Lambda([Actor]()
                     {
                         return Actor.IsValid() && Actor->GetCachePlaybackView().CanStop();
                     })
-                    .OnClicked_Lambda([Actor]()
+                    .OnClicked_Lambda([Actor, SeekMessage]()
                     {
                         if (AMtoULiveLinkActor* Target = Actor.Get())
                         {
+                            *SeekMessage = FText::GetEmpty();
                             Target->StopCachedPlayback();
                         }
                         return FReply::Handled();
                     })
                 ]
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                [
+                    SNew(SCheckBox)
+                    .Content()
+                    [
+                        SNew(STextBlock).Text(LOCTEXT("CacheLoop", "循环"))
+                    ]
+                    .ToolTipText(LOCTEXT("CacheLoopTip", "循环在最后一帧被接受后从首帧继续；关闭后完成当前轮。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanSeek();
+                    })
+                    .IsChecked_Lambda([Actor]()
+                    {
+                        return (Actor.IsValid() && Actor->GetCachePlaybackView().bLoopEnabled)
+                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+                    })
+                    .OnCheckStateChanged_Lambda([Actor, SeekMessage](ECheckBoxState State)
+                    {
+                        if (AMtoULiveLinkActor* Target = Actor.Get())
+                        {
+                            *SeekMessage = FText::GetEmpty();
+                            Target->SetCachedLoopEnabled(State == ECheckBoxState::Checked);
+                        }
+                    })
+                ]
+                + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                [
+                    SNew(SBox)
+                    .WidthOverride(90.0f)
+                    [
+                        SNew(SEditableTextBox)
+                        .HintText(LOCTEXT("CacheSeekHint", "Maya 源帧"))
+                        .Text_Lambda([SeekInput]() { return FText::FromString(*SeekInput); })
+                        .OnTextChanged_Lambda([SeekInput](const FText& NewText)
+                        {
+                            *SeekInput = NewText.ToString();
+                        })
+                        .IsEnabled_Lambda([Actor]()
+                        {
+                            return Actor.IsValid() && Actor->GetCachePlaybackView().CanSeek();
+                        })
+                    ]
+                ]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("CacheSeek", "定位"))
+                    .ToolTipText(LOCTEXT("CacheSeekTip", "显示指定 Maya 源帧后进入暂停；只接受本缓存已采样的帧。"))
+                    .IsEnabled_Lambda([Actor]()
+                    {
+                        return Actor.IsValid() && Actor->GetCachePlaybackView().CanSeek();
+                    })
+                    .OnClicked_Lambda([Actor, SeekInput, SeekMessage]()
+                    {
+                        AMtoULiveLinkActor* Target = Actor.Get();
+                        if (!Target)
+                        {
+                            return FReply::Handled();
+                        }
+                        const FString Text = SeekInput->TrimStartAndEnd();
+                        int32 SourceFrame = 0;
+                        if (Text.IsEmpty() || !LexTryParseString(SourceFrame, *Text))
+                        {
+                            *SeekMessage = LOCTEXT("CacheSeekNotInteger", "请输入整数 Maya 源帧。");
+                            return FReply::Handled();
+                        }
+                        *SeekMessage = FText::GetEmpty();
+                        if (!Target->SeekCachedPlayback(SourceFrame))
+                        {
+                            const FMtoUCachePlaybackView Refused = Target->GetCachePlaybackView();
+                            *SeekMessage = FText::Format(
+                                LOCTEXT("CacheSeekRefused",
+                                    "无法定位到源帧 {0}；当前缓存只采样了源帧 {1}–{2}。"),
+                                FText::FromString(FString::FromInt(SourceFrame)),
+                                FText::FromString(FString::FromInt(Refused.StartFrame)),
+                                FText::FromString(FString::FromInt(Refused.EndFrame)));
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.35f, 0.25f)))
+                .Text_Lambda([Actor, SeekMessage]()
+                {
+                    return SeekMessage->IsEmpty()
+                        ? FText::FromString(Actor.IsValid()
+                            ? Actor->GetCachePlaybackView().ErrorDetails : FString())
+                        : *SeekMessage;
+                })
+                .Visibility_Lambda([Actor, SeekMessage]()
+                {
+                    return !SeekMessage->IsEmpty()
+                        || (Actor.IsValid() && !Actor->GetCachePlaybackView().ErrorDetails.IsEmpty())
+                        ? EVisibility::Visible : EVisibility::Collapsed;
+                })
             ]
         ];
 

@@ -53,6 +53,26 @@ bool AMtoULiveLinkActor::StopCachedPlayback()
     return MtoUStopActorCachedPlayback(*this);
 }
 
+bool AMtoULiveLinkActor::PauseCachedPlayback()
+{
+    return MtoUPauseActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::ResumeCachedPlayback()
+{
+    return MtoUResumeActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::SeekCachedPlayback(int32 SourceFrame)
+{
+    return MtoUSeekActorCachedPlayback(*this, SourceFrame);
+}
+
+bool AMtoULiveLinkActor::SetCachedLoopEnabled(bool bEnabled)
+{
+    return MtoUSetActorCachedLoop(*this, bEnabled);
+}
+
 void AMtoULiveLinkActor::OnConstruction(const FTransform& Transform)
 {
     Super::OnConstruction(Transform);

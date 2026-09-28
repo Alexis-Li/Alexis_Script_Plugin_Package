@@ -157,7 +157,7 @@ public:
         Progress.Packet = FMtoUProtocol::EncodeCacheProgress(1, 777);
         Delayed.Add(MoveTemp(Progress));
         FMtoUOutgoing Complete;
-        Complete.Packet = FMtoUProtocol::EncodeCacheComplete(1, 777, 0.5);
+        Complete.Packet = FMtoUProtocol::EncodeCacheComplete(1, 777, 0.5, true, 1000, 1776);
         Delayed.Add(MoveTemp(Complete));
         FMtoUOutgoing Error;
         Error.Packet = FMtoUProtocol::EncodeError(TEXT("CACHE_NOT_READY"), TEXT("delayed session A"));
@@ -672,6 +672,9 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             || Operation == TEXT("cache_ready") || Operation == TEXT("cache_playing")
             || Operation == TEXT("cache_progress")
             || Operation == TEXT("cache_complete") || Operation == TEXT("cache_stopped")
+            || Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed")
+            || Operation == TEXT("cache_seeked") || Operation == TEXT("cache_looped")
+            || Operation == TEXT("cache_loop_changed")
             || Operation == TEXT("cache_cleared"))
         {
             const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
@@ -712,7 +715,8 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 PacketBytes = FMtoUProtocol::EncodeCachePlaying(
                     static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
-                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    Source->GetBoolField(TEXT("loop")));
             }
             else if (Operation == TEXT("cache_progress"))
             {
@@ -720,12 +724,48 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("applied"))));
             }
+            else if (Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed"))
+            {
+                // A pose-less pause omits the source frame instead of naming one.
+                const int32 SourceFrame = Source->HasField(TEXT("source_frame"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("source_frame")))
+                    : INDEX_NONE;
+                const int32 PlayId = static_cast<int32>(Source->GetNumberField(TEXT("play_id")));
+                const int32 AppliedFrames =
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frames")));
+                PacketBytes = Operation == TEXT("cache_paused")
+                    ? FMtoUProtocol::EncodeCachePaused(PlayId, AppliedFrames, SourceFrame)
+                    : FMtoUProtocol::EncodeCacheResumed(PlayId, AppliedFrames, SourceFrame);
+            }
+            else if (Operation == TEXT("cache_seeked"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheSeeked(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("source_frame"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frames"))));
+            }
+            else if (Operation == TEXT("cache_looped"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheLooped(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("round"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("source_frame"))));
+            }
+            else if (Operation == TEXT("cache_loop_changed"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheLoopChanged(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    Source->GetBoolField(TEXT("loop")));
+            }
             else if (Operation == TEXT("cache_complete"))
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheComplete(
                     static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("applied_frame_count"))),
-                    Source->GetNumberField(TEXT("elapsed_seconds")));
+                    Source->GetNumberField(TEXT("elapsed_seconds")),
+                    Source->GetStringField(TEXT("scope")) == TEXT("cache"),
+                    static_cast<int32>(Source->GetNumberField(TEXT("start_frame"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("end_frame"))));
             }
             else if (Operation == TEXT("cache_stopped"))
             {
@@ -788,16 +828,33 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 }
                 else if (Operation == TEXT("cache_playing"))
                 {
-                    RequiredFields = {TEXT("upload_id"), TEXT("play_id")};
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id"), TEXT("loop")};
                 }
                 else if (Operation == TEXT("cache_progress"))
                 {
                     RequiredFields = {TEXT("play_id"), TEXT("applied")};
                 }
+                else if (Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied_frames")};
+                }
+                else if (Operation == TEXT("cache_seeked"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("source_frame"), TEXT("applied_frames")};
+                }
+                else if (Operation == TEXT("cache_looped"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("round"), TEXT("source_frame")};
+                }
+                else if (Operation == TEXT("cache_loop_changed"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("loop")};
+                }
                 else if (Operation == TEXT("cache_complete"))
                 {
                     RequiredFields = {TEXT("play_id"), TEXT("applied_frame_count"),
-                        TEXT("elapsed_seconds")};
+                        TEXT("elapsed_seconds"), TEXT("scope"), TEXT("start_frame"),
+                        TEXT("end_frame")};
                 }
                 else if (Operation == TEXT("cache_stopped"))
                 {
@@ -1244,6 +1301,252 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSegmentTest,
+    "MtoULiveLink.CachedPlayback.Segments",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheSegmentTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const double Interval = 1.0 / 30.0;
+    // Every scheduled pose is applied half an interval after its due time:
+    // inside the one-interval window with room for floating-point noise.
+    const double SlotMargin = Interval / 2.0;
+
+    // One session per scenario: each keeps its own deterministic clock, pose
+    // journal, and progress journal so a scenario can never inherit another's
+    // attempt, segment, or loop state.
+    struct FScenario
+    {
+        double Clock = 10.0;
+        TArray<float> Applied;
+        TArray<int32> Progress;
+        FMtoUCacheSession Session;
+
+        void Setup(int32 FrameCount, int32 UploadId = 1)
+        {
+            Session.SetClock([this]() { return Clock; });
+            Session.BeginSession({1, 0, 7});
+            Session.SetPublish([this](const FMtoUFrameMessage& Frame) -> bool
+            {
+                Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+                return true;
+            });
+            Session.SetProgressSink([this](int32 PlayId, int32 AppliedFrames)
+            {
+                Progress.Add(PlayId * 100000 + AppliedFrames);
+            });
+            FMtoUCacheCommand Begin = MakeCacheBeginCommand(7, FrameCount, 30.0, UploadId);
+            Begin.Begin.StartFrame = 100;
+            Begin.Begin.EndFrame = 100 + FrameCount - 1;
+            check(Session.HandleCommand(Begin).bAccepted);
+            for (int32 Index = 0; Index < FrameCount; ++Index)
+            {
+                check(Session.HandleCommand(
+                    MakeCachedFrameCommand(Index, static_cast<float>(Index))).bAccepted);
+            }
+            check(Session.HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End)).bAccepted);
+        }
+
+        // Applies the pose scheduled by the given slot of a schedule whose
+        // slot zero is at Baseline.
+        FMtoUCacheTransition ApplySlot(double Baseline, int32 Slot)
+        {
+            Clock = Baseline + static_cast<double>(Slot) * Interval + SlotMargin;
+            return Session.Tick();
+        }
+
+        FString AppliedSequence() const
+        {
+            return FString::JoinBy(Applied, TEXT(","), [](float Value)
+                { return FString::FromInt(static_cast<int32>(Value)); });
+        }
+    };
+
+    // Long pause: the held pose and cache survive an arbitrary wait, the
+    // resumed schedule continues exactly where it stopped, and no paused
+    // interval is replayed or counted as a late segment.
+    FScenario Pause;
+    Pause.Setup(4);
+    TestTrue(TEXT("pause scenario play starts"),
+        Pause.Session.StartLocalPlayback().bAccepted);
+    Pause.ApplySlot(10.0, 0);
+    TestEqual(TEXT("pause scenario applied the first pose"), Pause.Applied.Num(), 1);
+    const FMtoUCacheTransition Paused = Pause.Session.PauseLocalPlayback();
+    TestEqual(TEXT("pause reports its own outcome"),
+        Paused.Kind, FMtoUCacheTransition::EKind::Paused);
+    TestEqual(TEXT("pause holds the applied source frame"), Paused.SourceFrame, 100);
+    TestEqual(TEXT("pause reports the segment's applied frames"), Paused.AppliedFrames, 1);
+    TestEqual(TEXT("pause holds the pose"), Pause.Session.GetState(), EMtoUCacheState::Paused);
+    Pause.Clock += 120.0;
+    TestEqual(TEXT("a long pause produces no completion"),
+        Pause.Session.Tick().Kind, FMtoUCacheTransition::EKind::None);
+    TestEqual(TEXT("a long pause never fails playback"),
+        Pause.Session.GetState(), EMtoUCacheState::Paused);
+    const FMtoUCacheTransition Resumed = Pause.Session.ResumeLocalPlayback();
+    TestEqual(TEXT("resume reports its own outcome"),
+        Resumed.Kind, FMtoUCacheTransition::EKind::Resumed);
+    TestEqual(TEXT("resume continues at the held source frame"), Resumed.SourceFrame, 100);
+    // The pause shifts the schedule by the 120s wait: the next pose is due
+    // one interval after the resume, never immediately as a catch-up.
+    const double ResumedBaseline = 130.0;
+    Pause.ApplySlot(ResumedBaseline, 1);
+    Pause.ApplySlot(ResumedBaseline, 2);
+    const FMtoUCacheTransition PauseCompletion = Pause.ApplySlot(ResumedBaseline, 3);
+    TestEqual(TEXT("resume never replays paused frames"),
+        Pause.AppliedSequence(), FString(TEXT("0,1,2,3")));
+    TestEqual(TEXT("pause scenario completes after every pose"),
+        Pause.Session.GetState(), EMtoUCacheState::Completed);
+    TestEqual(TEXT("an unbroken whole-cache run completes with the cache scope"),
+        PauseCompletion.bWholeCacheScope, true);
+    TestEqual(TEXT("the paused run reports its whole range"), PauseCompletion.StartFrame, 100);
+    TestEqual(TEXT("the paused run reports its whole frame count"), PauseCompletion.FrameCount, 4);
+    TestTrue(TEXT("a paused run measures only its playing time"),
+        FMath::IsNearlyEqual(
+            PauseCompletion.ElapsedSeconds, 3.0 * Interval + SlotMargin, 1e-6));
+
+    // Seek: only sampled source frames are accepted, a refused frame never
+    // clamps or changes state, and an accepted seek displays its target and
+    // holds it until a resume opens the segment's play.
+    FScenario Seek;
+    Seek.Setup(4);
+    const FMtoUCacheTransition OutOfRangeLow = Seek.Session.SeekLocalPlayback(99);
+    TestFalse(TEXT("a source frame below the capture is refused"), OutOfRangeLow.bAccepted);
+    TestEqual(TEXT("below-range seek names its own code"),
+        OutOfRangeLow.ErrorCode, FString(TEXT("CACHE_SEEK_INVALID")));
+    TestTrue(TEXT("below-range prompt names the requested frame"),
+        OutOfRangeLow.Details.Contains(TEXT("99")));
+    TestTrue(TEXT("below-range prompt names the sampled range"),
+        OutOfRangeLow.Details.Contains(TEXT("100..103")));
+    const FMtoUCacheTransition OutOfRangeHigh = Seek.Session.SeekLocalPlayback(104);
+    TestFalse(TEXT("a source frame above the capture is refused"), OutOfRangeHigh.bAccepted);
+    TestEqual(TEXT("a refused seek changes no state"),
+        Seek.Session.GetState(), EMtoUCacheState::Ready);
+    TestEqual(TEXT("a refused seek applies no pose"), Seek.Applied.Num(), 0);
+
+    const FMtoUCacheTransition Seeked = Seek.Session.SeekLocalPlayback(102);
+    TestTrue(TEXT("a sampled source frame is accepted"), Seeked.bAccepted);
+    TestEqual(TEXT("seek reports its own outcome"),
+        Seeked.Kind, FMtoUCacheTransition::EKind::Seeked);
+    TestEqual(TEXT("seek displays the requested source frame"), Seeked.SourceFrame, 102);
+    TestEqual(TEXT("seek holds playback"), Seek.Session.GetState(), EMtoUCacheState::Paused);
+    TestEqual(TEXT("seek applies its target immediately"), Seek.Applied.Num(), 1);
+    TestEqual(TEXT("seek applied the requested pose"), Seek.Applied[0], 2.0f);
+    const FMtoUCachePlaybackView SeekView = Seek.Session.GetView();
+    TestTrue(TEXT("the held pose is the seek target"), SeekView.bPositionedBySeek);
+    TestEqual(TEXT("seek view names the target source frame"), SeekView.CurrentSourceFrame, 102);
+    TestEqual(TEXT("seek opens a new segment from the target"), SeekView.AppliedFrames, 1);
+    TestTrue(TEXT("seek opens a new attempt identity"), Seeked.PlayId > 0);
+
+    TestEqual(TEXT("seek resume continues the segment"),
+        Seek.Session.ResumeLocalPlayback().Kind, FMtoUCacheTransition::EKind::Resumed);
+    const double SeekBaseline = 10.0;
+    const FMtoUCacheTransition SeekCompletion = Seek.ApplySlot(SeekBaseline, 1);
+    TestEqual(TEXT("a seek never re-applies its displayed target"), Seek.Applied.Num(), 2);
+    TestEqual(TEXT("the segment advances past the target"), Seek.Applied[1], 3.0f);
+    TestEqual(TEXT("a seeked segment completes"),
+        SeekCompletion.Kind, FMtoUCacheTransition::EKind::Completed);
+    TestFalse(TEXT("a seeked segment never claims the whole-cache scope"),
+        SeekCompletion.bWholeCacheScope);
+    TestEqual(TEXT("a segment completion names its first source frame"), SeekCompletion.StartFrame, 102);
+    TestEqual(TEXT("a segment completion names its last source frame"), SeekCompletion.EndFrame, 103);
+    TestEqual(TEXT("a segment reports its applied frames"), SeekCompletion.FrameCount, 2);
+
+    // Loop: the last accepted pose wraps to the first frame, the schedule
+    // stays continuous, and turning loop off completes the current round as a
+    // segment instead of claiming the whole-cache replay.
+    FScenario Loop;
+    Loop.Setup(3);
+    TestEqual(TEXT("loop selection before an attempt sends no outcome"),
+        Loop.Session.SetLocalLoop(true).Kind, FMtoUCacheTransition::EKind::None);
+    TestTrue(TEXT("loop selection is visible before playback"), Loop.Session.IsLoopEnabled());
+    const FMtoUCacheTransition LoopPlay = Loop.Session.StartLocalPlayback();
+    TestTrue(TEXT("loop attempt reports its selection to Maya"), LoopPlay.bLoopEnabled);
+    for (int32 Slot = 0; Slot < 6; ++Slot)
+    {
+        Loop.ApplySlot(10.0, Slot);
+    }
+    TestEqual(TEXT("loop keeps one pose per scheduled slot"),
+        Loop.AppliedSequence(), FString(TEXT("0,1,2,0,1,2")));
+    TestEqual(TEXT("loop wraps back to the first frame"), Loop.Session.GetLoopRound(), 2);
+    TestEqual(TEXT("loop never completes the attempt"),
+        Loop.Session.GetState(), EMtoUCacheState::Playing);
+    const FMtoUCacheTransition LoopOff = Loop.Session.SetLocalLoop(false);
+    TestEqual(TEXT("loop selection change reports to Maya"),
+        LoopOff.Kind, FMtoUCacheTransition::EKind::LoopChanged);
+    TestFalse(TEXT("loop selection change carries the new selection"), LoopOff.bLoopEnabled);
+    Loop.ApplySlot(10.0, 6);
+    Loop.ApplySlot(10.0, 7);
+    const FMtoUCacheTransition RoundCompletion = Loop.ApplySlot(10.0, 8);
+    TestEqual(TEXT("the current round completes after loop is turned off"),
+        RoundCompletion.Kind, FMtoUCacheTransition::EKind::Completed);
+    TestFalse(TEXT("a looped round never claims the whole-cache scope"),
+        RoundCompletion.bWholeCacheScope);
+    TestEqual(TEXT("the completed round reports its own frames"), RoundCompletion.FrameCount, 3);
+    TestEqual(TEXT("the completed round keeps one pose per slot"),
+        Loop.AppliedSequence(), FString(TEXT("0,1,2,0,1,2,0,1,2")));
+
+    // A one-frame cache under loop advances one round per interval: repeated
+    // playback can neither burst nor report a completion twice.
+    FScenario Single;
+    Single.Setup(1);
+    Single.Session.SetLocalLoop(true);
+    Single.Session.StartLocalPlayback();
+    for (int32 Round = 1; Round <= 4; ++Round)
+    {
+        Single.Clock = 10.0 + static_cast<double>(Round - 1) * Interval + SlotMargin;
+        const FMtoUCacheTransition Wrapped = Single.Session.Tick();
+        TestEqual(*FString::Printf(TEXT("one-frame round %d wraps"), Round),
+            Wrapped.Kind, FMtoUCacheTransition::EKind::Looped);
+        TestEqual(*FString::Printf(TEXT("one-frame round %d applies one pose"), Round),
+            Wrapped.AppliedFramesThisTick, 1);
+        TestEqual(*FString::Printf(TEXT("one-frame round %d is counted"), Round),
+            Single.Session.GetLoopRound(), Round);
+    }
+    TestEqual(TEXT("single-frame looping keeps the attempt running"),
+        Single.Session.GetState(), EMtoUCacheState::Playing);
+
+    // Stop from a pause keeps the cache and the held pose for a later replay.
+    FScenario Stop;
+    Stop.Setup(2);
+    Stop.Session.StartLocalPlayback();
+    Stop.ApplySlot(10.0, 0);
+    Stop.Session.PauseLocalPlayback();
+    const FMtoUCacheTransition Stopped = Stop.Session.StopLocalPlayback();
+    TestEqual(TEXT("a paused attempt can be stopped"),
+        Stopped.Kind, FMtoUCacheTransition::EKind::Stopped);
+    TestEqual(TEXT("stop from pause holds the cache"),
+        Stop.Session.GetState(), EMtoUCacheState::Stopped);
+    FMtoUCachePlaybackView StopView = Stop.Session.GetView();
+    StopView.bConnected = true;
+    TestEqual(TEXT("stop from pause keeps the held source frame"),
+        StopView.CurrentSourceFrame, 100);
+    TestTrue(TEXT("stop from pause allows another replay"), StopView.CanPlay());
+    TestFalse(TEXT("stop from pause is no longer pausable"), StopView.CanPause());
+    TestFalse(TEXT("stop from pause cannot be resumed"), StopView.CanResume());
+
+    // A recapture invalidates every playback selection and segment.
+    FScenario Recapture;
+    Recapture.Setup(2);
+    Recapture.Session.SetLocalLoop(true);
+    Recapture.Session.StartLocalPlayback();
+    Recapture.ApplySlot(10.0, 0);
+    Recapture.Session.SeekLocalPlayback(101);
+    FMtoUCacheCommand RecaptureBegin = MakeCacheBeginCommand(7, 2, 30.0, 2);
+    RecaptureBegin.Begin.StartFrame = 100;
+    RecaptureBegin.Begin.EndFrame = 101;
+    TestTrue(TEXT("recapture begins a new upload"),
+        Recapture.Session.HandleCommand(RecaptureBegin).bAccepted);
+    TestFalse(TEXT("recapture clears the loop selection"), Recapture.Session.IsLoopEnabled());
+    TestEqual(TEXT("recapture clears the loop round"), Recapture.Session.GetLoopRound(), 0);
+    TestEqual(TEXT("recapture clears the positioned pose"),
+        Recapture.Session.GetView().bPositionedBySeek, false);
+    TestTrue(TEXT("recapture clears the held source frame"),
+        !Recapture.Session.GetView().bHasAppliedSourceFrame);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheNegativeSourceFrameTest,
     "MtoULiveLink.CachedPlayback.NegativeSourceFrame",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1643,7 +1946,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
     FString ErrorCode;
@@ -1654,7 +1957,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
     TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":8"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":9"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
     TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     ErrorCode.Reset();
     TestFalse(TEXT("protocol-v3 clients are rejected"),
@@ -1662,7 +1965,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
     TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":8"), TEXT("\"version\":\"4\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":9"), TEXT("\"version\":\"4\""))), Message, Error));
     TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
         TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
     TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
@@ -1682,23 +1985,23 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     TestTrue(TEXT("tiny non-zero bind scale is accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -1715,28 +2018,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -2876,7 +3179,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -2914,7 +3217,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -3725,7 +4028,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
         return false;
     }
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -4152,7 +4455,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
         const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
         State->RootBoneId = TestSkeleton->GetBoneName(0);
         State->InitPacket = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
             *RootBoneName,
             *TransformJson(TestSkeleton->GetRefBonePose()[0]),
             *ChildBoneName,
@@ -4519,7 +4822,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -4976,6 +5279,499 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaInteractivePlaybackTest,
+    "MtoULiveLink.Source.MayaInteractivePlayback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaInteractivePlaybackTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Mayapy, Peer, Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
+    {
+        AddInfo(TEXT("Host check not requested; supply MtoUMayapy, MtoUMayaPeer and MtoUEvidence."));
+        return true;
+    }
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer))
+    {
+        AddError(TEXT("Host check requires existing mayapy/peer paths and an evidence directory."));
+        return false;
+    }
+    ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    if (!Sockets) { return false; }
+    FSocket* Reservation = BindLoopback(*Sockets, 0, true);
+    if (!Reservation) { return false; }
+    TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+    Reservation->GetAddress(*Address);
+    const uint16 Port = static_cast<uint16>(Address->GetPort());
+    DestroySocket(*Sockets, Reservation);
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    if (!World) { return false; }
+    FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    Context.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = AddBoundActor(*World);
+    TestNotNull(TEXT("real host binding actor"), Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    ILiveLinkClient& Client = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+        ILiveLinkClient::ModularFeatureName);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid Guid = Client.AddSource(Source);
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    const FLiveLinkSubjectKey Key(Guid, FName(TEXT("MtoU_Character")));
+    TArray<FVector> Applied;
+    FMtoUSessionIsolationTestAccess::ObserveApplied(*Source,
+        [&](uint64 Session, const FMtoUFrameMessage& Frame)
+        {
+            (void)Session;
+            if (!Frame.Transforms.IsEmpty())
+            {
+                Applied.Add(Frame.Transforms[0].Translation);
+            }
+        });
+    const FReferenceSkeleton& Skeleton = Actor->GetSkeletalMeshComponent()
+        ->GetSkeletalMeshAsset()->GetRefSkeleton();
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index) { Bones += TEXT(","); }
+        Bones += FString::Printf(TEXT("[\"%s\",%d]"),
+            *Skeleton.GetBoneName(Index).ToString(), Skeleton.GetParentIndex(Index));
+    }
+    const FString Fixture = FPaths::Combine(Evidence, TEXT("interactive-fixture.json"));
+    const FString Result = FPaths::Combine(Evidence, TEXT("interactive-result.json"));
+    IFileManager::Get().Delete(*Result);
+    TestTrue(TEXT("write host fixture"), FFileHelper::SaveStringToFile(
+        FString::Printf(TEXT("{\"port\":%d,\"bones\":[%s]}"), Port, *Bones), *Fixture));
+    const FString Args = FString::Printf(TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
+        *Peer, *Fixture, *Result);
+    FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *Args, false, true, true,
+        nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+
+    const int32 FirstSourceFrame = 1;
+    const int32 LastSourceFrame = 24;
+    const float ValuePerFrame = 10.0f;
+    const int32 FrameCount = LastSourceFrame - FirstSourceFrame + 1;
+
+    const auto ReadPeer = [&]() -> TSharedPtr<FJsonObject>
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Object;
+        if (FFileHelper::LoadFileToString(Text, *Result)
+            && JsonObjectFromBytes(Utf8(Text), Object))
+        {
+            return Object;
+        }
+        return nullptr;
+    };
+    const auto PumpOnce = [&]()
+    {
+        Source->Update();
+        Client.ForceTick();
+    };
+    const auto ProcessAlive = [&]()
+    {
+        return Process.IsValid() && FPlatformProcess::IsProcRunning(Process);
+    };
+    // Waits on the actor's own view, which is also how Maya's progress is
+    // observed: the peer's result file is only read after it exits.
+    const auto WaitActor = [&](TFunctionRef<bool(const FMtoUCachePlaybackView&)> Predicate,
+        double TimeoutSeconds) -> bool
+    {
+        PollUntil([&]()
+        {
+            if (!ProcessAlive())
+            {
+                return true;
+            }
+            PumpOnce();
+            return Actor && Predicate(Actor->GetCachePlaybackView());
+        }, TimeoutSeconds);
+        return ProcessAlive() && Actor && Predicate(Actor->GetCachePlaybackView());
+    };
+    const auto WaitProcessExit = [&](double TimeoutSeconds) -> bool
+    {
+        return PollUntil([&]()
+        {
+            PumpOnce();
+            return !ProcessAlive();
+        }, TimeoutSeconds);
+    };
+    const auto EvaluateRoot = [&]() -> TOptional<FVector>
+    {
+        FLiveLinkSubjectFrameData Frame;
+        if (Client.EvaluateFrameFromSource_AnyThread(
+                Key, ULiveLinkAnimationRole::StaticClass(), Frame))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    Frame.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                if (!Animation->Transforms.IsEmpty())
+                {
+                    return Animation->Transforms[0].GetTranslation();
+                }
+            }
+        }
+        return TOptional<FVector>();
+    };
+    const auto WaitPose = [&](int32 SourceFrame, double TimeoutSeconds) -> bool
+    {
+        const FVector Expected(SourceFrame * ValuePerFrame, 0.0, 0.0);
+        return PollUntil([&]()
+        {
+            PumpOnce();
+            const TOptional<FVector> Pose = EvaluateRoot();
+            return Pose.IsSet() && Pose.GetValue().Equals(Expected, 0.5);
+        }, TimeoutSeconds);
+    };
+    // One ordered run of the captured animation: each pose names its own frame.
+    const auto AppliedSliceMatches = [&](int32 StartIndex, int32 FirstFrame, int32 Count)
+    {
+        if (StartIndex < 0 || Applied.Num() < StartIndex + Count)
+        {
+            return false;
+        }
+        for (int32 Index = 0; Index < Count; ++Index)
+        {
+            const FVector Expected(
+                (FirstFrame + Index) * ValuePerFrame, 0.0, 0.0);
+            if (!Applied[StartIndex + Index].Equals(Expected, 0.5))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Maya captures and uploads the whole range; Unreal waits for its own action.
+    const bool bReachedReady = WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Ready; }, 180.0);
+    {
+        const FMtoUCachePlaybackView Observed = Actor->GetCachePlaybackView();
+        AddInfo(FString::Printf(
+            TEXT("after the initial wait: state=%d connected=%d range=%d..%d frames=%d error=%s"),
+            static_cast<int32>(Observed.State), Observed.bConnected ? 1 : 0,
+            Observed.StartFrame, Observed.EndFrame, Observed.FrameCount,
+            *Observed.ErrorDetails));
+    }
+    TestTrue(TEXT("real Maya upload reaches Ready"), bReachedReady);
+    const FMtoUCachePlaybackView ReadyView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("Maya-uploaded cache is Ready for the binding actor"),
+        ReadyView.State, EMtoUCacheState::Ready);
+    TestEqual(TEXT("uploaded source range start"), ReadyView.StartFrame, FirstSourceFrame);
+    TestEqual(TEXT("uploaded source range end"), ReadyView.EndFrame, LastSourceFrame);
+    TestEqual(TEXT("uploaded source frame count"), ReadyView.FrameCount, FrameCount);
+
+    // Play, pause, and hold: an arbitrarily long inspection must neither fail
+    // playback nor move the held pose.
+    TestTrue(TEXT("actor starts the Maya-uploaded cache"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("playback applies its first poses"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Playing && View.AppliedFrames >= 2; }, 5.0));
+    TestTrue(TEXT("actor pauses the running playback"), Actor->PauseCachedPlayback());
+    const FMtoUCachePlaybackView PausedView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("pause holds the pose"), PausedView.State, EMtoUCacheState::Paused);
+    TestTrue(TEXT("pause reports an applied source frame"), PausedView.bHasAppliedSourceFrame);
+    const int32 HeldFrame = PausedView.CurrentSourceFrame;
+    const int32 AppliedBeforePause = Applied.Num();
+    const TOptional<FVector> HeldPose = EvaluateRoot();
+    TestTrue(TEXT("the held pose can be evaluated"), HeldPose.IsSet());
+    bool bHeldPoseStable = HeldPose.IsSet();
+    bool bFailedWhilePaused = false;
+    const double HoldDeadline = FPlatformTime::Seconds() + 2.5;
+    while (FPlatformTime::Seconds() < HoldDeadline)
+    {
+        PumpOnce();
+        const TOptional<FVector> Observed = EvaluateRoot();
+        bHeldPoseStable &= Observed.IsSet()
+            && HeldPose.IsSet()
+            && Observed.GetValue().Equals(HeldPose.GetValue(), 0.01);
+        bFailedWhilePaused |= Actor->GetCachePlaybackView().State == EMtoUCacheState::Failed;
+        FPlatformProcess::Sleep(0.01f);
+    }
+    TestFalse(TEXT("a long pause never fails playback"), bFailedWhilePaused);
+    TestTrue(TEXT("a long pause holds one pose"), bHeldPoseStable);
+    TestEqual(TEXT("a long pause keeps the held source frame"),
+        Actor->GetCachePlaybackView().CurrentSourceFrame, HeldFrame);
+
+    // Resume continues from the held position without replaying paused frames.
+    TestTrue(TEXT("actor resumes from the held pose"), Actor->ResumeCachedPlayback());
+    TestTrue(TEXT("resume keeps playing"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Playing
+            && View.CurrentSourceFrame > 0; }, 5.0));
+    TestTrue(TEXT("resume applies the pose after the held one"),
+        PollUntil([&]()
+        {
+            PumpOnce();
+            return Applied.Num() > AppliedBeforePause + 1
+                && AppliedSliceMatches(AppliedBeforePause, HeldFrame + 1, 2);
+        }, 3.0));
+
+    // Seek forward, seek backward, and refuse an unsampled frame.
+    TestTrue(TEXT("seek forward is accepted"), Actor->SeekCachedPlayback(20));
+    const FMtoUCachePlaybackView ForwardView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("seek holds playback"), ForwardView.State, EMtoUCacheState::Paused);
+    TestEqual(TEXT("seek reports its target"), ForwardView.CurrentSourceFrame, 20);
+    TestTrue(TEXT("seek displays its target pose"), WaitPose(20, 3.0));
+    TestTrue(TEXT("seek backward is accepted"), Actor->SeekCachedPlayback(5));
+    TestTrue(TEXT("backward seek displays its target pose"), WaitPose(5, 3.0));
+    TestFalse(TEXT("an unsampled source frame is refused"), Actor->SeekCachedPlayback(99));
+    TestEqual(TEXT("a refused seek keeps its held frame"),
+        Actor->GetCachePlaybackView().CurrentSourceFrame, 5);
+    TestTrue(TEXT("a refused seek names its reason"),
+        Actor->GetCachePlaybackView().ErrorDetails.Contains(TEXT("CACHE_SEEK_INVALID")));
+
+    // Loop two rounds, then let the current round complete as a segment.
+    TestTrue(TEXT("actor stops the paused attempt before looping"), Actor->StopCachedPlayback());
+    TestTrue(TEXT("loop selection is accepted"), Actor->SetCachedLoopEnabled(true));
+    TestTrue(TEXT("looping attempt reports its selection"),
+        Actor->GetCachePlaybackView().bLoopEnabled);
+    const int32 AppliedBeforeLoop = Applied.Num();
+    TestTrue(TEXT("actor plays the cache under loop"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("the first loop round wraps"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.LoopRound >= 1; }, 5.0));
+    TestTrue(TEXT("the second loop round wraps"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.LoopRound >= 2; }, 5.0));
+    // Each loop round replays the whole captured range in order.
+    const bool bLoopFramesInOrder =
+        AppliedSliceMatches(AppliedBeforeLoop, FirstSourceFrame, FrameCount)
+        && AppliedSliceMatches(
+            AppliedBeforeLoop + FrameCount, FirstSourceFrame, FrameCount);
+    if (!bLoopFramesInOrder)
+    {
+        TArray<FString> Values;
+        for (int32 Index = AppliedBeforeLoop; Index < Applied.Num(); ++Index)
+        {
+            Values.Add(FString::FromInt(static_cast<int32>(Applied[Index].X)));
+        }
+        AddInfo(FString::Printf(TEXT("loop attempt applied %d poses from index %d: %s"),
+            Applied.Num() - AppliedBeforeLoop, AppliedBeforeLoop,
+            *FString::Join(Values, TEXT(","))));
+    }
+    TestTrue(TEXT("both rounds replay every captured frame in order"),
+        bLoopFramesInOrder);
+    TestTrue(TEXT("loop selection is turned off mid-round"), Actor->SetCachedLoopEnabled(false));
+    TestTrue(TEXT("the current round completes instead of wrapping again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Completed; }, 5.0));
+
+    // Both endpoints stay addressable after the loop, and the attempt stops
+    // holding the last displayed frame.
+    TestTrue(TEXT("first endpoint seek is accepted"), Actor->SeekCachedPlayback(FirstSourceFrame));
+    TestTrue(TEXT("first endpoint pose is displayed"), WaitPose(FirstSourceFrame, 3.0));
+    TestTrue(TEXT("last endpoint seek is accepted"), Actor->SeekCachedPlayback(LastSourceFrame));
+    TestTrue(TEXT("last endpoint pose is displayed"), WaitPose(LastSourceFrame, 3.0));
+    TestTrue(TEXT("a paused attempt can be stopped"), Actor->StopCachedPlayback());
+    TestEqual(TEXT("stop holds the retained cache"),
+        Actor->GetCachePlaybackView().State, EMtoUCacheState::Stopped);
+
+    // Maya leaves cached playback, reconnects after a real transport loss,
+    // uploads a fresh cache, and leaves again.
+    TestTrue(TEXT("Maya leaves cached playback and clears the Unreal cache"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Idle; }, 30.0));
+    TestTrue(TEXT("Maya reconnects and uploads again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Ready; }, 120.0));
+    TestEqual(TEXT("reconnected upload keeps the same captured range"),
+        Actor->GetCachePlaybackView().EndFrame, LastSourceFrame);
+    TestTrue(TEXT("the reconnected cache starts from the actor"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("the reconnected cache plays to completion"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Completed; }, 10.0));
+    TestTrue(TEXT("Maya leaves the reconnected upload again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Idle; }, 30.0));
+    TestTrue(TEXT("Maya finishes the interactive host check"),
+        WaitProcessExit(120.0));
+
+    int32 ExitCode = -1;
+    if (Process.IsValid())
+    {
+        if (FPlatformProcess::IsProcRunning(Process))
+        {
+            FPlatformProcess::TerminateProc(Process, true);
+            AddError(TEXT("Maya host check timed out"));
+        }
+        FPlatformProcess::GetProcReturnCode(Process, &ExitCode);
+        FPlatformProcess::CloseProc(Process);
+    }
+    TestEqual(TEXT("Maya host assertions and cleanup pass"), ExitCode, 0);
+
+    const TSharedPtr<FJsonObject> PeerResult = ReadPeer();
+    TestTrue(TEXT("Maya result exists"), PeerResult.IsValid());
+    if (PeerResult.IsValid() && PeerResult->HasField(TEXT("outcomes")))
+    {
+        TestTrue(TEXT("Maya host check reports success"),
+            PeerResult->GetBoolField(TEXT("ok")));
+        TestTrue(TEXT("Maya retains the completed cache after leaving cached playback"),
+            PeerResult->GetBoolField(TEXT("cache_retained_after_leave")));
+        TestTrue(TEXT("closing the controller releases every transient cache"),
+            PeerResult->GetBoolField(TEXT("caches_cleaned")));
+        TestTrue(TEXT("Maya reports no diagnostic during the reconnect leg"),
+            PeerResult->GetArrayField(TEXT("reconnect_diagnostics")).IsEmpty());
+        TestEqual(TEXT("both sessions captured the whole range"),
+            static_cast<int32>(PeerResult->GetArrayField(TEXT("sessions")).Num()), 2);
+        for (const TSharedPtr<FJsonValue>& SessionValue
+            : PeerResult->GetArrayField(TEXT("sessions")))
+        {
+            const TSharedPtr<FJsonObject> Session = SessionValue->AsObject();
+            TestEqual(TEXT("a captured session uploads the whole range"),
+                static_cast<int32>(Session->GetNumberField(TEXT("frame_count"))), FrameCount);
+            TestEqual(TEXT("a captured session uploads its own identity"),
+                static_cast<int32>(Session->GetNumberField(TEXT("upload_id"))), 1);
+        }
+
+        TArray<TSharedPtr<FJsonValue>> Outcomes =
+            PeerResult->GetArrayField(TEXT("outcomes"));
+        auto OutcomeTypes = [&]()
+        {
+            TArray<FString> Types;
+            for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+            {
+                Types.Add(Value->AsObject()->GetStringField(TEXT("type")));
+            }
+            return Types;
+        };
+        const TArray<FString> Types = OutcomeTypes();
+        for (const TCHAR* Required : {TEXT("cache_playing"), TEXT("cache_paused"),
+                 TEXT("cache_resumed"), TEXT("cache_seeked"), TEXT("cache_looped"),
+                 TEXT("cache_loop_changed"), TEXT("cache_complete"), TEXT("cache_stopped")})
+        {
+            TestTrue(*FString::Printf(TEXT("Maya received %s"), Required),
+                Types.Contains(Required));
+        }
+        int32 Seeked20 = 0;
+        int32 Seeked5 = 0;
+        int32 Seeked99 = 0;
+        int32 Looped1 = 0;
+        int32 Looped2 = 0;
+        int32 SegmentCompletions = 0;
+        int32 LoopPlays = 0;
+        int32 PausedOutcomes = 0;
+        for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+        {
+            const TSharedPtr<FJsonObject> Outcome = Value->AsObject();
+            const FString Type = Outcome->GetStringField(TEXT("type"));
+            if (Type == TEXT("cache_seeked"))
+            {
+                const int32 Frame = static_cast<int32>(Outcome->GetNumberField(TEXT("source_frame")));
+                Seeked20 += Frame == 20;
+                Seeked5 += Frame == 5;
+                Seeked99 += Frame == 99;
+            }
+            else if (Type == TEXT("cache_looped"))
+            {
+                const int32 Round = static_cast<int32>(Outcome->GetNumberField(TEXT("round")));
+                Looped1 += Round == 1;
+                Looped2 += Round == 2;
+            }
+            else if (Type == TEXT("cache_complete")
+                && Outcome->GetStringField(TEXT("session")) == TEXT("A"))
+            {
+                // The interactive attempt only ever ended a seeked or looped
+                // segment, so it must never claim the whole-cache scope.
+                TestTrue(TEXT("a looped run never claims the whole-cache completion scope"),
+                    Outcome->GetStringField(TEXT("scope")) == TEXT("segment"));
+                SegmentCompletions += 1;
+            }
+            else if (Type == TEXT("cache_playing"))
+            {
+                LoopPlays += Outcome->GetBoolField(TEXT("loop")) ? 1 : 0;
+            }
+            else if (Type == TEXT("cache_paused"))
+            {
+                PausedOutcomes += 1;
+                TestTrue(TEXT("a pause names the pose it holds"),
+                    Outcome->GetNumberField(TEXT("applied_frames")) >= 1);
+            }
+        }
+        TestEqual(TEXT("both interactive seeks reach Maya"), Seeked20 + Seeked5, 2);
+        TestEqual(TEXT("a refused seek never reaches Maya"), Seeked99, 0);
+        TestTrue(TEXT("a local refusal is never reported as a peer error"),
+            !Types.Contains(TEXT("error")));
+        TestEqual(TEXT("Maya sees the first loop round"), Looped1, 1);
+        TestEqual(TEXT("Maya sees the second loop round"), Looped2, 1);
+        TestEqual(TEXT("one segment completion ends the looped attempt"), SegmentCompletions, 1);
+        TestEqual(TEXT("the looping attempt reports its loop selection"), LoopPlays, 1);
+        TestEqual(TEXT("one pause outcome reaches Maya"), PausedOutcomes, 1);
+
+        TArray<FString> Presentation;
+        for (const TSharedPtr<FJsonValue>& Value
+            : PeerResult->GetArrayField(TEXT("presentation")))
+        {
+            Presentation.Add(Value->AsString());
+        }
+        auto HasText = [&](const TCHAR* Fragment)
+        {
+            for (const FString& Text : Presentation)
+            {
+                if (Text.Contains(Fragment)) { return true; }
+            }
+            return false;
+        };
+        int32 CacheScopeCompletions = 0;
+        for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+        {
+            const TSharedPtr<FJsonObject> Outcome = Value->AsObject();
+            if (Outcome->GetStringField(TEXT("type")) == TEXT("cache_complete")
+                && Outcome->GetStringField(TEXT("scope")) == TEXT("cache")
+                && Outcome->GetStringField(TEXT("session")) == TEXT("B"))
+            {
+                CacheScopeCompletions += 1;
+                TestEqual(TEXT("a reconnected whole-cache run reports every frame"),
+                    static_cast<int32>(Outcome->GetNumberField(TEXT("applied_frame_count"))),
+                    FrameCount);
+            }
+        }
+        TestEqual(TEXT("the reconnected run completes as a whole-cache attempt"),
+            CacheScopeCompletions, 1);
+
+        TestTrue(TEXT("Maya shows the paused source frame"), HasText(TEXT("已暂停于源帧")));
+        TestTrue(TEXT("Maya shows the seeked source frame"), HasText(TEXT("已定位到源帧")));
+        TestTrue(TEXT("Maya shows the looped round"), HasText(TEXT("第 2 轮")));
+        TestTrue(TEXT("Maya shows the segment completion"), HasText(TEXT("播放段完成")));
+        TestTrue(TEXT("Maya shows the segment frame range"), HasText(TEXT("源帧 1–24")));
+
+        bool bSecondRoundShown = false;
+        for (const TSharedPtr<FJsonValue>& Value
+            : PeerResult->GetArrayField(TEXT("view_snapshots")))
+        {
+            const TSharedPtr<FJsonObject> Snapshot = Value->AsObject();
+            const FString State = Snapshot->GetStringField(TEXT("state"));
+            const FString Type = Snapshot->GetStringField(TEXT("type"));
+            if (State == TEXT("PAUSED") && Type == TEXT("cache_paused"))
+            {
+                TestEqual(TEXT("Maya's paused view names the held frame"),
+                    static_cast<int32>(Snapshot->GetNumberField(TEXT("source_frame"))), HeldFrame);
+            }
+            if (State == TEXT("SEEKED") && Type == TEXT("cache_seeked"))
+            {
+                const int32 Frame =
+                    static_cast<int32>(Snapshot->GetNumberField(TEXT("source_frame")));
+                TestTrue(TEXT("Maya's seeked view names a seek target"),
+                    Frame == 20 || Frame == 5 || Frame == FirstSourceFrame
+                    || Frame == LastSourceFrame);
+            }
+            if (State == TEXT("REPLAYING") && Type == TEXT("cache_looped")
+                && static_cast<int32>(Snapshot->GetNumberField(TEXT("loop_round"))) == 2)
+            {
+                bSecondRoundShown = true;
+            }
+        }
+        TestTrue(TEXT("Maya's looping view counts the second round"), bSecondRoundShown);
+    }
+
+    Source->StopListener();
+    Client.RemoveSource(Source);
+    MtoUSetActiveSource(PreviousSource);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheBackpressureSocketTest,
     "MtoULiveLink.Source.CacheBackpressure",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -5035,7 +5831,7 @@ bool FMtoUCacheBackpressureSocketTest::RunTest(const FString& Parameters)
         return false;
     }
     const FString InitText = TEXT(
-        "{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\","
+        "{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\","
         "\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,"
         "[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     const TArray<uint8> InitBytes = Packet(InitText);
@@ -5348,7 +6144,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
         const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
         return Packet(FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
             *Workflow,
             bBlendshapes ? TEXT("true") : TEXT("false"),
             *RootBoneName,
@@ -6272,7 +7068,7 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -6443,7 +7239,7 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     // PIE is not supported: its duplicated Binding actor must not be treated
@@ -6593,7 +7389,7 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -6923,7 +7719,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("character part client connects"), Client);
     const FString Bones = ReferenceSkeletonBonesJson(MayaSkeleton);
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
         *Bones);
     const TArray<uint8> InitPacket = Packet(Init);
     TestTrue(TEXT("character part init is sent"), Client
@@ -7336,7 +8132,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
         *TransformJson(FTransform::Identity),
         *TransformJson(ClothBind));
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *MayaBones);
 
     FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
@@ -7473,7 +8269,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
     Client = ConnectLoopback(*SocketSubsystem, Port);
     const FString AmbiguousInit = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
         *PrimaryBones,
         *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
         *TransformJson(ClothBind),
@@ -7525,7 +8321,7 @@ bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
             && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
         Client = ConnectLoopback(*SocketSubsystem, Port);
         const FString TwoTargetInit = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
+            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
             *PrimaryBones, *TransformJson(ClothBind), *TransformJson(ClothBind));
         const TArray<uint8> TwoTargetPacket = Packet(TwoTargetInit);
         TestTrue(TEXT("two-target init is sent"),
@@ -7697,7 +8493,7 @@ bool FMtoUCharacterPartRenameProjectionTest::RunTest(const FString& Parameters)
     const auto InitText = [&](bool bNarrowFirst, int32 Revision)
     {
         return FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":%d,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"spare\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",2,%s],[\"%s\",0,%s],[\"%s\",0,%s]],\"curves\":[]}"),
+            TEXT("{\"type\":\"init\",\"revision\":%d,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"spare\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",2,%s],[\"%s\",0,%s],[\"%s\",0,%s]],\"curves\":[]}"),
             Revision,
             *PrimaryBones,
             *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
@@ -8324,7 +9120,7 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source reaches listening state"),
         WaitForStatus(Source, TEXT("Listening on")));
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(Primary->GetRefSkeleton()));
     const auto ConnectAndNegotiate = [&](FSocket*& OutClient)
     {
@@ -8877,7 +9673,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     // extra bone cannot be the reason for any failure below.
     const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *Bones);
     auto NegotiateCurrentBinding = [&](FString& OutReply)
     {

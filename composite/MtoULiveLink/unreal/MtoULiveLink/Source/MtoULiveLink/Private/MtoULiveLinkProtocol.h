@@ -70,12 +70,12 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 8;
+    static constexpr int32 Version = 9;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
     // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
     // frozen wire values; the single source of truth is the `limits` block of
-    // protocol/conformance-v8.json, and both host adapters assert their
+    // protocol/conformance-v9.json, and both host adapters assert their
     // constants against the corpus. Encoded bytes are metered from the framing
     // boundary; parsed transient memory is preflighted from the negotiated
     // transform and curve counts before any allocation.
@@ -138,9 +138,24 @@ public:
         int32 AcceptedMorphCount,
         int32 NegotiatedRevision);
     static TArray<uint8> EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount);
-    static TArray<uint8> EncodeCachePlaying(int32 UploadId, int32 PlayId);
+    static TArray<uint8> EncodeCachePlaying(int32 UploadId, int32 PlayId, bool bLoopEnabled);
     static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);
-    static TArray<uint8> EncodeCacheComplete(int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds);
+    // Paused and resumed carry no source frame while the attempt has not
+    // applied a pose yet; INDEX_NONE omits the field instead of inventing one.
+    static TArray<uint8> EncodeCachePaused(int32 PlayId, int32 AppliedFrames, int32 SourceFrame);
+    static TArray<uint8> EncodeCacheResumed(int32 PlayId, int32 AppliedFrames, int32 SourceFrame);
+    static TArray<uint8> EncodeCacheSeeked(int32 PlayId, int32 SourceFrame, int32 AppliedFrames);
+    static TArray<uint8> EncodeCacheLooped(int32 PlayId, int32 Round, int32 SourceFrame);
+    static TArray<uint8> EncodeCacheLoopChanged(int32 PlayId, bool bLoopEnabled);
+    // Only a whole-cache segment may claim ScopeCache: a seek or a loop round
+    // completes a segment and never the attempt's single sequential replay.
+    static TArray<uint8> EncodeCacheComplete(
+        int32 PlayId,
+        int32 AppliedFrameCount,
+        double ElapsedSeconds,
+        bool bWholeCacheScope,
+        int32 StartFrame,
+        int32 EndFrame);
     static TArray<uint8> EncodeCacheStopped(int32 PlayId);
     // Cleared echoes the owning identity of the cache ownership that was
     // dropped so Maya can discard late outcomes from older operations.

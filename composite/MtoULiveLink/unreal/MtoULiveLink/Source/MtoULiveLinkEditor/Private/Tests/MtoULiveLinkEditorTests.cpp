@@ -500,6 +500,71 @@ bool FMtoUDetailsNegativeSourceFrameTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsInteractiveStateTextTest,
+    "MtoULiveLink.Editor.DetailsInteractiveStateText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsInteractiveStateTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUCachePlaybackView View;
+    View.bConnected = true;
+    View.StartFrame = 1;
+    View.EndFrame = 24;
+    View.FrameCount = 24;
+    View.Fps = 30.0;
+
+    View.State = EMtoUCacheState::Playing;
+    View.CurrentSourceFrame = 7;
+    View.bHasAppliedSourceFrame = true;
+    View.AppliedFrames = 7;
+    TestTrue(TEXT("playing names its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("正在播放")));
+
+    View.bLoopEnabled = true;
+    View.LoopRound = 1;
+    TestTrue(TEXT("a looping attempt names its round"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("正在循环播放（第 2 轮）")));
+    View.bLoopEnabled = false;
+    View.LoopRound = 0;
+
+    View.State = EMtoUCacheState::Paused;
+    TestTrue(TEXT("pause names the held source frame"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已暂停于源帧 7，姿势保留")));
+    View.bPositionedBySeek = true;
+    View.CurrentSourceFrame = 12;
+    TestTrue(TEXT("a seek names its target and stays paused"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已定位到源帧 12，已暂停")));
+    View.bPositionedBySeek = false;
+    View.bHasAppliedSourceFrame = false;
+    TestTrue(TEXT("a pause before its first pose still reads as paused"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已暂停，姿势保留")));
+    View.bHasAppliedSourceFrame = true;
+
+    View.State = EMtoUCacheState::Stopped;
+    TestTrue(TEXT("stop keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已停止，缓存保留")));
+    View.State = EMtoUCacheState::Completed;
+    TestTrue(TEXT("completion keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已结束，停在最后一帧")));
+    View.State = EMtoUCacheState::Ready;
+    TestTrue(TEXT("ready keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已就绪，等待播放")));
+    View.State = EMtoUCacheState::Failed;
+    TestTrue(TEXT("a failed attempt keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("播放失败，缓存保留")));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
     "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -3669,7 +3734,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -3828,7 +3893,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -4791,7 +4856,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":8,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;

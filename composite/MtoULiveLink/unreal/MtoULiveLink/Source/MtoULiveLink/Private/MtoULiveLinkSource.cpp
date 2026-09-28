@@ -151,6 +151,42 @@ bool MtoUStopActorCachedPlayback(const AMtoULiveLinkActor& Actor)
     return false;
 }
 
+bool MtoUPauseActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->PauseActorCachedPlayback(Actor);
+    }
+    return false;
+}
+
+bool MtoUResumeActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->ResumeActorCachedPlayback(Actor);
+    }
+    return false;
+}
+
+bool MtoUSeekActorCachedPlayback(const AMtoULiveLinkActor& Actor, int32 SourceFrame)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->SeekActorCachedPlayback(Actor, SourceFrame);
+    }
+    return false;
+}
+
+bool MtoUSetActorCachedLoop(const AMtoULiveLinkActor& Actor, bool bEnabled)
+{
+    if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
+    {
+        return Source->SetActorCachedLoop(Actor, bEnabled);
+    }
+    return false;
+}
+
 void MtoURequestStreamingSessionEnd()
 {
     ++GStreamingSessionEndRequests;
@@ -264,6 +300,67 @@ bool FMtoULiveLinkSource::StopActorCachedPlayback(const AMtoULiveLinkActor& Acto
     }
     const FMtoUCacheTransition Transition = CacheSession.StopLocalPlayback();
     ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    return Transition.bAccepted;
+}
+
+// The four interactive actions below exist only on this Binding actor, unlike
+// play/stop which Maya can also send. A refused one therefore stays a local
+// prompt in the actor row and is never reported to Maya as a peer outcome.
+bool FMtoULiveLinkSource::PauseActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (!GetActorCachePlaybackView(Actor).CanPause())
+    {
+        return false;
+    }
+    const FMtoUCacheTransition Transition = CacheSession.PauseLocalPlayback();
+    if (Transition.bAccepted)
+    {
+        ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    }
+    return Transition.bAccepted;
+}
+
+bool FMtoULiveLinkSource::ResumeActorCachedPlayback(const AMtoULiveLinkActor& Actor)
+{
+    if (!GetActorCachePlaybackView(Actor).CanResume())
+    {
+        return false;
+    }
+    const FMtoUCacheTransition Transition = CacheSession.ResumeLocalPlayback();
+    if (Transition.bAccepted)
+    {
+        ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    }
+    return Transition.bAccepted;
+}
+
+bool FMtoULiveLinkSource::SeekActorCachedPlayback(const AMtoULiveLinkActor& Actor, int32 SourceFrame)
+{
+    if (!GetActorCachePlaybackView(Actor).CanSeek())
+    {
+        return false;
+    }
+    // A refused seek carries its reason in the session's error details, so the
+    // actor row can prompt with the requested frame and the sampled range.
+    const FMtoUCacheTransition Transition = CacheSession.SeekLocalPlayback(SourceFrame);
+    if (Transition.bAccepted)
+    {
+        ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    }
+    return Transition.bAccepted;
+}
+
+bool FMtoULiveLinkSource::SetActorCachedLoop(const AMtoULiveLinkActor& Actor, bool bEnabled)
+{
+    if (!GetActorCachePlaybackView(Actor).CanSeek())
+    {
+        return false;
+    }
+    const FMtoUCacheTransition Transition = CacheSession.SetLocalLoop(bEnabled);
+    if (Transition.bAccepted)
+    {
+        ApplyCacheTransitionOnGameThread(GameThreadSession, Transition);
+    }
     return Transition.bAccepted;
 }
 
@@ -1409,7 +1506,35 @@ void FMtoULiveLinkSource::ApplyCacheTransitionOnGameThread(
             break;
         case EKind::Playing:
             SetStatus(TEXT("Playing cached animation locally"));
-            Packet = FMtoUProtocol::EncodeCachePlaying(Transition.UploadId, Transition.PlayId);
+            Packet = FMtoUProtocol::EncodeCachePlaying(
+                Transition.UploadId, Transition.PlayId, Transition.bLoopEnabled);
+            break;
+        case EKind::Paused:
+            SetStatus(TEXT("Cached playback paused; current pose held"));
+            Packet = FMtoUProtocol::EncodeCachePaused(
+                Transition.PlayId, Transition.AppliedFrames, Transition.SourceFrame);
+            break;
+        case EKind::Resumed:
+            SetStatus(TEXT("Cached playback resumed from the held pose"));
+            Packet = FMtoUProtocol::EncodeCacheResumed(
+                Transition.PlayId, Transition.AppliedFrames, Transition.SourceFrame);
+            break;
+        case EKind::Seeked:
+            SetStatus(TEXT("Cached playback positioned; pose held"));
+            Packet = FMtoUProtocol::EncodeCacheSeeked(
+                Transition.PlayId, Transition.SourceFrame, Transition.AppliedFrames);
+            break;
+        case EKind::Looped:
+            SetStatus(TEXT("Cached playback looped to the first frame"));
+            Packet = FMtoUProtocol::EncodeCacheLooped(
+                Transition.PlayId, Transition.LoopRound, Transition.SourceFrame);
+            break;
+        case EKind::LoopChanged:
+            SetStatus(Transition.bLoopEnabled
+                ? TEXT("Cached playback will loop")
+                : TEXT("Cached playback completes the current round"));
+            Packet = FMtoUProtocol::EncodeCacheLoopChanged(
+                Transition.PlayId, Transition.bLoopEnabled);
             break;
         case EKind::Stopped:
             SetStatus(TEXT("Cached playback stopped; last applied frame held"));
@@ -1424,9 +1549,16 @@ void FMtoULiveLinkSource::ApplyCacheTransitionOnGameThread(
                 Transition.UploadId, Transition.PlayId, Transition.ClearId);
             break;
         case EKind::Completed:
-            SetStatus(TEXT("Cached playback complete; final frame held"));
+            SetStatus(Transition.bWholeCacheScope
+                ? TEXT("Cached playback complete; final frame held")
+                : TEXT("Cached playback segment complete; final frame held"));
             Packet = FMtoUProtocol::EncodeCacheComplete(
-                Transition.PlayId, Transition.FrameCount, Transition.ElapsedSeconds);
+                Transition.PlayId,
+                Transition.FrameCount,
+                Transition.ElapsedSeconds,
+                Transition.bWholeCacheScope,
+                Transition.StartFrame,
+                Transition.EndFrame);
             break;
         case EKind::PerformanceFailed:
             SetStatus(TEXT("Cached playback missed the captured scene rate"));

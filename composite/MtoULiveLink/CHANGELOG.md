@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Drive cached playback interactively from the Unreal Binding Actor (Issue #50).
+  After a validated upload, the 预览控制 group adds 暂停, 继续, a Maya source
+  frame field with 定位, and a 循环 selection beside 播放/停止. Pause holds the
+  pose and the cache, so any wait is safe; resume rebuilds the timing baseline
+  and never replays the paused interval. Seek displays the target sampled frame
+  and holds it paused; an unsampled frame is refused with the requested frame
+  and the sampled range instead of being silently clamped. Loop wraps from the
+  accepted last frame to the first, and turning it off completes the current
+  round. Stop also ends a paused attempt. Playback is organized in segments, so
+  completion evidence is scoped: only an unbroken whole-cache run reports
+  `scope: "cache"`, while a seek or a completed loop round reports
+  `scope: "segment"` with its own source range, and paused time is excluded from
+  the measured duration. Protocol v9 adds `cache_paused`, `cache_resumed`,
+  `cache_seeked`, `cache_looped`, and `cache_loop_changed`, and extends
+  `cache_playing` (loop selection) and `cache_complete` (scope and range). Maya
+  renders pause, seek, loop round, stop, and completion from those outcomes
+  without a re-upload. Recapture, clear, disconnect, and character or Preview
+  input changes drop the attempt's loop selection, positioned pose, and segment
+  state. Both components identify as 0.9.0.
 - Add an Unreal Binding Actor garment comparison control (Issue #51). The
   original outfit and Generated Preview alternate in the same Model session,
   retaining the pose, Morph values, body, enabled Additional Parts, and actor

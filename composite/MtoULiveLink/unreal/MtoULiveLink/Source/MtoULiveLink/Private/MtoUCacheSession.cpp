@@ -15,6 +15,7 @@ const TCHAR* ToString(EMtoUCacheState State)
         case EMtoUCacheState::Receiving: return TEXT("Receiving");
         case EMtoUCacheState::Ready: return TEXT("Ready");
         case EMtoUCacheState::Playing: return TEXT("Playing");
+        case EMtoUCacheState::Paused: return TEXT("Paused");
         case EMtoUCacheState::Completed: return TEXT("Completed");
         case EMtoUCacheState::Stopped: return TEXT("Stopped");
         case EMtoUCacheState::Failed: return TEXT("Failed");
@@ -69,10 +70,19 @@ void FMtoUCacheSession::ResetToIdle()
     Frames.Reset();
     ActualPayloadBytes = 0;
     NextFrame = 0;
-    AppliedCount = 0;
+    SegmentFrameCount = 0;
+    SegmentStartIndex = 0;
+    ScheduleSlots = 0;
+    SegmentStartSlot = 0;
+    ScheduleBaseline = 0.0;
+    LoopRound = 0;
     LastAppliedIndex = INDEX_NONE;
-    PlaybackStart = 0.0;
     ElapsedSeconds = 0.0;
+    PausedAt = 0.0;
+    bLoopEnabled = false;
+    bSeekedInAttempt = false;
+    bWrappedInAttempt = false;
+    bPositionedBySeek = false;
     ActiveUploadId = 0;
     ActivePlayId = 0;
 }
@@ -89,6 +99,40 @@ void FMtoUCacheSession::EndSession()
     ErrorDetails.Reset();
 }
 
+int32 FMtoUCacheSession::CurrentSourceFrame() const
+{
+    return LastAppliedIndex == INDEX_NONE
+        ? INDEX_NONE
+        : Begin.StartFrame + LastAppliedIndex;
+}
+
+void FMtoUCacheSession::BeginAttempt(int32 PlayId)
+{
+    LastSeenPlayId = PlayId;
+    ActivePlayId = PlayId;
+    NextFrame = 0;
+    SegmentFrameCount = Frames.Num();
+    SegmentStartIndex = 0;
+    ScheduleSlots = 0;
+    SegmentStartSlot = 0;
+    ScheduleBaseline = Now();
+    LoopRound = 0;
+    ElapsedSeconds = 0.0;
+    PausedAt = 0.0;
+    bSeekedInAttempt = false;
+    bWrappedInAttempt = false;
+    bPositionedBySeek = false;
+    // The pose already displayed keeps its identity until the attempt applies
+    // its own first pose; only a new upload invalidates it.
+}
+
+void FMtoUCacheSession::BeginSegment(int32 StartIndex, int32 FrameCount, int32 StartSlot)
+{
+    SegmentStartIndex = StartIndex;
+    SegmentFrameCount = FrameCount;
+    SegmentStartSlot = StartSlot;
+}
+
 FMtoUCachePlaybackView FMtoUCacheSession::GetView() const
 {
     FMtoUCachePlaybackView View;
@@ -97,7 +141,10 @@ FMtoUCachePlaybackView FMtoUCacheSession::GetView() const
     View.EndFrame = Begin.EndFrame;
     View.Fps = Begin.Fps;
     View.FrameCount = Begin.FrameCount;
-    View.AppliedFrames = AppliedCount;
+    View.AppliedFrames = AppliedInSegment();
+    View.bLoopEnabled = bLoopEnabled;
+    View.LoopRound = LoopRound;
+    View.bPositionedBySeek = bPositionedBySeek;
     View.ErrorDetails = ErrorDetails;
     if (LastAppliedIndex != INDEX_NONE)
     {
@@ -117,12 +164,42 @@ FMtoUCacheTransition FMtoUCacheSession::StartLocalPlayback()
 
 FMtoUCacheTransition FMtoUCacheSession::StopLocalPlayback()
 {
-    if (State != EMtoUCacheState::Playing)
+    if (!HasActiveAttempt())
     {
         return FMtoUCacheTransition();
     }
     FMtoUCacheCommand Command;
     Command.Kind = FMtoUCacheCommand::EKind::Stop;
+    return HandleCommand(Command);
+}
+
+FMtoUCacheTransition FMtoUCacheSession::PauseLocalPlayback()
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Pause;
+    return HandleCommand(Command);
+}
+
+FMtoUCacheTransition FMtoUCacheSession::ResumeLocalPlayback()
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Resume;
+    return HandleCommand(Command);
+}
+
+FMtoUCacheTransition FMtoUCacheSession::SeekLocalPlayback(int32 SourceFrame)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::Seek;
+    Command.SeekSourceFrame = SourceFrame;
+    return HandleCommand(Command);
+}
+
+FMtoUCacheTransition FMtoUCacheSession::SetLocalLoop(bool bEnabled)
+{
+    FMtoUCacheCommand Command;
+    Command.Kind = FMtoUCacheCommand::EKind::SetLoop;
+    Command.bLoopEnabled = bEnabled;
     return HandleCommand(Command);
 }
 
@@ -170,18 +247,55 @@ FMtoUCacheTransition FMtoUCacheSession::HandleCommand(const FMtoUCacheCommand& C
             if (bAccepted)
             {
                 Result.RealtimeOverride = true;
+                Result.bLoopEnabled = bLoopEnabled;
             }
             break;
         case FMtoUCacheCommand::EKind::Stop:
-            if (State == EMtoUCacheState::Playing)
+            if (HasActiveAttempt())
             {
                 State = EMtoUCacheState::Stopped;
+                bPositionedBySeek = false;
             }
             Result.Kind = EKind::Stopped;
             Result.PlayId = ActivePlayId;
             Result.RealtimeOverride = false;
             bAccepted = true;
             break;
+        case FMtoUCacheCommand::EKind::Pause:
+            if (State == EMtoUCacheState::Paused)
+            {
+                // Repeated pause keeps the held pose and sends no second outcome.
+                bAccepted = true;
+                break;
+            }
+            bAccepted = HandlePause(Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Paused;
+            Result.PlayId = ActivePlayId;
+            Result.SourceFrame = CurrentSourceFrame();
+            Result.AppliedFrames = AppliedInSegment();
+            break;
+        case FMtoUCacheCommand::EKind::Resume:
+            if (State == EMtoUCacheState::Playing)
+            {
+                // Repeated resume continues the running schedule unchanged.
+                bAccepted = true;
+                break;
+            }
+            bAccepted = HandleResume(Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Resumed;
+            Result.PlayId = ActivePlayId;
+            Result.SourceFrame = CurrentSourceFrame();
+            Result.AppliedFrames = AppliedInSegment();
+            break;
+        case FMtoUCacheCommand::EKind::Seek:
+            bAccepted = HandleSeek(Command.SeekSourceFrame, Result.ErrorCode, Result.Details);
+            Result.Kind = EKind::Seeked;
+            Result.PlayId = ActivePlayId;
+            Result.SourceFrame = CurrentSourceFrame();
+            Result.AppliedFrames = AppliedInSegment();
+            break;
+        case FMtoUCacheCommand::EKind::SetLoop:
+            return HandleLoopChange(Command.bLoopEnabled);
         case FMtoUCacheCommand::EKind::Clear:
             if (Command.ClearId <= LastSeenClearId)
             {
@@ -300,8 +414,21 @@ bool FMtoUCacheSession::HandleBegin(
     Frames.Reset(Begin.FrameCount);
     ActualPayloadBytes = 0;
     NextFrame = 0;
-    AppliedCount = 0;
+    SegmentFrameCount = 0;
+    SegmentStartIndex = 0;
+    ScheduleSlots = 0;
+    SegmentStartSlot = 0;
+    ScheduleBaseline = 0.0;
+    LoopRound = 0;
     LastAppliedIndex = INDEX_NONE;
+    ElapsedSeconds = 0.0;
+    PausedAt = 0.0;
+    // A fresh cache starts with loop off; the previous cache's playback
+    // selection never survives a recapture.
+    bLoopEnabled = false;
+    bSeekedInAttempt = false;
+    bWrappedInAttempt = false;
+    bPositionedBySeek = false;
     State = EMtoUCacheState::Receiving;
     return true;
 }
@@ -447,16 +574,152 @@ bool FMtoUCacheSession::HandlePlay(
             TEXT("cache_play arrived while the cache state is %s."), ToString(State));
         return false;
     }
-    LastSeenPlayId = Command.PlayId;
-    ActivePlayId = Command.PlayId;
-    NextFrame = 0;
-    AppliedCount = 0;
-    PlaybackStart = Now();
+    // Every attempt opens its own whole-cache segment; only this fresh
+    // segment (or a later unbroken continuation of it) may claim the
+    // whole-cache completion scope.
+    BeginAttempt(Command.PlayId);
     State = EMtoUCacheState::Playing;
-    // cache_play only initializes the attempt: every pose, including the
+    // Starting an attempt only initializes it: every pose, including the
     // first, is published by a later Tick so one game-thread update can never
     // apply two cached poses.
     return true;
+}
+
+bool FMtoUCacheSession::HandlePause(FString& OutErrorCode, FString& OutDetails)
+{
+    if (State != EMtoUCacheState::Playing)
+    {
+        OutErrorCode = TEXT("CACHE_NOT_READY");
+        OutDetails = FString::Printf(
+            TEXT("Pausing cached playback requires playing playback;"
+                 " the cache state is %s."),
+            ToString(State));
+        return false;
+    }
+    // Holding the pose freezes the schedule: no frame becomes due while the
+    // user inspects, so an arbitrarily long pause can never fail playback.
+    PausedAt = Now();
+    State = EMtoUCacheState::Paused;
+    return true;
+}
+
+bool FMtoUCacheSession::HandleResume(FString& OutErrorCode, FString& OutDetails)
+{
+    if (State != EMtoUCacheState::Paused)
+    {
+        OutErrorCode = TEXT("CACHE_NOT_READY");
+        OutDetails = FString::Printf(
+            TEXT("Resuming cached playback requires paused playback;"
+                 " the cache state is %s."),
+            ToString(State));
+        return false;
+    }
+    // Rebuilding the timing baseline continues from the held position: the
+    // paused interval is never replayed and never counts as a late segment.
+    ScheduleBaseline += Now() - PausedAt;
+    PausedAt = 0.0;
+    bPositionedBySeek = false;
+    State = EMtoUCacheState::Playing;
+    return true;
+}
+
+bool FMtoUCacheSession::HandleSeek(int32 SourceFrame, FString& OutErrorCode, FString& OutDetails)
+{
+    if (!HasCache())
+    {
+        OutErrorCode = TEXT("CACHE_NOT_READY");
+        OutDetails = FString::Printf(
+            TEXT("Seeking requires a received cache; the cache state is %s."),
+            ToString(State));
+        return false;
+    }
+    // Only frames this capture actually sampled are addressable; an
+    // out-of-range request is reported instead of silently clamped.
+    if (SourceFrame < Begin.StartFrame || SourceFrame > Begin.EndFrame)
+    {
+        OutErrorCode = TEXT("CACHE_SEEK_INVALID");
+        OutDetails = FString::Printf(
+            TEXT("source frame %d is not a sampled frame of the current cache"
+                 " (%d..%d)."),
+            SourceFrame,
+            Begin.StartFrame,
+            Begin.EndFrame);
+        return false;
+    }
+    const int32 Index = SourceFrame - Begin.StartFrame;
+    if (!Frames.IsValidIndex(Index))
+    {
+        OutErrorCode = TEXT("CACHE_SEEK_INVALID");
+        OutDetails = FString::Printf(
+            TEXT("source frame %d has no buffered cache frame."), SourceFrame);
+        return false;
+    }
+    // The target is displayed immediately; only then does the seek hold.
+    if (Publish && !Publish(Frames[Index]))
+    {
+        OutErrorCode = TEXT("CACHE_SEEK_FAILED");
+        OutDetails = FString::Printf(
+            TEXT("source frame %d could not be applied to the character."),
+            SourceFrame);
+        return false;
+    }
+    if (!HasActiveAttempt())
+    {
+        // Positioning before or after an attempt still opens one, so every
+        // later outcome carries an increasing identity.
+        ActivePlayId = LastSeenPlayId + 1;
+        LastSeenPlayId = ActivePlayId;
+    }
+    bSeekedInAttempt = true;
+    bPositionedBySeek = true;
+    LastAppliedIndex = Index;
+    // A seek opens a new segment: its schedule starts at the displayed frame
+    // and only a later resume advances past it.
+    NextFrame = Index + 1;
+    BeginSegment(Index, Frames.Num() - Index, 0);
+    ScheduleSlots = 1;
+    ScheduleBaseline = Now();
+    PausedAt = Now();
+    State = EMtoUCacheState::Paused;
+    return true;
+}
+
+FMtoUCacheTransition FMtoUCacheSession::HandleLoopChange(bool bEnabled)
+{
+    FMtoUCacheTransition Result;
+    Result.Revision = NegotiatedRevision;
+    ErrorDetails.Reset();
+    if (bLoopEnabled == bEnabled)
+    {
+        // No outcome for a selection that already holds: repeated clicks can
+        // never produce duplicate notifications.
+        return Result;
+    }
+    if (!HasCache())
+    {
+        Result.Kind = FMtoUCacheTransition::EKind::Rejected;
+        Result.bAccepted = false;
+        Result.ErrorCode = TEXT("CACHE_NOT_READY");
+        Result.Details = FString::Printf(
+            TEXT("Selecting loop playback requires a received cache;"
+                 " the cache state is %s."),
+            ToString(State));
+        ErrorDetails = Result.ErrorCode + TEXT(": ") + Result.Details;
+        if (AcceptsLiveFrames())
+        {
+            Result.RealtimeOverride = true;
+        }
+        return Result;
+    }
+    bLoopEnabled = bEnabled;
+    if (HasActiveAttempt())
+    {
+        Result.Kind = FMtoUCacheTransition::EKind::LoopChanged;
+        Result.PlayId = ActivePlayId;
+        Result.bLoopEnabled = bEnabled;
+    }
+    // Without an attempt the selection rides along in the next cache_playing.
+    return Result;
 }
 
 void FMtoUCacheSession::FailPerformance(const FString& Details)
@@ -469,17 +732,57 @@ void FMtoUCacheSession::FailPerformance(const FString& Details)
         *Details);
 }
 
-void FMtoUCacheSession::ApplyNextPose()
+FMtoUCacheSession::EStep FMtoUCacheSession::FinishSegment()
+{
+    if (bLoopEnabled)
+    {
+        // The last pose of the round was accepted; the next round continues
+        // the same continuous schedule instead of restarting it.
+        ++LoopRound;
+        bWrappedInAttempt = true;
+        BeginSegment(0, Frames.Num(), ScheduleSlots);
+        NextFrame = 0;
+        return EStep::Wrapped;
+    }
+    const int32 Applied = AppliedInSegment();
+    const double Schedule = static_cast<double>(Applied) * FrameInterval();
+    const double SegmentStart = ScheduleBaseline
+        + static_cast<double>(SegmentStartSlot) * FrameInterval();
+    const double Elapsed = Now() - SegmentStart;
+    const double Tolerance = FMath::Min(0.5, FMath::Max(0.05 * Schedule, FrameInterval()));
+    // Completion guard: successful completion requires every pose of the
+    // segment accepted exactly once in order plus the active playback
+    // duration remaining within the captured-rate requirement. A pause shifts
+    // the baseline, so paused time is excluded rather than considered late.
+    if (Applied != SegmentFrameCount || Elapsed > Schedule + Tolerance || Elapsed < 0.0)
+    {
+        FailPerformance(FString::Printf(
+            TEXT("local playback of %d cached frames took %.3fs for a %.3fs schedule"),
+            Applied,
+            Elapsed,
+            Schedule));
+        return EStep::PerformanceFailed;
+    }
+    ElapsedSeconds = Elapsed;
+    // Successful completion: the final accepted pose stays held.
+    State = EMtoUCacheState::Completed;
+    return EStep::Completed;
+}
+
+FMtoUCacheSession::EStep FMtoUCacheSession::ApplyNextPose()
 {
     if (NextFrame >= Frames.Num())
     {
-        return;
+        // The segment's final pose was already applied by the previous update
+        // or by a seek onto it; this update only settles the outcome.
+        return FinishSegment();
     }
-    const double Due = PlaybackStart + static_cast<double>(NextFrame) * FrameInterval();
+    const double Due =
+        ScheduleBaseline + static_cast<double>(ScheduleSlots) * FrameInterval();
     const double NowValue = Now();
     if (NowValue < Due)
     {
-        return;
+        return EStep::None;
     }
     // Valid source-frame window check: this pose must still be inside its own
     // scheduled slot. Once the window is missed we stop BEFORE publishing, so
@@ -492,7 +795,7 @@ void FMtoUCacheSession::ApplyNextPose()
             NextFrame,
             NowValue - Due,
             Begin.Fps));
-        return;
+        return EStep::PerformanceFailed;
     }
     bool bAccepted = true;
     if (Publish)
@@ -503,37 +806,22 @@ void FMtoUCacheSession::ApplyNextPose()
     {
         // Applied evidence never advances past a refused publication; the
         // next update either publishes it in window or fails on the window.
-        return;
+        return EStep::None;
     }
     LastAppliedIndex = NextFrame;
-    ++AppliedCount;
+    ++ScheduleSlots;
     ++NextFrame;
 
     if (ProgressSink)
     {
-        ProgressSink(ActivePlayId, AppliedCount);
+        ProgressSink(ActivePlayId, AppliedInSegment());
     }
 
     if (NextFrame >= Frames.Num())
     {
-        // Completion guard: successful completion requires every pose
-        // accepted exactly once in order plus the elapsed monotonic duration
-        // remaining within the captured-rate requirement.
-        const double Schedule = static_cast<double>(Frames.Num()) * FrameInterval();
-        const double Tolerance = FMath::Min(0.5, FMath::Max(0.05 * Schedule, FrameInterval()));
-        if (NowValue - PlaybackStart > Schedule + Tolerance)
-        {
-            FailPerformance(FString::Printf(
-                TEXT("local playback of %d cached frames took %.3fs for a %.3fs schedule"),
-                Frames.Num(),
-                NowValue - PlaybackStart,
-                Schedule));
-            return;
-        }
-        ElapsedSeconds = NowValue - PlaybackStart;
-        // Successful completion: the final accepted pose stays held.
-        State = EMtoUCacheState::Completed;
+        return FinishSegment();
     }
+    return EStep::Applied;
 }
 
 FMtoUCacheTransition FMtoUCacheSession::Tick()
@@ -543,25 +831,40 @@ FMtoUCacheTransition FMtoUCacheSession::Tick()
     {
         return Result;
     }
-    const int32 Before = AppliedCount;
-    ApplyNextPose();
-    Result.AppliedFramesThisTick = AppliedCount - Before;
+    using EKind = FMtoUCacheTransition::EKind;
+    const int32 SlotsBefore = ScheduleSlots;
+    const EStep Step = ApplyNextPose();
+    Result.AppliedFramesThisTick = ScheduleSlots - SlotsBefore;
     Result.UploadId = ActiveUploadId;
     Result.PlayId = ActivePlayId;
-    Result.FrameCount = AppliedCount;
+    Result.AppliedFrames = AppliedInSegment();
+    Result.FrameCount = AppliedInSegment();
     Result.ElapsedSeconds = ElapsedSeconds;
-    if (State == EMtoUCacheState::Completed)
+    switch (Step)
     {
-        Result.Kind = FMtoUCacheTransition::EKind::Completed;
-        // Preserve the existing realtime override to keep the final pose
-        // naturally evaluated. Completion never changes viewport policy.
-    }
-    else if (State == EMtoUCacheState::Failed)
-    {
-        Result.Kind = FMtoUCacheTransition::EKind::PerformanceFailed;
-        Result.ErrorCode = TEXT("CACHED_PLAYBACK_PERFORMANCE");
-        Result.Details = ErrorDetails;
-        Result.RealtimeOverride = false;
+        case EStep::Wrapped:
+            Result.Kind = EKind::Looped;
+            Result.LoopRound = LoopRound;
+            Result.SourceFrame = Begin.StartFrame;
+            break;
+        case EStep::Completed:
+            Result.Kind = EKind::Completed;
+            // Only an unbroken whole-cache segment may claim the whole-cache
+            // scope; a seek or a completed loop round ends a segment instead.
+            Result.bWholeCacheScope = !bSeekedInAttempt && !bWrappedInAttempt;
+            Result.StartFrame = Begin.StartFrame + SegmentStartIndex;
+            Result.EndFrame = Begin.StartFrame + SegmentStartIndex + SegmentFrameCount - 1;
+            break;
+        case EStep::PerformanceFailed:
+            Result.Kind = EKind::PerformanceFailed;
+            Result.ErrorCode = TEXT("CACHED_PLAYBACK_PERFORMANCE");
+            Result.Details = ErrorDetails;
+            Result.RealtimeOverride = false;
+            break;
+        case EStep::None:
+        case EStep::Applied:
+        default:
+            break;
     }
     return Result;
 }

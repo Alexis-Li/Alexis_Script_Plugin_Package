@@ -10,6 +10,8 @@ enum class EMtoUCacheState : uint8
     Receiving,
     Ready,
     Playing,
+    /** Playback or a seek is held: pose and cache stay, no frames are due. */
+    Paused,
     Completed,
     Stopped,
     Failed,
@@ -26,7 +28,13 @@ struct MTOULIVELINK_API FMtoUCachePlaybackView
     int32 FrameCount = 0;
     int32 CurrentSourceFrame = INDEX_NONE;
     bool bHasAppliedSourceFrame = false;
+    /** Frames applied in the current playback segment, not since the attempt began. */
     int32 AppliedFrames = 0;
+    bool bLoopEnabled = false;
+    /** Completed loop rounds of the current attempt; zero when none wrapped yet. */
+    int32 LoopRound = 0;
+    /** The held pose came from a seek rather than from a pause. */
+    bool bPositionedBySeek = false;
     FString ErrorDetails;
 
     bool CanPlay() const
@@ -36,5 +44,28 @@ struct MTOULIVELINK_API FMtoUCachePlaybackView
                 || State == EMtoUCacheState::Completed || State == EMtoUCacheState::Failed);
     }
 
-    bool CanStop() const { return bConnected && State == EMtoUCacheState::Playing; }
+    bool CanStop() const
+    {
+        return bConnected
+            && (State == EMtoUCacheState::Playing || State == EMtoUCacheState::Paused);
+    }
+
+    bool CanPause() const
+    {
+        return bConnected && State == EMtoUCacheState::Playing;
+    }
+
+    bool CanResume() const
+    {
+        return bConnected && State == EMtoUCacheState::Paused;
+    }
+
+    /** Seeking and loop selection need a complete cache, not an attempt. */
+    bool CanSeek() const
+    {
+        return bConnected && FrameCount > 0
+            && (State == EMtoUCacheState::Ready || State == EMtoUCacheState::Playing
+                || State == EMtoUCacheState::Paused || State == EMtoUCacheState::Stopped
+                || State == EMtoUCacheState::Completed || State == EMtoUCacheState::Failed);
+    }
 };

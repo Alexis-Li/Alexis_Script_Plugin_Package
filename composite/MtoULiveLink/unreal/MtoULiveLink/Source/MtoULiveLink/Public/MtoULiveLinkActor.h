@@ -164,6 +164,14 @@ public:
     FMtoUCachePlaybackView GetCachePlaybackView() const;
     bool StartCachedPlayback();
     bool StopCachedPlayback();
+    /** Holds the current pose; an arbitrary wait never fails playback. */
+    bool PauseCachedPlayback();
+    /** Continues from the held position and rebuilds the timing baseline. */
+    bool ResumeCachedPlayback();
+    /** Displays one sampled Maya source frame and holds it paused. */
+    bool SeekCachedPlayback(int32 SourceFrame);
+    /** Loops the cache or completes the current round, without re-upload. */
+    bool SetCachedLoopEnabled(bool bEnabled);
 
     /**
      * Enabled Additional Part components in canonical part order. They are a

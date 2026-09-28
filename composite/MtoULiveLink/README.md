@@ -135,13 +135,23 @@ fixed when capture starts; capture does not change Maya's playback range.
 Single frames and negative start frames are supported.
 
 In the Unreal Binding Actor's **预览控制**, check the source range, rate, current
-applied source frame, and cache state. Click **播放** to start, **停止** to hold the
-last applied pose, and **再次播放** to play the retained cache from its start.
-Natural completion holds the final frame. To prepare a new range in Maya, click
-**捕获并上传** again; the old UE playback ends before sampling begins. Switch Maya
-back to **实时预览** to clear the UE cache and resume live poses. After a connection
-loss, reconnect and use **上传保留缓存** if a compatible complete local cache remains.
-Maya's status line shows capture, upload, Ready, playback, stop, and failure.
+applied source frame, and cache state. **播放** starts from the first frame, and
+**再次播放** replays a cache retained by a stop or a completed run. **暂停** holds
+the current pose and the cache for as long as you need, and **继续** carries on
+from that pose without replaying the paused time. **停止** ends the attempt and
+keeps both the cache and the held pose. To inspect one frame, type a Maya source
+frame beside **定位** and click it: Unreal displays that frame and holds it
+paused. Only frames this capture sampled are accepted; an unsampled frame is
+refused, and the row names the requested frame and the sampled range. **循环**
+wraps from the last frame back to the first and shows the current round; turning
+it off completes the current round. Locating and looping reuse the uploaded
+cache. Natural completion holds the final frame. To prepare a new range in Maya,
+click **捕获并上传** again; the old UE playback ends before sampling begins.
+Switch Maya back to **实时预览** to clear the UE cache and resume live poses.
+After a connection loss, reconnect and use **上传保留缓存** if a compatible
+complete local cache remains. Maya's status line shows capture, upload, Ready,
+playback, pause, seek, loop, stop, and failure; a run completed after a seek or
+a loop round is reported as a playback segment rather than a full replay.
 
 A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
 that limit. Invalid ranges fail before sampling. Sampling or upload failures

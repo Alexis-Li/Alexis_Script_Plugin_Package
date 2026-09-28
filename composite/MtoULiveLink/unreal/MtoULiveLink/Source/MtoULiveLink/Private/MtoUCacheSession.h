@@ -9,6 +9,13 @@
 // rate using an injectable monotonic clock: at most one pose per source-frame
 // position per update, and never a catch-up burst. It never touches packages
 // or disk.
+//
+// Local playback is organized in segments. A segment is one ordered run of
+// buffered frames with its own timing baseline: starting an attempt or
+// seeking opens one, resuming shifts its baseline past the paused interval
+// without replaying it, and a loop round continues the same schedule instead
+// of restarting it. Only a segment that covered the whole cache without a
+// seek or a wrap may claim the whole-cache completion scope.
 
 struct FMtoUCacheCommand
 {
@@ -22,6 +29,10 @@ struct FMtoUCacheCommand
         Play,
         Stop,
         Clear,
+        Pause,
+        Resume,
+        Seek,
+        SetLoop,
     };
 
     // Transport identity: commands from older streaming sessions are ignored.
@@ -30,6 +41,9 @@ struct FMtoUCacheCommand
     int32 Index = 0;
     int32 PlayId = 0;
     int32 ClearId = 0;
+    // Local-only seek target; INDEX_NONE when the command carries none.
+    int32 SeekSourceFrame = INDEX_NONE;
+    bool bLoopEnabled = false;
     // Owning upload identity stamped by the worker at intake so a rejected,
     // superseded, or cleared upload can drop all of its queued frame/end
     // commands together and can never affect a newer attempt.
@@ -58,8 +72,8 @@ struct FMtoUCacheTransition
 {
     enum class EKind : uint8
     {
-        None, Entered, Receiving, Ready, Playing, Stopped, Cleared, Completed,
-        Rejected, PerformanceFailed,
+        None, Entered, Receiving, Ready, Playing, Paused, Resumed, Seeked, Looped,
+        LoopChanged, Stopped, Cleared, Completed, Rejected, PerformanceFailed,
     };
 
     EKind Kind = EKind::None;
@@ -75,6 +89,18 @@ struct FMtoUCacheTransition
     int32 FrameCount = 0;
     int32 AppliedFramesThisTick = 0;
     double ElapsedSeconds = 0.0;
+    // Held or positioned source frame for pause, resume, seek, and loop.
+    int32 SourceFrame = INDEX_NONE;
+    // Frames applied in the segment the outcome belongs to.
+    int32 AppliedFrames = 0;
+    // Loop transitions only.
+    int32 LoopRound = 0;
+    bool bLoopEnabled = false;
+    // Completion evidence: a whole-cache scope is the only claim that this
+    // attempt replayed the complete cache once, in order.
+    bool bWholeCacheScope = false;
+    int32 StartFrame = 0;
+    int32 EndFrame = 0;
     FString ErrorCode;
     FString Details;
 };
@@ -89,7 +115,7 @@ public:
     // advances on acceptance.
     using FPublish = TFunction<bool(const FMtoUFrameMessage&)>;
 
-    // Bounded informational progress for the current play attempt.
+    // Bounded informational progress for the current play segment.
     using FProgress = TFunction<void(int32 PlayId, int32 AppliedFrames)>;
 
     FMtoUCacheSession();
@@ -107,16 +133,27 @@ public:
     EMtoUCacheState GetState() const { return State; }
     const FString& GetErrorDetails() const { return ErrorDetails; }
     int32 GetBufferedFrameCount() const { return Frames.Num(); }
-    int32 GetAppliedFrameCount() const { return AppliedCount; }
+    // Frames applied in the current segment; reset by a new segment.
+    int32 GetAppliedFrameCount() const { return ScheduleSlots - SegmentStartSlot; }
     int32 GetLastAppliedIndex() const { return LastAppliedIndex; }
     int32 GetActiveUploadId() const { return ActiveUploadId; }
     int32 GetActivePlayId() const { return ActivePlayId; }
+    int32 GetLoopRound() const { return LoopRound; }
+    bool IsLoopEnabled() const { return bLoopEnabled; }
     FMtoUCachePlaybackView GetView() const;
 
-    // The Editor actor starts and stops a complete cache on the Game Thread.
-    // These use the same transition and identity checks as protocol commands.
+    // The Editor actor starts, pauses, resumes, seeks, and loops a complete
+    // cache on the Game Thread. These use the same transition and identity
+    // checks as protocol commands.
     FMtoUCacheTransition StartLocalPlayback();
     FMtoUCacheTransition StopLocalPlayback();
+    FMtoUCacheTransition PauseLocalPlayback();
+    FMtoUCacheTransition ResumeLocalPlayback();
+    // Seeks to a sampled Maya source frame, applies it, and holds it paused.
+    // An out-of-range frame is refused with CACHE_SEEK_INVALID and never
+    // silently clamped.
+    FMtoUCacheTransition SeekLocalPlayback(int32 SourceFrame);
+    FMtoUCacheTransition SetLocalLoop(bool bEnabled);
 
     // Captures identities before destructive transitions; callers never need
     // to reconstruct an outcome from the command and post-transition getters.
@@ -127,6 +164,15 @@ public:
     FMtoUCacheTransition Tick();
 
 private:
+    enum class EStep : uint8
+    {
+        None,
+        Applied,
+        Wrapped,
+        Completed,
+        PerformanceFailed,
+    };
+
     // Drops any buffered cache and returns to Idle. Used by clear and
     // per-session teardown.
     void ResetToIdle();
@@ -136,7 +182,35 @@ private:
     bool HandleFrame(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandleEnd(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
     bool HandlePlay(const FMtoUCacheCommand& Command, FString& OutErrorCode, FString& OutDetails);
-    void ApplyNextPose();
+    bool HandlePause(FString& OutErrorCode, FString& OutDetails);
+    bool HandleResume(FString& OutErrorCode, FString& OutDetails);
+    bool HandleSeek(int32 SourceFrame, FString& OutErrorCode, FString& OutDetails);
+    FMtoUCacheTransition HandleLoopChange(bool bEnabled);
+
+    bool HasCache() const
+    {
+        return State == EMtoUCacheState::Ready
+            || State == EMtoUCacheState::Playing
+            || State == EMtoUCacheState::Paused
+            || State == EMtoUCacheState::Stopped
+            || State == EMtoUCacheState::Completed
+            || State == EMtoUCacheState::Failed;
+    }
+
+    // An attempt is active exactly while it can still advance: playing or held.
+    bool HasActiveAttempt() const
+    {
+        return State == EMtoUCacheState::Playing || State == EMtoUCacheState::Paused;
+    }
+
+    // A seek or loop round restarting the attempt's cache-relative evidence
+    // frees the whole-cache completion scope for the rest of the attempt.
+    void BeginAttempt(int32 PlayId);
+    void BeginSegment(int32 StartIndex, int32 FrameCount, int32 StartSlot);
+    int32 AppliedInSegment() const { return ScheduleSlots - SegmentStartSlot; }
+    int32 CurrentSourceFrame() const;
+    EStep ApplyNextPose();
+    EStep FinishSegment();
     void FailPerformance(const FString& Details);
     double FrameInterval() const;
 
@@ -156,9 +230,21 @@ private:
     int32 ActivePlayId = 0;
     int64 ActualPayloadBytes = 0;
     int32 NextFrame = 0;
-    int32 AppliedCount = 0;
+    // Frames the current segment will apply, from SegmentStartIndex.
+    int32 SegmentFrameCount = 0;
+    int32 SegmentStartIndex = 0;
+    // Schedule position: one slot per applied pose since ScheduleBaseline.
+    int32 ScheduleSlots = 0;
+    int32 SegmentStartSlot = 0;
+    double ScheduleBaseline = 0.0;
+    int32 LoopRound = 0;
     int32 LastAppliedIndex = INDEX_NONE;
-    double PlaybackStart = 0.0;
     double ElapsedSeconds = 0.0;
+    // Paused playback holds the pose and never lets the schedule run late.
+    double PausedAt = 0.0;
+    bool bLoopEnabled = false;
+    bool bSeekedInAttempt = false;
+    bool bWrappedInAttempt = false;
+    bool bPositionedBySeek = false;
     FString ErrorDetails;
 };

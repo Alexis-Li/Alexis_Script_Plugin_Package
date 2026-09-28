@@ -1010,12 +1010,13 @@ TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 UploadId, int32 NegotiatedRe
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCachePlaying(int32 UploadId, int32 PlayId)
+TArray<uint8> FMtoUProtocol::EncodeCachePlaying(int32 UploadId, int32 PlayId, bool bLoopEnabled)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_playing"));
     Object->SetNumberField(TEXT("upload_id"), UploadId);
     Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetBoolField(TEXT("loop"), bLoopEnabled);
     return EncodeObject(Object);
 }
 
@@ -1028,14 +1029,81 @@ TArray<uint8> FMtoUProtocol::EncodeCacheProgress(int32 PlayId, int32 AppliedFram
     return EncodeObject(Object);
 }
 
+TArray<uint8> FMtoUProtocol::EncodeCachePaused(
+    int32 PlayId, int32 AppliedFrames, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_paused"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    if (SourceFrame != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    }
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheResumed(
+    int32 PlayId, int32 AppliedFrames, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_resumed"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    if (SourceFrame != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    }
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheSeeked(
+    int32 PlayId, int32 SourceFrame, int32 AppliedFrames)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_seeked"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheLooped(int32 PlayId, int32 Round, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_looped"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("round"), Round);
+    Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheLoopChanged(int32 PlayId, bool bLoopEnabled)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_loop_changed"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetBoolField(TEXT("loop"), bLoopEnabled);
+    return EncodeObject(Object);
+}
+
 TArray<uint8> FMtoUProtocol::EncodeCacheComplete(
-    int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds)
+    int32 PlayId,
+    int32 AppliedFrameCount,
+    double ElapsedSeconds,
+    bool bWholeCacheScope,
+    int32 StartFrame,
+    int32 EndFrame)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_complete"));
     Object->SetNumberField(TEXT("play_id"), PlayId);
     Object->SetNumberField(TEXT("applied_frame_count"), AppliedFrameCount);
     Object->SetNumberField(TEXT("elapsed_seconds"), ElapsedSeconds);
+    Object->SetStringField(
+        TEXT("scope"), bWholeCacheScope ? TEXT("cache") : TEXT("segment"));
+    Object->SetNumberField(TEXT("start_frame"), StartFrame);
+    Object->SetNumberField(TEXT("end_frame"), EndFrame);
     return EncodeObject(Object);
 }
 

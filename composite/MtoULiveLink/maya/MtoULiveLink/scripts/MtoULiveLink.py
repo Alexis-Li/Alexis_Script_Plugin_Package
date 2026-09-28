@@ -15,8 +15,8 @@ import threading
 import time
 import uuid
 
-__version__ = "0.8.0"
-PROTOCOL_VERSION = 8
+__version__ = "0.9.0"
+PROTOCOL_VERSION = 9
 WORKFLOW_ANIMATION = "animation"
 WORKFLOW_MODEL = "model"
 WORKFLOWS = (WORKFLOW_ANIMATION, WORKFLOW_MODEL)
@@ -553,6 +553,16 @@ def _exact_int(value):
     return value
 
 
+def _exact_bool(value):
+    """Return value when it is a JSON boolean, else None.
+
+    ``bool`` is the only accepted type: JSON ``1``/``0`` are numbers, and
+    ``isinstance(1, int)`` style leniency must never turn a count into a
+    selection.
+    """
+    return value if isinstance(value, bool) else None
+
+
 def _finite_float(value):
     """Return value as float when it is a non-bool finite JSON number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -581,16 +591,40 @@ def validate_reply(reply):
             "revision": (int, float),
             "frame_count": (int, float),
         },
-        "cache_playing": {"upload_id": (int, float), "play_id": (int, float)},
+        "cache_playing": {
+            "upload_id": (int, float), "play_id": (int, float), "loop": bool},
         "cache_progress": {"play_id": (int, float), "applied": (int, float)},
         "cache_complete": {
             "play_id": (int, float),
             "applied_frame_count": (int, float),
             "elapsed_seconds": (int, float),
+            "scope": str,
+            "start_frame": (int, float),
+            "end_frame": (int, float),
         },
+        "cache_paused": {"play_id": (int, float), "applied_frames": (int, float)},
+        "cache_resumed": {"play_id": (int, float), "applied_frames": (int, float)},
+        "cache_seeked": {
+            "play_id": (int, float),
+            "source_frame": (int, float),
+            "applied_frames": (int, float),
+        },
+        "cache_looped": {
+            "play_id": (int, float),
+            "round": (int, float),
+            "source_frame": (int, float),
+        },
+        "cache_loop_changed": {"play_id": (int, float), "loop": bool},
         "cache_stopped": {"play_id": (int, float)},
         "cache_cleared": {
             "upload_id": (int, float), "play_id": (int, float), "clear_id": int},
+    }
+    # ``source_frame`` is present only once the attempt has applied a pose; a
+    # pause or resume before the first frame omits it instead of inventing a
+    # frame the character never showed.
+    optional = {
+        "cache_paused": ("source_frame",),
+        "cache_resumed": ("source_frame",),
     }
     fields = required.get(reply_type)
     if fields is None:
@@ -603,15 +637,22 @@ def validate_reply(reply):
             raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
         if expected_type is list and any(not isinstance(value, str) for value in reply[name]):
             raise ValueError("protocol reply field '{0}' must contain strings".format(name))
+    for name in optional.get(reply_type, ()):
+        if name in reply and not isinstance(reply[name], (int, float)):
+            raise ValueError("protocol reply field '{0}' has the wrong JSON type".format(name))
     for name in ("revision", "target_morph_count", "accepted_morph_count",
                  "upload_id", "play_id", "clear_id", "applied",
-                 "applied_frame_count"):
+                 "applied_frame_count", "applied_frames", "round",
+                 "start_frame", "end_frame"):
         if name not in reply:
             continue
         value = reply[name]
         if isinstance(value, bool) or not float(value).is_integer():
             raise ValueError(
                 "protocol reply field '{0}' must be an integer count".format(name))
+    if "scope" in reply and reply["scope"] not in ("cache", "segment"):
+        raise ValueError(
+            "protocol reply field 'scope' must be 'cache' or 'segment'")
     if "clear_id" in reply and not 1 <= reply["clear_id"] <= 2147483647:
         raise ValueError("protocol reply field 'clear_id' must be a positive int32")
     if "elapsed_seconds" in reply and _finite_float(reply["elapsed_seconds"]) is None:
@@ -1915,11 +1956,14 @@ class _CachedPlaybackView(object):
     __slots__ = (
         "_state", "_current", "_total", "_cache_summary", "_diagnostic",
         "_can_capture", "_can_upload", "_can_cancel", "_can_leave",
+        "_source_frame", "_loop_enabled", "_loop_round",
+        "_segment_start", "_segment_end",
     )
 
     def __init__(self, state, current=0, total=0, cache_summary=None, diagnostic=None,
                  can_capture=False, can_upload=False, can_cancel=False,
-                 can_leave=False):
+                 can_leave=False, source_frame=None, loop_enabled=False,
+                 loop_round=0, segment_start=None, segment_end=None):
         self._state = state
         self._current = int(current or 0)
         self._total = int(total or 0)
@@ -1929,6 +1973,11 @@ class _CachedPlaybackView(object):
         self._can_upload = bool(can_upload)
         self._can_cancel = bool(can_cancel)
         self._can_leave = bool(can_leave)
+        self._source_frame = None if source_frame is None else int(source_frame)
+        self._loop_enabled = bool(loop_enabled)
+        self._loop_round = int(loop_round or 0)
+        self._segment_start = None if segment_start is None else int(segment_start)
+        self._segment_end = None if segment_end is None else int(segment_end)
 
     def __setattr__(self, name, value):
         if hasattr(self, name):
@@ -1945,12 +1994,23 @@ class _CachedPlaybackView(object):
     can_upload = property(lambda self: self._can_upload)
     can_cancel = property(lambda self: self._can_cancel)
     can_leave = property(lambda self: self._can_leave)
+    # Source frame the current attempt is positioned on (pause/seek), None
+    # while Unreal has not applied a pose in this attempt.
+    source_frame = property(lambda self: self._source_frame)
+    loop_enabled = property(lambda self: self._loop_enabled)
+    loop_round = property(lambda self: self._loop_round)
+    # Bounds of the last completed playback segment; both are None while the
+    # whole cache still plays as one unbroken segment.
+    segment_start = property(lambda self: self._segment_start)
+    segment_end = property(lambda self: self._segment_end)
 
     def _values(self):
         diagnostic = tuple(sorted((self._diagnostic or {}).items()))
         return (self._state, self._current, self._total, self._cache_summary,
                 diagnostic, self._can_capture, self._can_upload,
-                self._can_cancel, self._can_leave)
+                self._can_cancel, self._can_leave, self._source_frame,
+                self._loop_enabled, self._loop_round, self._segment_start,
+                self._segment_end)
 
     def __eq__(self, other):
         return isinstance(other, _CachedPlaybackView) and self._values() == other._values()
@@ -2262,6 +2322,8 @@ class _CachedPlayback(object):
     UPLOADING = "UPLOADING"
     READY = "READY"
     REPLAYING = "REPLAYING"
+    PAUSED = "PAUSED"
+    SEEKED = "SEEKED"
     STOPPING = "STOPPING"
     COMPLETED = "COMPLETED"
     STOPPED = "STOPPED"
@@ -2303,6 +2365,11 @@ class _CachedPlayback(object):
         self._poller_timer_id = None
         self._uploaded_revision = None
         self._applied_frames = None
+        self._source_frame = None
+        self._loop_enabled = False
+        self._loop_round = 0
+        self._segment_start = None
+        self._segment_end = None
         self._upload_id = 0
         self._play_id = 0
         self._clear_id = 0
@@ -2330,6 +2397,10 @@ class _CachedPlayback(object):
             return self.READY
         if self._phase == "replaying":
             return self.REPLAYING
+        if self._phase == "paused":
+            return self.PAUSED
+        if self._phase == "seeked":
+            return self.SEEKED
         if self._phase == "stopping":
             return self.STOPPING
         if self._phase == "completed":
@@ -2343,6 +2414,19 @@ class _CachedPlayback(object):
             # remains cached renders as FAILED.
             return self.FAILED if self._paused_streaming else self.REALTIME
         return self.CACHED_IDLE if self._paused_streaming else self.REALTIME
+
+    def _reset_attempt_state(self):
+        """Drop the interactive state of a playback attempt Maya no longer owns.
+
+        Pause/seek positions, the loop selection and the round counter all
+        describe one attempt of one cache; a fresh capture, a clear, or a new
+        attempt never inherits them.
+        """
+        self._source_frame = None
+        self._loop_enabled = False
+        self._loop_round = 0
+        self._segment_start = None
+        self._segment_end = None
 
     def _cache_summary(self):
         if self._cache is not None and self._cache.completed:
@@ -2367,6 +2451,11 @@ class _CachedPlayback(object):
                         and state not in (self.CAPTURING, self.UPLOADING)),
             can_cancel=state == self.CAPTURING,
             can_leave=entered and state not in (self.CAPTURING, self.DETACHED),
+            source_frame=self._source_frame,
+            loop_enabled=self._loop_enabled,
+            loop_round=self._loop_round,
+            segment_start=self._segment_start,
+            segment_end=self._segment_end,
         )
 
     @property
@@ -2472,6 +2561,8 @@ class _CachedPlayback(object):
         # resume streaming so live frames follow the clear in order.
         self._teardown_cached_runtime(send_clear=True, resume_streaming=True)
         self._uploaded_revision = None
+        self._applied_frames = None
+        self._reset_attempt_state()
         self._phase = "idle"
         self._publish(current=0, total=0)
 
@@ -2588,6 +2679,8 @@ class _CachedPlayback(object):
             self._cache.delete()
             self._cache = None
         self._uploaded_revision = None
+        self._applied_frames = None
+        self._reset_attempt_state()
         original_frame = self._timeline.current_frame()
         self._capture_original_frame = original_frame
         if self._timeline.is_playing():
@@ -2844,8 +2937,105 @@ class _CachedPlayback(object):
                 self._play_id = play_id
                 self._active_play_id = play_id
                 self._applied_frames = None
+                # Every attempt starts as one whole-cache segment: no pose was
+                # displayed yet, and the round counter owns the loop display.
+                self._reset_attempt_state()
+                self._loop_enabled = bool(_exact_bool(reply.get("loop")))
                 self._phase = "replaying"
                 self._publish(current=0, total=self._cache.frame_count)
+            return
+        if reply_type == "cache_paused":
+            play_id = _exact_int(reply.get("play_id"))
+            applied = _exact_int(reply.get("applied_frames"))
+            cache = self._cache
+            if (cache is not None
+                    and self._uploaded_revision == cache.snapshot_revision
+                    and self._phase == "replaying"
+                    and play_id == self._active_play_id
+                    and applied is not None):
+                # Unreal holds the pose: the applied count of the current
+                # segment and the frame the character is frozen on are the
+                # only evidence a pause carries.
+                self._applied_frames = applied
+                self._source_frame = _exact_int(reply.get("source_frame"))
+                self._phase = "paused"
+                self._publish(current=applied, total=cache.frame_count)
+            return
+        if reply_type == "cache_resumed":
+            play_id = _exact_int(reply.get("play_id"))
+            applied = _exact_int(reply.get("applied_frames"))
+            cache = self._cache
+            if (cache is not None
+                    and self._uploaded_revision == cache.snapshot_revision
+                    and self._phase in ("paused", "seeked")
+                    and play_id == self._active_play_id
+                    and applied is not None):
+                # Resuming rebuilds Unreal's timing baseline from the held
+                # position: no frame of the stopped interval is replayed.
+                self._applied_frames = applied
+                self._source_frame = _exact_int(reply.get("source_frame"))
+                self._phase = "replaying"
+                self._publish(current=applied, total=cache.frame_count)
+            return
+        if reply_type == "cache_seeked":
+            play_id = _exact_int(reply.get("play_id"))
+            source_frame = _exact_int(reply.get("source_frame"))
+            applied = _exact_int(reply.get("applied_frames"))
+            cache = self._cache
+            if cache is None or self._uploaded_revision != cache.snapshot_revision:
+                return
+            start_frame, end_frame = cache.capture_range
+            if source_frame is None or not start_frame <= source_frame <= end_frame:
+                # Out-of-range seek evidence is rejected outright, never
+                # clamped onto a neighbouring captured frame the user did not
+                # ask for.
+                return
+            if self._phase in ("ready_to_play", "stopped", "completed",
+                               "playback_failed"):
+                # Positioning outside an attempt opens one, exactly like a
+                # fresh play, so every later outcome carries an identity.
+                if play_id is None or play_id <= self._play_id:
+                    return
+                self._play_id = play_id
+                self._active_play_id = play_id
+            elif self._phase in ("replaying", "paused", "seeked"):
+                if play_id != self._active_play_id:
+                    return
+            else:
+                return
+            if applied is None:
+                return
+            self._applied_frames = applied
+            self._source_frame = source_frame
+            self._phase = "seeked"
+            self._publish(current=applied, total=cache.frame_count)
+            return
+        if reply_type == "cache_looped":
+            play_id = _exact_int(reply.get("play_id"))
+            round_number = _exact_int(reply.get("round"))
+            cache = self._cache
+            if (cache is not None
+                    and self._uploaded_revision == cache.snapshot_revision
+                    and self._phase == "replaying"
+                    and play_id == self._active_play_id
+                    and round_number is not None
+                    and round_number > self._loop_round):
+                # The round counter only ever grows within one attempt, and the
+                # new round starts before its first pose is applied.
+                self._loop_round = round_number
+                self._publish(current=0, total=cache.frame_count)
+            return
+        if reply_type == "cache_loop_changed":
+            play_id = _exact_int(reply.get("play_id"))
+            loop = _exact_bool(reply.get("loop"))
+            cache = self._cache
+            if (cache is not None
+                    and self._uploaded_revision == cache.snapshot_revision
+                    and self._phase in ("replaying", "paused", "seeked")
+                    and play_id == self._active_play_id
+                    and loop is not None):
+                self._loop_enabled = loop
+                self._publish()
             return
         if reply_type == "error":
             play_id = _exact_int(reply.get("play_id"))
@@ -2876,27 +3066,57 @@ class _CachedPlayback(object):
             play_id = _exact_int(reply.get("play_id"))
             if self._phase != "replaying" or play_id != self._active_play_id:
                 return
-            total_frames = self._cache.frame_count if self._cache else None
+            cache = self._cache
+            total_frames = cache.frame_count if cache is not None else None
             applied = _exact_int(reply.get("applied_frame_count"))
             elapsed = _finite_float(reply.get("elapsed_seconds"))
-            if (total_frames is None or applied != total_frames
-                    or elapsed is None or elapsed < 0.0
-                    or (total_frames > 1 and elapsed == 0.0)):
+            scope = reply.get("scope")
+            start_frame = _exact_int(reply.get("start_frame"))
+            end_frame = _exact_int(reply.get("end_frame"))
+            segment = None
+            if scope == "cache":
+                # Only an unbroken whole-cache play may claim the old
+                # one-attempt semantics: every cached frame applied once.
+                consistent = (total_frames is not None and applied == total_frames)
+            elif scope == "segment":
+                # A seek or a finished loop round ends a segment: the segment's
+                # own frame count must equal the range it reports, and that
+                # range must address captured frames.
+                consistent = (cache is not None
+                              and start_frame is not None
+                              and end_frame is not None
+                              and applied is not None
+                              and applied == end_frame - start_frame + 1)
+                if consistent:
+                    cache_start, cache_end = cache.capture_range
+                    consistent = (cache_start <= start_frame <= end_frame
+                                  <= cache_end)
+                if consistent:
+                    segment = (start_frame, end_frame)
+            else:
+                consistent = False
+            if (not consistent or elapsed is None or elapsed < 0.0
+                    or (applied is not None and applied > 1 and elapsed == 0.0)):
                 self._phase = "failed"
                 self._publish(diagnostic=make_diagnostic(
                     "INTERNAL_ERROR",
                     "Unreal reported inconsistent playback evidence.",
-                    details="completion applied_frame_count={0}"
-                            " elapsed_seconds={1}, expected {2} applied"
-                            " frames".format(applied, elapsed, total_frames)))
+                    details="completion scope={0} applied_frame_count={1}"
+                            " elapsed_seconds={2} start_frame={3} end_frame={4},"
+                            " cached frames {5}".format(
+                                scope, applied, elapsed, start_frame, end_frame,
+                                total_frames)))
                 return
             self._applied_frames = applied
+            self._segment_start, self._segment_end = (
+                segment if segment is not None else (None, None))
             self._phase = "completed"
             self._publish(current=applied, total=total_frames)
             return
         if reply_type == "cache_stopped":
             play_id = _exact_int(reply.get("play_id"))
-            if self._phase in ("replaying", "stopping") and play_id == self._active_play_id:
+            if (self._phase in ("replaying", "paused", "seeked", "stopping")
+                    and play_id == self._active_play_id):
                 # Success is reported only once Unreal acknowledges this
                 # exact attempt; a late ack for an older attempt is dropped.
                 # The poller keeps running so completed and stopped states
@@ -4689,11 +4909,33 @@ class _Controller(object):
             self._set_connected(
                 True, "缓存回放中：Unreal 按捕获帧率本地播放 {0}/{1}".format(
                     view.current, view.total))
+        elif view.state == _CachedPlayback.REPLAYING and view.loop_round > 0 \
+                and view.current > 0:
+            self._set_text(
+                self._status_text,
+                "缓存循环播放（第 {0} 轮） {1}/{2}".format(
+                    view.loop_round, view.current, view.total))
         elif view.state == _CachedPlayback.REPLAYING:
             self._set_text(
                 self._status_text,
                 "缓存播放（仅显示已捕获缓存） {0}/{1}".format(
                     view.current, view.total))
+        elif view.state == _CachedPlayback.PAUSED and view.source_frame is not None:
+            self._set_connected(
+                True, "缓存已暂停于源帧 {0}（已应用 {1}/{2} 帧）".format(
+                    view.source_frame, view.current, view.total))
+        elif view.state == _CachedPlayback.PAUSED:
+            self._set_connected(
+                True, "缓存已暂停（已应用 {0}/{1} 帧）".format(
+                    view.current, view.total))
+        elif view.state == _CachedPlayback.SEEKED:
+            self._set_connected(
+                True, "已定位到源帧 {0}，缓存已暂停".format(view.source_frame))
+        elif (view.state == _CachedPlayback.COMPLETED
+              and view.segment_start is not None):
+            self._set_connected(
+                True, "播放段完成（源帧 {0}–{1}），已停在最后一帧".format(
+                    view.segment_start, view.segment_end))
         elif view.state == _CachedPlayback.COMPLETED:
             self._set_connected(True, "缓存播放完成，已停在最后一帧")
         elif view.state == _CachedPlayback.STOPPED:

@@ -11,7 +11,7 @@ target compatibility and display semantics, so it is a protocol contract rather
 than optional diagnostic metadata. Model requires the current Preview revision
 to be ready; Animation does not. Both components must come from the same release.
 The active protocol version, message fields, and rejection cases are maintained
-in the [protocol corpus](../../protocol/conformance-v8.json), not duplicated here.
+in the [protocol corpus](../../protocol/conformance-v9.json), not duplicated here.
 Morph acceptance is defined by [ADR 0011](0011-activate-only-current-outfit-morphs.md).
 
 The current product supports one streaming session and one `MtoU_Character`

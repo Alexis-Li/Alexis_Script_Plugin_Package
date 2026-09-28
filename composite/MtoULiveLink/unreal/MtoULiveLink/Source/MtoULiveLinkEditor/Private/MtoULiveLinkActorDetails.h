@@ -13,6 +13,12 @@ public:
     /** Cache summary shown in Details, also used to verify source-frame display. */
     static FText FormatCacheSummary(const FMtoUCachePlaybackView& View);
 
+    /**
+     * Cache state headline shown in Details, also used to verify that pause,
+     * seek, loop, stop, and completion stay distinguishable.
+     */
+    static FText FormatCacheState(const FMtoUCachePlaybackView& View);
+
     virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
     /** How urgent the combined Preview and connection state is. */

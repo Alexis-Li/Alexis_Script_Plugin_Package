@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "protocol_version": 8,
+  "protocol_version": 9,
   "cases": [
     {
       "id": "framing-partial-packet",
@@ -107,7 +107,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -163,7 +163,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": false,
@@ -203,7 +203,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": true,
@@ -241,7 +241,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -468,7 +468,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "blendshapes_enabled": true,
         "bones": [
@@ -508,7 +508,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": 7,
         "blendshapes_enabled": true,
@@ -549,7 +549,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "preview",
         "blendshapes_enabled": true,
@@ -590,7 +590,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "model",
         "bones": [
@@ -630,7 +630,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": "true",
@@ -671,7 +671,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -711,7 +711,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 8,
+        "version": 9,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -2269,8 +2269,106 @@
       "id": "cache-playing-basic",
       "operation": "cache_playing",
       "applies_to": ["maya", "unreal"],
-      "payload": {"type": "cache_playing", "upload_id": 1, "play_id": 3},
+      "payload": {"type": "cache_playing", "upload_id": 1, "play_id": 3, "loop": false},
       "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-playing-loop-enabled",
+      "operation": "cache_playing",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_playing", "upload_id": 2, "play_id": 4, "loop": true},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-playing-missing-loop",
+      "operation": "cache_playing",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_playing", "upload_id": 1, "play_id": 3},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["loop"]}
+    },
+    {
+      "id": "cache-paused-basic",
+      "operation": "cache_paused",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_paused", "play_id": 3, "applied_frames": 2, "source_frame": 1002},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-paused-before-first-frame",
+      "operation": "cache_paused",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_paused", "play_id": 3, "applied_frames": 0},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-paused-missing-applied-frames",
+      "operation": "cache_paused",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_paused", "play_id": 3, "source_frame": 1002},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["applied_frames"]}
+    },
+    {
+      "id": "cache-paused-source-frame-wrong-type",
+      "operation": "cache_paused",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_paused", "play_id": 3, "applied_frames": 2, "source_frame": "1002"},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["source_frame"]}
+    },
+    {
+      "id": "cache-resumed-basic",
+      "operation": "cache_resumed",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_resumed", "play_id": 3, "applied_frames": 2, "source_frame": 1002},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-resumed-missing-play-id",
+      "operation": "cache_resumed",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_resumed", "applied_frames": 2},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["play_id"]}
+    },
+    {
+      "id": "cache-seeked-basic",
+      "operation": "cache_seeked",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_seeked", "play_id": 3, "source_frame": 1002, "applied_frames": 1},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-seeked-missing-source-frame",
+      "operation": "cache_seeked",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_seeked", "play_id": 3, "applied_frames": 1},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["source_frame"]}
+    },
+    {
+      "id": "cache-looped-basic",
+      "operation": "cache_looped",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_looped", "play_id": 3, "round": 1, "source_frame": 1000},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-looped-missing-round",
+      "operation": "cache_looped",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_looped", "play_id": 3, "source_frame": 1000},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["round"]}
+    },
+    {
+      "id": "cache-loop-changed-basic",
+      "operation": "cache_loop_changed",
+      "applies_to": ["maya", "unreal"],
+      "payload": {"type": "cache_loop_changed", "play_id": 3, "loop": true},
+      "expected": {"accepted": true, "close": false}
+    },
+    {
+      "id": "cache-loop-changed-loop-wrong-type",
+      "operation": "cache_loop_changed",
+      "applies_to": ["maya"],
+      "payload": {"type": "cache_loop_changed", "play_id": 3, "loop": 1},
+      "expected": {"accepted": false, "error_code": "INVALID_MESSAGE", "close": true, "keywords": ["loop"]}
     },
     {
       "id": "cache-playing-missing-upload-id",
@@ -2396,11 +2494,81 @@
         "type": "cache_complete",
         "play_id": 1,
         "applied_frame_count": 321,
-        "elapsed_seconds": 10.67
+        "elapsed_seconds": 10.67,
+        "scope": "cache",
+        "start_frame": 1000,
+        "end_frame": 1320
       },
       "expected": {
         "accepted": true,
         "close": false
+      }
+    },
+    {
+      "id": "cache-complete-segment-scope",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 4,
+        "applied_frame_count": 12,
+        "elapsed_seconds": 0.4,
+        "scope": "segment",
+        "start_frame": 1010,
+        "end_frame": 1021
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-complete-unknown-scope",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": 321,
+        "elapsed_seconds": 10.67,
+        "scope": "attempt",
+        "start_frame": 1000,
+        "end_frame": 1320
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "scope"
+        ]
+      }
+    },
+    {
+      "id": "cache-complete-missing-segment-range",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": 321,
+        "elapsed_seconds": 10.67,
+        "scope": "cache"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "start_frame"
+        ]
       }
     },
     {

@@ -64,7 +64,7 @@ class RepositoryToolTests(unittest.TestCase):
         }
         self.assertEqual(
             [
-                "protocol_version must equal 8",
+                "protocol_version must equal 9",
                 "case 1 id is duplicated: duplicate",
                 "case 1 operation is unsupported",
                 "case 1 applies_to must contain maya and/or unreal",
@@ -149,9 +149,9 @@ class RepositoryToolTests(unittest.TestCase):
         unreal_result = package_unreal_plugin.package(
             "MtoULiveLink", "5.7", ROOT / "releases", apply=False
         )
-        self.assertEqual("releases/MtoULiveLink-0.8.0.zip", maya_result["archive"])
+        self.assertEqual("releases/MtoULiveLink-0.9.0.zip", maya_result["archive"])
         self.assertEqual(
-            "releases/MtoULiveLink-0.8.0-UE5.7.zip",
+            "releases/MtoULiveLink-0.9.0-UE5.7.zip",
             unreal_result["archive"],
         )
         self.assertGreater(maya_result["file_count"], 0)
