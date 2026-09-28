@@ -99,6 +99,11 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - Start with the owning project's relevant checks and scope generic linters to
   its files. Test changed composite components independently; include cross-host
   acceptance when shared behavior or contracts are affected.
+- During iterative development, rerun failed tests or the smallest affected test
+  selection after a change, resuming from the failure when the runner supports it.
+  Do not restart the full suite after every edit. Run required broader checks
+  when the implementation stabilizes, and repeat them only if later changes could
+  invalidate their results.
 - Run repository gates for tooling, templates, shared rules/workflows, root
   metadata, or layout changes:
 
