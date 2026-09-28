@@ -1,10 +1,10 @@
 # Issue #51: original garment and Generated Preview comparison
 
-Date: 2026-09-28. Source development is complete on
-`codex/mtou-preview-workflow`. Independent review found no confirmed blocking
-functional defect; its editor-tick and evaluated-Morph coverage gap is closed by
-the natural-tick regression recorded below. Production-character visual
-acceptance in the target project remains pending. Issue #51 remains open.
+Date: 2026-09-28. Accepted at `867f2994b5b22febe2afd9e712e303453c6cdeb7`
+on `codex/mtou-preview-workflow`. Independent natural-tick verification and
+production C01 character acceptance passed, including rendered BaseColor
+comparison. No blocking defect remains for Issue #51. The user authorized
+scripted acceptance and screenshots in place of unnecessary desktop automation.
 
 ## Current contract
 
@@ -23,8 +23,9 @@ existing inspection and invalidation behavior.
 The Model negotiation already accepts the selected Maya outfit's Morph names
 from the union of Generated Preview, Primary Driver, and enabled Additional
 Parts. A Driver-only Morph remains accepted and active during comparison, so
-no protocol change was needed. Both host components identify as 0.8.0; the
-wire protocol remains v8.
+no comparison-specific protocol change was needed. The feature was introduced
+with components 0.8.0 and protocol v8; the final acceptance baseline includes
+Issue #50 and uses components 0.9.0 and protocol v9.
 
 ## Development verification
 
@@ -126,14 +127,63 @@ The focused run and the full suite were both executed; the suite is what proves
 the regression is order-independent, since the earlier single-test run could not
 expose the pending editor world described above.
 
-## Remaining acceptance
+## Final independent acceptance
 
-This computer has no company character or UE project assets. In the target
-editor, use one real full-character or split-part Binding with nonzero Morphs:
-connect the Maya Model workflow, pose and repeatedly switch the Details control,
-inspect garment exclusivity, body and part visibility, and matching pose under
-the same camera and lighting. Then modify an input, refresh or fail a refresh,
-delete the Preview, and confirm comparison becomes unavailable without showing
-stale generated geometry. Capture the required BaseColor viewport evidence for
-the visual check. Keep Issue #51 open until that production-scene acceptance is
-recorded.
+Maya 2024 and UE 5.7.4 (CL 51494982) loaded the supplied C01 scene and
+Backups project assets through a disposable host. The installed project plugin
+was not the review baseline, so the host used a separate copy of current source.
+Only the temporary CharacterAcceptance harness was extended; product source,
+Maya scene, Binding and character assets were not edited or saved.
+
+The transient Binding used `SK_C01_CombineBody_Clothes_05`,
+`SM_C01_Clothes_05`, and enabled Head and Hair parts. Automatic source selection
+correctly rejected overlapping nail/shoe regions. The documented manual-slot
+path resolved this asset configuration using imported slots
+`M_C01_Clothes_16`, `M_C01_Clothes_05`, and `M_C01_Clothes05_Shoes`.
+Refresh reached Ready with complete matched Preview coverage.
+
+- Actual Maya Model transport drove three poses, with a Generated/Original
+  pair captured for each pose and five consecutive Details-handler switches.
+  Each switch retained the same Maya session object, Generated mesh pointer,
+  readiness and Actor transform. It did not rebuild or reconnect.
+- All material slots were checked: Generated and original garment slots were
+  mutually exclusive, and body, nails and enabled parts remained visible.
+- The real garment Morph
+  `SM_C01_Clothes_05_Jacket__Shoulder_R_RotY_plus_0_35` evaluated to 0.35 on
+  both Generated and original Driver at all six observations. Checks read
+  `ActiveMorphTargets` / `MorphTargetWeights`, not only the assigned value.
+- Final display transforms were checked against 811 required published bones
+  across all owning components, including the original follower and parts.
+  Maximum displayed position error was 0.000022981 cm (tolerance 0.1 cm).
+  Follower transforms were read with the engine's bone-transform API because
+  followers share their leader's pose rather than owning an evaluated array.
+- Six 1392 x 837 BaseColor screenshots were inspected. Each pair retained the
+  same camera and scene; head, hair, body and clothing remained composed.
+  The images show the original and generated surfaces under the same pose.
+- An input change during Original display released the cached Preview and
+  disabled comparison. A failed refresh did not restore stale geometry.
+  Restoring the input and explicitly refreshing rebuilt a usable Preview;
+  deletion during Original display then cleared comparison and Generated data.
+
+Independent checks in this acceptance run:
+
+| Check | Result |
+| --- | --- |
+| Current Runtime/Editor source plus disposable acceptance harness, Development Editor build | Passed |
+| Unmodified `ComparisonNaturalTick`, NullRHI | 1/1 passed, no errors or warnings; Generated/Driver-only/part-only evaluated Morphs and four naturally observed poses |
+| Unmodified `Actor.PreviewInputRestore`, `Editor.Preview.CharacterParts`, `Editor.Preview.RefreshEndsSession`, `Preview.Readiness`, `Preview.ReadinessGuards`, `Workflow.Negotiation` | 6/6 passed; Readiness has the existing synthetic-world warnings |
+| Production CharacterAcceptance, D3D12 rendering and real Maya peer | 1/1 passed, no errors; 167 warnings all concern existing assets saved with an empty engine version |
+
+The Maya standalone peer runs production scene capture, controller and socket
+code, pumping Maya callbacks on its main thread. UE display evaluation runs
+through the editor loop. The harness invokes the same comparison handler as
+Details; it does not claim physical Slate clicks. The natural-tick regression
+separately proves updates without explicit display-tick calls, including
+Driver-only and part-only Morphs. No full 84-test suite, Python suite or package
+gates were rerun in this final phase: the changes being accepted add UE test
+coverage, and no product source was changed here.
+
+Reproduction harness, fixture, logs, report JSON and screenshots are retained
+outside the repository in `../.tmp/issue51-acceptance/`; the accepted rendered
+run is `final/`, `final-report/`, and `final.log`. No new branch, commit, PR or
+push was created. Existing unrelated working-tree changes were preserved.
