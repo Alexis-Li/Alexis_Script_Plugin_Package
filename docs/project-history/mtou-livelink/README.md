@@ -271,6 +271,24 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   lists, and the pending product decisions. No product code, protocol, or
   package changed, and Issue #52 remains open pending those decisions.
 
+- **2026-09-28:** Verified Issue #53 with a bounded two-host scene-reference
+  prototype. Unreal resolves an explicit level scope (the loaded level plus the
+  sublevels the caller names), exports it through its own FBX level exporter and
+  writes a manifest of the world data it evaluated; Maya imports that file into
+  one container namespace, puts the geometry on a single gray material and
+  compares position, bounding-box size, pivot offset and surface centroid
+  against the manifest. Ten objects, including instanced, off-origin, rotated,
+  non-uniformly scaled and Blueprint-component samples, matched with a position
+  error of `0.0 cm`, a size error of `4.5e-13 cm` and an axis-fit residual of
+  `9.2e-13 cm`, so no geometry is mirrored. The handoff writes one file with no
+  image files and no texture records, and a texture-driven material makes the
+  exporter write a record that the Maya side refuses. The measured axis
+  convention is `(x, z, y)` by default and `(-y, z, x)` with the forced front
+  axis, neither of which is the camera route's `(y, z, -x)`, so the two routes
+  need one explicit conversion. The [acceptance record](issue-53-scene-reference-acceptance.md)
+  owns the evidence, the support list and the pending decisions. No product
+  code, protocol, or package changed, and Issue #53 remains open.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
@@ -292,6 +310,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Issue #50 interactive playback acceptance](issue-50-interactive-playback-acceptance.md)
 - [Issue #51 garment comparison development acceptance](issue-51-garment-comparison-acceptance.md)
 - [Issue #52 Unreal to Maya camera verification](issue-52-camera-sync-acceptance.md)
+- [Issue #53 scene reference verification](issue-53-scene-reference-acceptance.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project

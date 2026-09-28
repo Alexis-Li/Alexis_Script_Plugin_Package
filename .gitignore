@@ -57,3 +57,6 @@ unreal/Packaged/
 unreal/Releases/
 *.zip
 *.7z
+
+# Generated verification fixtures (rebuilt by the owning prototype's tests)
+unreal/Content/MtoUSceneRefFixture/
