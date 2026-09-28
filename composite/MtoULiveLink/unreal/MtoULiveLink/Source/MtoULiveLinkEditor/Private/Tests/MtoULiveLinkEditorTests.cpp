@@ -8,7 +8,9 @@
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
 
+#include "Animation/AnimCurveMetadata.h"
 #include "Animation/MorphTarget.h"
+#include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/PoseableMeshComponent.h"
@@ -46,6 +48,7 @@
 #include "UDynamicMesh.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 // Editor-private bridge for the Refresh-during-session integration test
@@ -59,6 +62,7 @@
 #include "HAL/PlatformProcess.h"
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
+#include "LevelEditorViewport.h"
 #include "LiveLinkInstance.h"
 #include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
@@ -5095,6 +5099,983 @@ bool FMtoUCharacterPartsPreviewTest::RunTest(const FString& Parameters)
 
     World->DestroyWorld(false);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #51 natural-tick comparison regression.
+//
+// The earlier comparison tests drive the actor, its animation, and a transient
+// world directly. This one proves the same comparison through the editor's own
+// loop: the Binding actor lives in the real editor world, the Details control
+// performs every switch, and each displayed-bone and evaluated-Morph
+// observation below reads the components after the editor advanced them. No
+// command here calls Actor::Tick, TickAnimation, RefreshBoneTransforms, or
+// World::Tick; between a socket send and its observation only the editor main
+// loop (the Live Link client tick that updates the source, plus the natural
+// component and actor tick behind the plugin's realtime override) may advance
+// the display. Control-plane steps (negotiation, Details clicks, invalidation)
+// still pump Source->Update for determinism and draw no display conclusion.
+// ---------------------------------------------------------------------------
+namespace
+{
+const TCHAR* const ComparisonGarmentMorph = TEXT("GarmentFlare");
+const TCHAR* const ComparisonDriverOnlyMorph = TEXT("FaceBlink");
+const TCHAR* const ComparisonPartOnlyMorph = TEXT("HeadSway");
+
+FString ComparisonTransformJson(const FTransform& Transform)
+{
+    const FVector Translation = Transform.GetTranslation();
+    const FQuat Rotation = Transform.GetRotation();
+    const FVector Scale = Transform.GetScale3D();
+    return FString::Printf(
+        TEXT("[%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g]"),
+        Translation.X, Translation.Y, Translation.Z,
+        Rotation.X, Rotation.Y, Rotation.Z, Rotation.W,
+        Scale.X, Scale.Y, Scale.Z);
+}
+
+/** One Model frame in manifest order: garment, Driver-only, and part-only values. */
+FString ComparisonFrameJson(const FReferenceSkeleton& Skeleton,
+    const FVector& RootTranslation, const float GarmentFlare, const float FaceBlink,
+    const float HeadSway)
+{
+    FString Transforms;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index > 0)
+        {
+            Transforms += TEXT(",");
+        }
+        FTransform Pose = Skeleton.GetRefBonePose()[Index];
+        if (Index == 0)
+        {
+            Pose.SetTranslation(RootTranslation);
+        }
+        Transforms += ComparisonTransformJson(Pose);
+    }
+    return FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[%.17g,%.17g,%.17g]}"),
+        *Transforms, GarmentFlare, FaceBlink, HeadSway);
+}
+
+/**
+ * Final evaluated Morph weight of the component's own mesh: the weight the
+ * current animation evaluation left for skinning, not a value the test set.
+ * False when the displayed mesh does not own the name at all.
+ */
+bool ComparisonEvaluatedMorphWeight(const USkeletalMeshComponent* Component,
+    const TCHAR* Name, float& OutWeight)
+{
+    const USkeletalMesh* Mesh = Component ? Component->GetSkeletalMeshAsset() : nullptr;
+    const UMorphTarget* Morph = Mesh ? Mesh->FindMorphTarget(FName(Name)) : nullptr;
+    if (!Morph)
+    {
+        return false;
+    }
+    const int32* WeightIndex = Component->ActiveMorphTargets.Find(Morph);
+    if (!WeightIndex || !Component->MorphTargetWeights.IsValidIndex(*WeightIndex))
+    {
+        return false;
+    }
+    OutWeight = Component->MorphTargetWeights[*WeightIndex];
+    return true;
+}
+
+bool ComparisonPollUntil(TFunctionRef<bool()> Predicate, const double Timeout = 2.0)
+{
+    const double Deadline = FPlatformTime::Seconds() + Timeout;
+    do
+    {
+        if (Predicate())
+        {
+            return true;
+        }
+        FPlatformProcess::Sleep(0.005f);
+    }
+    while (FPlatformTime::Seconds() < Deadline);
+    return Predicate();
+}
+
+TArray<uint8> ComparisonPacket(const FString& Text)
+{
+    FTCHARToUTF8 Converted(*Text);
+    TArray<uint8> Payload;
+    Payload.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
+    TArray<uint8> Bytes;
+    Bytes.SetNumUninitialized(8);
+    const uint64 Length = static_cast<uint64>(Payload.Num());
+    for (int32 Index = 0; Index < 8; ++Index)
+    {
+        Bytes[Index] = static_cast<uint8>(Length >> ((7 - Index) * 8));
+    }
+    Bytes.Append(Payload);
+    return Bytes;
+}
+
+FString ComparisonFromUtf8(const TArray<uint8>& Bytes)
+{
+    FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+    return FString::ConstructFromPtrSize(Converted.Get(), Converted.Length());
+}
+
+bool ComparisonSend(FSocket& Socket, const uint8* Data, const int32 Num)
+{
+    int32 Offset = 0;
+    const double Deadline = FPlatformTime::Seconds() + 2.0;
+    while (Offset < Num && FPlatformTime::Seconds() < Deadline)
+    {
+        int32 Sent = 0;
+        if (Socket.Send(Data + Offset, Num - Offset, Sent) && Sent > 0)
+        {
+            Offset += Sent;
+        }
+        else
+        {
+            Socket.Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(5));
+        }
+    }
+    return Offset == Num;
+}
+
+bool ComparisonReceive(FSocket& Socket, TArray<uint8>& OutPayload,
+    TFunctionRef<void()> Pump, const double Timeout = 2.0)
+{
+    TArray<uint8> Pending;
+    return ComparisonPollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+        {
+            Pending.Append(Buffer, Read);
+        }
+        if (Pending.Num() < 8)
+        {
+            return false;
+        }
+        uint64 Length = 0;
+        for (int32 Index = 0; Index < 8; ++Index)
+        {
+            Length = (Length << 8) | Pending[Index];
+        }
+        if (static_cast<uint64>(Pending.Num()) < 8 + Length)
+        {
+            return false;
+        }
+        OutPayload.SetNumUninitialized(static_cast<int32>(Length));
+        if (Length > 0)
+        {
+            FMemory::Memcpy(OutPayload.GetData(), Pending.GetData() + 8,
+                static_cast<int32>(Length));
+        }
+        return true;
+    }, Timeout);
+}
+
+FSocket* ComparisonConnect(ISocketSubsystem& SocketSubsystem, const uint16 Port)
+{
+    TSharedRef<FInternetAddr> Address = SocketSubsystem.CreateInternetAddr();
+    bool bValid = false;
+    Address->SetIp(TEXT("127.0.0.1"), bValid);
+    Address->SetPort(Port);
+    FSocket* Socket = SocketSubsystem.CreateSocket(
+        NAME_Stream, TEXT("MtoUComparisonNaturalTick client"));
+    if (!Socket || !Socket->Connect(*Address))
+    {
+        if (Socket)
+        {
+            SocketSubsystem.DestroySocket(Socket);
+        }
+        return nullptr;
+    }
+    Socket->SetNonBlocking(true);
+    return Socket;
+}
+
+bool ComparisonHasOverride(const FText& OverrideName)
+{
+    int32 Count = 0;
+    if (!GEditor)
+    {
+        return false;
+    }
+    for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+    {
+        if (!ViewportClient)
+        {
+            continue;
+        }
+        ++Count;
+        if (!ViewportClient->HasRealtimeOverride(OverrideName) || !ViewportClient->IsRealtime())
+        {
+            return false;
+        }
+    }
+    return Count > 0;
+}
+
+struct FMtoUComparisonExpectation
+{
+    FVector Pose = FVector::ZeroVector;
+    float GarmentFlare = 0.0f;
+    float FaceBlink = 0.0f;
+    float HeadSway = 0.0f;
+};
+
+struct FMtoUComparisonNaturalTickState
+{
+    ISocketSubsystem* SocketSubsystem = nullptr;
+    FSocket* Client = nullptr;
+    TSharedPtr<FMtoULiveLinkSource> Source;
+    UWorld* EditorWorld = nullptr;
+    AMtoULiveLinkActor* Actor = nullptr;
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard;
+    USkeletalMeshComponent* DriverDisplay = nullptr;
+    UMtoUCharacterPartComponent* PartComponent = nullptr;
+    UStaticMesh* PreviewInput = nullptr;
+    const FReferenceSkeleton* Skeleton = nullptr;
+    USkeletalMesh* PreviewMesh = nullptr;
+    EMtoUPreviewState ReadinessState = EMtoUPreviewState::None;
+    FName RootBoneId = NAME_None;
+    uint64 Session = 0;
+    FTransform ActorTransform = FTransform::Identity;
+    TArray<TPair<FLevelEditorViewportClient*, bool>> SavedRealtime;
+    bool bSetupFailed = false;
+};
+
+/** The visible character state the editor loop must reach on its own. */
+bool ComparisonDisplayMatches(const FMtoUComparisonNaturalTickState& State,
+    const FMtoUComparisonExpectation& Expected)
+{
+    USkeletalMeshComponent* Leader =
+        State.Actor ? State.Actor->GetSkeletalMeshComponent() : nullptr;
+    USkeletalMeshComponent* Driver = State.DriverDisplay;
+    UMtoUCharacterPartComponent* Part = State.PartComponent;
+    if (!Leader || !Driver || !Part
+        || !Leader->IsRegistered() || !Driver->IsRegistered() || !Part->IsRegistered())
+    {
+        return false;
+    }
+    float Garment = 0.0f;
+    float LeaderGarment = 0.0f;
+    float DriverOnly = 0.0f;
+    float PartOnly = 0.0f;
+    return Leader->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && Driver->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && Part->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && ComparisonEvaluatedMorphWeight(Leader, ComparisonGarmentMorph, LeaderGarment)
+        && FMath::IsNearlyEqual(LeaderGarment, Expected.GarmentFlare, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Driver, ComparisonGarmentMorph, Garment)
+        && FMath::IsNearlyEqual(Garment, Expected.GarmentFlare, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Driver, ComparisonDriverOnlyMorph, DriverOnly)
+        && FMath::IsNearlyEqual(DriverOnly, Expected.FaceBlink, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Part, ComparisonPartOnlyMorph, PartOnly)
+        && FMath::IsNearlyEqual(PartOnly, Expected.HeadSway, 1.e-3f);
+}
+
+/** Every value the predicate above observes, for a failed wait. */
+FString ComparisonDisplayReport(const FMtoUComparisonNaturalTickState& State,
+    const FMtoUComparisonExpectation& Expected)
+{
+    USkeletalMeshComponent* Leader =
+        State.Actor ? State.Actor->GetSkeletalMeshComponent() : nullptr;
+    USkeletalMeshComponent* Driver = State.DriverDisplay;
+    UMtoUCharacterPartComponent* Part = State.PartComponent;
+    const auto BoneText = [&](const USkeletalMeshComponent* Component)
+    {
+        return Component && Component->IsRegistered() && !State.RootBoneId.IsNone()
+            ? Component->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation().ToString()
+            : FString(TEXT("<not displayed>"));
+    };
+    const auto WeightText = [](const USkeletalMeshComponent* Component, const TCHAR* Name)
+    {
+        if (!Component)
+        {
+            return FString(TEXT("<no component>"));
+        }
+        const USkeletalMesh* Mesh = Component->GetSkeletalMeshAsset();
+        const UMorphTarget* Morph = Mesh ? Mesh->FindMorphTarget(FName(Name)) : nullptr;
+        const int32* WeightIndex = Morph ? Component->ActiveMorphTargets.Find(Morph) : nullptr;
+        const FString Weight = WeightIndex && Component->MorphTargetWeights.IsValidIndex(*WeightIndex)
+            ? FString::Printf(TEXT("%.4f"), Component->MorphTargetWeights[*WeightIndex])
+            : FString(TEXT("<none>"));
+        float CurveValue = 0.0f;
+        const bool bCurveValue = Component->GetCurveValue(FName(Name), 0.0f, CurveValue);
+        const FString Curve = bCurveValue
+            ? FString::Printf(TEXT("%.4f"), CurveValue)
+            : FString(TEXT("<none>"));
+        return FString::Printf(TEXT("weight %s (mesh %s, owns Morph %s, active %s, curve %s)"),
+            *Weight,
+            Mesh ? *Mesh->GetName() : TEXT("<null>"),
+            Morph ? TEXT("yes") : TEXT("no"),
+            WeightIndex ? TEXT("yes") : TEXT("no"),
+            *Curve);
+    };
+    return FString::Printf(
+        TEXT("expected pose %s with garment %.4f, Driver-only %.4f, part-only %.4f; saw Generated %s, Driver %s, part %s; evaluated weights: Generated garment %s, Driver garment %s, Driver-only %s, part-only %s"),
+        *Expected.Pose.ToString(), Expected.GarmentFlare, Expected.FaceBlink, Expected.HeadSway,
+        *BoneText(Leader), *BoneText(Driver), *BoneText(Part),
+        *WeightText(Leader, ComparisonGarmentMorph),
+        *WeightText(Driver, ComparisonGarmentMorph),
+        *WeightText(Driver, ComparisonDriverOnlyMorph),
+        *WeightText(Part, ComparisonPartOnlyMorph));
+}
+
+/** Session, Preview revision, readiness, and actor transform survive every switch. */
+void CheckComparisonInvariants(FAutomationTestBase& Test,
+    const FMtoUComparisonNaturalTickState& State, const TCHAR* Stage)
+{
+    const AMtoULiveLinkActor* Actor = State.Actor;
+    Test.TestTrue(FString::Printf(
+            TEXT("%s: the switch changed neither the session, the Preview revision, nor readiness"),
+            Stage),
+        Actor
+        && Actor->GetPreviewReadiness().GeneratedPreview == State.PreviewMesh
+        && Actor->GetPreviewReadiness().State == State.ReadinessState
+        && State.Source.IsValid()
+        && FMtoURefreshEndsSessionTestAccess::Session(*State.Source) == State.Session
+        && Actor->GetActorTransform().Equals(State.ActorTransform));
+}
+
+/** Records the reached display state as report evidence for this observation. */
+void AddComparisonObservation(FAutomationTestBase& Test,
+    const FMtoUComparisonNaturalTickState& State, const TCHAR* Stage,
+    const FMtoUComparisonExpectation& Expected)
+{
+    Test.AddInfo(FString::Printf(TEXT("%s: %s"), Stage, *ComparisonDisplayReport(State, Expected)));
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewComparisonNaturalTickTest,
+    "MtoULiveLink.Editor.Preview.ComparisonNaturalTick",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+#if !WITH_EDITOR
+    AddError(TEXT("the comparison natural-tick regression requires an editor build."));
+    return false;
+#else
+    if (!GEditor)
+    {
+        AddError(TEXT("the comparison natural-tick regression requires GEditor."));
+        return false;
+    }
+    FMtoUPreviewComparisonNaturalTickTest* Self = this;
+    TSharedRef<FMtoUComparisonNaturalTickState> State =
+        MakeShared<FMtoUComparisonNaturalTickState>();
+    const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+
+    const FMtoUComparisonExpectation GeneratedPose{
+        FVector(21.0, 22.0, 23.0), 0.35f, 0.45f, 0.55f};
+    const FMtoUComparisonExpectation OriginalPose{
+        FVector(31.0, 32.0, 33.0), 0.40f, 0.50f, 0.60f};
+    const FMtoUComparisonExpectation OriginalPoseAgain{
+        FVector(41.0, 42.0, 43.0), 0.45f, 0.55f, 0.65f};
+    const FMtoUComparisonExpectation RestoredPose{
+        FVector(51.0, 52.0, 53.0), 0.50f, 0.60f, 0.70f};
+
+    // Setup: negotiate the Model workflow with the Generated, Driver-only, and
+    // part-only Morph manifest in the real editor world. This control plane
+    // pumps Source->Update for determinism; no display conclusion is drawn here.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName]()
+    {
+        ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+        Self->TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+        IModularFeatures& Features = IModularFeatures::Get();
+        const bool bLiveLinkClient =
+            Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName);
+        Self->TestTrue(TEXT("Live Link client feature is available"), bLiveLinkClient);
+        UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        Self->TestNotNull(TEXT("real editor world is available"), EditorWorld);
+        Self->TestTrue(TEXT("real editor world is an editor world"),
+            EditorWorld && EditorWorld->WorldType == EWorldType::Editor);
+        int32 ViewportCount = 0;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient)
+                {
+                    ++ViewportCount;
+                }
+            }
+        }
+        Self->TestTrue(TEXT("at least one real level viewport drives the editor tick"),
+            ViewportCount > 0);
+        int32 ExistingPlaced = 0;
+        if (EditorWorld)
+        {
+            for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+            {
+                if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It)
+                    && It->GetWorld() == EditorWorld)
+                {
+                    ++ExistingPlaced;
+                }
+            }
+        }
+        Self->TestEqual(TEXT("editor world starts without a stale binding actor"), ExistingPlaced, 0);
+        // A world an earlier test destroyed is only collected on the next GC,
+        // while the plugin requires exactly one placed editor-world binding
+        // actor for a Model connection. Collecting here keeps this regression
+        // independent of test order instead of inheriting that pending world.
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        int32 ExistingPlacedElsewhere = 0;
+        for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+        {
+            if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It) && It->GetWorld()
+                && It->GetWorld() != EditorWorld
+                && It->GetWorld()->WorldType == EWorldType::Editor)
+            {
+                ++ExistingPlacedElsewhere;
+            }
+        }
+        Self->TestEqual(TEXT("no other placed editor-world binding actor survives collection"),
+            ExistingPlacedElsewhere, 0);
+        if (!SocketSubsystem || !bLiveLinkClient || !EditorWorld
+            || EditorWorld->WorldType != EWorldType::Editor || ViewportCount == 0
+            || ExistingPlaced != 0 || ExistingPlacedElsewhere != 0)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->SocketSubsystem = SocketSubsystem;
+        State->EditorWorld = EditorWorld;
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                State->SavedRealtime.Add(TPair<FLevelEditorViewportClient*, bool>(
+                    ViewportClient, ViewportClient->IsRealtime()));
+            }
+        }
+        ILiveLinkClient& LiveLinkClient =
+            Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+        UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUComparisonNaturalTickWorld"));
+        FMtoUFullCharacterFixtures Fixtures;
+        const bool bFixtures = MakeFullCharacterFixtures(*WorldPackage, *Self, Fixtures);
+        // An FBX-imported character carries Morph Target curve metadata, so its
+        // streamed Morph values reach the evaluated Morph weights. The
+        // transient fixtures get the same metadata on their own Skeleton
+        // duplicate, which keeps the shared engine asset untouched and is
+        // inherited by the Generated Preview the driver builds.
+        USkeleton* FixtureSkeleton = bFixtures
+            ? DuplicateObject<USkeleton>(Fixtures.FullDriver->GetSkeleton(), WorldPackage)
+            : nullptr;
+        if (FixtureSkeleton)
+        {
+            Fixtures.FullDriver->SetSkeleton(FixtureSkeleton);
+            for (const TCHAR* Morph : {ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
+                     TEXT("ArmRaise"), TEXT("HairSway"), ComparisonPartOnlyMorph})
+            {
+                FixtureSkeleton->AddCurveMetaData(FName(Morph), false);
+                if (FCurveMetaData* MetaData = FixtureSkeleton->GetCurveMetaData(FName(Morph)))
+                {
+                    MetaData->Type.bMorphtarget = true;
+                }
+            }
+        }
+        const FCurveMetaData* FixtureMorphMetaData = FixtureSkeleton
+            ? FixtureSkeleton->GetCurveMetaData(FName(ComparisonGarmentMorph))
+            : nullptr;
+        Self->TestTrue(TEXT("the fixture Skeleton carries imported Morph curve metadata"),
+            FixtureMorphMetaData && FixtureMorphMetaData->Type.bMorphtarget);
+        USkeletalMesh* PartMesh = bFixtures
+            ? DuplicateObject<USkeletalMesh>(Fixtures.FullDriver, WorldPackage)
+            : nullptr;
+        if (PartMesh)
+        {
+            PartMesh->ClearFlags(RF_Public | RF_Standalone);
+            PartMesh->SetSkeleton(FixtureSkeleton);
+            PartMesh->SetRefSkeleton(Fixtures.FullDriver->GetRefSkeleton());
+        }
+        const bool bPartMorph = PartMesh && AddUniformMorph(
+            *PartMesh, FName(ComparisonPartOnlyMorph), FVector3f(0.0f, 0.0f, 1.5f));
+        Self->TestTrue(TEXT("full-character fixtures and a part-only Morph are created"),
+            bFixtures && Fixtures.IsValid() && bPartMorph);
+        if (!bFixtures || !Fixtures.IsValid() || !bPartMorph)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        // RegisterMorphTarget(..., bInvalidateRenderData=false) leaves the morph
+        // name lookup unbuilt. A loaded character has it, and the engine
+        // resolves streamed Morph values through it, so the fixtures build it
+        // exactly as loading would.
+        Fixtures.FullDriver->InitMorphTargets();
+        PartMesh->InitMorphTargets();
+        Self->TestTrue(TEXT("the fixture meshes resolve their Morph names"),
+            Fixtures.FullDriver->FindMorphTarget(FName(ComparisonGarmentMorph)) != nullptr
+            && Fixtures.FullDriver->FindMorphTarget(FName(ComparisonDriverOnlyMorph)) != nullptr
+            && PartMesh->FindMorphTarget(FName(ComparisonPartOnlyMorph)) != nullptr);
+
+        AMtoULiveLinkActor* Actor = EditorWorld->SpawnActor<AMtoULiveLinkActor>();
+        UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+        State->BindingGuard.Reset(Binding);
+        Binding->SkeletalMesh = Fixtures.FullDriver;
+        Binding->PreviewStaticMesh = Fixtures.Preview;
+        FMtoUCharacterPart& HeadPart = Binding->AdditionalParts.AddDefaulted_GetRef();
+        HeadPart.PartId = FGuid::NewGuid();
+        HeadPart.PartName = TEXT("Head");
+        HeadPart.SkeletalMesh = PartMesh;
+        HeadPart.bEnabled = true;
+        Self->TestNotNull(TEXT("binding actor is placed in the real editor world"), Actor);
+        if (!Actor)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Actor = Actor;
+        State->PreviewInput = Fixtures.Preview;
+        Actor->SetBinding(Binding);
+        Actor->PostRegisterAllComponents();
+        State->PartComponent = Actor->GetCharacterPartComponents().IsEmpty()
+            ? nullptr
+            : Actor->GetCharacterPartComponents()[0].Get();
+        TArray<USkeletalMeshComponent*> DisplayMeshes;
+        Actor->GetComponents(DisplayMeshes);
+        USkeletalMeshComponent** DriverEntry = DisplayMeshes.FindByPredicate(
+            [Actor](const USkeletalMeshComponent* Component)
+            {
+                return Component != Actor->GetSkeletalMeshComponent()
+                    && !Component->IsA<UMtoUCharacterPartComponent>();
+            });
+        State->DriverDisplay = DriverEntry ? *DriverEntry : nullptr;
+        Self->TestTrue(TEXT("the enabled part joins the character display"),
+            State->PartComponent
+            && State->PartComponent->GetSkeletalMeshAsset() == PartMesh
+            && PartMesh->GetSkeleton() == FixtureSkeleton);
+
+        // The fixture meshes build their render data asynchronously; a build
+        // that completes after the Refresh would invalidate the Preview through
+        // its own source-rebuild rule, so the test settles it first.
+        FAssetCompilingManager::Get().FinishAllCompilation();
+        const FMtoUPreviewReadiness Refresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+        Self->TestTrue(TEXT("the comparison fixture reaches a Ready Generated Preview"),
+            Refresh.IsUsable() && Refresh.GeneratedPreview
+            && Refresh.GeneratedPreview->GetSkeleton() == FixtureSkeleton
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Refresh.GeneratedPreview);
+        Self->TestTrue(TEXT("the original Driver follower shows the same character"),
+            State->DriverDisplay
+            && State->DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver);
+        Self->TestTrue(TEXT("a Ready Generated Preview enables garment comparison"),
+            Actor->CanCompareGarments());
+        if (!Refresh.IsUsable() || !Actor->CanCompareGarments()
+            || !State->DriverDisplay || !State->PartComponent)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        Self->TestTrue(TEXT("the editor world drives this actor's component animation"),
+            Actor->GetSkeletalMeshComponent()->IsRegistered()
+            && Actor->GetSkeletalMeshComponent()->IsComponentTickEnabled()
+            && Actor->GetSkeletalMeshComponent()->GetUpdateAnimationInEditor()
+            && State->PartComponent->GetUpdateAnimationInEditor());
+        State->PreviewMesh = Refresh.GeneratedPreview;
+        State->ReadinessState = Refresh.State;
+        State->Skeleton = &Refresh.GeneratedPreview->GetRefSkeleton();
+        State->RootBoneId = State->Skeleton->GetBoneName(0);
+        State->ActorTransform = Actor->GetActorTransform();
+
+        FSocket* Reservation = SocketSubsystem->CreateSocket(
+            NAME_Stream, TEXT("MtoUComparisonNaturalTick reservation"));
+        Self->TestNotNull(TEXT("test port can be reserved"), Reservation);
+        if (!Reservation)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        TSharedRef<FInternetAddr> ReservationAddress = SocketSubsystem->CreateInternetAddr();
+        bool bValidAddress = false;
+        ReservationAddress->SetIp(TEXT("127.0.0.1"), bValidAddress);
+        ReservationAddress->SetPort(0);
+        Reservation->Bind(*ReservationAddress);
+        Reservation->Listen(1);
+        TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+        Reservation->GetAddress(*ReservedAddress);
+        const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+        Reservation->Close();
+        SocketSubsystem->DestroySocket(Reservation);
+
+        TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+        State->Source = Source;
+        const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+        Self->TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+        Self->TestTrue(TEXT("source reaches listening state"), ComparisonPollUntil(
+            [Source]() { return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on")); }));
+
+        FSocket* Client = ComparisonConnect(*SocketSubsystem, Port);
+        Self->TestNotNull(TEXT("Maya Model client connects"), Client);
+        if (!Client)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Client = Client;
+        FString BonesJson;
+        for (int32 Index = 0; Index < State->Skeleton->GetNum(); ++Index)
+        {
+            if (Index > 0)
+            {
+                BonesJson += TEXT(",");
+            }
+            BonesJson += FString::Printf(TEXT("[\"%s\",%d,%s]"),
+                *State->Skeleton->GetBoneName(Index).ToString(),
+                State->Skeleton->GetParentIndex(Index),
+                *ComparisonTransformJson(State->Skeleton->GetRefBonePose()[Index]));
+        }
+        const FString Init = FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
+            *BonesJson, ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
+            ComparisonPartOnlyMorph);
+        const TArray<uint8> InitBytes = ComparisonPacket(Init);
+        Self->TestTrue(TEXT("Model init is sent"),
+            ComparisonSend(*Client, InitBytes.GetData(), InitBytes.Num()));
+        TArray<uint8> Payload;
+        Self->TestTrue(TEXT("Model negotiation reaches ready"),
+            ComparisonReceive(*Client, Payload, [&Source]() { Source->Update(); }));
+        const FString Reply = ComparisonFromUtf8(Payload);
+        Self->TestTrue(TEXT("the Preview is still ready when the Model session negotiates"),
+            Actor->GetPreviewReadiness().IsUsable());
+        Self->TestTrue(FString::Printf(
+                TEXT("the accepted Preview Morph set is the Generated, Driver, and part union (reply %s, status %s)"),
+                *Reply.Left(512), *Actor->GetConnectionStatus()),
+            Reply.Contains(TEXT("\"type\":\"ready\""))
+            && Reply.Contains(TEXT("\"target_morph_count\":5"))
+            && Reply.Contains(TEXT("\"accepted_morph_count\":3")));
+        Self->TestTrue(TEXT("Model readiness keeps the Generated display and the same Preview revision"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetPreviewReadiness().GeneratedPreview == State->PreviewMesh
+            && Actor->GetPreviewReadiness().State == State->ReadinessState);
+        State->Session = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+        Self->TestTrue(TEXT("the negotiated session is streaming"), State->Session != 0);
+        Self->TestTrue(TEXT("the connected stream forces editor viewport realtime"),
+            ComparisonHasOverride(OverrideName));
+        return true;
+    }));
+
+    // Natural observation 1: the Generated display reaches the first pose.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, GeneratedPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, GeneratedPose.Pose, GeneratedPose.GarmentFlare,
+            GeneratedPose.FaceBlink, GeneratedPose.HeadSway));
+        Self->TestTrue(TEXT("the first Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, GeneratedPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, GeneratedPose);
+        },
+        [Self, State, GeneratedPose]() -> bool
+        {
+            Self->AddError(FString::Printf(TEXT("Generated display did not reach the first pose: %s"),
+                *ComparisonDisplayReport(*State, GeneratedPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, GeneratedPose]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State, TEXT("Generated display, first pose"), GeneratedPose);
+            CheckComparisonInvariants(*Self, *State, TEXT("Generated display, first pose"));
+        }
+        return true;
+    }));
+
+    // Details switch to the original garment. The switch itself is a control
+    // action; the display it leaves behind is observed naturally below.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the Details control shows the original garment without replacing the Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == State->PreviewMesh
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+        Self->TestTrue(TEXT("the Generated garment is hidden and the whole original character is displayed"),
+            !Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(0, 0)
+            && !Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(3, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(4, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(5, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(6, 0)
+            && State->PartComponent
+            && State->PartComponent->IsMaterialSectionShown(0, 0));
+        Self->TestTrue(TEXT("the actor asks the editor viewport to tick while the original garment is displayed"),
+            Actor->ShouldTickIfViewportsOnly());
+        CheckComparisonInvariants(*Self, *State, TEXT("Details switch to the original garment"));
+        return true;
+    }));
+
+    // Natural observation 2: the visible original garment and the part reach a
+    // new pose and new Morph values through the editor loop alone.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, OriginalPose.Pose, OriginalPose.GarmentFlare,
+            OriginalPose.FaceBlink, OriginalPose.HeadSway));
+        Self->TestTrue(TEXT("the first original-garment Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, OriginalPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, OriginalPose);
+        },
+        [Self, State, OriginalPose]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("original-garment display did not reach the first pose: %s"),
+                *ComparisonDisplayReport(*State, OriginalPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPose]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State,
+                TEXT("original garment, first pose"), OriginalPose);
+            CheckComparisonInvariants(*Self, *State, TEXT("first original-garment pose"));
+        }
+        return true;
+    }));
+
+    // Natural observation 3: a second, distinct pose proves the comparison
+    // keeps refreshing instead of holding the pose it was switched with.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPoseAgain]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, OriginalPoseAgain.Pose, OriginalPoseAgain.GarmentFlare,
+            OriginalPoseAgain.FaceBlink, OriginalPoseAgain.HeadSway));
+        Self->TestTrue(TEXT("the second original-garment Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, OriginalPoseAgain]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, OriginalPoseAgain);
+        },
+        [Self, State, OriginalPoseAgain]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("original-garment display did not reach the second pose: %s"),
+                *ComparisonDisplayReport(*State, OriginalPoseAgain)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPoseAgain]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State,
+                TEXT("original garment, second pose"), OriginalPoseAgain);
+            CheckComparisonInvariants(*Self, *State, TEXT("second original-garment pose"));
+        }
+        return true;
+    }));
+
+    // Details switch back: the Generated display returns with the same session
+    // and Preview, and only the resolved original garment slots hide again.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the Details control restores the same Generated Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == State->PreviewMesh
+            && Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(0, 0)
+            && Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay
+            && !State->DriverDisplay->IsMaterialSectionShown(3, 0)
+            && !State->DriverDisplay->IsMaterialSectionShown(4, 0)
+            && !State->DriverDisplay->IsMaterialSectionShown(5, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->PartComponent
+            && State->PartComponent->GetSkeletalMeshAsset() != nullptr);
+        CheckComparisonInvariants(*Self, *State, TEXT("Details switch back to the Generated Preview"));
+        return true;
+    }));
+
+    // Natural observation 4: the restored Generated display reaches the last pose.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, RestoredPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, RestoredPose.Pose, RestoredPose.GarmentFlare,
+            RestoredPose.FaceBlink, RestoredPose.HeadSway));
+        Self->TestTrue(TEXT("the restored Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, RestoredPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, RestoredPose);
+        },
+        [Self, State, RestoredPose]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("restored Generated display did not reach the last pose: %s"),
+                *ComparisonDisplayReport(*State, RestoredPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, RestoredPose]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        USkeletalMeshComponent* Leader = State->Actor->GetSkeletalMeshComponent();
+        float Unused = 0.0f;
+        Self->TestFalse(TEXT("the Driver-only Morph is not a Generated Preview Morph"),
+            ComparisonEvaluatedMorphWeight(Leader, ComparisonDriverOnlyMorph, Unused));
+        Self->TestFalse(TEXT("the part-only Morph is not a Generated Preview Morph"),
+            ComparisonEvaluatedMorphWeight(Leader, ComparisonPartOnlyMorph, Unused));
+        Self->TestTrue(TEXT("the body and attachment material slots stay displayed on the original character"),
+            State->DriverDisplay
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(2, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(6, 0));
+        CheckComparisonInvariants(*Self, *State, TEXT("restored Generated pose"));
+        AddComparisonObservation(*Self, *State, TEXT("restored Generated display"), RestoredPose);
+        return true;
+    }));
+
+    // The input change that invalidates the Preview keeps its existing rule: no
+    // comparison and no stale generated geometry survive it.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor || !State->PreviewInput)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the original garment is displayed before the Preview input changes"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment);
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(State->PreviewInput);
+        Self->TestTrue(TEXT("a changed Preview input invalidates comparison and clears both displays"),
+            Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+            && !Actor->GetPreviewReadiness().IsUsable()
+            && !Actor->CanCompareGarments()
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+            && State->DriverDisplay && State->DriverDisplay->GetSkeletalMeshAsset() == nullptr
+            && !Actor->ShouldTickIfViewportsOnly());
+        return true;
+    }));
+
+    // Cleanup always runs: the actor, source, socket, and viewport override
+    // leave no trace in the real editor world.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName]()
+    {
+        if (State->Source.IsValid())
+        {
+            State->Source->StopListener();
+            if (IModularFeatures::Get().IsModularFeatureAvailable(
+                    ILiveLinkClient::ModularFeatureName))
+            {
+                IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+                    ILiveLinkClient::ModularFeatureName).RemoveSource(State->Source.ToSharedRef());
+            }
+        }
+        State->Source.Reset();
+        if (State->Actor && State->EditorWorld)
+        {
+            State->EditorWorld->DestroyActor(State->Actor);
+        }
+        State->Actor = nullptr;
+        State->DriverDisplay = nullptr;
+        State->PartComponent = nullptr;
+        if (State->SocketSubsystem && State->Client)
+        {
+            FSocket* Client = State->Client;
+            State->Client = nullptr;
+            Client->Close();
+            State->SocketSubsystem->DestroySocket(Client);
+        }
+        if (GEditor)
+        {
+            for (const TPair<FLevelEditorViewportClient*, bool>& Saved : State->SavedRealtime)
+            {
+                if (Saved.Key)
+                {
+                    Saved.Key->SetRealtime(Saved.Value);
+                    Saved.Key->RemoveRealtimeOverride(OverrideName, false);
+                }
+            }
+        }
+        bool bNoOverride = true;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient && ViewportClient->HasRealtimeOverride(OverrideName))
+                {
+                    bNoOverride = false;
+                }
+            }
+        }
+        int32 RemainingPlaced = 0;
+        if (State->EditorWorld)
+        {
+            for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+            {
+                if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It)
+                    && It->GetWorld() == State->EditorWorld)
+                {
+                    ++RemainingPlaced;
+                }
+            }
+        }
+        Self->TestTrue(TEXT("cleanup leaves no plugin viewport override"), bNoOverride);
+        Self->TestEqual(TEXT("cleanup leaves no binding actor in the editor world"),
+            RemainingPlaced, 0);
+        return true;
+    }));
+    return true;
+#endif
 }
 
 #endif

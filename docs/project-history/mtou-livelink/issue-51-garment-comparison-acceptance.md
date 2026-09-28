@@ -1,9 +1,10 @@
 # Issue #51: original garment and Generated Preview comparison
 
-Date: 2026-09-27. Source development is complete on
+Date: 2026-09-28. Source development is complete on
 `codex/mtou-preview-workflow`. Independent review found no confirmed blocking
-functional defect; editor tick/Morph regression coverage and production-character
-visual acceptance remain pending. Issue #51 remains open.
+functional defect; its editor-tick and evaluated-Morph coverage gap is closed by
+the natural-tick regression recorded below. Production-character visual
+acceptance in the target project remains pending. Issue #51 remains open.
 
 ## Current contract
 
@@ -67,16 +68,63 @@ The review confirmed that negotiation uses the Generated Preview, Primary Driver
 and enabled Additional Parts Morph-name union. ADR-0011 now consistently states
 that contract, including the empty-intersection rejection condition.
 
-The remaining automated coverage gap is separate from a reproduced defect:
-the comparison test directly calls `Actor->Tick`, the Details session test reads
-the Live Link subject pose, and the Additional Parts comparison checks asset
-identity rather than evaluated nonzero Morphs. Add a synthetic editor-world
-latent regression through normal editor/viewport tick scheduling, without
-direct Actor Tick or animation-refresh calls. Switch through the Details
-handler while sending successive poses and Driver-only/Part-only nonzero
-Morphs, then check final component bones and evaluated Morph weights or deformed
-vertices, together with unchanged session and Preview readiness. This can be
-done without company assets; it has not yet been implemented.
+## Review follow-up
+
+The review's remaining automated coverage gap was closed by
+`MtoULiveLink.Editor.Preview.ComparisonNaturalTick`, a latent regression that
+runs in `GEditor`'s real editor world:
+
+- The Binding actor is placed with a full-character Driver, a garment Preview,
+  and one enabled Additional Part that owns a part-only Morph. The Model session
+  negotiates a garment, Driver-only, and part-only Morph manifest, so the
+  accepted set is exactly the Generated Preview, Primary Driver, and enabled
+  part union.
+- The Details handler performs every switch. Between a socket send and its
+  observation nothing calls `Actor::Tick`, `TickAnimation`,
+  `RefreshBoneTransforms`, or `World::Tick`: the editor main loop, the Live Link
+  client's source update, and the plugin's realtime override advance the
+  display. Control-plane steps (negotiation, Details clicks, invalidation) still
+  pump `Source->Update` for determinism and draw no display conclusion.
+- Four successive streamed poses are observed through the final displayed bones
+  of the Generated Preview, the original Driver follower, and the part, and
+  through their evaluated Morph weights (`USkinnedMeshComponent::MorphTargetWeights`)
+  for the garment, Driver-only, and part-only names. Two poses arrive while the
+  original garment is displayed, one before the switch, one after switching
+  back, and the report records each reached state.
+- Session id, Preview pointer, readiness, actor transform, and material-section
+  exclusivity are asserted around every switch; the Driver-only and part-only
+  Morphs are confirmed absent from the Generated Preview; a Preview input change
+  made while the original garment is displayed still invalidates the comparison
+  and clears both displays.
+
+The synthetic fixtures build the two things a loaded character has and a
+GeometryScript-built fixture does not: morph name lookup
+(`InitMorphTargets`, because `RegisterMorphTarget(..., bInvalidateRenderData=false)`
+leaves `MorphTargetIndexMap` unbuilt) and morph-target curve metadata, which
+FBX import writes to the Skeleton by default. The engine resolves streamed Morph
+values through both, so without them the fixtures would not represent an
+imported asset and the evaluated weights would stay at zero.
+
+The regression places the only binding actor of the editor world, and the plugin
+refuses a Model connection with `MULTIPLE_BINDING_ACTORS` while any other placed
+editor-world actor exists. A world destroyed by an earlier test is collected
+only on the next garbage collection, so the setup collects before it asserts
+that no other placed editor-world binding actor survives; no existing test was
+changed for this.
+
+### Review follow-up verification
+
+| Check | Result |
+| --- | --- |
+| UE 5.7 Development Editor build (`Build.bat UnrealEditor Win64 Development unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE -NoUBA`) | Succeeded; Runtime and Editor modules relinked |
+| `Automation RunTests MtoULiveLink.Editor.Preview.ComparisonNaturalTick`, NullRHI | 1/1 Success, 0 errors, 0 warnings; the report records the four reached poses with the evaluated Morph weights of the Generated Preview, the original Driver follower, and the part |
+| `Automation RunTests MtoULiveLink`, NullRHI | 84/84 Success, 0 failed or not run; the same 9 tests as before carry their expected warnings |
+| `python tools/validate_repository.py` | `ok: True`, no errors or warnings |
+| `python -m unittest discover -s tests -q` | 22 passed, 1 skipped |
+
+The focused run and the full suite were both executed; the suite is what proves
+the regression is order-independent, since the earlier single-test run could not
+expose the pending editor world described above.
 
 ## Remaining acceptance
 
