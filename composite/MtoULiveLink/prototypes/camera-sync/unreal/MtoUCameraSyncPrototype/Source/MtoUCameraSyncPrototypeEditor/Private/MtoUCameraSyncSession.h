@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Containers/Queue.h"
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 #include "MtoUCameraSyncPayload.h"
@@ -81,6 +82,8 @@ public:
 	int64 GetFailedSendCount() const { return FailedSends; }
 	int64 GetClientLineAnomalyCount() const { return ClientLineAnomalies; }
 	int64 GetClientTrailingByteCount() const { return ClientTrailingBytes; }
+	/** Client lines handled so far, including lines drained from the receive buffer. */
+	int64 GetClientLinesProcessed() const { return ClientLinesProcessed; }
 	const FString& GetLastClientLineAnomaly() const { return LastClientLineAnomaly; }
 	const TArray<FAppliedReport>& GetAppliedReports() const { return AppliedReports; }
 	int64 GetPairedPoseCount() const { return PairedPoses; }
@@ -106,11 +109,27 @@ private:
 	void ApplyTimeToPlayer();
 	bool BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FString& OutError);
 	bool PublishCurrentFrame();
-	FString BuildEvalIdentity(const FMtoUCameraSyncFrameSample& Frame) const;
+	/** `<sequence>@<tick>+<milli-tick>/<camera path>#<published camera content>`. */
+	FString BuildEvalIdentity(
+		const FFrameTime& TickTime, const FString& CameraPath, const FString& ContentDigest) const;
+	/** Resolves the evaluated camera of the sampled time and refreshes the target generation. */
 	void RefreshEvalTarget();
 	FMtoUCameraSyncCutSample DescribeCut(double DisplayFrame) const;
+	/**
+	 * Called on the listener thread. It only queues the connection: every piece of session
+	 * state belongs to the game thread, which adopts or refuses the socket in Pump().
+	 */
 	bool AcceptClient(FSocket* Socket, const FIPv4Endpoint& Endpoint);
+	/** Adopts or refuses the queued connections. Game thread only. */
+	void AdoptPendingClients();
+	/** Answers a connection the session cannot serve, then closes it. */
+	void RefuseClient(FSocket& Socket, const FString& Category, const FString& Detail);
+	void DestroyClientSocket(FSocket& Socket);
 	void ReadClientLines();
+	/** Handles the complete lines already buffered, within the remaining line budget. */
+	bool DrainBufferedClientLines(int32& LinesHandled);
+	/** Receives more input within the per-pump byte budget; false when none is available. */
+	bool ReceiveClientBytes(int32& BytesReceived);
 	void DropClient();
 	void SendJson(const TSharedRef<FJsonObject>& Object);
 	void SendError(const FString& Category, const FString& Detail);
@@ -128,6 +147,14 @@ private:
 
 	FConfig Config;
 	TUniquePtr<FTcpListener> Listener;
+	/** One connection the listener thread accepted, awaiting the game thread's decision. */
+	struct FPendingClient
+	{
+		FSocket* Socket = nullptr;
+		FString Host;
+	};
+	/** Written only by the listener thread, drained only by the game thread. */
+	TQueue<FPendingClient, EQueueMode::Spsc> PendingClients;
 	FSocket* ClientSocket = nullptr;
 	TArray<uint8> ReceiveBytes;
 	FString ClientHost;
@@ -147,7 +174,15 @@ private:
 	int64 FrameSerial = 0;
 	int64 EvalSerial = 0;
 	double LastEvalTargetDisplayFrame = -1.0;
-	FString PendingEvalIdentity;
+	FString EvalTargetIdentity;
+	/** The evaluated camera of the current target, captured once per target refresh. */
+	TWeakObjectPtr<UCameraComponent> EvalTargetCamera;
+	FMtoUCameraSyncCameraSample EvalTargetCameraSample;
+	FMtoUCameraSyncViewSample EvalTargetView;
+	FMtoUCameraSyncProjectionSample EvalTargetProjection;
+	FString EvalTargetContentDigest;
+	FString EvalTargetCaptureError;
+	bool bEvalTargetCaptured = false;
 	int64 ConnectionSessionId = 0;
 	int64 PublishedFrames = 0;
 	int64 FailedSends = 0;

@@ -246,6 +246,137 @@ TSharedPtr<FJsonObject> GetObject(const TSharedPtr<FJsonObject>& Object, const T
 	}
 	return nullptr;
 }
+
+/** Connects one synthetic client to a session's loopback port. */
+bool ConnectLoopbackClient(uint16 Port, FSocket*& OutSocket)
+{
+	OutSocket = nullptr;
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	if (!Sockets)
+	{
+		return false;
+	}
+	OutSocket = Sockets->CreateSocket(NAME_Stream, TEXT("MtoU synthetic client"));
+	if (!OutSocket)
+	{
+		return false;
+	}
+	const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+	bool bValidAddress = false;
+	Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
+	Address->SetPort(Port);
+	const bool bConnected = bValidAddress && OutSocket->Connect(*Address);
+	if (!bConnected)
+	{
+		OutSocket->Close();
+		Sockets->DestroySocket(OutSocket);
+		OutSocket = nullptr;
+	}
+	return bConnected;
+}
+
+void CloseLoopbackClient(FSocket*& Socket)
+{
+	if (!Socket)
+	{
+		return;
+	}
+	Socket->Close();
+	if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
+	{
+		Sockets->DestroySocket(Socket);
+	}
+	Socket = nullptr;
+}
+
+/** Sends raw bytes, retrying while the socket accepts them partially. */
+bool SendLoopbackBytes(FSocket& Socket, const uint8* Data, int32 Num)
+{
+	int32 Offset = 0;
+	while (Offset < Num)
+	{
+		int32 Sent = 0;
+		if (!Socket.Send(Data + Offset, Num - Offset, Sent) || Sent <= 0)
+		{
+			return false;
+		}
+		Offset += Sent;
+	}
+	return true;
+}
+
+/** Sends one protocol line, terminator included. */
+bool SendLoopbackLine(FSocket& Socket, const FString& Line)
+{
+	const FString Text = Line + TEXT("\n");
+	const FTCHARToUTF8 Utf8(*Text);
+	return SendLoopbackBytes(Socket, reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+}
+
+/** Pumps the session until the predicate holds or the attempt budget runs out. */
+bool PumpUntil(FMtoUCameraSyncSession& Session, TFunctionRef<bool()> Predicate,
+	int32 Attempts = 200, double Delta = 0.02)
+{
+	for (int32 Attempt = 0; Attempt < Attempts && !Predicate(); ++Attempt)
+	{
+		Session.Pump(Delta);
+		FPlatformProcess::Sleep(0.005f);
+	}
+	return Predicate();
+}
+
+/** Sends the handshake and waits until the session greeted this client. */
+bool GreetLoopbackClient(FMtoUCameraSyncSession& Session, FSocket& Socket)
+{
+	const bool bSent = SendLoopbackLine(Socket,
+		TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
+		TEXT("\"host\":\"synthetic-test\",\"scene_fps\":24,\"time_unit\":\"film\"}"));
+	return bSent && PumpUntil(Session, [&Session]() { return Session.IsGreeted(); });
+}
+
+/**
+ * One applied report that answers the given publication, with every field taken from it.
+ * The fixtures use equal display and scene rates with a playback start of 1001.
+ */
+FString MakePoseLine(const ULevelSequence& Sequence, const TSharedPtr<FJsonObject>& Published,
+	int64 ReportSession, int64 ReportSerial, double MayaOrigin, double PoseValue,
+	double PlaybackStart = 1001.0)
+{
+	const TSharedPtr<FJsonObject> Time = GetObject(Published, TEXT("time"));
+	const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
+	const double DisplayFrame = GetNumber(Time, TEXT("display_frame"), 0.0);
+	const double MayaFrame = MayaOrigin + (DisplayFrame - PlaybackStart);
+	return FString::Printf(
+		TEXT("{\"type\":\"applied\",\"session\":%lld,\"sequence\":\"%s\",\"frame_serial\":%lld,")
+		TEXT("\"eval_serial\":%lld,\"eval_identity\":\"%s\",\"maya_frame\":%.9f,")
+		TEXT("\"unreal_display_frame\":%.9f,\"unreal_camera_path\":\"%s\",")
+		TEXT("\"maya_origin_frame\":%.9f,\"status\":\"applied\",\"detail\":[],\"camera\":{},")
+		TEXT("\"markers\":[],\"pose\":{\"sampled_maya_frame\":%.9f,\"translate_x\":%.9f}}"),
+		ReportSession, *Sequence.GetName(), ReportSerial,
+		static_cast<int64>(GetNumber(Published, TEXT("eval_serial"), 0.0)),
+		*Published->GetStringField(TEXT("eval_identity")),
+		MayaFrame, DisplayFrame, *Camera->GetStringField(TEXT("path")),
+		MayaOrigin, MayaFrame, PoseValue);
+}
+
+/** The `@<tick>` segment of an evaluation identity, without the milli-tick. */
+FString EvalIdentityTickPart(const FString& Identity)
+{
+	int32 At = INDEX_NONE;
+	int32 Plus = INDEX_NONE;
+	if (!Identity.FindChar(TEXT('@'), At) || !Identity.FindChar(TEXT('+'), Plus) || Plus <= At)
+	{
+		return FString();
+	}
+	return Identity.Mid(At, Plus - At);
+}
+
+/** The `#<content digest>` segment of an evaluation identity. */
+FString EvalIdentityDigestPart(const FString& Identity)
+{
+	int32 Hash = INDEX_NONE;
+	return Identity.FindLastChar(TEXT('#'), Hash) ? Identity.Mid(Hash) : FString();
+}
 }  // namespace
 
 // The evaluated camera is read through public engine API and reported with the units the
@@ -653,82 +784,18 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 	Session.SetPoseWitnessTarget(Witness);
 	Session.SetDisplayFrame(1001.0);
 
-	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	TestNotNull(TEXT("socket subsystem"), Sockets);
-	if (!Sockets)
-	{
-		Session.Stop(TEXT("test finished"));
-		return false;
-	}
-
-	auto ConnectClient = [Sockets, &Config](FSocket*& OutSocket) -> bool
-	{
-		OutSocket = Sockets->CreateSocket(NAME_Stream, TEXT("MtoU evaluation client"));
-		if (!OutSocket)
-		{
-			return false;
-		}
-		const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
-		bool bValidAddress = false;
-		Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
-		Address->SetPort(Config.Port);
-		const bool bConnected = bValidAddress && OutSocket->Connect(*Address);
-		if (!bConnected)
-		{
-			OutSocket->Close();
-			Sockets->DestroySocket(OutSocket);
-			OutSocket = nullptr;
-		}
-		return bConnected;
-	};
-	auto SendLine = [](FSocket* Socket, const FString& Line)
-	{
-		const FString Text = Line + TEXT("\n");
-		const FTCHARToUTF8 Utf8(*Text);
-		int32 Sent = 0;
-		Socket->Send(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent);
-	};
-	auto WaitFor = [&Session](TFunctionRef<bool()> Predicate, double Delta = 0.02)
-	{
-		for (int32 Attempt = 0; Attempt < 200 && !Predicate(); ++Attempt)
-		{
-			Session.Pump(Delta);
-			FPlatformProcess::Sleep(0.005f);
-		}
-		return Predicate();
-	};
-
 	FSocket* Client = nullptr;
-	if (!TestTrue(TEXT("a synthetic client connects"), ConnectClient(Client)))
+	if (!TestTrue(TEXT("a synthetic client connects"), ConnectLoopbackClient(Config.Port, Client)))
 	{
 		Session.Stop(TEXT("test finished"));
 		return false;
 	}
-	SendLine(Client, TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
-		TEXT("\"host\":\"evaluation-test\",\"scene_fps\":24,\"time_unit\":\"film\"}"));
-	TestTrue(TEXT("the client is greeted"), WaitFor([&Session]() { return Session.IsGreeted(); }));
-
-	// One report line for a publication, with every field taken from that publication.
-	auto PoseLine = [Sequence](const TSharedPtr<FJsonObject>& Published,
-		int64 ReportSession, int64 ReportSerial, double MayaOrigin, double PoseValue)
+	if (!TestTrue(TEXT("the client is greeted"), GreetLoopbackClient(Session, *Client)))
 	{
-		const TSharedPtr<FJsonObject> Time = GetObject(Published, TEXT("time"));
-		const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
-		const double DisplayFrame = GetNumber(Time, TEXT("display_frame"), 0.0);
-		// Equal rates with the fixture's playback start of 1001.
-		const double MayaFrame = MayaOrigin + (DisplayFrame - 1001.0);
-		return FString::Printf(
-			TEXT("{\"type\":\"applied\",\"session\":%lld,\"sequence\":\"%s\",\"frame_serial\":%lld,")
-			TEXT("\"eval_serial\":%lld,\"eval_identity\":\"%s\",\"maya_frame\":%.9f,")
-			TEXT("\"unreal_display_frame\":%.9f,\"unreal_camera_path\":\"%s\",")
-			TEXT("\"maya_origin_frame\":%.9f,\"status\":\"applied\",\"detail\":[],\"camera\":{},")
-			TEXT("\"markers\":[],\"pose\":{\"sampled_maya_frame\":%.9f,\"translate_x\":%.9f}}"),
-			ReportSession, *Sequence->GetName(), ReportSerial,
-			static_cast<int64>(GetNumber(Published, TEXT("eval_serial"), 0.0)),
-			*Published->GetStringField(TEXT("eval_identity")),
-			MayaFrame, DisplayFrame, *Camera->GetStringField(TEXT("path")),
-			MayaOrigin, MayaFrame, PoseValue);
-	};
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
 
 	const TSharedPtr<FJsonObject> FirstFrame = Session.GetLastPublishedFrame();
 	if (!TestTrue(TEXT("the first target is published"), FirstFrame.IsValid()))
@@ -751,7 +818,7 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 
 	const int64 PairedBeforeSlowReport = Session.GetPairedPoseCount();
 	Session.HandleClientLine(
-		PoseLine(FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
+		MakePoseLine(*Sequence, FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
 	TestEqual(TEXT("a slow report for the current target pairs"),
 		Session.GetPairedPoseCount(), PairedBeforeSlowReport + 1);
 	TestTrue(TEXT("the witness carries the paired value"),
@@ -759,7 +826,7 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the current target is paired"), Session.IsCurrentTargetPaired());
 
 	Session.HandleClientLine(
-		PoseLine(FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
+		MakePoseLine(*Sequence, FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
 	TestEqual(TEXT("a replayed publication never pairs twice"),
 		Session.GetPairedPoseCount(), PairedBeforeSlowReport + 1);
 
@@ -780,9 +847,9 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 
 	const int64 RejectedBeforeJump = Session.GetRejectedPoseCount();
 	Session.SetDisplayFrame(1030.0);
-	SendLine(Client, PoseLine(InFlightFrame, Session.GetConnectionSessionId(), InFlightSerial, 1001.0, 7.0));
+	SendLoopbackLine(*Client, MakePoseLine(*Sequence, InFlightFrame, Session.GetConnectionSessionId(), InFlightSerial, 1001.0, 7.0));
 	TestTrue(TEXT("a report the timeline has left is refused before the new frame is published"),
-		WaitFor([&Session, RejectedBeforeJump]()
+		PumpUntil(Session, [&Session, RejectedBeforeJump]()
 		{
 			return Session.GetRejectedPoseCount() > RejectedBeforeJump;
 		}));
@@ -806,7 +873,7 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 
 	// The final target converges once its own report arrives.
 	const int64 PairedBeforeConvergence = Session.GetPairedPoseCount();
-	Session.HandleClientLine(PoseLine(SecondFrame, Session.GetConnectionSessionId(),
+	Session.HandleClientLine(MakePoseLine(*Sequence, SecondFrame, Session.GetConnectionSessionId(),
 		static_cast<int64>(GetNumber(SecondFrame, TEXT("frame_serial"), -1.0)), 1001.0, 9.0));
 	TestEqual(TEXT("the final target converges"), Session.GetPairedPoseCount(),
 		PairedBeforeConvergence + 1);
@@ -818,38 +885,35 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 	// condition (generation, serial, time, camera) is valid, and the same report pairs
 	// once it carries the current session identity.
 	const int64 OldSessionId = Session.GetConnectionSessionId();
-	Client->Close();
-	Sockets->DestroySocket(Client);
-	Client = nullptr;
-	TestTrue(TEXT("the first connection is dropped"), WaitFor([&Session]()
+	CloseLoopbackClient(Client);
+	TestTrue(TEXT("the first connection is dropped"), PumpUntil(Session, [&Session]()
 	{
 		return !Session.HasClient();
 	}));
 
 	FSocket* SecondClient = nullptr;
-	if (!TestTrue(TEXT("a second client connects"), ConnectClient(SecondClient)))
+	if (!TestTrue(TEXT("a second client connects"), ConnectLoopbackClient(Config.Port, SecondClient)))
 	{
 		Session.Stop(TEXT("test finished"));
 		return false;
 	}
-	SendLine(SecondClient, TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
+	SendLoopbackLine(*SecondClient, TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
 		TEXT("\"host\":\"evaluation-test\",\"scene_fps\":24,\"time_unit\":\"film\"}"));
-	TestTrue(TEXT("the second connection is greeted and publishes"), WaitFor([&Session, OldSessionId]()
+	TestTrue(TEXT("the second connection is greeted and publishes"), PumpUntil(Session, [&Session, OldSessionId]()
 	{
 		return Session.HasClient() && Session.GetConnectionSessionId() == OldSessionId + 1
 			&& Session.GetLastPublishedFrame().IsValid();
-	}, 0.12));
+	}, 200, 0.12));
 
 	const TSharedPtr<FJsonObject> ReconnectedFrame = Session.GetLastPublishedFrame();
 	if (!TestTrue(TEXT("the new connection has a published frame"), ReconnectedFrame.IsValid()))
 	{
-		SecondClient->Close();
-		Sockets->DestroySocket(SecondClient);
+		CloseLoopbackClient(SecondClient);
 		Session.Stop(TEXT("test finished"));
 		return false;
 	}
 	const int64 RejectedBeforeOldSession = Session.GetRejectedPoseCount();
-	Session.HandleClientLine(PoseLine(ReconnectedFrame, OldSessionId,
+	Session.HandleClientLine(MakePoseLine(*Sequence, ReconnectedFrame, OldSessionId,
 		static_cast<int64>(GetNumber(ReconnectedFrame, TEXT("frame_serial"), -1.0)), 1001.0, 3.0));
 	TestEqual(TEXT("a former connection's report is refused with every other condition valid"),
 		Session.GetRejectedPoseCount(), RejectedBeforeOldSession + 1);
@@ -857,13 +921,219 @@ bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
 		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 9.0, 1e-6));
 
 	const int64 PairedBeforeCurrentSession = Session.GetPairedPoseCount();
-	Session.HandleClientLine(PoseLine(ReconnectedFrame, Session.GetConnectionSessionId(),
+	Session.HandleClientLine(MakePoseLine(*Sequence, ReconnectedFrame, Session.GetConnectionSessionId(),
 		static_cast<int64>(GetNumber(ReconnectedFrame, TEXT("frame_serial"), -1.0)), 1001.0, 3.0));
 	TestEqual(TEXT("the same report pairs with the current session identity"),
 		Session.GetPairedPoseCount(), PairedBeforeCurrentSession + 1);
 
-	SecondClient->Close();
-	Sockets->DestroySocket(SecondClient);
+	CloseLoopbackClient(SecondClient);
+	Session.Stop(TEXT("test finished"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncCameraContentTest,
+	"MtoUCameraSyncPrototype.CameraContentIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The evaluation identity covers the camera content, not only the sequence time and the
+ * camera object: editing the camera that is already selected (transform, focal length)
+ * starts a new generation, so a report for the previous content cannot converge it, and
+ * the report that answers the changed content is applied. It also fixes the identity
+ * precision inside a tick, and shows that a pose edited at the same frame reaches Unreal
+ * on the next heartbeat of an unchanged target.
+ */
+bool FMtoUCameraSyncCameraContentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+	ACineCameraActor* Camera = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+	AActor* Witness = SpawnMarker(*Fixture.World, TEXT("content witness"), FVector::ZeroVector);
+	if (!TestNotNull(TEXT("camera"), Camera) || !TestNotNull(TEXT("pose witness"), Witness))
+	{
+		return false;
+	}
+	Witness->Tags.Remove(FName(MarkerTagName));
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *Camera, TEXT("CamA")),
+		1001 * 1000, 1051 * 1000);
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	if (!TestTrue(TEXT("loopback port reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	Session.SetPoseWitnessTarget(Witness);
+	Session.SetDisplayFrame(1001.0);
+
+	FSocket* Client = nullptr;
+	if (!TestTrue(TEXT("a synthetic client connects"), ConnectLoopbackClient(Config.Port, Client)))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	if (!TestTrue(TEXT("the client is greeted"), GreetLoopbackClient(Session, *Client)))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> FirstFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the first target is published"), FirstFrame.IsValid()))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 FirstEvalSerial =
+		static_cast<int64>(GetNumber(FirstFrame, TEXT("eval_serial"), -1.0));
+	const FString FirstIdentity = FirstFrame->GetStringField(TEXT("eval_identity"));
+	TestTrue(TEXT("the first target carries an evaluation serial"), FirstEvalSerial >= 1);
+
+	// A rebuild of the same target publishes the identity the receipts are judged against:
+	// the digest is stable while nothing about the published camera changes.
+	FMtoUCameraSyncFrameSample Rebuild;
+	if (TestTrue(TEXT("the target rebuilds"), Session.BuildCurrentFrame(Rebuild, Error)))
+	{
+		TestEqual(TEXT("an unchanged camera keeps the evaluation identity"),
+			Rebuild.EvalIdentity, FirstIdentity);
+	}
+
+	Session.HandleClientLine(MakePoseLine(*Sequence, FirstFrame,
+		Session.GetConnectionSessionId(),
+		static_cast<int64>(GetNumber(FirstFrame, TEXT("frame_serial"), -1.0)), 1001.0, 5.0));
+	TestTrue(TEXT("the first target converges"), Session.IsCurrentTargetPaired());
+	TestTrue(TEXT("the witness carries the first value"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 5.0, 1e-6));
+
+	// A fresh, still unpaired publication of that unchanged content is in flight when the
+	// camera is edited, so the refusal below cannot be explained by a replayed serial.
+	Session.Pump(0.2);
+	const TSharedPtr<FJsonObject> InFlightFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("an in-flight publication exists"), InFlightFrame.IsValid()))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 InFlightSerial =
+		static_cast<int64>(GetNumber(InFlightFrame, TEXT("frame_serial"), -1.0));
+	TestTrue(TEXT("the in-flight publication carries a fresh serial"),
+		InFlightSerial > static_cast<int64>(GetNumber(FirstFrame, TEXT("frame_serial"), -1.0)));
+	TestEqual(TEXT("the in-flight publication repeats the generation"),
+		static_cast<int64>(GetNumber(InFlightFrame, TEXT("eval_serial"), -1.0)), FirstEvalSerial);
+
+	// Same sequence time, same camera object, edited content.
+	Camera->GetCineCameraComponent()->SetCurrentFocalLength(85.0f);
+	Camera->SetActorLocation(FVector(120.0, 0.0, 100.0));
+	Session.Pump(0.2);
+	const TSharedPtr<FJsonObject> ChangedFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the changed content is published"), ChangedFrame.IsValid()))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const FString ChangedIdentity = ChangedFrame->GetStringField(TEXT("eval_identity"));
+	const int64 ChangedEvalSerial =
+		static_cast<int64>(GetNumber(ChangedFrame, TEXT("eval_serial"), -1.0));
+	TestTrue(TEXT("editing the evaluated camera starts a new generation"),
+		ChangedEvalSerial > FirstEvalSerial);
+	TestTrue(TEXT("the changed content has its own identity"), ChangedIdentity != FirstIdentity);
+	TestFalse(TEXT("the changed target is not the one that converged"),
+		Session.IsCurrentTargetPaired());
+
+	const int64 RejectedBeforeStaleContent = Session.GetRejectedPoseCount();
+	Session.HandleClientLine(MakePoseLine(*Sequence, InFlightFrame,
+		Session.GetConnectionSessionId(), InFlightSerial, 1001.0, 6.0));
+	TestEqual(TEXT("a report for the previous camera content is refused"),
+		Session.GetRejectedPoseCount(), RejectedBeforeStaleContent + 1);
+	TestTrue(TEXT("the refused report cannot move the witness"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 5.0, 1e-6));
+
+	const int64 PairedBeforeNewContent = Session.GetPairedPoseCount();
+	Session.HandleClientLine(MakePoseLine(*Sequence, ChangedFrame,
+		Session.GetConnectionSessionId(),
+		static_cast<int64>(GetNumber(ChangedFrame, TEXT("frame_serial"), -1.0)), 1001.0, 7.5));
+	TestEqual(TEXT("the changed content converges with its own report"),
+		Session.GetPairedPoseCount(), PairedBeforeNewContent + 1);
+	TestTrue(TEXT("the new value reaches the witness"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 7.5, 1e-6));
+	TestTrue(TEXT("the changed content is paired"), Session.IsCurrentTargetPaired());
+
+	// Identity precision inside a tick: half a tick later (0.0005 display frames at 24 fps)
+	// is a different target although the published camera content is unchanged.
+	Session.SetDisplayFrame(1001.0005);
+	Session.Pump(0.2);
+	const TSharedPtr<FJsonObject> SubTickFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the sub-tick position is published"), SubTickFrame.IsValid()))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const FString SubTickIdentity = SubTickFrame->GetStringField(TEXT("eval_identity"));
+	TestTrue(TEXT("the identity carries the documented time segment"),
+		EvalIdentityTickPart(ChangedIdentity) == TEXT("@1001000"));
+	TestTrue(TEXT("the identity carries a content digest"),
+		EvalIdentityDigestPart(ChangedIdentity).Len() > 20);
+	TestTrue(TEXT("a sub-tick move inside one tick starts a new generation"),
+		static_cast<int64>(GetNumber(SubTickFrame, TEXT("eval_serial"), -1.0)) > ChangedEvalSerial);
+	TestTrue(TEXT("a sub-tick move changes the identity"), SubTickIdentity != ChangedIdentity);
+	TestEqual(TEXT("a sub-tick move stays inside the same tick"),
+		EvalIdentityTickPart(SubTickIdentity), EvalIdentityTickPart(ChangedIdentity));
+	TestEqual(TEXT("a sub-tick move keeps the content digest regardless of the milli-tick"),
+		EvalIdentityDigestPart(SubTickIdentity), EvalIdentityDigestPart(ChangedIdentity));
+
+	// A pose edited in Maya at the very same frame: the next heartbeat repeats the target
+	// and its generation, and the report that carries the new value has to be applied.
+	Session.Pump(0.2);
+	const TSharedPtr<FJsonObject> HeartbeatFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("a heartbeat of the sub-tick target exists"), HeartbeatFrame.IsValid()))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	TestEqual(TEXT("the heartbeat keeps the generation of the edited-pose target"),
+		static_cast<int64>(GetNumber(HeartbeatFrame, TEXT("eval_serial"), -1.0)),
+		static_cast<int64>(GetNumber(SubTickFrame, TEXT("eval_serial"), -1.0)));
+	TestTrue(TEXT("the heartbeat carries a fresh serial"),
+		static_cast<int64>(GetNumber(HeartbeatFrame, TEXT("frame_serial"), -1.0))
+			> static_cast<int64>(GetNumber(SubTickFrame, TEXT("frame_serial"), -1.0)));
+	const int64 PairedBeforeEdit = Session.GetPairedPoseCount();
+	const int64 RejectedBeforeEdit = Session.GetRejectedPoseCount();
+	Session.HandleClientLine(MakePoseLine(*Sequence, HeartbeatFrame,
+		Session.GetConnectionSessionId(),
+		static_cast<int64>(GetNumber(HeartbeatFrame, TEXT("frame_serial"), -1.0)), 1001.0, 12.5));
+	TestEqual(TEXT("the report of an edited pose is accepted"),
+		Session.GetPairedPoseCount(), PairedBeforeEdit + 1);
+	TestEqual(TEXT("the edited pose is not mistaken for a stale report"),
+		Session.GetRejectedPoseCount(), RejectedBeforeEdit);
+	TestTrue(TEXT("the edited pose reaches the witness"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 12.5, 1e-6));
+
+	CloseLoopbackClient(Client);
 	Session.Stop(TEXT("test finished"));
 	return true;
 }
@@ -881,6 +1151,157 @@ bool FMtoUCameraSyncTrailingByteTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("one anomalous client line"), Session.GetClientLineAnomalyCount(), 1ll);
 	TestEqual(TEXT("the trailing character is two UTF-8 bytes"),
 		Session.GetClientTrailingByteCount(), 2ll);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncClientBufferTest,
+	"MtoUCameraSyncPrototype.ClientBufferBounds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The receive path has to keep making progress on the lines it already buffered (a burst
+ * larger than the per-pump budget drains even after the sender goes silent), hold a line
+ * that arrives in pieces until its terminator, bound the bytes it buffers by failing a
+ * message that never terminates, and start a new connection with an empty buffer.
+ */
+bool FMtoUCameraSyncClientBufferTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+	ACineCameraActor* Camera = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+	if (!TestNotNull(TEXT("camera"), Camera))
+	{
+		return false;
+	}
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *Camera, TEXT("CamA")),
+		1001 * 1000, 1051 * 1000);
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	if (!TestTrue(TEXT("loopback port reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	Session.SetDisplayFrame(1001.0);
+
+	FSocket* Client = nullptr;
+	if (!TestTrue(TEXT("a synthetic client connects"), ConnectLoopbackClient(Config.Port, Client)))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	if (!TestTrue(TEXT("the client is greeted"), GreetLoopbackClient(Session, *Client)))
+	{
+		CloseLoopbackClient(Client);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+
+	// One burst well past the 64-line budget, followed by silence: the remainder is
+	// already buffered and must be handled without any further network input.
+	const int32 BurstLines = 65;
+	const int64 LinesBeforeBurst = Session.GetClientLinesProcessed();
+	const int32 ReportsBeforeBurst = Session.GetAppliedReports().Num();
+	FString Burst;
+	Burst.Reserve(BurstLines * 13);
+	for (int32 Index = 0; Index < BurstLines; ++Index)
+	{
+		Burst += TEXT("{\"type\":\"applied\"}\n");
+	}
+	const FTCHARToUTF8 BurstUtf8(*Burst);
+	if (TestTrue(TEXT("the burst is sent"), SendLoopbackBytes(*Client,
+		reinterpret_cast<const uint8*>(BurstUtf8.Get()), BurstUtf8.Length())))
+	{
+		PumpUntil(Session, [&Session, LinesBeforeBurst, BurstLines]()
+		{
+			return Session.GetClientLinesProcessed() >= LinesBeforeBurst + BurstLines;
+		});
+		TestEqual(TEXT("every line of the silent burst is processed"),
+			Session.GetClientLinesProcessed(), LinesBeforeBurst + BurstLines);
+		TestEqual(TEXT("every line of the burst reached the session"),
+			Session.GetAppliedReports().Num(), ReportsBeforeBurst + BurstLines);
+	}
+
+	// A line that arrives in two pieces is held until its terminator.
+	const int64 LinesBeforeFragment = Session.GetClientLinesProcessed();
+	TestTrue(TEXT("the first fragment is sent"),
+		SendLoopbackBytes(*Client, reinterpret_cast<const uint8*>("{\"type\":\"app"), 12));
+	Session.Pump(0.02);
+	TestEqual(TEXT("an incomplete line is not handled"),
+		Session.GetClientLinesProcessed(), LinesBeforeFragment);
+	TestTrue(TEXT("the rest of the fragmented line is sent"),
+		SendLoopbackLine(*Client, TEXT("lied\"}")));
+	PumpUntil(Session, [&Session, LinesBeforeFragment]()
+	{
+		return Session.GetClientLinesProcessed() > LinesBeforeFragment;
+	}, 40);
+	TestEqual(TEXT("the fragmented line is handled once it is complete"),
+		Session.GetClientLinesProcessed(), LinesBeforeFragment + 1);
+
+	// A message that never terminates inside the cap fails the session closed instead of
+	// growing the receive buffer with whatever the client streams.
+	int32 Flooded = 0;
+	const int32 FloodBytes = 68 * 1024;
+	TArray<uint8> FloodChunk;
+	FloodChunk.Init(uint8(TEXT('A')), 4096);
+	bool bFloodSent = true;
+	while (Flooded < FloodBytes && Session.HasClient() && bFloodSent)
+	{
+		bFloodSent = SendLoopbackBytes(*Client, FloodChunk.GetData(), FloodChunk.Num());
+		Flooded += FloodChunk.Num();
+		Session.Pump(0.02);
+	}
+	TestFalse(TEXT("the flood kept the sender connected until the session refused it"),
+		bFloodSent && Session.HasClient());
+	const bool bDropped = PumpUntil(Session, [&Session]() { return !Session.HasClient(); }, 60);
+	TestTrue(TEXT("the flooding client is dropped"), bDropped);
+	TestTrue(TEXT("the oversize message is reported"),
+		Session.GetLastError().Contains(TEXT("CLIENT_MESSAGE_TOO_LARGE")));
+	TestEqual(TEXT("the flood is not mistaken for client lines"),
+		Session.GetClientLinesProcessed(), LinesBeforeFragment + 1);
+	CloseLoopbackClient(Client);
+
+	// The partial input belonged to the connection that sent it: a new client starts with
+	// an empty buffer and its own session identity.
+	const int64 SessionIdBefore = Session.GetConnectionSessionId();
+	FSocket* Second = nullptr;
+	if (TestTrue(TEXT("a second client connects"), ConnectLoopbackClient(Config.Port, Second)))
+	{
+		TestTrue(TEXT("the second client is greeted"), GreetLoopbackClient(Session, *Second));
+		TestEqual(TEXT("the new connection has its own identity"),
+			Session.GetConnectionSessionId(), SessionIdBefore + 1);
+		const int64 LinesBeforeSecond = Session.GetClientLinesProcessed();
+		TestTrue(TEXT("the second client can report"),
+			SendLoopbackLine(*Second, TEXT("{\"type\":\"applied\"}")));
+		PumpUntil(Session, [&Session, LinesBeforeSecond]()
+		{
+			return Session.GetClientLinesProcessed() > LinesBeforeSecond;
+		}, 40);
+		TestEqual(TEXT("a line of the new connection is handled"),
+			Session.GetClientLinesProcessed(), LinesBeforeSecond + 1);
+		CloseLoopbackClient(Second);
+	}
+
+	Session.Stop(TEXT("test finished"));
 	return true;
 }
 

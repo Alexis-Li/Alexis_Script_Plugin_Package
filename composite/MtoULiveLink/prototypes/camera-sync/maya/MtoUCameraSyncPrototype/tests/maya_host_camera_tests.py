@@ -248,6 +248,42 @@ def main(argv=None):
         check("witness keys are untouched",
               int(cmds.keyframe(witness, query=True, keyframeCount=True) or 0) == 2)
 
+        # The publisher's heartbeat repeats an unchanged target. A pose keyed at the very
+        # frame the session sits on has to reach Unreal on the next report instead of
+        # leaving the previous value converged.
+        heartbeat_witness = cmds.createNode("transform", name="MtoUHeartbeatWitness")
+        cmds.setKeyframe(heartbeat_witness, attribute="translateX",
+                         time=playback["start"], value=1.0)
+        cmds.setKeyframe(heartbeat_witness, attribute="translateX",
+                         time=playback["end"], value=5.0)
+        follower.pose_node = heartbeat_witness
+        edited_frame = float(cmds.currentTime(query=True))
+        cmds.setKeyframe(heartbeat_witness, attribute="translateX",
+                         time=edited_frame, value=42.0)
+        # setKeyframe leaves the graph unevaluated until the time changes.
+        cmds.currentTime(edited_frame - 1.0)
+        cmds.currentTime(edited_frame)
+        heartbeat = json.loads(json.dumps(frame))
+        heartbeat["frame_serial"] = frame["frame_serial"] + 1
+        updated = follower.apply_frame(heartbeat, follower.session)
+        checks.record("heartbeat_report", {
+            "frame_serial": updated.get("frame_serial"),
+            "eval_serial": updated.get("eval_serial"),
+            "eval_identity": updated.get("eval_identity"),
+            "status": updated.get("status"),
+            "pose": updated.get("pose"),
+            "detail": updated.get("detail")})
+        check("the heartbeat report is applied", updated["status"] == "applied",
+              str(updated.get("detail")))
+        check("the heartbeat repeats the target and advances the transport serial",
+              updated["eval_identity"] == frame["eval_identity"] and
+              updated["eval_serial"] == frame["eval_serial"] and
+              updated["frame_serial"] == frame["frame_serial"] + 1)
+        check("a pose edited at the same frame is reported by the next heartbeat",
+              updated["pose"]["translate_x"] == 42.0, str(updated.get("pose")))
+        checks.close("the edited pose is sampled at the applied Maya time",
+                     updated["pose"]["sampled_maya_frame"], applied["maya_frame"])
+
         # A rejected frame must leave the camera exactly as it was.
         broken = json.loads(json.dumps(frame))
         del broken["camera"]["focal_length_mm"]

@@ -6,10 +6,12 @@ the Unreal time. The editor mode follows the user's open Sequencer. An opt-in
 test peer samples one keyed Maya joint and returns a pose witness with the
 camera frame identity; Unreal only applies a matching witness to a disposable
 actor. The prototype protocol is **v2**: frames carry an evaluation identity
-(`eval_serial`, `eval_identity`) that is separate from the transport serial, so
-a slow report for a still-current paused target still pairs and acceptance
-requires the final target to converge. This verifies a small paused-frame loop,
-not product pose streaming or continuous playback.
+(`eval_serial`, `eval_identity`) that is separate from the transport serial. The
+identity names the sequence time at milli-tick precision and the published
+content of the evaluated camera, so a slow report for a still-current paused
+target still pairs, while editing that camera at the same time starts a new
+target, and acceptance requires the final target to converge. This verifies a
+small paused-frame loop, not product pose streaming or continuous playback.
 
 This is verification scaffolding, not a product. It does not change the
 MtoULiveLink product, its protocol (v9), its packages, or its supported
@@ -98,8 +100,9 @@ playback ranges on either side, and no client message can move the Unreal time.
   evaluation identity, serial, camera and time. Old, duplicate and mismatched
   reports cannot move the disposable Unreal witness actor; reconnects receive a
   new identity, and heartbeats for an unchanged target never invalidate a
-  report that is in flight. A stopped timeline has to converge: the target that
-  is current when following ends must have been answered.
+  report that is in flight, yet still carry a pose that was edited at the parked
+  frame. A stopped timeline has to converge: the target that is current when
+  following ends must have been answered.
 - World transform, focal length, film back, film offsets, film fit, f-stop,
   focus distance, depth-of-field enablement, near clip, and the Maya resolution
   gate, which follows the film aperture's pixel extent rather than the full
@@ -134,9 +137,14 @@ intact, zero failed sends, and that the final evaluation target converged within
 a bounded wait. A deliberately malformed multibyte suffix is also checked for an
 exact UTF-8 byte count.
 
-Per pump, Unreal processes at most 64 client lines with the remainder left in
-the receive buffer, and its report evidence queue is capped; both bounds keep a
-slow or flooding client from turning one editor tick into unbounded work.
+Per pump, Unreal drains the complete client lines it has already buffered before
+reading the socket (at most 64 lines, 256 KiB received) and buffers no more than
+one message plus one read; a message longer than 64 KiB without a complete line
+fails the session closed instead of growing the buffer, and a dropped connection
+discards its partial line. The report evidence queue is capped as well. Both
+bounds keep a slow or flooding client from turning one editor tick into
+unbounded work, and the buffered remainder still drains when the sender has gone
+silent.
 
 ## Related records
 

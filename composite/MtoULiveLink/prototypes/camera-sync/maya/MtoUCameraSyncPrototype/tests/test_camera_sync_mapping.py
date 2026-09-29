@@ -470,7 +470,7 @@ def frame_payload(**overrides):
         "sequence": 1,
         "frame_serial": 7,
         "eval_serial": 3,
-        "eval_identity": "MtoU_CameraSync@24000/CineCameraActor",
+        "eval_identity": "MtoU_CameraSync@24000+000/CineCameraActor#fixture-content",
         "time": {"display_frame": 130.0, "seconds": 1.0, "source_frame": 130,
                  "tick": 24000, "display_rate": {"numerator": 30, "denominator": 1}},
         "camera_cut": {"camera": "CineCameraActor", "stage": "root"},
@@ -533,7 +533,7 @@ class ValidationTest(unittest.TestCase):
             self.assertIn(field, caught.exception.detail)
         self.assertEqual(
             mapping.validate_message(frame_payload())["eval_identity"],
-            "MtoU_CameraSync@24000/CineCameraActor")
+            "MtoU_CameraSync@24000+000/CineCameraActor#fixture-content")
 
     def test_evaluation_identity_must_be_a_non_empty_string(self):
         for value in ("", 7, None, ["id"]):

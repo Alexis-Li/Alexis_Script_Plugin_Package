@@ -62,9 +62,23 @@ even when every other identity field is current.
 `frame_serial` counts publications and always increases, including heartbeats
 that repeat an unchanged target. `eval_serial` counts **evaluation targets**:
 it increases only when the sampled target actually changes (a jump, a camera
-cut, a shot change, a different sequence time or a different evaluated camera).
+cut, a shot change, a different evaluated camera, or different content on the
+camera being evaluated, including an edit made while the timeline is paused).
 `eval_identity` is the readable form of that target:
-`<sequence>@<tick>/<camera object path>`.
+
+```
+<sequence>@<tick>+<milli-tick>/<camera object path>#<camera content>
+```
+
+- `<tick>` and `<milli-tick>` are the target time in the sequence's tick
+  resolution, so the identity distinguishes times inside one tick at
+  **1/1000 tick** precision; times closer than that are the same target.
+- `<camera content>` is a canonical text of every camera value the `frame`
+  message publishes (transform, lens, filmback, offsets, clip planes, depth of
+  field), formatted at 1e-6 of the payload's own unit. Editing the camera that
+  is already selected at the sequence time that is already sampled therefore
+  starts a new generation, and a report for the previous content is refused
+  like a report for a different time. Hosts treat the whole string as opaque.
 
 A keyed-joint witness is paired when its report answers the target sampled for
 the current pump:
@@ -85,10 +99,20 @@ the current pump:
 - Acceptance is convergence, not one lucky pair: after the timeline stops, the
   target that is current must be answered within a bounded wait. `eval_serial`
   and `last_paired_eval_serial` expose that condition, and the tests assert it.
-- Transport work is bounded per pump (64 client lines; the remainder stays in
-  the receive buffer for the next tick) and the report evidence queue is capped
-  (512 entries, evictions counted as `applied_reports_dropped`), so a slow or
-  flooding client cannot grow an unbounded backlog of stale targets.
+- A client at the same frame may report again for a later publication: the pose
+  it carries is re-read from Maya, so editing a joint's animation at the parked
+  frame reaches Unreal on the next heartbeat of the unchanged target.
+- Transport work is bounded per pump, and the bounds are structural rather than
+  best-effort. Unreal consumes the complete lines that are already buffered
+  *before* it reads the socket, so a burst larger than the per-pump line budget
+  (64 lines) keeps draining on later pumps even when the sender has gone silent.
+  One pump receives at most 256 KiB and buffers at most one message plus one
+  read (4 KiB); a message that exceeds 64 KiB without a complete line fails the
+  session closed with `CLIENT_MESSAGE_TOO_LARGE` instead of growing the buffer,
+  and a dropped connection discards its partial line. The report evidence queue
+  is capped at 512 entries and counts its evictions
+  (`applied_reports_dropped`), so a slow or flooding client cannot turn one
+  editor tick into unbounded work or an unbounded backlog of stale targets.
 
 ## Time model
 

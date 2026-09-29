@@ -91,10 +91,21 @@ bool ExtractFirstJsonObject(const FString& Line, FString& OutObject)
  * the pose witness.
  */
 const int32 ProtocolVersion = 2;
-/** Bounded transport work per pump; the remainder is processed on the next tick. */
+/**
+ * Bounded transport work per pump. Complete buffered lines are drained before every
+ * receive, so a burst larger than this budget keeps draining on later pumps even when the
+ * sender goes silent afterwards.
+ */
 const int32 MaxClientLinesPerPump = 64;
+/** Bytes one pump may receive, so a flooding client cannot turn an editor tick into unbounded work. */
+const int32 MaxClientBytesPerPump = 256 * 1024;
+/** A client message may not exceed this many UTF-8 bytes; a longer one fails the session closed. */
+const int32 MaxClientMessageBytes = 64 * 1024;
+/** One socket read; the receive buffer holds at most one maximum message plus a read. */
+const int32 MaxClientReceiveChunkBytes = 4096;
 /** Bounded evidence queue; evictions are counted instead of growing without limit. */
 const int32 MaxStoredAppliedReports = 512;
+const uint8 NewlineByte = 0x0A;
 
 FString FrameTimeToJsonLine(const TSharedRef<FJsonObject>& Object)
 {
@@ -254,6 +265,15 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 		SendJson(End);
 		DropClient();
 	}
+	// Connections the listener queued but the game thread never adopted.
+	FPendingClient Pending;
+	while (PendingClients.Dequeue(Pending))
+	{
+		if (Pending.Socket)
+		{
+			DestroyClientSocket(*Pending.Socket);
+		}
+	}
 	if (Listener)
 	{
 		Listener->Stop();
@@ -330,6 +350,7 @@ void FMtoUCameraSyncSession::Pump(double DeltaSeconds)
 		ApplyTimeToPlayer();
 	}
 	RefreshEvalTarget();
+	AdoptPendingClients();
 	ReadClientLines();
 
 	if (bGreeted)
@@ -360,10 +381,18 @@ void FMtoUCameraSyncSession::ApplyTimeToPlayer()
 	LastAppliedDisplayFrame = CurrentDisplayFrame;
 }
 
-FString FMtoUCameraSyncSession::BuildEvalIdentity(const FMtoUCameraSyncFrameSample& Frame) const
+FString FMtoUCameraSyncSession::BuildEvalIdentity(
+	const FFrameTime& TickTime, const FString& CameraPath, const FString& ContentDigest) const
 {
-	return FString::Printf(TEXT("%s@%lld/%s"),
-		*Frame.SequenceName, Frame.Time.Tick, *Frame.Camera.Path);
+	// The time in the identity is the tick-resolution sampling the report's time fields are
+	// checked against, at milli-tick precision: times closer than one milli-tick are the
+	// same target, and the camera content digest decides everything inside a tick.
+	const int64 Tick = TickTime.GetFrame().Value;
+	const int32 MilliTick = FMath::Clamp(
+		FMath::RoundToInt(TickTime.GetSubFrame() * 1000.0f), 0, 999);
+	return FString::Printf(TEXT("%s@%lld+%03d/%s#%s"),
+		*Sequence->GetName(), Tick, MilliTick,
+		CameraPath.IsEmpty() ? TEXT("-") : *CameraPath, *ContentDigest);
 }
 
 void FMtoUCameraSyncSession::RefreshEvalTarget()
@@ -392,17 +421,28 @@ void FMtoUCameraSyncSession::RefreshEvalTarget()
 		: ResolvedPlayer->GetActiveCameraComponent();
 	UCameraComponent* Camera = CutCamera ? CutCamera : FallbackCamera.Get();
 
-	FMtoUCameraSyncFrameSample Target;
-	Target.SequenceName = Sequence->GetName();
-	Target.Time.Tick = FFrameRate::TransformTime(Current.Time, Current.Rate, TickResolution).FrameNumber.Value;
-	Target.Camera.Path = Camera ? Camera->GetPathName() : FString();
+	// The target covers the camera *content*, not only its object path: editing the same
+	// camera at the same sequence time (transform, focal length, filmback, offsets) has to
+	// supersede reports for the previous content. The capture is cached, so the frame
+	// published for this pump carries exactly the state the identity was derived from.
+	EvalTargetCamera = Camera;
+	EvalTargetCaptureError.Reset();
+	bEvalTargetCaptured = Camera != nullptr
+		&& FMtoUCameraSyncCapture::CaptureCamera(*Camera, Config.OutputResolution,
+			EvalTargetCameraSample, EvalTargetView, EvalTargetProjection, EvalTargetCaptureError);
+	EvalTargetContentDigest = bEvalTargetCaptured
+		? MtoUCameraSyncCameraContentDigest(EvalTargetCameraSample)
+		: FString(TEXT("none"));
 
-	// A heartbeat repeats a target and keeps its evaluation serial. Only a real jump,
-	// cut or camera change starts a new generation and supersedes in-flight results.
-	const FString Identity = BuildEvalIdentity(Target);
-	if (Identity != PendingEvalIdentity)
+	// A heartbeat repeats a target and keeps its evaluation serial. Only a real jump, cut,
+	// camera change or change of the camera content starts a new generation and supersedes
+	// in-flight results.
+	const FString Identity = BuildEvalIdentity(
+		FFrameRate::TransformTime(Current.Time, Current.Rate, TickResolution),
+		Camera ? Camera->GetPathName() : FString(), EvalTargetContentDigest);
+	if (Identity != EvalTargetIdentity)
 	{
-		PendingEvalIdentity = Identity;
+		EvalTargetIdentity = Identity;
 		++EvalSerial;
 	}
 }
@@ -469,27 +509,64 @@ bool FMtoUCameraSyncSession::HasClient() const
 
 bool FMtoUCameraSyncSession::AcceptClient(FSocket* Socket, const FIPv4Endpoint& Endpoint)
 {
-	if (!bRunning || ClientSocket != nullptr)
-	{
-		const TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
-		Error->SetStringField(TEXT("type"), TEXT("error"));
-		Error->SetStringField(TEXT("category"), TEXT("SESSION_BUSY"));
-		Error->SetStringField(TEXT("detail"), TEXT("one Maya client at a time"));
-		const FString Line = FrameTimeToJsonLine(Error);
-		int32 Sent = 0;
-		const FTCHARToUTF8 Utf8(*Line);
-		Socket->Send(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent);
-		return false;
-	}
-	ClientSocket = Socket;
-	++ConnectionSessionId;
-	LastPairedSerial = 0;
-	LastPairedEvalSerial = 0;
-	LastPublishedFrame.Reset();
-	ClientHost = Endpoint.ToString();
-	ReceiveBytes.Reset();
-	bGreeted = false;
+	// The listener thread owns no session state: it hands the accepted socket to the game
+	// thread, which adopts it or answers SESSION_BUSY in Pump(). Returning true keeps the
+	// socket for that decision instead of letting the listener destroy it.
+	FPendingClient Pending;
+	Pending.Socket = Socket;
+	Pending.Host = Endpoint.ToString();
+	PendingClients.Enqueue(MoveTemp(Pending));
 	return true;
+}
+
+void FMtoUCameraSyncSession::AdoptPendingClients()
+{
+	FPendingClient Pending;
+	while (PendingClients.Dequeue(Pending))
+	{
+		if (!Pending.Socket)
+		{
+			continue;
+		}
+		if (ClientSocket != nullptr)
+		{
+			RefuseClient(*Pending.Socket, TEXT("SESSION_BUSY"), TEXT("one Maya client at a time"));
+			continue;
+		}
+		ClientSocket = Pending.Socket;
+		++ConnectionSessionId;
+		LastPairedSerial = 0;
+		LastPairedEvalSerial = 0;
+		LastPublishedFrame.Reset();
+		ClientHost = Pending.Host;
+		ReceiveBytes.Reset();
+		bGreeted = false;
+	}
+}
+
+void FMtoUCameraSyncSession::RefuseClient(
+	FSocket& Socket, const FString& Category, const FString& Detail)
+{
+	const TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
+	Error->SetStringField(TEXT("type"), TEXT("error"));
+	Error->SetStringField(TEXT("category"), Category);
+	Error->SetStringField(TEXT("detail"), Detail);
+	Error->SetStringField(TEXT("protocol"), ProtocolName);
+	Error->SetNumberField(TEXT("version"), ProtocolVersion);
+	const FString Line = FrameTimeToJsonLine(Error);
+	const FTCHARToUTF8 Utf8(*Line);
+	int32 Sent = 0;
+	Socket.Send(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent);
+	DestroyClientSocket(Socket);
+}
+
+void FMtoUCameraSyncSession::DestroyClientSocket(FSocket& Socket)
+{
+	Socket.Close();
+	if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
+	{
+		Sockets->DestroySocket(&Socket);
+	}
 }
 
 void FMtoUCameraSyncSession::DropClient()
@@ -498,13 +575,12 @@ void FMtoUCameraSyncSession::DropClient()
 	{
 		return;
 	}
-	ClientSocket->Close();
-	if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
-	{
-		Sockets->DestroySocket(ClientSocket);
-	}
+	DestroyClientSocket(*ClientSocket);
 	ClientSocket = nullptr;
 	bGreeted = false;
+	// Partial input belongs to the connection that sent it; a new client must not inherit
+	// half a line from the previous one.
+	ReceiveBytes.Reset();
 }
 
 void FMtoUCameraSyncSession::ReadClientLines()
@@ -519,75 +595,137 @@ void FMtoUCameraSyncSession::ReadClientLines()
 		return;
 	}
 
+	// Complete lines that are already buffered are drained before every receive. A burst
+	// larger than the per-pump line budget therefore keeps draining on later pumps even
+	// when the sender has gone silent, and the receive buffer stays bounded by one
+	// message plus one read.
 	int32 LinesHandled = 0;
-	uint32 Pending = 0;
+	int32 BytesReceived = 0;
 	while (ClientSocket && LinesHandled < MaxClientLinesPerPump)
 	{
-		const bool bHasPendingData = ClientSocket->HasPendingData(Pending) && Pending > 0;
-		if (!bHasPendingData
-			&& !ClientSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::Zero()))
+		if (!DrainBufferedClientLines(LinesHandled))
+		{
+			return;
+		}
+		if (LinesHandled >= MaxClientLinesPerPump || BytesReceived >= MaxClientBytesPerPump)
+		{
+			// The remainder stays buffered for the next pump instead of growing an
+			// unbounded backlog of stale targets inside one editor tick.
+			break;
+		}
+		if (!ReceiveClientBytes(BytesReceived))
 		{
 			break;
 		}
+	}
+}
 
-		uint8 Buffer[4096];
-		int32 Read = 0;
-		if (!ClientSocket->Recv(Buffer, sizeof(Buffer), Read, ESocketReceiveFlags::None))
+bool FMtoUCameraSyncSession::DrainBufferedClientLines(int32& LinesHandled)
+{
+	int32 Consumed = 0;
+	while (LinesHandled < MaxClientLinesPerPump)
+	{
+		int32 NewlineIndex = INDEX_NONE;
+		for (int32 Index = Consumed; Index < ReceiveBytes.Num(); ++Index)
 		{
-			if (!bHasPendingData && Read == 0)
+			if (ReceiveBytes[Index] == NewlineByte)
 			{
-				// Readable with nothing to read is the end of the stream. A client that
-				// closes cleanly leaves the socket readable, and the engine's connection
-				// state keeps reporting it as connected, so the EOF has to be probed.
-				DropClient();
-				return;
-			}
-			break;
-		}
-		if (Read <= 0)
-		{
-			break;
-		}
-		// Frame at the byte level: a multi-byte UTF-8 character can straddle two reads,
-		// so only complete lines are converted to text.
-		ReceiveBytes.Append(Buffer, Read);
-
-		int32 LineStart = 0;
-		for (int32 Index = 0; Index < ReceiveBytes.Num(); ++Index)
-		{
-			if (ReceiveBytes[Index] != 0x0A)
-			{
-				continue;
-			}
-			const int32 Length = Index - LineStart;
-			if (Length > 0)
-			{
-				const FUTF8ToTCHAR Converted(
-					reinterpret_cast<const ANSICHAR*>(ReceiveBytes.GetData() + LineStart), Length);
-				// The converter's buffer is length-delimited, not a C string.
-				FString Line(Converted.Length(), Converted.Get());
-				Line.TrimStartInline();
-				if (Line.EndsWith(TEXT("\r"))) { Line.LeftChopInline(1); }
-				if (!Line.IsEmpty())
-				{
-					HandleClientLine(Line);
-					++LinesHandled;
-					++ClientLinesProcessed;
-				}
-			}
-			LineStart = Index + 1;
-			if (LinesHandled >= MaxClientLinesPerPump)
-			{
-				// The remainder stays buffered for the next pump instead of growing an
-				// unbounded backlog of stale targets inside one editor tick.
+				NewlineIndex = Index;
 				break;
 			}
 		}
-		if (LineStart > 0)
+
+		// A message that carries no complete line inside the cap fails the session closed:
+		// the alternative is a buffer that grows with whatever the client streams.
+		const int32 PendingLength =
+			(NewlineIndex == INDEX_NONE ? ReceiveBytes.Num() : NewlineIndex) - Consumed;
+		if (PendingLength > MaxClientMessageBytes)
 		{
-			ReceiveBytes.RemoveAt(0, LineStart, EAllowShrinking::No);
+			SendError(TEXT("CLIENT_MESSAGE_TOO_LARGE"), FString::Printf(
+				TEXT("a client message exceeded %d bytes without a complete line"),
+				MaxClientMessageBytes));
+			DropClient();
+			return false;
 		}
+		if (NewlineIndex == INDEX_NONE)
+		{
+			break;
+		}
+
+		if (NewlineIndex > Consumed)
+		{
+			// Frame at the byte level: a multi-byte UTF-8 character can straddle two reads,
+			// so only complete lines are converted to text.
+			const FUTF8ToTCHAR Converted(
+				reinterpret_cast<const ANSICHAR*>(ReceiveBytes.GetData() + Consumed),
+				NewlineIndex - Consumed);
+			// The converter's buffer is length-delimited, not a C string.
+			FString Line(Converted.Length(), Converted.Get());
+			Line.TrimStartInline();
+			if (Line.EndsWith(TEXT("\r"))) { Line.LeftChopInline(1); }
+			if (!Line.IsEmpty())
+			{
+				HandleClientLine(Line);
+				++LinesHandled;
+				++ClientLinesProcessed;
+				if (!ClientSocket)
+				{
+					// The line ended the session ("bye" or a refused transport).
+					ReceiveBytes.Reset();
+					return false;
+				}
+			}
+		}
+		Consumed = NewlineIndex + 1;
 	}
+	if (Consumed > 0)
+	{
+		ReceiveBytes.RemoveAt(0, Consumed, EAllowShrinking::No);
+	}
+	return true;
+}
+
+bool FMtoUCameraSyncSession::ReceiveClientBytes(int32& BytesReceived)
+{
+	// The budget bounds one pump, the capacity bounds the buffer: a read is only issued
+	// when both leave room, so no path can grow the buffer past one message plus a read.
+	const int32 ChunkSize = FMath::Min3(
+		MaxClientReceiveChunkBytes,
+		MaxClientBytesPerPump - BytesReceived,
+		MaxClientMessageBytes + MaxClientReceiveChunkBytes - ReceiveBytes.Num());
+	if (ChunkSize <= 0)
+	{
+		return false;
+	}
+
+	uint32 Pending = 0;
+	const bool bHasPendingData = ClientSocket->HasPendingData(Pending) && Pending > 0;
+	if (!bHasPendingData
+		&& !ClientSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::Zero()))
+	{
+		return false;
+	}
+
+	uint8 Buffer[MaxClientReceiveChunkBytes];
+	int32 Read = 0;
+	if (!ClientSocket->Recv(Buffer, ChunkSize, Read, ESocketReceiveFlags::None))
+	{
+		if (!bHasPendingData && Read == 0)
+		{
+			// Readable with nothing to read is the end of the stream. A client that closes
+			// cleanly leaves the socket readable, and the engine's connection state keeps
+			// reporting it as connected, so the EOF has to be probed.
+			DropClient();
+		}
+		return false;
+	}
+	if (Read <= 0)
+	{
+		return false;
+	}
+	ReceiveBytes.Append(Buffer, Read);
+	BytesReceived += Read;
+	return true;
 }
 
 void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
@@ -739,7 +877,7 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 					|| Report.Serial <= 0 || Report.Serial > FrameSerial
 					|| Report.Serial <= LastPairedSerial
 					|| Report.EvalSerial != EvalSerial
-					|| Report.EvalIdentity != PendingEvalIdentity
+					|| Report.EvalIdentity != EvalTargetIdentity
 					|| !FMath::IsNearlyEqual(PublishedDisplayFrame, CurrentDisplayFrame, 1e-5)
 					|| !FMath::IsNearlyEqual(UnrealFrame, PublishedDisplayFrame, 1e-5)
 					|| !FMath::IsNearlyEqual(Report.MayaFrame, ExpectedMayaFrame, 1e-5)
@@ -847,24 +985,26 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 		return false;
 	}
 
-	// The published frame must carry the identity of the target the receipts are
-	// judged against, so it is derived here through the same path.
+	// The published frame has to carry the identity the receipts are judged against, and
+	// the camera content that identity was derived from, so both come from the target
+	// sampled for this pump.
 	RefreshEvalTarget();
-
-	UCameraComponent* CutCamera = Sequencer.IsValid()
-		? Sequencer->GetLastEvaluatedCameraCut().Get()
-		: ResolvedPlayer->GetActiveCameraComponent();
-	UCameraComponent* Camera = CutCamera ? CutCamera : FallbackCamera.Get();
-	if (!Camera)
+	if (!EvalTargetCamera.IsValid())
 	{
 		OutError = TEXT("no camera cut is active and no fallback camera is configured");
+		return false;
+	}
+	if (!bEvalTargetCaptured)
+	{
+		OutError = EvalTargetCaptureError.IsEmpty()
+			? TEXT("the evaluated camera could not be read") : EvalTargetCaptureError;
 		return false;
 	}
 
 	FMtoUCameraSyncFrameSample Frame;
 	Frame.Serial = FrameSerial + 1;
 	Frame.EvalSerial = EvalSerial;
-	Frame.EvalIdentity = PendingEvalIdentity;
+	Frame.EvalIdentity = EvalTargetIdentity;
 	Frame.SequenceName = Sequence->GetName();
 	Frame.SequencePath = Sequence->GetPathName();
 	Frame.OutputResolution = Config.OutputResolution;
@@ -885,17 +1025,15 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 	Frame.Time.Tick = TickTime.FrameNumber.Value;
 
 	Frame.Cut = DescribeCut(Frame.Time.DisplayFrame);
-	if (!Frame.Cut.bActive && CutCamera)
+	if (!Frame.Cut.bActive && EvalTargetCamera.IsValid())
 	{
 		Frame.Cut.bActive = true;
 		Frame.Cut.Stage = TEXT("subsequence");
 	}
 
-	if (!FMtoUCameraSyncCapture::CaptureCamera(
-		*Camera, Config.OutputResolution, Frame.Camera, Frame.View, Frame.Projection, OutError))
-	{
-		return false;
-	}
+	Frame.Camera = EvalTargetCameraSample;
+	Frame.View = EvalTargetView;
+	Frame.Projection = EvalTargetProjection;
 
 	Frame.ApertureResolution = FIntPoint(
 		Frame.Projection.ViewRect.Width(), Frame.Projection.ViewRect.Height());
@@ -912,7 +1050,7 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 		}
 	}
 
-	Frame.EvalIdentity = BuildEvalIdentity(Frame);
+	Frame.EvalIdentity = EvalTargetIdentity;
 	OutFrame = Frame;
 	return true;
 }

@@ -23,6 +23,41 @@ TSharedRef<FJsonObject> MtoUCameraSyncVector(const FVector& Value)
 	Object->SetNumberField(TEXT("z"), Value.Z);
 	return Object;
 }
+
+/** Appends canonical `key=value;` entries in a fixed order; only text equality matters. */
+struct FMtoUCameraSyncDigestBuilder
+{
+	FString Text;
+
+	void Add(const TCHAR* Key, bool Value)
+	{
+		Text += FString::Printf(TEXT("%s=%d;"), Key, Value ? 1 : 0);
+	}
+	void Add(const TCHAR* Key, int32 Value)
+	{
+		Text += FString::Printf(TEXT("%s=%d;"), Key, Value);
+	}
+	void Add(const TCHAR* Key, double Value)
+	{
+		Text += FString::Printf(TEXT("%s=%.6f;"), Key, Value);
+	}
+	void Add(const TCHAR* Key, const FString& Value)
+	{
+		Text += FString::Printf(TEXT("%s=%s;"), Key, *Value);
+	}
+	void Add(const TCHAR* Key, const FVector& Value)
+	{
+		Text += FString::Printf(TEXT("%s=%.6f,%.6f,%.6f;"), Key, Value.X, Value.Y, Value.Z);
+	}
+	void Add(const TCHAR* Key, const FRotator& Value)
+	{
+		Text += FString::Printf(TEXT("%s=%.6f,%.6f,%.6f;"), Key, Value.Pitch, Value.Yaw, Value.Roll);
+	}
+	void Add(const TCHAR* Key, const FVector2D& Value)
+	{
+		Text += FString::Printf(TEXT("%s=%.6f,%.6f;"), Key, Value.X, Value.Y);
+	}
+};
 }  // namespace
 
 FString MtoUCameraSyncAxisConstraintName(uint8 Constraint)
@@ -153,6 +188,77 @@ TSharedRef<FJsonObject> MtoUCameraSyncSerializeCamera(const FMtoUCameraSyncCamer
 	Object->SetNumberField(TEXT("post_process_blend_weight"), Camera.PostProcessBlendWeight);
 	Object->SetObjectField(TEXT("dof"), MtoUCameraSyncSerializeDof(Camera.Dof));
 	return Object;
+}
+
+FString MtoUCameraSyncCameraContentDigest(const FMtoUCameraSyncCameraSample& Camera)
+{
+	// One entry per field MtoUCameraSyncSerializeCamera publishes: any change the client
+	// would apply is a change of the evaluation target, including a same-tick edit of the
+	// camera this frame is already following.
+	FMtoUCameraSyncDigestBuilder Digest;
+	Digest.Add(TEXT("name"), Camera.Name);
+	Digest.Add(TEXT("actor"), Camera.ActorName);
+	Digest.Add(TEXT("component"), Camera.ComponentName);
+	Digest.Add(TEXT("path"), Camera.Path);
+	Digest.Add(TEXT("cine_camera"), Camera.bCineCamera);
+	Digest.Add(TEXT("location"), Camera.LocationCm);
+	Digest.Add(TEXT("rotation"), Camera.Rotation);
+	Digest.Add(TEXT("right"), Camera.Right);
+	Digest.Add(TEXT("up"), Camera.Up);
+	Digest.Add(TEXT("forward"), Camera.Forward);
+	Digest.Add(TEXT("component_location"), Camera.ComponentLocationCm);
+	Digest.Add(TEXT("view_transform_differs"), Camera.bViewTransformDiffers);
+	Digest.Add(TEXT("focal_length_mm"), Camera.FocalLengthMm);
+	Digest.Add(TEXT("horizontal_fov_deg"), Camera.HorizontalFovDeg);
+	Digest.Add(TEXT("vertical_fov_deg"), Camera.VerticalFovDeg);
+	Digest.Add(TEXT("sensor_width_mm"), Camera.SensorWidthMm);
+	Digest.Add(TEXT("sensor_height_mm"), Camera.SensorHeightMm);
+	Digest.Add(TEXT("sensor_aspect_ratio"), Camera.SensorAspectRatio);
+	Digest.Add(TEXT("sensor_horizontal_offset_mm"), Camera.SensorHorizontalOffsetMm);
+	Digest.Add(TEXT("sensor_vertical_offset_mm"), Camera.SensorVerticalOffsetMm);
+	Digest.Add(TEXT("aspect_axis_constraint"), Camera.AspectAxisConstraint);
+	Digest.Add(TEXT("constrain_aspect_ratio"), Camera.bConstrainAspectRatio);
+	Digest.Add(TEXT("rendered_aspect_ratio"), Camera.RenderedAspectRatio);
+	Digest.Add(TEXT("f_stop"), Camera.FStop);
+	Digest.Add(TEXT("focus_method"), Camera.FocusMethod);
+	Digest.Add(TEXT("focus_distance_cm"), Camera.FocusDistanceCm);
+	Digest.Add(TEXT("manual_focus_distance_cm"), Camera.ManualFocusDistanceCm);
+	Digest.Add(TEXT("depth_of_field"), Camera.bDepthOfField);
+	Digest.Add(TEXT("squeeze_factor"), Camera.SqueezeFactor);
+	Digest.Add(TEXT("min_focal_mm"), Camera.MinFocalMm);
+	Digest.Add(TEXT("max_focal_mm"), Camera.MaxFocalMm);
+	Digest.Add(TEXT("min_fstop"), Camera.MinFStop);
+	Digest.Add(TEXT("max_fstop"), Camera.MaxFStop);
+	Digest.Add(TEXT("minimum_focus_distance_cm"), Camera.MinimumFocusDistanceCm);
+	Digest.Add(TEXT("crop_enabled"), Camera.bCropEnabled);
+	Digest.Add(TEXT("crop_aspect_ratio"), Camera.CropAspectRatio);
+	Digest.Add(TEXT("near_clip_cm"), Camera.NearClipCm);
+	Digest.Add(TEXT("near_clip_source"), Camera.NearClipSource);
+	Digest.Add(TEXT("custom_near_clip_cm"), Camera.CustomNearClipCm);
+	Digest.Add(TEXT("override_custom_near_clip"), Camera.bOverrideCustomNearClip);
+	Digest.Add(TEXT("has_far_clip"), Camera.bHasFarClip);
+	Digest.Add(TEXT("far_clip_cm"), Camera.FarClipCm);
+	Digest.Add(TEXT("off_center_projection_offset"), Camera.OffCenterProjectionOffset);
+	Digest.Add(TEXT("overscan"), Camera.Overscan);
+	Digest.Add(TEXT("overscan_resolution_fraction"), Camera.OverscanResolutionFraction);
+	Digest.Add(TEXT("post_process_blend_weight"), Camera.PostProcessBlendWeight);
+	Digest.Add(TEXT("dof_override_focal_distance"), Camera.Dof.bOverrideFocalDistance);
+	Digest.Add(TEXT("dof_focal_distance_cm"), Camera.Dof.FocalDistanceCm);
+	Digest.Add(TEXT("dof_override_fstop"), Camera.Dof.bOverrideFStop);
+	Digest.Add(TEXT("dof_fstop"), Camera.Dof.FStop);
+	Digest.Add(TEXT("dof_override_sensor_width"), Camera.Dof.bOverrideSensorWidth);
+	Digest.Add(TEXT("dof_sensor_width_mm"), Camera.Dof.SensorWidthMm);
+	Digest.Add(TEXT("dof_override_squeeze_factor"), Camera.Dof.bOverrideSqueezeFactor);
+	Digest.Add(TEXT("dof_squeeze_factor"), Camera.Dof.SqueezeFactor);
+	Digest.Add(TEXT("dof_override_min_fstop"), Camera.Dof.bOverrideMinFStop);
+	Digest.Add(TEXT("dof_min_fstop"), Camera.Dof.MinFStop);
+	Digest.Add(TEXT("dof_override_blade_count"), Camera.Dof.bOverrideBladeCount);
+	Digest.Add(TEXT("dof_blade_count"), Camera.Dof.BladeCount);
+	Digest.Add(TEXT("dof_override_depth_blur_radius"), Camera.Dof.bOverrideDepthBlurRadius);
+	Digest.Add(TEXT("dof_depth_blur_radius"), Camera.Dof.DepthBlurRadius);
+	Digest.Add(TEXT("dof_override_depth_blur_amount"), Camera.Dof.bOverrideDepthBlurAmount);
+	Digest.Add(TEXT("dof_depth_blur_amount"), Camera.Dof.DepthBlurAmount);
+	return Digest.Text;
 }
 
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeCut(const FMtoUCameraSyncCutSample& Cut)

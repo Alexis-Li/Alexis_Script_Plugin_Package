@@ -197,6 +197,15 @@ FString MtoUCameraSyncAxisConstraintName(uint8 Constraint);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeFrameRate(const FFrameRate& Rate);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeDof(const FMtoUCameraSyncDofSample& Dof);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeCamera(const FMtoUCameraSyncCameraSample& Camera);
+
+/**
+ * Canonical text of every camera value MtoUCameraSyncSerializeCamera publishes, compared
+ * for equality only. The evaluation identity carries it, so editing the same camera at the
+ * same sequence time (transform, focal length, filmback, offsets, clip planes, depth of
+ * field) starts a new target generation instead of leaving the old content converged.
+ * Formatting precision is 1e-6 of the payload's own unit.
+ */
+FString MtoUCameraSyncCameraContentDigest(const FMtoUCameraSyncCameraSample& Camera);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeCut(const FMtoUCameraSyncCutSample& Cut);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeTime(const FMtoUCameraSyncTimeSample& Time);
 TSharedRef<FJsonObject> MtoUCameraSyncSerializeView(const FMtoUCameraSyncViewSample& View);

@@ -215,9 +215,10 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
         frame = {
             "frame_serial": index + 1,
             "eval_serial": index + 1,
-            "eval_identity": "{0}@{1}/{2}".format(
+            # The documented shape: <sequence>@<tick>+<milli-tick>/<camera path>#<content>.
+            "eval_identity": "{0}@{1}+000/{2}#{3}".format(
                 sequence_name, int(round(display_frame * display_numerator)),
-                "CineCameraActor"),
+                "CineCameraActor", "fixture-camera-content"),
             "repeat": 2,
             "time": {"display_frame": display_frame,
                      "seconds": (display_frame - float(playback_start))
