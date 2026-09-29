@@ -123,10 +123,14 @@ Actor 的配对，在同一预览时间下更新。道具优先复用 Maya 已�
 女主完整身体与仅手臂网格骨架不同，应分别匹配对应 Maya 骨架／目标选项，
 不是 Additional Parts，也不做重定向或假定两者可直接互换。
 
-当前单角色单 Subject 的边界需要显式修订；验证两个不同骨架对象独立连接、
-同步摆姿、缓存操作、断开清理和同名 Morph 隔离后，再扩大数量。
-
-官方能力与待验证部分见 [技术调研](next-stage-research.md)。
+当前产品的单角色单 Subject 契约不允许直接增加道具目标。Issue #54 仅通过
+独立双宿主原型验证实时双对象的独立配对、同帧更新、断开清理、空间摆放与
+Sequencer 接管；缓存只确定共同时间、兼容性、就绪和失败策略，不实施多对象缓存。
+结论、实测状态和限制见
+[验收记录](../../../docs/project-history/mtou-livelink/issue-54-multi-subject-acceptance.md)；
+后续需要修订的单 Subject 契约与最小实施顺序见
+[原型协议](../prototypes/multi-subject/protocol.md)。不得把该原型
+直接当作生产版多角色预览。
 
 Issue #52 的有界验证已完成：双宿主原型从 UE 取得求值相机、切换 Camera Cuts、
 按子序列映射时间并驱动 Maya 时间；标记投影在分析上一致到 1.09e-07 NDC，Maya

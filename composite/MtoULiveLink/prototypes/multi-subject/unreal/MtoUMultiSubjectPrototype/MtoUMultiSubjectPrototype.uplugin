@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0-prototype",
+	"FriendlyName": "MtoU Multi Subject Prototype",
+	"Description": "Bounded two-subject realtime receiver used by the Issue 54 verification: independent Maya roots, strict skeleton identity, shared frame time, explicit preview takeover. Editor-only, standalone from the MtoULiveLink product.",
+	"Category": "Other",
+	"CreatedBy": "Alexis Script Plugin Package",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "MtoUMultiSubjectPrototypeEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "GeometryScripting",
+			"Enabled": true
+		},
+		{
+			"Name": "LevelSequenceEditor",
+			"Enabled": true
+		}
+	]
+}

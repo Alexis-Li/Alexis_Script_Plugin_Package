@@ -15,11 +15,16 @@
     {
       "Name": "MtoUSceneRefPrototype",
       "Enabled": true
+    },
+    {
+      "Name": "MtoUMultiSubjectPrototype",
+      "Enabled": true
     }
   ],
   "AdditionalPluginDirectories": [
     "../composite/MtoULiveLink/unreal",
     "../composite/MtoULiveLink/prototypes/camera-sync/unreal",
-    "../composite/MtoULiveLink/prototypes/scene-reference/unreal"
+    "../composite/MtoULiveLink/prototypes/scene-reference/unreal",
+    "../composite/MtoULiveLink/prototypes/multi-subject/unreal"
   ]
 }

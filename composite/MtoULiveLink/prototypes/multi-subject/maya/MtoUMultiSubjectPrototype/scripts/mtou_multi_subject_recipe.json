@@ -1,0 +1,94 @@
+{
+  "name": "mtou-multi-subject-default",
+  "revision": 2,
+  "fps": 30.0,
+  "range": [1.0, 6.0],
+  "notes": "Deterministic minimal rigs for the bounded two-subject prototype. Every rig is an independent Maya file, referenced by namespace into the session scene, with its own skin, its own blendShape alias 'Shared' and its own keyed root motion. Linear tangents keep fractional-time samples exact. 'character' and 'prop' deliberately share the bone name 'Root' and the Morph alias 'Shared' so duplicate-name isolation is exercised; 'arms' is a distinct skeleton used for role replacement on a new connection. 'character' has a static ancestor group, 'arms' has a keyed (moving) ancestor socket, so the ancestor/socket guard has a deterministic target.",
+  "rigs": {
+    "character": {
+      "namespace": "character",
+      "ancestors": [
+        { "name": "Group", "translate": [0.0, 0.0, 0.0], "animation": {} }
+      ],
+      "bones": [
+        { "name": "Root", "parent": -1, "translate": [0.0, 0.0, 0.0] },
+        { "name": "Spine", "parent": 0, "translate": [0.0, 30.0, 0.0] },
+        { "name": "Chest", "parent": 1, "translate": [0.0, 20.0, 0.0] },
+        { "name": "Head", "parent": 2, "translate": [0.0, 15.0, 0.0] }
+      ],
+      "mesh": { "name": "characterMesh", "size": [14.0, 70.0, 14.0] },
+      "curves": {
+        "Shared": [[1.0, 0.0], [3.0, 1.0], [6.0, 0.25]]
+      },
+      "animation": {
+        "Root": {
+          "translateX": [[1.0, 100.0], [3.0, 130.0], [6.0, 100.0]],
+          "translateY": [[1.0, 5.0], [6.0, 25.0]],
+          "translateZ": [[1.0, 0.0], [6.0, 45.0]],
+          "rotateY": [[1.0, 0.0], [6.0, 90.0]]
+        },
+        "Spine": {
+          "rotateX": [[1.0, -10.0], [6.0, 25.0]]
+        },
+        "Head": {
+          "rotateZ": [[1.0, 0.0], [6.0, -35.0]]
+        }
+      }
+    },
+    "prop": {
+      "namespace": "prop",
+      "ancestors": [],
+      "bones": [
+        { "name": "Root", "parent": -1, "translate": [0.0, 0.0, 0.0] },
+        { "name": "PropBody", "parent": 0, "translate": [0.0, 18.0, 0.0] },
+        { "name": "PropTip", "parent": 1, "translate": [0.0, 22.0, 0.0] }
+      ],
+      "mesh": { "name": "propMesh", "size": [26.0, 40.0, 8.0] },
+      "curves": {
+        "Shared": [[1.0, 1.0], [4.0, 0.0], [6.0, 0.75]]
+      },
+      "animation": {
+        "Root": {
+          "translateX": [[1.0, -40.0], [6.0, -15.0]],
+          "translateY": [[1.0, 20.0], [6.0, 35.0]],
+          "rotateZ": [[1.0, 0.0], [6.0, 180.0]]
+        },
+        "PropBody": {
+          "rotateX": [[1.0, 0.0], [6.0, 40.0]]
+        }
+      }
+    },
+    "arms": {
+      "namespace": "arms",
+      "ancestors": [
+        { "name": "Socket", "translate": [0.0, 0.0, 0.0],
+          "animation": { "translateY": [[1.0, 0.0], [6.0, 6.0]] } }
+      ],
+      "bones": [
+        { "name": "ArmsRoot", "parent": -1, "translate": [0.0, 0.0, 0.0] },
+        { "name": "UpperArm_L", "parent": 0, "translate": [25.0, 30.0, 0.0] },
+        { "name": "Forearm_L", "parent": 1, "translate": [30.0, 0.0, 0.0] },
+        { "name": "Hand_L", "parent": 2, "translate": [12.0, 0.0, 0.0] },
+        { "name": "UpperArm_R", "parent": 0, "translate": [-25.0, 30.0, 0.0] },
+        { "name": "Forearm_R", "parent": 4, "translate": [-30.0, 0.0, 0.0] },
+        { "name": "Hand_R", "parent": 5, "translate": [-12.0, 0.0, 0.0] }
+      ],
+      "mesh": { "name": "armsMesh", "size": [80.0, 20.0, 20.0] },
+      "curves": {
+        "Shared": [[1.0, 0.5], [3.0, 0.9], [6.0, 0.0]]
+      },
+      "animation": {
+        "ArmsRoot": {
+          "translateX": [[1.0, 50.0], [6.0, 80.0]],
+          "rotateY": [[1.0, 0.0], [6.0, 45.0]]
+        },
+        "UpperArm_L": {
+          "rotateZ": [[1.0, 0.0], [6.0, -60.0]]
+        },
+        "UpperArm_R": {
+          "rotateZ": [[1.0, 0.0], [6.0, 60.0]]
+        }
+      }
+    }
+  }
+}
