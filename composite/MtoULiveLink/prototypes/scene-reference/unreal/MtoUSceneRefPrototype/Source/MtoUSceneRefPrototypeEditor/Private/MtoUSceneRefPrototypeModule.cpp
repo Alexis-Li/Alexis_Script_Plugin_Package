@@ -3,6 +3,8 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "MtoUSceneRefFixture.h"
@@ -13,19 +15,30 @@ namespace
 {
 	FString DescribeTransfer(const FMtoUSceneRefTransferResult& Result)
 	{
+		const FMtoUSceneRefTextureScan& Scan = Result.Output.TextureScan;
 		return FString::Printf(
-			TEXT("objects=%d actors=%d components=%d triangles=%d vertices=%d textures=%d images=%d"),
+			TEXT("objects=%d actors=%d components=%d suppressed=%d triangles=%d vertices=%d")
+			TEXT(" texture_records=%d texture_references=%d video_records=%d content_records=%d")
+			TEXT(" embedded_media_records=%d image_files=%d camera_records=%d light_records=%d"),
 			Result.Resolution.ExportedObjectCount(),
 			Result.Resolution.Actors.Num(),
 			Result.ComponentCount,
+			Result.SuppressedComponentCount,
 			Result.TriangleCount,
 			Result.VertexCount,
-			Result.Output.TextureScan.TextureReferences,
-			Result.Output.ImageFiles.Num());
+			Scan.TextureRecords,
+			Scan.TextureReferences,
+			Scan.VideoRecords,
+			Scan.ContentRecords,
+			Scan.EmbeddedMediaRecords,
+			Result.Output.ImageFiles.Num(),
+			Scan.CameraRecords,
+			Scan.LightRecords);
 	}
 
 	void LogTransfer(const FMtoUSceneRefTransferResult& Result, const FString& ManifestPath)
 	{
+		const FMtoUSceneRefTextureScan& Scan = Result.Output.TextureScan;
 		UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: %s"),
 			*Result.Resolution.ScopeName, *DescribeTransfer(Result));
 		UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: scope loaded=[%s] unloaded=[%s] excluded=[%s]"),
@@ -39,16 +52,130 @@ namespace
 			UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef[%s]: unsupported %s (%s): %s"),
 				*Result.Resolution.ScopeName, *Skipped.ActorLabel, *Skipped.ActorClass, *Skipped.Reason);
 		}
-		for (const FString& Reference : Result.Output.TextureScan.FileNames)
+		for (const FMtoUSceneRefSuppressedComponent& Suppressed : Result.Resolution.SuppressedComponents)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef[%s]: texture reference recorded: %s"),
-				*Result.Resolution.ScopeName, *Reference);
+			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: suppressed %s (%s) component %s (%s): %s"),
+				*Result.Resolution.ScopeName,
+				*Suppressed.ActorLabel,
+				*Suppressed.ActorClass,
+				*Suppressed.ComponentName,
+				*Suppressed.ComponentClass,
+				*Suppressed.Reason);
+		}
+		// The media counts are facts the manifest carries, not a refusal: they say what the
+		// file names, what it embeds, and how many image files the export wrote.
+		for (const FString& Reference : Scan.FileNames)
+		{
+			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: media reference recorded: %s%s"),
+				*Result.Resolution.ScopeName, *Reference,
+				Result.Output.TextureReferenceFilesPresent.Contains(Reference)
+					? TEXT(" (present on this machine)")
+					: TEXT(" (absent)"));
+		}
+		for (const FString& Embedded : Scan.EmbeddedMedia)
+		{
+			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: embedded media: %s"),
+				*Result.Resolution.ScopeName, *Embedded);
+		}
+		if (Result.Output.ImageFiles.Num() > 0 || Scan.EmbeddedMediaRecords > 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef[%s]: the handoff carries media: %d image files, %d embedded media records"),
+				*Result.Resolution.ScopeName, Result.Output.ImageFiles.Num(), Scan.EmbeddedMediaRecords);
 		}
 		UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef[%s]: manifest %s"),
 			*Result.Resolution.ScopeName, *ManifestPath);
 	}
 
-	bool ExportScope(const FMtoUSceneRefScopeSpec& Spec, const FMtoUSceneRefTransferOptions& Options, const FString& ObjPath)
+	/** Trims a mayapy value and the quotes a command line or a shell may have kept around it. */
+	FString TrimMayapyValue(const FString& Value)
+	{
+		FString Trimmed = Value;
+		Trimmed.TrimStartAndEndInline();
+		if (Trimmed.Len() >= 2 && Trimmed.StartsWith(TEXT("\"")) && Trimmed.EndsWith(TEXT("\"")))
+		{
+			Trimmed = Trimmed.Mid(1, Trimmed.Len() - 2);
+			Trimmed.TrimStartAndEndInline();
+		}
+		return Trimmed;
+	}
+
+	/**
+	 * The mayapy the Maya peer runs under, and where it came from.
+	 *
+	 * The command's arguments reach it already split on whitespace, so a mayapy path that
+	 * contains spaces cannot travel as a positional argument, and the 8.3 short form of such
+	 * a path breaks Maya's own plug-in resolution (measured: mayapy exits 2 with
+	 * REFUSED FBX_PLUGIN_UNAVAILABLE). The full path therefore comes from the
+	 * `-MtoUSceneRefMayapy=` command line switch when the run carries it, else from the
+	 * MTOU_SCENEREF_MAYAPY environment variable, and only then from the first positional
+	 * argument (kept for a path without spaces).
+	 *
+	 * OutPeerScriptIndex is the index of the peer script: the argument after the mayapy when
+	 * the mayapy was positional, the first argument otherwise. Returns false when no source
+	 * names a mayapy at all.
+	 */
+	bool ResolveMayapyPath(const TArray<FString>& Args, FString& OutMayapy, int32& OutPeerScriptIndex, FString& OutSource)
+	{
+		OutPeerScriptIndex = 0;
+
+		FString Switch;
+		if (FParse::Value(FCommandLine::Get(), TEXT("MtoUSceneRefMayapy="), Switch))
+		{
+			const FString Value = TrimMayapyValue(Switch);
+			if (!Value.IsEmpty())
+			{
+				OutMayapy = Value;
+				OutSource = TEXT("-MtoUSceneRefMayapy=");
+				return true;
+			}
+		}
+
+		const FString Variable = TrimMayapyValue(FPlatformMisc::GetEnvironmentVariable(TEXT("MTOU_SCENEREF_MAYAPY")));
+		if (!Variable.IsEmpty())
+		{
+			OutMayapy = Variable;
+			OutSource = TEXT("MTOU_SCENEREF_MAYAPY");
+			return true;
+		}
+
+		if (Args.Num() > 0)
+		{
+			OutMayapy = Args[0];
+			OutSource = TEXT("the first positional argument");
+			OutPeerScriptIndex = 1;
+			return true;
+		}
+		return false;
+	}
+
+	/** The export flags every export command shares. */
+	struct FMtoUSceneRefCommandOptions
+	{
+		FMtoUSceneRefTransferOptions Transfer;
+		bool bObjProbe = false;
+	};
+
+	/** Reads `obj`, `frontx` and `out=` out of one command's argument list. */
+	void ReadExportFlags(const TArray<FString>& Args, FMtoUSceneRefCommandOptions& Out)
+	{
+		for (const FString& Arg : Args)
+		{
+			if (Arg.Equals(TEXT("obj"), ESearchCase::IgnoreCase))
+			{
+				Out.bObjProbe = true;
+			}
+			else if (Arg.Equals(TEXT("frontx"), ESearchCase::IgnoreCase))
+			{
+				Out.Transfer.bForceFrontXAxis = true;
+			}
+			else if (Arg.StartsWith(TEXT("out=")))
+			{
+				Out.Transfer.OutputDirectory = Arg.RightChop(4);
+			}
+		}
+	}
+
+	bool ExportScope(const FMtoUSceneRefScopeSpec& Spec, const FMtoUSceneRefTransferOptions& Options, bool bObjProbe)
 	{
 		UWorld* World = GEditor != nullptr ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (World == nullptr)
@@ -74,8 +201,10 @@ namespace
 		}
 		LogTransfer(Result, ManifestPath);
 
-		if (!ObjPath.IsEmpty())
+		if (bObjProbe)
 		{
+			const FString ObjPath = FPaths::Combine(
+				Result.Output.Directory, Result.Resolution.ScopeName + TEXT(".obj"));
 			TArray<FMtoUSceneRefProducedFile> ObjFiles;
 			TArray<FString> MaterialLines;
 			FString ObjError;
@@ -154,72 +283,146 @@ void FMtoUSceneRefPrototypeModule::RegisterCommands()
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
 			bool bTextured = false;
-			bool bObjProbe = false;
-			FMtoUSceneRefTransferOptions Options;
+			FMtoUSceneRefCommandOptions CommandOptions;
 			for (const FString& Arg : Args)
 			{
 				if (Arg.Equals(TEXT("textured"), ESearchCase::IgnoreCase))
 				{
 					bTextured = true;
 				}
-				else if (Arg.Equals(TEXT("obj"), ESearchCase::IgnoreCase))
-				{
-					bObjProbe = true;
-				}
-				else if (Arg.Equals(TEXT("frontx"), ESearchCase::IgnoreCase))
-				{
-					Options.bForceFrontXAxis = true;
-				}
-				else if (Arg.StartsWith(TEXT("out=")))
-				{
-					Options.OutputDirectory = Arg.RightChop(4);
-				}
 			}
+			ReadExportFlags(Args, CommandOptions);
 
 			const FMtoUSceneRefScopeSpec Spec = bTextured
 				? FMtoUSceneRefFixture::TexturedScope()
 				: FMtoUSceneRefFixture::MainScope();
-			const FString ObjPath = bObjProbe
-				? FPaths::Combine(Options.OutputDirectory.IsEmpty()
-						? FPaths::ProjectSavedDir() / TEXT("MtoUSceneRef") / Spec.ScopeName()
-						: Options.OutputDirectory,
-					Spec.ScopeName() + TEXT(".obj"))
-				: FString();
-			if (!ExportScope(Spec, Options, ObjPath))
+			if (!ExportScope(Spec, CommandOptions.Transfer, CommandOptions.bObjProbe))
 			{
 				UE_LOG(LogTemp, Error, TEXT("MtoUSceneRef.Export failed"));
 			}
 		})));
 
 	Commands.Add(IConsoleManager::Get().RegisterConsoleCommand(
-		TEXT("MtoUSceneRef.Peer"),
-		TEXT("Runs the Maya importer/verifier over the last export. "
-			"Args: <mayapy> <peer script> [out=<dir>]."),
+		TEXT("MtoUSceneRef.ExportLevel"),
+		TEXT("Exports the scope of a level that is already the loaded editor world; the "
+			"command never loads or switches a level. "
+			"Args: <level_package> [sublevel=<package>]... [obj] [frontx] [out=<dir>]."),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
-			if (Args.Num() < 2)
-			{
-				UE_LOG(LogTemp, Error, TEXT("MtoUSceneRef.Peer needs <mayapy> and <peer script>"));
-				return;
-			}
-			FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MtoUSceneRef"),
-				FMtoUSceneRefFixture::MainScope().ScopeName());
+			FMtoUSceneRefScopeSpec Spec;
+			FMtoUSceneRefCommandOptions CommandOptions;
 			for (const FString& Arg : Args)
 			{
-				if (Arg.StartsWith(TEXT("out=")))
+				if (Arg.StartsWith(TEXT("sublevel=")))
+				{
+					Spec.RequestedSublevels.Add(Arg.RightChop(9));
+				}
+				else if (!Arg.Contains(TEXT("=")))
+				{
+					if (Spec.LevelPackage.IsEmpty())
+					{
+						Spec.LevelPackage = Arg;
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef.ExportLevel: ignoring the extra argument %s"), *Arg);
+					}
+				}
+			}
+			ReadExportFlags(Args, CommandOptions);
+
+			if (Spec.LevelPackage.IsEmpty())
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("MtoUSceneRef.ExportLevel needs the level package: "
+						"MtoUSceneRef.ExportLevel /Game/Map [sublevel=/Game/Sub] [obj] [frontx] [out=<dir>]"));
+				return;
+			}
+			if (!ExportScope(Spec, CommandOptions.Transfer, CommandOptions.bObjProbe))
+			{
+				UE_LOG(LogTemp, Error, TEXT("MtoUSceneRef.ExportLevel failed"));
+			}
+		})));
+
+	Commands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("MtoUSceneRef.Peer"),
+		TEXT("Runs the Maya importer/verifier over the last export. "
+			"The mayapy that runs the peer is resolved in this order: the "
+			"-MtoUSceneRefMayapy=<path> command line switch, then the MTOU_SCENEREF_MAYAPY "
+			"environment variable, then the first positional argument. A path that contains "
+			"spaces only fits the switch or the variable, because the command's arguments are "
+			"split on whitespace (an 8.3 short path is not a substitute: it breaks Maya's own "
+			"plug-in resolution). "
+			"Args: [<mayapy>] <peer script> [scope=<name>] [out=<dir>] "
+			"[world=camera] [shading=material|keep] [dryrun] [allowimagedata]. "
+			"The last four reach the Maya CLI as --target-world, --shading, --dry-run "
+			"and --allow-image-data."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			FString MayapyPath;
+			FString MayapySource;
+			int32 PeerScriptIndex = 0;
+			if (!ResolveMayapyPath(Args, MayapyPath, PeerScriptIndex, MayapySource)
+				|| Args.Num() <= PeerScriptIndex)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("MtoUSceneRef.Peer needs a mayapy (the -MtoUSceneRefMayapy=<path> switch, "
+						"the MTOU_SCENEREF_MAYAPY environment variable, or the first positional "
+						"argument) and the peer script"));
+				return;
+			}
+
+			FString ScopeName = FMtoUSceneRefFixture::MainScope().ScopeName();
+			FString Directory;
+			TArray<FString> ExtraArguments;
+			for (int32 ArgIndex = PeerScriptIndex + 1; ArgIndex < Args.Num(); ++ArgIndex)
+			{
+				const FString& Arg = Args[ArgIndex];
+				if (Arg.StartsWith(TEXT("scope=")))
+				{
+					ScopeName = Arg.RightChop(6);
+				}
+				else if (Arg.StartsWith(TEXT("out=")))
 				{
 					Directory = Arg.RightChop(4);
 				}
+				else if (Arg.Equals(TEXT("world=camera"), ESearchCase::IgnoreCase))
+				{
+					ExtraArguments.Add(TEXT("--target-world camera"));
+				}
+				else if (Arg.StartsWith(TEXT("shading=")))
+				{
+					ExtraArguments.Add(FString::Printf(TEXT("--shading %s"), *Arg.RightChop(8)));
+				}
+				else if (Arg.Equals(TEXT("dryrun"), ESearchCase::IgnoreCase))
+				{
+					ExtraArguments.Add(TEXT("--dry-run"));
+				}
+				else if (Arg.Equals(TEXT("allowimagedata"), ESearchCase::IgnoreCase))
+				{
+					ExtraArguments.Add(TEXT("--allow-image-data"));
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef.Peer: unknown argument %s"), *Arg);
+				}
 			}
-			const FString ScopeName = FMtoUSceneRefFixture::MainScope().ScopeName();
+			if (Directory.IsEmpty())
+			{
+				Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MtoUSceneRef"), ScopeName);
+			}
 
 			FMtoUSceneRefPeerRequest Request;
-			Request.MayapyPath = Args[0];
-			Request.PeerScriptPath = Args[1];
+			Request.MayapyPath = MayapyPath;
+			Request.PeerScriptPath = Args[PeerScriptIndex];
 			Request.FbxPath = FPaths::Combine(Directory, ScopeName + TEXT(".fbx"));
 			Request.ManifestPath = FPaths::Combine(Directory, ScopeName + TEXT(".manifest.json"));
 			Request.ReportPath = FPaths::Combine(Directory, ScopeName + TEXT(".maya-report.json"));
 			Request.LogPath = FPaths::Combine(Directory, ScopeName + TEXT(".maya-peer.log"));
+			Request.ExtraArguments = ExtraArguments;
+
+			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef.Peer: mayapy %s (from %s)"),
+				*Request.MayapyPath, *MayapySource);
 
 			FMtoUSceneRefPeerResult Result;
 			FString Error;
@@ -228,8 +431,11 @@ void FMtoUSceneRefPrototypeModule::RegisterCommands()
 				UE_LOG(LogTemp, Error, TEXT("MtoUSceneRef.Peer: %s"), *Error);
 				return;
 			}
-			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef.Peer: exit=%d report=%s"),
-				Result.ReturnCode, *Request.ReportPath);
+			const bool bReportOk = Result.Report.IsValid()
+				&& Result.Report->HasTypedField<EJson::Boolean>(TEXT("ok"))
+				&& Result.Report->GetBoolField(TEXT("ok"));
+			UE_LOG(LogTemp, Display, TEXT("MtoUSceneRef.Peer: exit=%d ok=%s report=%s"),
+				Result.ReturnCode, bReportOk ? TEXT("true") : TEXT("false"), *Request.ReportPath);
 			UE_LOG(LogTemp, Display, TEXT("%s"), *Result.Output);
 		})));
 }

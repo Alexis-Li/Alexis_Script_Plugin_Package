@@ -2,40 +2,45 @@
 
 The Unreal side exports the static geometry of one level scope into an ASCII FBX
 plus a ``mtou-scene-ref-manifest/1`` measurement record. This module imports that
-file into one container, puts the reference geometry on a single gray material
-and compares the measured Maya world matrices and bounding boxes against the
-manifest, so the two hosts are checked against each other rather than trusted.
-The frozen contract is
+file into its own container, keeps the material assignment the file carries while
+showing the geometry in one uniform gray, optionally moves it into the world the
+camera route uses, and compares the measured Maya world matrices and bounding
+boxes against the manifest, so the two hosts are checked against each other
+rather than trusted. The frozen contract is
 ``composite/MtoULiveLink/prototypes/scene-reference/transfer.md``; this module
-implements its "Maya report schema", "Texture rule", "Object naming" and
+implements its "Maya report schema", "Media rule", "World", "Object naming" and
 "Commands" sections and never changes the contract.
 
 Usage::
 
     <mayapy> MtoUSceneRefPrototype.py --fbx <file> --manifest <file>
-        --report <file> [--container MtoU_UE_SceneRef] [--allow-textures]
-        [--keep-existing] [--json]
+        --report <file> [--container MtoU_UE_SceneRef]
+        [--target-world engine|camera] [--shading display|material|keep]
+        [--allow-image-data] [--dry-run] [--json]
 
 Exit codes: ``0`` when every check passed, ``1`` when a check failed (including a
-handoff that records textures without ``--allow-textures``), ``2`` for usage and
-contract errors (an unreadable or non-FBX handoff, a manifest that is not
+handoff that delivers image data without ``--allow-image-data``), ``2`` for usage
+and contract errors (an unreadable or non-FBX handoff, a manifest that is not
 ``mtou-scene-ref-manifest/1``, a scene or manifest unit that is not centimetres,
-a manifest world that is not Z up, an unusable container name).
+a manifest world that is not Z up, an unusable container name, an unknown world
+or shading mode).
 
 Safety contract
 ---------------
 * The scene is never saved. Playback range, frame rate, current time and every
   existing key are left exactly as they were; the importer never calls
   ``save``, ``playbackOptions``, ``currentTime`` or ``setKeyframe``.
-* Only the container namespace and its group are created, replaced or deleted.
-  Nothing outside the container is renamed, reparented, reassigned or deleted,
-  so a production scene keeps its own objects and shading networks.
-* Replacing the container happens only when the container already exists and
-  ``--keep-existing`` was not passed; the deletion is scoped to that namespace
-  and that group.
-* A handoff that records material textures is not imported unless
-  ``--allow-textures`` was passed, and ``file`` nodes that survive in the
-  container are always reported.
+* The handoff is imported into a staging namespace first. Only after the
+  comparison passed is the previous reference deleted and the staged one renamed
+  into the container's name; a run that fails keeps the previous reference
+  exactly as it was, and the staging namespace is deleted again. Nothing outside
+  the container namespace is renamed, reparented, reassigned or deleted, so a
+  production scene keeps its own objects and shading networks.
+* A handoff that delivers image data -- image files in the directory the
+  exporter owns, or media embedded in the FBX -- is refused unless
+  ``--allow-image-data`` was passed; a material assignment and a recorded
+  texture path are not image data and are imported, reported and never treated
+  as a failure.
 * ``main()`` never raises: a failure is written into the report JSON with the
   phase it happened in and the run exits non-zero.
 
@@ -56,6 +61,18 @@ from pathlib import Path
 
 DEFAULT_CONTAINER = "MtoU_UE_SceneRef"
 
+#: The namespace a run stages its import in before it replaces the reference.
+STAGING_SUFFIX = "_Incoming"
+
+#: The shading modes the caller can ask for.
+SHADING_DISPLAY = "display"
+SHADING_MATERIAL = "material"
+SHADING_KEEP = "keep"
+SHADING_MODES = (SHADING_DISPLAY, SHADING_MATERIAL, SHADING_KEEP)
+
+#: The gray the uniform display uses.
+GRAY_DISPLAY_COLOR = (0.5, 0.5, 0.5)
+
 EXIT_OK = 0
 EXIT_CHECK_FAILED = 1
 EXIT_USAGE = 2
@@ -64,12 +81,15 @@ CATEGORY_CONTAINER_NAME = "CONTAINER_NAME_INVALID"
 CATEGORY_UNSUPPORTED_SCENE_UNIT = "UNSUPPORTED_SCENE_LINEAR_UNIT"
 CATEGORY_UNSUPPORTED_MANIFEST_UNIT = "UNSUPPORTED_MANIFEST_LINEAR_UNIT"
 CATEGORY_UNSUPPORTED_UP_AXIS = "UNSUPPORTED_MANIFEST_UP_AXIS"
+CATEGORY_UNKNOWN_WORLD = "UNKNOWN_WORLD_TARGET"
+CATEGORY_UNKNOWN_SHADING = "UNKNOWN_SHADING_MODE"
 CATEGORY_FBX_UNREADABLE = "FBX_UNREADABLE"
 CATEGORY_FBX_NOT_FBX = "FBX_NOT_FBX"
 CATEGORY_FBX_PLUGIN = "FBX_PLUGIN_UNAVAILABLE"
-CATEGORY_TEXTURES_PRESENT = "TEXTURE_REFERENCES_PRESENT"
+CATEGORY_IMAGE_DATA_PRESENT = "IMAGE_DATA_PRESENT"
 CATEGORY_IMPORT_FAILED = "FBX_IMPORT_FAILED"
 CATEGORY_GRAY_MATERIAL = "GRAY_MATERIAL_CONFLICT"
+CATEGORY_SWAP_FAILED = "STAGED_SWAP_FAILED"
 
 #: Most faces accumulated per object for the world surface centroid check. Above
 #: it the faces are sampled evenly, so a huge handoff cannot turn the check into
@@ -197,31 +217,62 @@ class SceneRefImporter(object):
     """Imports one handoff into the container and verifies it against the manifest."""
 
     def __init__(self, fbx, manifest, container=DEFAULT_CONTAINER,
-                 allow_textures=False, keep_existing=False):
+                 target_world=None, shading=SHADING_DISPLAY,
+                 allow_image_data=False, dry_run=False):
         self.fbx = str(fbx)
         self.manifest_path = str(manifest)
         self.container = str(container)
-        self.allow_textures = bool(allow_textures)
-        self.keep_existing = bool(keep_existing)
+        self.target_world = (target_world or mapping().WORLD_ENGINE).strip().lower()
+        self.shading = str(shading).strip().lower()
+        self.allow_image_data = bool(allow_image_data)
+        self.dry_run = bool(dry_run)
         self.manifest = None
         self.summary = {}
         self.scan = {}
+        self.staging = None
+        self.active_namespace = None
+        self.staged = False
+        self.swap_partial = False
+        self.world_conversion = None
+        self.frame_factor_reported = False
         self.report = {
             "schema": mapping().REPORT_SCHEMA,
             "ok": False,
             "phase": "start",
             "maya": {},
             "container": {"namespace": self.container, "group": self.container,
-                          "replaced": False},
+                          "group_path": None, "staging_namespace": None,
+                          "previous_existed": False, "swapped": False,
+                          "kept_existing": False, "namespace_created": False},
+            "update": {"mode": None, "staging_namespace": None,
+                       "existing_container": False, "swapped": False,
+                       "discarded": False, "stale_staging_removed": False,
+                       "discarded_nodes": [], "swap_seconds": None,
+                       "post_swap_paths_checked": False,
+                       "post_swap_paths_missing": []},
             "counts": {"manifest_objects": 0, "container_nodes": 0,
                        "file_texture_nodes": 0, "image_nodes_loaded": 0},
-            "gray_material": {},
+            "media": {"handoff_directory": None,
+                      "image_files_in_handoff_directory": [],
+                      "embedded_media_records": 0, "content_records": 0,
+                      "file_nodes_created": 0, "image_nodes_loaded": 0,
+                      "image_paths_present": [], "allowed": False},
+            "world": {"target": self.target_world, "target_map": None,
+                      "target_note": None, "conversion_applied": False,
+                      "conversion_matrix": None, "conversion_determinant": None,
+                      "conversion_rotation_deg": None,
+                      "conversion_seconds": None, "objects_converted": 0,
+                      "manifest_conventions": None, "engine_check": None},
+            "materials": {"mode": self.shading, "gray_material": None,
+                          "display": None, "preserved_assignment": [],
+                          "imported_material_nodes": [], "file_nodes": []},
+            "texture_scan": {},
             "transform_check": {},
             "objects": [],
-            "texture_scan": {},
             # Present for the contract's shape; a run that never imported leaves
             # them null instead of claiming a duration it did not measure.
-            "timing": {"import_seconds": None, "verify_seconds": None},
+            "timing": {"staging_seconds": None, "import_seconds": None,
+                       "verify_seconds": None},
             "memory": {},
             "problems": [],
             "warnings": [],
@@ -240,26 +291,32 @@ class SceneRefImporter(object):
             self._read_manifest()
             self._read_scene()
             self._scan_handoff()
-            self._import_handoff()
-            self._apply_gray_material()
+            self._stage_handoff()
+            self._check_import_world()
+            self._apply_world_conversion()
+            self._apply_shading()
             self._verify()
+            self._finalise()
             self.report["phase"] = "done"
         except SceneRefRefused as refusal:
             exit_code = refusal.exit_code
             self.report["phase"] = "refused"
             self.report["problems"].append(
                 "REFUSED {0}: {1}".format(refusal.category, refusal.detail))
+            self._discard_staging("refused")
         except mapping().ManifestError as refusal:
             exit_code = EXIT_USAGE
             self.report["phase"] = "refused"
             self.report["problems"].append(
                 "REFUSED {0}: {1}".format(refusal.category, refusal.detail))
+            self._discard_staging("refused")
         except Exception:  # noqa: BLE001 - the report carries the failure
             exit_code = EXIT_CHECK_FAILED
             self.report["phase"] = "failed"
             self.report["error"] = traceback.format_exc()
             self.report["problems"].append(
                 "INTERNAL_ERROR: the run failed, see the report's error field")
+            self._discard_staging("failed")
         finally:
             self.report["timing"]["total_seconds"] = round(time.time() - started, 3)
             rss, source = process_memory_mb()
@@ -288,6 +345,7 @@ class SceneRefImporter(object):
                 CATEGORY_UNSUPPORTED_UP_AXIS,
                 "manifest world up axis is {0!r}; the axis candidates assume "
                 "Unreal's Z up".format(world.get("up_axis")))
+        self._check_manifest_conventions(summary.get("conventions"))
         self.report["manifest"] = summary
         self.report["counts"]["manifest_objects"] = summary["objects_exported"]
         self.report["counts"]["manifest_objects_total"] = summary["objects_total"]
@@ -297,6 +355,27 @@ class SceneRefImporter(object):
                 "so there is nothing to compare")
         self.report["phase"] = "manifest"
 
+    def _check_manifest_conventions(self, conventions):
+        """Compare the exporter's declared axis convention with this module's.
+
+        The declared map is what the exporter believes its FBX carries; the
+        comparison below measures the map the file really arrived in, so a
+        disagreement is reported instead of silently trusted either way.
+        """
+        if not conventions:
+            self.report["warnings"].append(
+                "CONVENTIONS_ABSENT: the manifest declares no conventions block, "
+                "so the exporter's own statement of the axis convention is not "
+                "available; the measured candidates still decide the comparison")
+            return
+        declared = conventions.get("engine_to_maya_point_map")
+        expected = mapping().ENGINE_HANDOFF_CANDIDATE
+        if declared != expected:
+            self.report["warnings"].append(
+                "CONVENTIONS_DISAGREEMENT: the manifest declares the handoff map "
+                "{0!r} while this host measures against {1!r}".format(
+                    declared, expected))
+
     def _read_scene(self):
         """Record the Maya session and refuse a scene the comparison cannot use."""
         maya_cmds = commands()
@@ -304,6 +383,24 @@ class SceneRefImporter(object):
             raise SceneRefRefused(
                 CATEGORY_CONTAINER_NAME,
                 "container name {0!r} is not a plain Maya node name".format(self.container))
+        if self.shading not in SHADING_MODES:
+            raise SceneRefRefused(
+                CATEGORY_UNKNOWN_SHADING,
+                "shading mode {0!r} is not one of {1}".format(
+                    self.shading, ", ".join(SHADING_MODES)))
+        if self.target_world not in [name for name, _candidate, _note
+                                     in mapping().WORLD_TARGETS]:
+            raise SceneRefRefused(
+                CATEGORY_UNKNOWN_WORLD,
+                "world target {0!r} is not one of {1}".format(
+                    self.target_world,
+                    ", ".join(name for name, _candidate, _note
+                              in mapping().WORLD_TARGETS)))
+        if not _container_name_valid(self.container + STAGING_SUFFIX):
+            raise SceneRefRefused(
+                CATEGORY_CONTAINER_NAME,
+                "the staging name {0!r} is not a plain Maya node name".format(
+                    self.container + STAGING_SUFFIX))
         try:
             maya_cmds.loadPlugin("fbxmaya", quiet=True)
         except Exception as error:  # noqa: BLE001 - reported as a refusal
@@ -350,10 +447,35 @@ class SceneRefImporter(object):
         self.report["phase"] = "scene"
 
     def _scan_handoff(self):
-        """Scan the FBX text and refuse a textured handoff when not allowed."""
+        """Scan the FBX text and refuse a handoff that delivers image data.
+
+        A recorded texture path is a reference, not a deliverable: the file may
+        carry it, the geometry may keep its material, and the run only reports
+        it. What a static reference handoff may not deliver is image data, and
+        that is checked in two places: the files in the directory the exporter
+        owns, and media embedded in the FBX itself.
+        """
         scan = mapping().scan_fbx_file(self.fbx)
         self.scan = scan
         self.report["texture_scan"] = scan
+        image_files = mapping().image_files_beside(self.fbx)
+        media = {
+            "handoff_directory": os.path.dirname(os.path.abspath(self.fbx)),
+            "image_files_in_handoff_directory": image_files,
+            "embedded_media_records": scan["embedded_media_records"],
+            "embedded_media": scan["embedded_media"],
+            "content_records": scan["content_records"],
+            "texture_records": scan["texture_records"],
+            "texture_references": scan["texture_references"],
+            "camera_records": scan["camera_records"],
+            "light_records": scan["light_records"],
+            "media_heuristic": scan["media_heuristic"],
+            "file_nodes_created": 0,
+            "image_nodes_loaded": 0,
+            "image_paths_present": [],
+            "allowed": bool(self.allow_image_data),
+        }
+        self.report["media"] = media
         if not scan["exists"] or not scan["readable"]:
             raise SceneRefRefused(
                 CATEGORY_FBX_UNREADABLE,
@@ -364,43 +486,69 @@ class SceneRefImporter(object):
                 CATEGORY_FBX_NOT_FBX,
                 "handoff {0} is not an FBX file: its header {1!r} matches neither "
                 "the ASCII nor the binary FBX magic".format(self.fbx, scan["magic"]))
-        if scan["binary"] and not scan["texture_records"]:
+        if scan["binary"]:
             self.report["warnings"].append(
-                "BINARY_SCAN: the handoff is a binary FBX, so the texture scan is "
-                "a heuristic string table pass rather than a parsed document")
+                "BINARY_SCAN: the handoff is a binary FBX, so the media scan is a "
+                "heuristic string table pass rather than a parsed document")
         self._compare_texture_scan(scan)
-        if scan["texture_records"] and not self.allow_textures:
-            raise SceneRefRefused(
-                CATEGORY_TEXTURES_PRESENT,
-                "the handoff records {0} Texture record(s) ({1} of them naming a "
-                "file {2}); the contract forbids importing a textured handoff, "
-                "pass --allow-textures to inspect it anyway".format(
-                    scan["texture_records"], scan["texture_references"], scan["files"]),
-                exit_code=EXIT_CHECK_FAILED)
-        self.report["texture_scan"]["allowed"] = bool(self.allow_textures)
+        if image_files:
+            message = ("IMAGE_FILES_IN_HANDOFF: the directory the exporter owns "
+                       "holds image files {0}; a static reference handoff must not "
+                       "deliver copied or baked images".format(image_files))
+            if self.allow_image_data:
+                self.report["warnings"].append(message)
+            else:
+                raise SceneRefRefused(CATEGORY_IMAGE_DATA_PRESENT, message,
+                                      exit_code=EXIT_CHECK_FAILED)
+        if scan["embedded_media_records"]:
+            detail = [(record.get("kind"), record.get("line"),
+                       record.get("payload_characters"))
+                      for record in scan["embedded_media"]]
+            message = ("EMBEDDED_MEDIA_PRESENT: the handoff embeds media data in "
+                       "{0} record(s) {1}; the reference geometry must not carry "
+                       "image data".format(scan["embedded_media_records"], detail))
+            if self.allow_image_data:
+                self.report["warnings"].append(message)
+            else:
+                raise SceneRefRefused(CATEGORY_IMAGE_DATA_PRESENT, message,
+                                      exit_code=EXIT_CHECK_FAILED)
+        if scan["content_records"] > scan["embedded_media_records"]:
+            self.report["warnings"].append(
+                "CONTENT_WITHOUT_MEDIA: {0} Content record(s) carry no payload; "
+                "they are reported but deliver no image data".format(
+                    scan["content_records"] - scan["embedded_media_records"]))
+        if scan["camera_records"] or scan["light_records"]:
+            self.report["warnings"].append(
+                "NON_GEOMETRY_RECORDS: the handoff carries {0} camera and {1} "
+                "light node record(s); a static reference scope is reported to "
+                "deliver none".format(scan["camera_records"], scan["light_records"]))
+        self.report["texture_scan"]["allowed"] = bool(self.allow_image_data)
         self.report["phase"] = "scan"
 
     def _compare_texture_scan(self, scan):
-        """Record where this scan and the exporter's own count disagree."""
+        """Record where this scan and the exporter's own counts disagree."""
         output = self.summary.get("output") or {}
-        for key in ("texture_records", "texture_references", "video_references"):
+        for key in ("texture_records", "texture_references", "video_references",
+                    "camera_records", "light_records", "embedded_media_records",
+                    "content_records"):
             declared = output.get(key)
             if declared is None:
                 continue
-            if int(declared) != int(scan[key]):
+            if int(declared) != int(scan.get(key, 0)):
                 self.report["warnings"].append(
-                    "TEXTURE_COUNT_DISAGREEMENT: the manifest reports {0}={1}, this "
-                    "Maya scan found {2}".format(key, declared, scan[key]))
+                    "MEDIA_COUNT_DISAGREEMENT: the manifest reports {0}={1}, this "
+                    "Maya scan found {2}".format(key, declared, scan.get(key, 0)))
         declared_images = output.get("image_files") or []
-        if declared_images and not scan["texture_records"]:
+        if declared_images:
             self.report["warnings"].append(
-                "TEXTURE_FILES_DISAGREEMENT: the exporter listed produced image "
-                "files {0} but the FBX records no Texture record".format(declared_images))
+                "EXPORTER_IMAGE_FILES: the exporter listed produced image files "
+                "{0}; this run checks the directory itself".format(declared_images))
         declared_present = output.get("texture_reference_files_present") or []
         if declared_present:
             self.report["warnings"].append(
-                "TEXTURE_FILES_PRESENT: the exporter reports image files that exist "
-                "on disk next to the handoff: {0}".format(declared_present))
+                "TEXTURE_PATHS_PRESENT: the recorded texture paths {0} exist on "
+                "the exporter's machine; a reference to an existing file is not "
+                "an exported image".format(declared_present))
         declared_names = output.get("node_names")
         if isinstance(declared_names, list) and declared_names:
             missing = [entry.get("node_name")
@@ -411,31 +559,49 @@ class SceneRefImporter(object):
                     "NODE_NAMES_DISAGREEMENT: the exporter's output.node_names does "
                     "not hold the manifest node names {0}".format(missing))
 
-    def _import_handoff(self):
-        """Create or replace the container, import the FBX into it, parent the roots."""
+    def _stage_handoff(self):
+        """Import the handoff into the staging namespace, without touching the reference.
+
+        The staging namespace is what makes the update safe: the previous
+        reference stays exactly as it was while the new import is measured, and a
+        run that fails deletes only this namespace again. Renaming the namespace
+        into the container's name is a constant time operation, so a large level
+        does not pay for a per node swap.
+        """
         maya_cmds = commands()
         namespace_before = maya_cmds.namespaceInfo(currentNamespace=True)
         state_before = self._scene_state()
+        staging = self.container + STAGING_SUFFIX
+        self.staging = staging
         existing_namespace = bool(maya_cmds.namespace(exists=self.container))
-        existing_group = bool(self._container_group_names())
-        replaced = False
-        if (existing_namespace or existing_group) and not self.keep_existing:
-            self._remove_container()
-            replaced = True
-        if not maya_cmds.namespace(exists=self.container):
-            maya_cmds.namespace(add=self.container)
-        if not maya_cmds.objExists(self.container + ":" + self.container):
-            maya_cmds.namespace(set=self.container)
-            try:
-                maya_cmds.createNode("transform", name=self.container)
-            finally:
-                maya_cmds.namespace(set=namespace_before)
-        group = self._container_group()
+        existing_group = bool(self._container_group_names(self.container))
+        stale = self._remove_namespace(staging)
+        if maya_cmds.objExists(staging):
+            maya_cmds.delete(staging)
+            stale = True
+        self.report["update"].update({
+            "mode": "dry_run" if self.dry_run else "staged_swap",
+            "staging_namespace": staging,
+            "existing_container": bool(existing_namespace or existing_group),
+            "stale_staging_removed": stale,
+        })
+        if stale:
+            self.report["warnings"].append(
+                "STALE_STAGING_REMOVED: a staging namespace {0} was left behind by "
+                "an earlier run and has been deleted".format(staging))
+
+        maya_cmds.namespace(add=staging)
+        maya_cmds.namespace(set=staging)
+        try:
+            maya_cmds.createNode("transform", name=staging)
+        finally:
+            maya_cmds.namespace(set=namespace_before)
+        group = self._container_group(staging)
 
         started = time.time()
-        maya_cmds.namespace(set=self.container)
+        maya_cmds.namespace(set=staging)
         try:
-            imported = maya_cmds.file(self.fbx, i=True, ns=self.container, type="FBX",
+            imported = maya_cmds.file(self.fbx, i=True, ns=staging, type="FBX",
                                       ignoreVersion=True, mergeNamespacesOnClash=False,
                                       options="v=0;")
         except Exception as error:  # noqa: BLE001 - reported as a refusal
@@ -447,10 +613,13 @@ class SceneRefImporter(object):
             maya_cmds.namespace(set=namespace_before)
             self.report["scene"]["import_side_effects"] = self._restore_scene_state(
                 state_before)
-        roots = self._imported_roots(group)
+        self.staged = True
+        self.active_namespace = staging
+        roots = self._imported_roots(group, staging)
         for node in roots:
             maya_cmds.parent(node, group, relative=True)
-        self.report["timing"]["import_seconds"] = round(time.time() - started, 3)
+        self.report["timing"]["staging_seconds"] = round(time.time() - started, 3)
+        self.report["timing"]["import_seconds"] = self.report["timing"]["staging_seconds"]
         self.report["fbx"] = {
             "file": self.fbx,
             "bytes": self.scan.get("bytes"),
@@ -458,25 +627,148 @@ class SceneRefImporter(object):
             "plugin": "fbxmaya",
             "plugin_version": self.report["maya"].get("plugins", {}).get("fbxmaya"),
             "import_options": "v=0;",
-            "namespace_flag": self.container,
+            "namespace_flag": staging,
             "namespace_mechanism": ("current namespace during import; this host's "
                                     "fbxmaya ignores the ns flag for node placement"),
             "import_return": str(imported),
             "root_nodes_parented": roots,
         }
+        self.report["counts"]["container_nodes"] = len(self._namespace_members(staging))
         self.report["container"] = {
             "namespace": self.container,
             "group": self.container,
-            "group_path": group,
-            "replaced": replaced,
-            "kept_existing": bool(self.keep_existing and (existing_namespace or existing_group)),
-            "namespace_created": not existing_namespace or replaced,
+            "group_path": None,
+            "staging_namespace": staging,
+            "staging_group_path": group,
+            "previous_existed": bool(existing_namespace or existing_group),
+            "swapped": False,
+            "kept_existing": False,
+            "namespace_created": not existing_namespace,
         }
-        self.report["counts"]["container_nodes"] = len(self._namespace_members())
-        self.report["phase"] = "import"
+        self.report["phase"] = "staging"
 
-    def _apply_gray_material(self):
-        """Put every imported mesh on one gray lambert and report what is left."""
+    def _check_import_world(self):
+        """Measure the world the file arrived in, before any conversion.
+
+        The engine's handoff convention is a property of the file, not an
+        assumption: when the caller asks for another world, this comparison is
+        what proves the file really arrived in the handoff's world before the
+        conversion was applied.
+        """
+        if self.target_world == mapping().WORLD_ENGINE:
+            return
+        comparison = self._compare_against_manifest()
+        self.report["world"]["engine_check"] = comparison["transform_check"]
+        if not comparison["transform_check"].get("matched"):
+            self.report["warnings"].append(
+                "IMPORT_CONVENTION_UNEXPECTED: the file did not arrive in the "
+                "engine handoff's world: the comparison names {0}".format(
+                    comparison["transform_check"].get("candidate")))
+
+    def _apply_world_conversion(self):
+        """Move the staged geometry into the world the caller asked for."""
+        world = self.report["world"]
+        world["target"] = self.target_world
+        world["target_map"] = mapping().world_target_map(self.target_world)
+        world["target_note"] = mapping().world_target_note(self.target_world)
+        world["manifest_conventions"] = self.summary.get("conventions")
+        if self.target_world == mapping().WORLD_ENGINE:
+            world["conversion_applied"] = False
+            self.report["phase"] = "world"
+            return
+        matrix, determinant = mapping().world_conversion_matrix(
+            mapping().WORLD_ENGINE, self.target_world)
+        self.world_conversion = matrix
+        started = time.time()
+        group = self._container_group(self.active_namespace)
+        # Every root's world matrix is moved once; the children follow their
+        # parent, so a level costs one query and one write per root, not per node.
+        roots = commands().listRelatives(group, children=True, fullPath=True,
+                                         type="transform") or []
+        for node in roots:
+            values = [float(value) for value in
+                      commands().xform(node, query=True, worldSpace=True, matrix=True)]
+            commands().xform(node, worldSpace=True,
+                             matrix=mapping().carry_world_matrix(matrix, values))
+        world.update({
+            "conversion_applied": True,
+            "conversion_matrix": mapping().matrix3_values(matrix),
+            "conversion_determinant": determinant,
+            "conversion_rotation_deg": mapping().matrix3_rotation_angle_degrees(matrix),
+            "conversion_seconds": round(time.time() - started, 3),
+            "objects_converted": len(roots),
+        })
+        self.report["phase"] = "world"
+
+    def _apply_shading(self):
+        """Show the reference in one gray, without pretending it carries no material.
+
+        The material assignment the FBX carries is kept: the model may have
+        material balls, and a texture path in a material is a reference, not a
+        delivered image. What the artist needs to see is uniform gray, and that
+        is a display treatment: the viewport override colors every imported shape
+        gray and hides its textures, while the shading networks stay untouched
+        and are reported.
+        """
+        maya_cmds = commands()
+        namespace = self.active_namespace
+        shapes = self._container_nodes_of_type("mesh", namespace)
+        assignment = []
+        for shape in shapes:
+            assignment.append({
+                "shape": shape,
+                "shading_groups": list(maya_cmds.listConnections(shape,
+                                                                 type="shadingEngine") or []),
+            })
+        materials = {
+            "mode": self.shading,
+            "gray_material": None,
+            "display": None,
+            "preserved_assignment": assignment,
+            "imported_material_nodes": self._leftovers(namespace),
+            "file_nodes": sorted(self._container_nodes_of_type("file", namespace)),
+        }
+        if self.shading == SHADING_DISPLAY:
+            overridden = []
+            for shape in shapes:
+                maya_cmds.setAttr(shape + ".overrideEnabled", True)
+                maya_cmds.setAttr(shape + ".overrideShading", True)
+                maya_cmds.setAttr(shape + ".overrideTexturing", True)
+                maya_cmds.setAttr(shape + ".overrideColorRGB", *GRAY_DISPLAY_COLOR,
+                                  type="double3")
+                overridden.append(shape)
+            materials["display"] = {
+                "color": list(GRAY_DISPLAY_COLOR),
+                "shapes_overridden": len(overridden),
+                "shapes": overridden,
+                "note": ("a viewport display override: the shapes keep the material "
+                         "assignment the handoff carries, and a render still uses "
+                         "those materials"),
+            }
+        elif self.shading == SHADING_MATERIAL:
+            materials["gray_material"] = self._assign_gray_material(shapes)
+        self.report["materials"] = materials
+
+        file_nodes = materials["file_nodes"]
+        image_present = [node for node in file_nodes if _file_node_image_exists(node)]
+        self.report["counts"]["file_texture_nodes"] = len(file_nodes)
+        self.report["counts"]["image_nodes_loaded"] = len(image_present)
+        self.report["counts"]["meshes_assigned"] = len(shapes)
+        self.report["media"]["file_nodes_created"] = len(file_nodes)
+        self.report["media"]["image_nodes_loaded"] = len(image_present)
+        self.report["media"]["image_paths_present"] = [
+            _file_node_image_path(node) for node in image_present]
+        if image_present:
+            self.report["warnings"].append(
+                "REFERENCED_IMAGE_FILES_PRESENT: {0} imported file node(s) name an "
+                "image that exists on this machine ({1}); the handoff delivered no "
+                "image, but Maya resolves those references when it evaluates "
+                "shading".format(len(image_present),
+                                 self.report["media"]["image_paths_present"]))
+        self.report["phase"] = "shading"
+
+    def _assign_gray_material(self, shapes):
+        """Create or reuse the gray lambert and assign it to every mesh shape."""
         maya_cmds = commands()
         gray_name = mapping().DEFAULT_GRAY_MATERIAL
         existing = maya_cmds.ls(gray_name, type="lambert")
@@ -503,46 +795,22 @@ class SceneRefImporter(object):
                                      shading_group + ".surfaceShader"):
             maya_cmds.connectAttr(shader + ".outColor",
                                   shading_group + ".surfaceShader", force=True)
-
         replaced = 0
-        assigned = []
-        for shape in self._container_nodes_of_type("mesh"):
+        for shape in shapes:
             before = maya_cmds.listConnections(shape, type="shadingEngine") or []
             maya_cmds.sets(shape, edit=True, forceElement=shading_group)
             after = maya_cmds.listConnections(shape, type="shadingEngine") or []
             if before != after:
                 replaced += 1
-            assigned.append({"shape": shape, "before": before, "after": after})
-        leftovers = self._leftovers()
-        file_nodes = sorted(self._container_nodes_of_type("file"))
-        image_nodes_loaded = [node for node in file_nodes if _file_node_image_exists(node)]
-        if file_nodes:
-            message = ("TEXTURE_NODES_PRESENT: {0} file node(s) survive in the "
-                       "container {1}: {2}".format(len(file_nodes), self.container,
-                                                   file_nodes))
-            if self.allow_textures:
-                self.report["warnings"].append(message)
-                self.report["texture_scan"]["allowed"] = True
-            else:
-                self.report["problems"].append(message)
-        self.report["gray_material"] = {
+        return {
             "name": shader,
             "type": str(maya_cmds.nodeType(shader)),
             "color": color,
             "shading_group": shading_group,
             "reused": reused,
-            "meshes_assigned": len(assigned),
+            "meshes_assigned": len(shapes),
             "shading_groups_replaced": replaced,
-            "leftover_file_nodes": file_nodes,
-            "leftover_image_nodes_loaded": image_nodes_loaded,
-            "leftover_imported_material_nodes": leftovers,
-            "assignment": assigned,
         }
-        self.report["counts"]["file_texture_nodes"] = len(file_nodes)
-        self.report["counts"]["image_nodes_loaded"] = len(image_nodes_loaded)
-        self.report["counts"]["meshes_assigned"] = len(assigned)
-        self.report["counts"]["shading_groups_replaced"] = replaced
-        self.report["phase"] = "material"
 
     def _verify(self):
         """Compare every exported manifest object with its Maya node.
@@ -555,7 +823,30 @@ class SceneRefImporter(object):
         a reported problem.
         """
         started = time.time()
-        index = self._container_index()
+        comparison = self._compare_against_manifest()
+        self.report["objects"] = comparison["objects"]
+        self.report["transform_check"] = comparison["transform_check"]
+        self.report["problems"].extend(comparison["problems"])
+        self.report["warnings"].extend(comparison["warnings"])
+        counts = comparison["transform_check"]
+        transform_matched = [entry.get("node_name") for entry in comparison["objects"]
+                             if entry.get("matched_by") == "transform"]
+        if transform_matched:
+            self.report["warnings"].append(
+                "TRANSFORM_MATCH: {0} object(s) were matched by world position "
+                "rather than by name: {1}".format(len(transform_matched),
+                                                  transform_matched))
+        self.report["counts"]["matched_objects"] = counts.get("objects_compared", 0)
+        self.report["counts"]["matched_by_name"] = len(
+            [entry for entry in comparison["objects"] if entry.get("matched_by") == "name"])
+        self.report["counts"]["matched_by_transform_count"] = len(transform_matched)
+        self.report["timing"]["verify_seconds"] = round(time.time() - started, 3)
+        self.report["phase"] = "verify"
+        self._record_scene_after()
+
+    def _compare_against_manifest(self):
+        """Measure the staged container and compare it against the manifest."""
+        index = self._container_index(self.active_namespace)
         entries = []
         for entry in mapping().exported_objects(self.manifest):
             name, unreal_matrix, unreal_size, unreal_offset, unreal_centroid, \
@@ -576,29 +867,165 @@ class SceneRefImporter(object):
                 "match_candidate": None,
             })
         measurements = [self._measure_manifest_object(entry) for entry in entries]
-        comparison = mapping().compare_measurements(mapping().AXIS_CANDIDATES, measurements)
+        comparison = mapping().compare_measurements(
+            mapping().AXIS_CANDIDATES, measurements,
+            frame=self._frame_factor(), conversion=self.world_conversion)
         if self._match_pending_by_transform(entries, comparison):
             measurements = [self._measure_manifest_object(entry) for entry in entries]
-            comparison = mapping().compare_measurements(mapping().AXIS_CANDIDATES,
-                                                        measurements)
-        self.report["objects"] = comparison["objects"]
-        self.report["transform_check"] = comparison["transform_check"]
-        self.report["problems"].extend(comparison["problems"])
-        self.report["warnings"].extend(comparison["warnings"])
-        matched_by_transform = [entry["node_name"] for entry in entries
-                                if entry["matched_by"] == "transform"]
-        if matched_by_transform:
+            comparison = mapping().compare_measurements(
+                mapping().AXIS_CANDIDATES, measurements,
+                frame=self._frame_factor(), conversion=self.world_conversion)
+        return comparison
+
+    def _frame_factor(self):
+        """The node frame factor of this handoff, or ``None`` when unmeasured.
+
+        The factor is a property of the export axis option the manifest
+        declares. A manifest that carries no conventions block, or one that
+        names an option whose factor was never measured, reports the orientation
+        comparison as unavailable instead of comparing against a guess.
+        """
+        conventions = self.summary.get("conventions")
+        if not conventions:
+            return None
+        option = conventions.get("export_axis_option")
+        if option in mapping().MEASURED_ASYMMETRIC_FRAME_OPTIONS:
+            return mapping().ENGINE_HANDOFF_LOCAL_FRAME
+        if not self.frame_factor_reported:
+            self.frame_factor_reported = True
             self.report["warnings"].append(
-                "TRANSFORM_MATCH: {0} object(s) were matched by world position "
-                "rather than by name: {1}".format(len(matched_by_transform),
-                                                  matched_by_transform))
-        self.report["counts"]["matched_objects"] = comparison["transform_check"]["objects_compared"]
-        self.report["counts"]["matched_by_name"] = len(
-            [entry for entry in entries if entry["matched_by"] == "name"])
-        self.report["counts"]["matched_by_transform_count"] = len(matched_by_transform)
-        self.report["timing"]["verify_seconds"] = round(time.time() - started, 3)
-        self.report["phase"] = "verify"
-        self._record_scene_after()
+                "ORIENTATION_UNAVAILABLE: the manifest declares the export axis "
+                "option {0!r}, whose node frame factor was never measured; the "
+                "orientation comparison is reported as unavailable".format(option))
+        return None
+
+    def _finalise(self):
+        """Replace the previous reference with the staged one, or keep it.
+
+        The swap runs only after the comparison reported no problem, and it is a
+        namespace rename: the previous reference is deleted, the staging
+        namespace takes the container's name, and the staged group is renamed to
+        the group name the contract promises.
+        """
+        update = self.report["update"]
+        if self.dry_run or self.report["problems"]:
+            self._discard_staging("dry_run" if self.dry_run else "check_failed")
+            return
+        started = time.time()
+        maya_cmds = commands()
+        removal = self._remove_container()
+        self.swap_partial = True
+        try:
+            maya_cmds.namespace(rename=(self.staging, self.container))
+        except Exception as error:  # noqa: BLE001 - reported with the staging intact
+            raise SceneRefRefused(
+                CATEGORY_SWAP_FAILED,
+                "the staging namespace {0} could not be renamed to {1}: {2}".format(
+                    self.staging, self.container, error),
+                exit_code=EXIT_CHECK_FAILED)
+        staging_group = self.container + ":" + self.staging
+        try:
+            maya_cmds.rename(staging_group, self.container + ":" + self.container)
+        except Exception as error:  # noqa: BLE001 - the namespace name is the contract
+            raise SceneRefRefused(
+                CATEGORY_SWAP_FAILED,
+                "the staged group {0} could not be renamed to {1}: {2}".format(
+                    staging_group, self.container + ":" + self.container, error),
+                exit_code=EXIT_CHECK_FAILED)
+        self.swap_partial = False
+        self.active_namespace = self.container
+        self.staged = False
+        update.update({
+            "mode": "staged_swap",
+            "swapped": True,
+            "discarded": False,
+            "swap_seconds": round(time.time() - started, 3),
+            "previous_container_removal": removal,
+        })
+        self.report["container"].update({
+            "namespace": self.container,
+            "group": self.container,
+            "group_path": self._container_group(self.container),
+            "swapped": True,
+            "kept_existing": False,
+        })
+        # The measurements were taken in the staging namespace; a rename does not
+        # move a node, so only the recorded paths are rehomed, and each of them is
+        # read back to prove it still resolves.
+        self._rehome_paths()
+        self.report["counts"]["container_nodes"] = len(self._namespace_members(self.container))
+        self.report["phase"] = "finalise"
+
+    def _discard_staging(self, reason):
+        """Delete the staging namespace, leaving the previous reference untouched.
+
+        A failure after the namespace rename but before the group rename cannot be
+        undone -- the previous reference is already deleted at that point -- so
+        the partially swapped namespace is deleted as well and reported, instead
+        of leaving a container that answers to the contract's name but holds no
+        group.
+        """
+        if not self.staged or not self.staging:
+            return
+        update = self.report["update"]
+        nodes = self._namespace_members(self.staging)
+        staging_removed = self._remove_namespace(self.staging)
+        if commands().objExists(self.staging):
+            commands().delete(self.staging)
+        if self.swap_partial:
+            self._remove_container()
+        self.staged = False
+        self.active_namespace = None
+        if not update.get("swapped"):
+            update["mode"] = ("dry_run" if reason == "dry_run"
+                              else "staged_swap_discarded")
+            update["discarded"] = True
+            update["discard_reason"] = reason
+            update["discarded_nodes"] = nodes
+            update["discarded_node_count"] = len(nodes)
+            update["staging_namespace_removed"] = staging_removed
+            update["partial_swap_removed"] = bool(self.swap_partial)
+        self.report["container"]["kept_existing"] = bool(
+            update.get("existing_container"))
+
+    def _rehome_paths(self):
+        """Rewrite recorded paths after the swap, reading every one back.
+
+        A rename moves no node, so the measurements stay valid; only the recorded
+        paths change. Each path is resolved again by short name inside the final
+        container, which also proves the swap left a container the contract can
+        address.
+        """
+        missing = []
+
+        def resolve(value):
+            if not isinstance(value, str) or not value:
+                return value
+            short = _short_node_name(value)
+            if not short:
+                return value
+            found = commands().ls(self.container + ":" + short, long=True) or []
+            if found:
+                return found[0]
+            missing.append(value)
+            return value
+
+        for entry in self.report["objects"]:
+            entry["path"] = resolve(entry.get("path"))
+        materials = self.report["materials"]
+        for entry in materials.get("preserved_assignment") or []:
+            entry["shape"] = resolve(entry.get("shape"))
+        materials["file_nodes"] = [resolve(node)
+                                   for node in materials.get("file_nodes") or []]
+        display = materials.get("display")
+        if display:
+            display["shapes"] = [resolve(shape) for shape in display.get("shapes") or []]
+        self.report["update"]["post_swap_paths_checked"] = True
+        self.report["update"]["post_swap_paths_missing"] = missing
+        if missing:
+            self.report["problems"].append(
+                "POST_SWAP_PATHS: {0} recorded path(s) do not resolve after the "
+                "swap: {1}".format(len(missing), missing))
 
     def _measure_manifest_object(self, entry):
         """Maya readings for one manifest object, or an unfound placeholder."""
@@ -622,6 +1049,7 @@ class SceneRefImporter(object):
             "centroid_triangles_used": 0,
             "centroid_sampled": False,
             "local_size": None,
+            "identification_size": None,
             "match_distance_cm": entry["match_distance_cm"],
             "match_candidate": entry["match_candidate"],
         }
@@ -644,6 +1072,8 @@ class SceneRefImporter(object):
                 (bounds[0][axis] + bounds[1][axis]) / 2.0 - position[axis]
                 for axis in range(3)]
             measurement["local_size"] = _local_bounds_size(entry["path"])
+            measurement["identification_size"] = _identification_size(
+                measurement["local_size"], measurement["maya_matrix"])
         except Exception as error:  # noqa: BLE001 - size checks are reported missing
             measurement["problems"].append(
                 "BOUNDS_UNREADABLE: {0} has no readable bounding box: {1}".format(
@@ -695,9 +1125,10 @@ class SceneRefImporter(object):
                    if entry["path"] is None and entry["ue_matrix"]]
         if not pending:
             return False
-        group = self._container_group()
+        group = self._container_group(self.active_namespace)
         used = {entry["path"] for entry in entries if entry["path"]}
-        available = [node for node in self._container_nodes_of_type("transform")
+        available = [node for node in self._container_nodes_of_type("transform",
+                                                                   self.active_namespace)
                      if node not in used and node != group]
         if not available:
             return False
@@ -765,26 +1196,34 @@ class SceneRefImporter(object):
     # -------------------------------------------------------------- helpers
 
     def _remove_container(self):
-        """Delete only the container namespace and its group."""
+        """Delete only the container namespace, its group and the legacy root group."""
         maya_cmds = commands()
         removal = {"namespace_removed": False, "group_removed": False,
                    "namespace_existed": bool(maya_cmds.namespace(exists=self.container)),
-                   "group_existed": bool(self._container_group_names())}
+                   "group_existed": bool(self._container_group_names(self.container))}
         if removal["namespace_existed"]:
             maya_cmds.namespace(removeNamespace=self.container,
                                 deleteNamespaceContent=True)
             removal["namespace_removed"] = True
-        for node in self._container_group_names():
+        for node in self._container_group_names(self.container):
             if maya_cmds.objExists(node):
                 maya_cmds.delete(node)
                 removal["group_removed"] = True
-        self.report["container_removal"] = removal
+        return removal
 
-    def _container_group_names(self):
+    def _remove_namespace(self, namespace):
+        """Delete a namespace and everything in it; returns whether it existed."""
+        maya_cmds = commands()
+        if not maya_cmds.namespace(exists=namespace):
+            return False
+        maya_cmds.namespace(removeNamespace=namespace, deleteNamespaceContent=True)
+        return True
+
+    def _container_group_names(self, namespace):
         """Existing container transforms: a stale root one, and the namespaced one."""
         maya_cmds = commands()
-        names = list(maya_cmds.ls(self.container, type="transform", long=True) or [])
-        names.extend(maya_cmds.ls(self.container + ":" + self.container,
+        names = list(maya_cmds.ls(namespace, type="transform", long=True) or [])
+        names.extend(maya_cmds.ls(namespace + ":" + namespace,
                                   type="transform", long=True) or [])
         return names
 
@@ -820,29 +1259,30 @@ class SceneRefImporter(object):
             maya_cmds.currentTime(before["current_time"])
         return changed
 
-    def _namespace_members(self):
-        return list(commands().namespaceInfo(self.container, listNamespace=True) or [])
+    def _namespace_members(self, namespace):
+        return list(commands().namespaceInfo(namespace, listNamespace=True) or [])
 
-    def _container_nodes_of_type(self, node_type):
-        """Nodes of ``node_type`` inside the container namespace."""
-        return list(commands().ls(self.container + ":*", long=True, type=node_type) or [])
+    def _container_nodes_of_type(self, node_type, namespace=None):
+        """Nodes of ``node_type`` inside one namespace."""
+        namespace = namespace or self.active_namespace or self.container
+        return list(commands().ls(namespace + ":*", long=True, type=node_type) or [])
 
-    def _container_group(self):
-        """Long name of the container transform inside the container namespace."""
-        nodes = commands().ls(self.container + ":" + self.container, long=True,
-                          type="transform") or []
+    def _container_group(self, namespace):
+        """Long name of the container transform inside its namespace."""
+        nodes = commands().ls(namespace + ":" + namespace, long=True,
+                              type="transform") or []
         if not nodes:
             raise SceneRefRefused(
-                CATEGORY_GRAY_MATERIAL,
-                "the container group {0}:{0} was not created".format(self.container),
+                CATEGORY_SWAP_FAILED,
+                "the container group {0}:{0} was not created".format(namespace),
                 exit_code=EXIT_CHECK_FAILED)
         return nodes[0]
 
-    def _imported_roots(self, group):
+    def _imported_roots(self, group, namespace):
         """Imported container transforms that are still at the top of the scene."""
         maya_cmds = commands()
         roots = []
-        for node in self._container_nodes_of_type("transform"):
+        for node in self._container_nodes_of_type("transform", namespace):
             if node == group:
                 continue
             parent = maya_cmds.listRelatives(node, parent=True, fullPath=True)
@@ -850,19 +1290,18 @@ class SceneRefImporter(object):
                 roots.append(node)
         return roots
 
-    def _container_index(self):
+    def _container_index(self, namespace):
         """Container transforms by short node name, with their long paths."""
-        maya_cmds = commands()
         index = {}
-        for node in self._container_nodes_of_type("transform"):
+        for node in self._container_nodes_of_type("transform", namespace):
             short = _short_node_name(node)
             index.setdefault(short, []).append(node)
         return index
 
-    def _leftovers(self):
-        """Imported shading nodes the container still holds after reassignment."""
+    def _leftovers(self, namespace):
+        """Imported shading nodes the container still holds after the import."""
         leftovers = {"materials": [], "file": [], "place2d": [], "other": []}
-        for node in self._namespace_members():
+        for node in self._namespace_members(namespace):
             node_type = commands().nodeType(node)
             if node_type in ("lambert", "blinn", "phong", "standardSurface",
                              "anisotropic", "shadingEngine"):
@@ -1033,12 +1472,35 @@ def _world_surface_centroid(path, cap=CENTROID_FACE_CAP):
             stride > 1)
 
 
-def _file_node_image_exists(node):
-    """Whether a ``file`` node's image path exists on disk."""
+def _identification_size(local_size, world_matrix):
+    """The extents that decide whether a mesh's axes can be identified.
+
+    The shape's local bounding-box extents are scaled by the node's own axis
+    scale factors -- the lengths of the world matrix's axis rows -- because a
+    non-uniform scale separates axes that a symmetric mesh leaves ambiguous. A
+    cube whose world matrix scales it ``(2, 0.5, 0.25)`` produces images of
+    three different lengths, so an axis permutation or a sign flip changes the
+    geometry and must be reported; the same cube at uniform scale does not.
+    """
+    if not local_size or len(local_size) != 3 or not world_matrix:
+        return None
+    rows = mapping().matrix4_linear(world_matrix)
+    return [float(local_size[axis]) * mapping().vector_length(rows[axis])
+            for axis in range(3)]
+
+
+def _file_node_image_path(node):
+    """The image path a ``file`` node names, or ``None``."""
     try:
         image = commands().getAttr(node + ".fileTextureName")
     except Exception:  # noqa: BLE001 - a missing attribute is just not loaded
-        return False
+        return None
+    return str(image) if image else None
+
+
+def _file_node_image_exists(node):
+    """Whether a ``file`` node's image path exists on disk."""
+    image = _file_node_image_path(node)
     if not image:
         return False
     try:
@@ -1047,12 +1509,13 @@ def _file_node_image_exists(node):
         return False
 
 
-def run(fbx, manifest, container=DEFAULT_CONTAINER, allow_textures=False,
-        keep_existing=False):
+def run(fbx, manifest, container=DEFAULT_CONTAINER, target_world=None,
+        shading=SHADING_DISPLAY, allow_image_data=False, dry_run=False):
     """Import and verify one handoff; returns ``(report, exit_code)``."""
     return SceneRefImporter(fbx, manifest, container=container,
-                            allow_textures=allow_textures,
-                            keep_existing=keep_existing).run()
+                            target_world=target_world, shading=shading,
+                            allow_image_data=allow_image_data,
+                            dry_run=dry_run).run()
 
 
 def write_report(report, path):
@@ -1068,16 +1531,27 @@ def write_report(report, path):
 def summarise(report):
     """Short human readable summary lines for stdout."""
     counts = report.get("counts") or {}
+    world = report.get("world") or {}
+    media = report.get("media") or {}
+    update = report.get("update") or {}
     lines = [
         "phase: {0}  ok: {1}".format(report.get("phase"), report.get("ok")),
         "manifest objects: {0} exported of {1}".format(
             counts.get("manifest_objects"), counts.get("manifest_objects_total")),
-        "container: {0} nodes, {1} mesh(es) on {2}".format(
-            counts.get("container_nodes"), counts.get("meshes_assigned"),
-            (report.get("gray_material") or {}).get("name")),
+        "world: {0} (map {1}, conversion applied {2})".format(
+            world.get("target"), world.get("target_map"),
+            world.get("conversion_applied")),
+        "update: {0} (swapped {1}, discarded {2})".format(
+            update.get("mode"), update.get("swapped"), update.get("discarded")),
+        "media: {0} embedded record(s), {1} image file(s) in the handoff directory, "
+        "{2} file node(s), {3} resolving to an existing image".format(
+            media.get("embedded_media_records"),
+            len(media.get("image_files_in_handoff_directory") or []),
+            media.get("file_nodes_created"), media.get("image_nodes_loaded")),
+        "container: {0} nodes".format(counts.get("container_nodes")),
     ]
     texture_scan = report.get("texture_scan") or {}
-    lines.append("texture records: {0} Texture ({1} naming a file) {2}".format(
+    lines.append("texture records: {0} Texture(s) ({1} naming a file) {2}".format(
         texture_scan.get("texture_records"), texture_scan.get("texture_references"),
         texture_scan.get("files")))
     transform_check = report.get("transform_check") or {}
@@ -1099,10 +1573,19 @@ def main(argv=None):
     parser.add_argument("--report", required=True, help="path for the JSON report")
     parser.add_argument("--container", default=DEFAULT_CONTAINER,
                         help="container namespace and group name")
-    parser.add_argument("--allow-textures", action="store_true",
-                        help="import even when the handoff records textures")
-    parser.add_argument("--keep-existing", action="store_true",
-                        help="keep an existing container instead of replacing it")
+    parser.add_argument("--target-world", default="engine",
+                        help="the world to place the geometry in: engine (the "
+                             "handoff's own world, shared with the animation "
+                             "route) or camera (the camera sync route's world)")
+    parser.add_argument("--shading", default=SHADING_DISPLAY,
+                        help="display (uniform gray viewport override, materials "
+                             "kept), material (assign the gray lambert) or keep")
+    parser.add_argument("--allow-image-data", action="store_true",
+                        help="import even when the handoff directory holds image "
+                             "files or the FBX embeds media data")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="stage and verify the handoff but keep the existing "
+                             "reference as it is")
     parser.add_argument("--json", action="store_true",
                         help="print the whole report JSON to stdout")
     args = parser.parse_args(argv)
@@ -1117,8 +1600,9 @@ def main(argv=None):
     try:
         ensure_maya()
         report, exit_code = run(args.fbx, args.manifest, container=args.container,
-                                allow_textures=args.allow_textures,
-                                keep_existing=args.keep_existing)
+                                target_world=args.target_world, shading=args.shading,
+                                allow_image_data=args.allow_image_data,
+                                dry_run=args.dry_run)
     except Exception:  # noqa: BLE001 - never raise out of main
         report = dict(report)
         report["phase"] = "failed"

@@ -3,14 +3,18 @@
 Importer and verifier for the bounded Unreal -> Maya static geometry reference
 described in `../../transfer.md`. The Unreal side exports the static geometry of
 one level scope as an ASCII FBX plus a `mtou-scene-ref-manifest/1` measurement
-record; this side imports that file into one container, puts the reference
-geometry on a single gray material, and compares what Maya actually holds
-against the manifest so neither host is trusted about the result.
+record; this side stages that file in its own namespace, keeps the material
+assignment the file carries while showing the geometry in one uniform gray,
+places it in the handoff's world (or converts it into the camera route's world on
+request), and compares what Maya actually holds against the manifest so neither
+host is trusted about the result. The previous reference is replaced only after
+the comparison passed.
 
 `transfer.md` is the frozen contract; this folder implements the Maya half of
-its "Maya report schema", "Texture rule", "Object naming" and "Commands"
-sections and never changes them. Nothing here imports or depends on the
-product's `MtoULiveLink.py`.
+its "Maya report schema", "Media rule", "Worlds and the node matrix", "Object
+naming and the container", "Updating the reference" and "Commands" sections and
+never changes them. Nothing here imports or depends on the product's
+`MtoULiveLink.py`.
 
 ## Files
 
@@ -42,30 +46,47 @@ python -m unittest discover \
 # 3. one handoff, as the Unreal side calls it
 "$MAYAPY" composite/MtoULiveLink/prototypes/scene-reference/maya/MtoUSceneRefPrototype/scripts/MtoUSceneRefPrototype.py \
   --fbx <scope>.fbx --manifest <scope>.manifest.json --report maya_report.json
+#    ... add --target-world camera to place the reference in the camera route's
+#    world, --shading material|keep to change what the geometry is shown with,
+#    --allow-image-data to import a handoff that delivers image data anyway, or
+#    --dry-run to compare without replacing the previous reference
 ```
 
 Exit codes are the contract's: `0` when every check passed, `1` when a check
-failed (including a handoff that records a texture and was not given
-`--allow-textures`), `2` for usage and contract errors (an unreadable or non-FBX
+failed (including a handoff that delivers image data and was not given
+`--allow-image-data`), `2` for usage and contract errors (an unreadable or non-FBX
 handoff, a manifest that is not `mtou-scene-ref-manifest/1`, a scene or manifest
 that is not in centimetres, a manifest world that is not Z up, an unusable
-container name). `--json` prints the whole report to stdout; without it the run
-prints a short summary.
+container name, an unknown world or shading mode). `--json` prints the whole
+report to stdout; without it the run prints a short summary.
 
 ## What a run does
 
 1. Reads the manifest and reports the scope, the exported object count and the
-   geometry scale **before** anything is imported.
-2. Scans the FBX text with its own detector and refuses to import a handoff that
-   records a texture unless `--allow-textures` was passed.
-3. Creates the container namespace and group, imports the FBX inside that
-   namespace, and parents every imported root node under the group with
-   `cmds.parent(..., relative=True)` so the world placement is preserved.
-4. Creates one gray lambert (`MtoU_UE_SceneRef_Gray`, mid gray `0.5`) and
-   assigns it to every mesh shape in the container, reporting how many shading
-   groups it replaced and which imported material and texture nodes are left.
-5. Matches every exported manifest object to its Maya node, reads the node's
-   world matrix and world bounding box, and compares them with the manifest.
+   geometry scale **before** anything is imported, and compares the manifest's
+   declared axis convention with the one this module measures against.
+2. Scans the FBX text with its own detector, lists the image files in the
+   handoff's own directory, and refuses to import a handoff that delivers image
+   data (image files or embedded media) unless `--allow-image-data` was passed.
+   Texture records and recorded paths are reported, never refused.
+3. Creates the **staging** namespace `<container>_Incoming` and its group,
+   imports the FBX inside that namespace, and parents every imported root node
+   under the group with `cmds.parent(..., relative=True)` so the world placement
+   is preserved. The previous reference is untouched at this point.
+4. Reads the world the file arrived in when the caller asked for another one
+   (`world.engine_check`), then carries every root's world matrix through one
+   explicit conversion if `--target-world camera` was asked for.
+5. Shows the geometry as asked: a uniform gray display override on every mesh
+   shape with the imported material assignment left in place (`display`, the
+   default), the gray lambert assigned instead (`material`), or nothing (`keep`).
+6. Matches every exported manifest object to its Maya node, reads the node's
+   world matrix and world bounding box, and compares them with the manifest:
+   position, world box size, pivot-to-bounds-centre offset, surface centroid and
+   the node matrix's axis angles.
+7. Replaces the previous reference only when the comparison reported no problem:
+   the old container is deleted and the staging namespace is renamed into the
+   container's name. On any problem the staging namespace is deleted again and
+   the previous reference stays exactly as it was.
 
 ## Container naming, and the one host limit
 
@@ -77,11 +98,18 @@ exists), so the group lives *inside* its own namespace and its full name is
 `|MtoU_UE_SceneRef:MtoU_UE_SceneRef`. The report carries both parts plus the
 group's full path.
 
-A repeat run deletes only that namespace and that group before importing again
-(`cmds.namespace(removeNamespace=..., deleteNamespaceContent=True)` and the
-group node), so any other scene object, material or key survives untouched.
-`--keep-existing` skips the removal; the FBX plugin then merges into the names
-that are already there, and the report shows the resulting counts.
+A run works in a **staging namespace**, `<container>_Incoming`, with a group of
+the same name inside it. The previous reference is untouched while the new import
+is measured; when the comparison reports no problem the previous container
+(namespace + group, plus a legacy root-level group of that name) is deleted and
+the staging namespace is **renamed** to the container's name
+(`cmds.namespace(rename=...)`), with its group renamed to
+`<container>:<container>`. A rename moves no node, so the measurements stay valid
+and a level costs two string operations instead of a per-node swap; every
+recorded path is then re-resolved by short name inside the final container and
+reported. A run that fails, or `--dry-run`, deletes the staging namespace and
+keeps the previous reference exactly as it was; a staging namespace left behind
+by an interrupted run is deleted and reported (`update.stale_staging_removed`).
 
 What this host's `fbxmaya` plugin actually accepts is recorded in the report:
 
@@ -95,34 +123,49 @@ What this host's `fbxmaya` plugin actually accepts is recorded in the report:
   the importer does that instead and reports
   `fbx.namespace_mechanism`.
 
-## Texture rule
+## Media rule
+
+The reference keeps the material assignment the model carries: a material ball, a
+material slot and a texture record are normal, and a recorded path is a
+reference, not a delivered image. Image **data** is what a static reference
+handoff must not deliver, and it is checked in two places, on both hosts:
+
+* the files in the directory the exporter owns (`.png`, `.bmp`, `.tga`, `.jpg`,
+  `.jpeg`, `.exr`, `.hdr`, `.dds`, `.fbm`), listed by the Maya side itself with
+  `mapping.image_files_beside`, not taken from the exporter's word;
+* media embedded in the FBX: a `Content:` line inside a `Texture:`/`Video:`
+  record that carries a payload, on the same line or on the following quoted
+  line.
+
+Either finding refuses the import with `IMAGE_DATA_PRESENT` unless
+`--allow-image-data` was passed, in which case it is reported as a warning and
+the run continues. A recorded texture path that resolves to a file on this
+machine is reported (`media.image_paths_present`) and does not fail the run: it
+is a reference that resolves, not an image the handoff delivered.
 
 Both hosts run the same frozen, line based detector so their counts can be
 compared; `tests/test_scene_ref_mapping.py` holds the positive and negative
 controls (an engine style fragment, a nested property block, a take clip, the
-scene's own `Original|FileName` property, a commented out record and the
-`Definitions` template):
+scene's own `Original|FileName` property, a commented out record, the
+`Definitions` template, an embedded media record and a camera/light node
+attribute):
 
 * a line whose trimmed text starts with `Texture:` opens a texture record, one
-  starting with `Video:` opens a video record, and a line that is exactly `}`
-  closes the current record;
-* inside a record, `FileName:` and `RelativeFilename:` name a file, taking the
-  last quoted token on the line.
+  starting with `Video:` opens a video record, and the record ends only when the
+  brace depth returns to zero -- the SDK writes a nested `Properties70` block
+  before the name and `Content` lines, so a nested closing brace ends nothing;
+* inside a record, `FileName:`, `Filename:` and `RelativeFilename:` name a file,
+  taking the last quoted token on the line;
+* a `NodeAttribute:` line whose quoted tokens include the class `Camera` or
+  `Light` is a camera or light node record; the SDK writes no `Camera:` or
+  `Light:` record head at all.
 
-The scan reports `texture_records` (every `Texture:` record), `texture_references`
-(records that named a file), `video_references`, the distinct `files` in the
-order found, and the per record evidence. **The import refusal is based on
-`texture_records > 0`**, not only on `texture_references`: the SDK writes a
-nested `Properties70` block before the name lines, so a record can carry a
-texture and still name no file that this rule sees -- as both of this host's
-own exporter forms do. A texture record that names no file is still a material
-input that cannot be carried.
-
-`--allow-textures` imports anyway, for inspection. Surviving `file` nodes inside
-the container are then reported as warnings and counted in
-`counts.file_texture_nodes` and `counts.image_nodes_loaded`; without the flag
-the same finding would be a problem. Texture nodes are never deleted silently,
-and neither is any other node.
+The scan reports `texture_records`, `texture_references`, `video_references`,
+`content_records`, `embedded_media_records`, `camera_records`, `light_records`
+and the distinct `files` in the order found, with the per record evidence. The
+importer counts the `file` nodes the import created and how many of them name an
+image that exists on disk, so a run never claims "no texture was loaded" from the
+material it finally shows.
 
 A binary FBX cannot be read this way. The scan falls back to a documented
 heuristic over the FBX string table (node names are length prefixed, so a
@@ -147,9 +190,30 @@ handoff is ASCII.
   the node translation with Y negated and Maya converts the file's Z-up axis
   system to Y-up. Its determinant is `-1`, so it is a mirror of the camera
   route's `(y, z, -x)` map. `transform_check.camera_contract` scores that camera
-  map on the same handoff and states the divergence, and nothing here corrects
-  the imported geometry: a product that carries both routes has to reconcile
-  them.
+  map on the same handoff and states the divergence.
+* By default nothing corrects the imported geometry, because the handoff's own
+  world is also the world of the product's Maya to Unreal animation route:
+  `MtoULiveLink.py`'s `convert_transform` maps `maya (x, y, z) -> ue (x, z, y)`,
+  its own inverse and the same map as the handoff (checked 2026-09-29), so a
+  reference imported without conversion agrees with the character and props the
+  artist sends to Unreal. `--target-world camera` moves the geometry into the
+  camera route's world instead, through one explicit conversion
+  (`camera_map . engine_map^-1`, determinant `+1`, 90 degrees about the up axis)
+  applied to every imported root's world matrix, with the matrix, the angle and
+  the number of roots it moved reported in `world`. When a conversion is applied,
+  `world.engine_check` holds a full comparison measured **before** it, which is
+  what shows the file really arrived in the handoff's world.
+* A point map is not the whole story. The file writes each node in its own local
+  frame, so the node matrix Maya reads back is `frame . L_ue . map` with
+  `frame = ((1,0,0),(0,-1,0),(0,0,1))` for `bForceFrontXAxis = false`. Measured
+  over the ten object fixture handoff on 2026-09-29: every node matrix matches
+  that composition to `1.3e-15`, while `L_ue . map^T` is off by up to `7.7`. The
+  factor is reported as `transform_check.node_frame_factor`, and the orientation
+  comparison is anchored to the handoff's convention rather than to the scored
+  candidate, so it answers "did the file write the frames the convention
+  promises" and its error is the same for every candidate. A manifest that
+  declares no measured export axis option reports the orientation comparison as
+  unavailable instead of comparing against a guess.
 * The least-squares fit of `maya = M . ue` over the matched positions is
   reported with its determinant, its deviation from a signed permutation and its
   residual. A determined fit needs at least four non-coplanar matched objects;
@@ -205,11 +269,15 @@ handoff is ASCII.
   before this field existed carries no `world_surface_centroid_cm`; the check
   then reports itself unavailable for that object (`centroid_checked: false`)
   with a `CENTROID_UNAVAILABLE` warning instead of failing it.
-* Orientation is only compared where the mesh has an unambiguous axis: a mesh
-  whose local bounding box has three distinct extents. For a cube or a
-  two-by-two symmetric mesh a symmetry rotation can produce the same geometry
-  with a different node matrix, so the object reports
-  `orientation_checked: false` instead of a false pass.
+* Orientation is only compared where the mesh has an unambiguous axis: an
+  object whose **identification size** -- its shape's local bounding-box extents
+  scaled by the node's own axis scale lengths, reported as
+  `objects[].identification_size_cm` -- has three distinct extents. A non-uniform
+  scale is what separates axes a symmetric mesh would leave ambiguous, so a cube
+  scaled `(2, 0.5, 0.25)` is compared while the same cube at uniform scale is
+  not. For anything else a symmetry rotation can produce the same geometry with a
+  different node matrix, so the object reports `orientation_checked: false`
+  instead of a false pass.
 * Node matching is by short name first -- the namespace prefix removed, Maya's
   numeric deduplication suffix tolerated -- and reports `matched_by: "name"`.
   An object whose name did not survive is matched by world position under the
@@ -233,25 +301,40 @@ handoff is ASCII.
   take on this host. The importer captures the session state before the import,
   restores the frame rate, playback range and current time afterwards, and
   records every difference it had to undo in `scene.import_side_effects`.
-* Only the container namespace and its group are created, replaced or deleted.
-  Nothing outside the container is renamed, reparented, reassigned or deleted.
-* The gray material is created once in the root namespace and reused by later
-  runs. If a node of that name exists and is not a lambert, the run refuses
-  instead of renaming or replacing an object it did not create.
-* A handoff that records a texture is not imported without `--allow-textures`.
+* The import happens in the staging namespace `<container>_Incoming` first, and
+  the previous reference is only replaced after the comparison passed. A failed
+  or `--dry-run` run deletes the staging namespace again and leaves the previous
+  reference exactly as it was; the report says which of the two happened in
+  `update`.
+* Only the container namespace, its group, its staging namespace and a legacy
+  root-level group of the same name are created, replaced or deleted. Nothing
+  outside them is renamed, reparented, reassigned or deleted.
+* The gray material is only created when `--shading material` asks for it, in the
+  root namespace, and reused by later runs. If a node of that name exists and is
+  not a lambert, the run refuses instead of renaming or replacing an object it
+  did not create.
+* A handoff that delivers image data -- image files in its own directory, or
+  media embedded in the FBX -- is not imported without `--allow-image-data`.
+  Texture records and recorded paths are material information, not image data,
+  and never refuse a run.
 * `main()` never raises: a failure is written into the report JSON with the
   phase it happened in, and the run exits non-zero.
 
 ## Supported by the prototype
 
-* One ASCII FBX level-scope handoff per run, imported into a fresh container, on
-  Maya 2024 in centimetres and Y-up.
+* One ASCII FBX level-scope handoff per run, staged in its own namespace and
+  swapped into the container only after it verified, on Maya 2024 in centimetres
+  and Y-up.
 * Static mesh geometry only: the objects the manifest marks `exported: true`,
   matched by name or by world position, compared by position, world bounding box
-  size and orientation.
-* Repeat runs that replace only their own container, `--keep-existing` runs, and
-  the refusal paths for a textured, unreadable, missing or non-FBX handoff and
-  for a manifest with another schema or another unit system.
+  size, pivot offset, surface centroid and node orientation.
+* Two worlds: the handoff's own (default, the animation route's world) and the
+  camera route's world by one explicit conversion.
+* Three display choices: a uniform gray viewport override with the imported
+  material assignment kept (default), the gray lambert assigned, or nothing.
+* Repeat runs that replace only their own container, `--dry-run` runs, and the
+  refusal paths for a handoff that delivers image data, an unreadable, missing or
+  non-FBX handoff, and a manifest with another schema or another unit system.
 * Evidence: the report JSON, the exit code, and `--json` on stdout.
 
 ## Not supported (reported, never approximated)
@@ -262,8 +345,10 @@ handoff is ASCII.
   The prototype compares centimetres and does not rescale.
 * Rescaling, mirroring or offsetting a level that does not fit a signed
   permutation: the fit reports the deviation and every object reports its error.
-* Animation, skeletal meshes, cameras, lights, materials other than the gray
-  reference material, and any product protocol, package or installation change.
+* Animation, skeletal meshes, cameras, lights, and any product protocol,
+  package or installation change. Material assignment is carried and reported but
+  never translated: the reference is not claimed to shade like Unreal.
+* Any origin offset, and any axis conversion the caller did not ask for.
 * Repairing the handoff: a mismatched or missing object is reported, never
   moved, renamed or substituted.
 
@@ -294,23 +379,24 @@ Verified with Maya 2024 (mayapy 3.10.8) and the bundled `fbxmaya` plugin
 ## Report
 
 The report is the contract's `mtou-scene-ref-report/1` block: `ok`, `phase`,
-`maya`, `container`, `counts`, `gray_material`, `transform_check`, `objects`,
-`texture_scan`, `timing`, `memory` and `problems`. The keys the contract names
-mean exactly what it says; these additions carry the evidence behind them, and a
-reader that only wants the contract's keys can ignore them: `warnings` (the
-cross-host disagreements above, allowed textures, transform matches), the
-candidate notes and the whole fit block inside `transform_check`, the per record
-`texture_scan` detail, `objects[].matched_by`, `match_distance_cm`,
-`match_candidate`, `orientation_checked`, `local_bounds_size_cm`,
+`maya`, `manifest`, `scene`, `fbx`, `container`, `update`, `counts`, `media`,
+`texture_scan`, `world`, `materials`, `transform_check`, `objects`, `timing`,
+`memory`, `problems` and `warnings`. The keys the contract names mean exactly
+what it says; these additions carry the evidence behind them, and a reader that
+only wants the contract's keys can ignore them: the candidate notes and the whole
+fit block inside `transform_check`, the per record `texture_scan` detail,
+`objects[].matched_by`, `match_distance_cm`, `match_candidate`,
+`orientation_checked`, `local_bounds_size_cm`, `identification_size_cm`,
 `offset_error_cm` with its expected and measured vectors, `centroid_error_cm`
-with its expected and measured points, `centroid_checked`,
-`centroid_faces_used`, `centroid_triangles_used`, `centroid_sampled`,
-`container.group_path` and
-`container_removal`, `scene` (the session state the run captured and restored,
-including `import_side_effects`), `fbx` (the flags and mechanism actually used)
-and `manifest` (the scope, scale and output summary read before importing).
-Inside `transform_check` the additions are `decided_by`, `winner`,
-`camera_contract` and `max_offset_error_cm`/`max_centroid_error_cm`.
+with its expected and measured points, `centroid_checked`, `centroid_faces_used`,
+`centroid_triangles_used`, `centroid_sampled`, `update.discarded_nodes` and
+`update.post_swap_paths_missing`, `container.group_path`, `scene` (the session
+state the run captured and restored, including `import_side_effects`), `fbx` (the
+flags and mechanism actually used) and `manifest` (the scope, conventions, filter,
+scale and output summary read before importing). Inside `transform_check` the
+additions are `decided_by`, `winner`, `camera_contract`, `node_frame_factor`,
+`world_conversion_matrix`, `orientation_available`,
+`max_offset_error_cm`/`max_centroid_error_cm`/`max_orientation_error_deg`.
 
 ## Evidence
 

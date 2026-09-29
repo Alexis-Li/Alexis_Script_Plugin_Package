@@ -39,6 +39,16 @@ private:
 		UStaticMeshComponent& Component,
 		FMtoUSceneRefResolution& Out);
 
+	/**
+	 * The reason this component is not static reference geometry, or nullptr when it is
+	 * kept. Every reason names one engine export branch (camera, light, skeletal, child
+	 * actor), so a report reader can tell what would have reached the file.
+	 */
+	static const TCHAR* SuppressionReason(const USceneComponent& Component);
+
+	/** Appends one record per component of the actor the export has to suppress. */
+	static void CollectSuppressed(const AActor& Actor, const FString& LevelPackage, FMtoUSceneRefResolution& Out);
+
 	/** Fills the report-only lists for an actor no object is produced from. */
 	static void ReportSkipped(const AActor& Actor, const FString& Reason, bool bUnsupported, FMtoUSceneRefResolution& Out);
 };

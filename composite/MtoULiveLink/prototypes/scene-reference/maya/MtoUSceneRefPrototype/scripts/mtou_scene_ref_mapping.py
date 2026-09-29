@@ -50,24 +50,45 @@ Unreal to Maya maps: the handoff map is
 ``maya = (ue_x, ue_z, ue_y)`` (determinant -1) while the camera sync prototype
 documents ``maya = (ue_y, ue_z, -ue_x)``. The report scores the camera route's
 map on the same handoff in ``transform_check.camera_contract`` so the divergence
-is on the record, and nothing here corrects the imported geometry.
+is on the record.
 
-FBX texture records
--------------------
-The handoff may only be imported when its file records no material texture.
-:func:`scan_fbx_texture_records` implements the frozen detector both hosts share,
-line by line: ``Texture:`` opens a texture record, ``Video:`` opens a video
-record, a line that is exactly ``}`` closes the current record, and inside a
-record ``FileName:``/``RelativeFilename:`` record the last quoted token on the
-line. It reports ``texture_records`` (every ``Texture:`` record, whether or not
-it named a file), ``texture_references`` (records that named one),
-``video_references`` and the distinct ``files`` in the order found. The importer
-refuses on ``texture_records > 0``, because a texture record with no recorded
-name is still a material input that cannot be carried.
+The orientation comparison is *not* scored per candidate: a node matrix is not a
+point, and the file writes each node in the file's own local frame, so the
+expectation is ``frame . L_ue . handoff_map`` (:func:`expected_node_matrix`) with
+the frame factor measured for that export option (:data:`ENGINE_HANDOFF_LOCAL_FRAME`,
+reported as ``transform_check.node_frame_factor``). It answers whether the file
+wrote the frames the convention promises, which is a property of the handoff;
+a handoff whose export option has no measured factor reports the check as
+unavailable. :func:`world_conversion_matrix` composes the two named worlds into
+one Maya to Maya map (determinant ``+1``), which is what the caller applies when
+it asks for the other world.
+
+FBX records
+-----------
+The handoff may carry material assignments, texture records and recorded texture
+paths; what it may not deliver is image data, and the scan is what tells the two
+apart. :func:`scan_fbx_texture_records` implements the frozen detector both hosts
+share: ``Texture:`` opens a texture record, ``Video:`` opens a video record, and
+the record ends when the brace depth returns to zero (the SDK writes a nested
+``Properties70`` block before the name and ``Content`` lines, so a nested closing
+brace ends nothing). Inside a record, ``FileName:``/``Filename:``/
+``RelativeFilename:`` record the last quoted token on the line, and a ``Content:``
+line whose payload sits on the same line or on the following quoted line is an
+embedded media record. A ``NodeAttribute:`` line whose quoted tokens include the
+class ``Camera`` or ``Light`` counts as a camera or light record; the SDK writes
+no ``Camera:``/``Light:`` record head at all.
+
+The scan reports the texture counts (``texture_records``, ``texture_references``,
+``video_references``), the media counts (``content_records``,
+``embedded_media_records``), ``camera_records``, ``light_records`` and the
+distinct ``files`` in the order found. Only the media counts, together with the
+image files the handoff directory holds (:func:`image_files_beside`), refuse a
+run; the texture counts are information.
 
 Binary FBX cannot be read this way; the scan falls back to a documented
-heuristic over the FBX string table, reports ``binary: True`` and gates on its
-grouped texture nodes, so the caller can judge the evidence.
+heuristic over the FBX string table (including embedded media as a ``Content``
+node with a raw byte array), reports ``binary: True`` and sets
+``media_heuristic``, so the caller can judge the evidence.
 """
 
 import json
@@ -118,6 +139,51 @@ ENGINE_HANDOFF_CANDIDATE = "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y"
 #: tolerance but the least-squares fit does.
 FITTED_CANDIDATE_NAME = "fitted signed permutation"
 
+#: The local frame factor the engine's FBX level export writes into every node.
+#:
+#: The file's node matrices are not ``L . map``: the exporter writes each node in
+#: the file's own local frame, so a node's Maya matrix is
+#: ``frame . L_ue . map``. The factor was measured on 2026-09-29 over the ten
+#: object fixture handoff (Unreal 5.7.4, ``bForceFrontXAxis = false``, read back
+#: by Maya 2024 ``fbxmaya`` 2020.3.4): every measured node matrix matches
+#: ``frame . L_ue . map`` to ``1.3e-15``, while ``L_ue . map^T`` is off by up to
+#: ``7.7``. It is a mirror in the file's second axis, which the Maya reader
+#: applies to each node's local space as an up-axis conversion, and it is the
+#: reason the node matrix carries a positive determinant while the point map
+#: does not.
+ENGINE_HANDOFF_LOCAL_FRAME = ((1.0, 0.0, 0.0),
+                              (0.0, -1.0, 0.0),
+                              (0.0, 0.0, 1.0))
+
+#: Export axis options whose local frame factor has been measured. A handoff
+#: that declares another option reports the orientation check as unavailable
+#: instead of comparing against a factor it never measured.
+MEASURED_ASYMMETRIC_FRAME_OPTIONS = ("bForceFrontXAxis=false",)
+
+#: The world the reference geometry can be placed in.
+#:
+#: ``engine`` is the world the engine's FBX level export round-trips through
+#: (``ENGINE_HANDOFF_CANDIDATE``). It is also the world of the product's Maya to
+#: Unreal animation route: ``MtoULiveLink.py``'s ``convert_transform`` maps
+#: ``maya (x, y, z) -> ue (x, z, y)``, which is its own inverse and the same map
+#: as the handoff, so a level reference imported without conversion agrees with
+#: the character and prop animation the artist sends to Unreal (checked
+#: 2026-09-29).
+#:
+#: ``camera`` is the camera sync prototype's world (``CAMERA_SYNC_CANDIDATE``);
+#: the two differ by a rotation, and moving the reference into the camera's world
+#: is an explicit conversion the caller asks for.
+WORLD_ENGINE = "engine"
+WORLD_CAMERA = "camera"
+WORLD_TARGETS = (
+    (WORLD_ENGINE, ENGINE_HANDOFF_CANDIDATE,
+     "the engine FBX level handoff's own world, shared with the product's "
+     "Maya to Unreal animation route"),
+    (WORLD_CAMERA, CAMERA_SYNC_CANDIDATE,
+     "the camera sync prototype's world, for a scene that also follows an "
+     "Unreal camera"),
+)
+
 #: Axis candidates, in report order. ``matrix`` maps Unreal world points to Maya
 #: world points.
 AXIS_CANDIDATES = (
@@ -156,8 +222,23 @@ _QUOTED_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _TEXTURE_RECORD_HEAD = "Texture:"
 _VIDEO_RECORD_HEAD = "Video:"
 
-#: Recorded file name properties the walk reads inside a record.
-_FILE_NAME_HEADS = ("FileName:", "RelativeFilename:")
+#: The FBX class token a camera or light node attribute carries. Measured on an
+#: ASCII FBX written by this host's ``fbxmaya`` 2020.3.4: cameras and lights are
+#: ``NodeAttribute: <id>, "NodeAttribute::<name>", "Camera"|"Light" {`` records,
+#: not ``Camera:``/``Light:`` records.
+_NODE_ATTRIBUTE_HEAD = "NodeAttribute:"
+_CAMERA_CLASS = "Camera"
+_LIGHT_CLASS = "Light"
+
+#: The record property that carries embedded media data. The SDK writes it only
+#: when media is embedded, with the payload as a quoted string on the same line
+#: or on the following non-empty line.
+_CONTENT_HEAD = "Content:"
+
+#: Recorded file name properties the walk reads inside a record. The Texture
+#: record uses ``FileName`` while the Video record uses ``Filename``; both are
+#: recorded, as the FBX SDK writes them side by side.
+_FILE_NAME_HEADS = ("FileName:", "Filename:", "RelativeFilename:")
 
 #: FBX property type names a binary string scan must not report as a file.
 _FBX_TYPE_TOKENS = frozenset((
@@ -224,7 +305,7 @@ def read_fbx_text(path, limit_bytes=None):
 
 
 def scan_fbx_texture_records(text):
-    """File texture records of an ASCII FBX document.
+    """Material media records of an ASCII FBX document.
 
     The walk is the contract's own rule, frozen with the Unreal exporter's
     detector so both hosts count the same file identically:
@@ -232,38 +313,91 @@ def scan_fbx_texture_records(text):
     * a line whose trimmed text starts with ``Texture:`` opens a texture record;
     * a line whose trimmed text starts with ``Video:`` opens a video record;
     * a line that is exactly ``}`` closes the current record;
-    * inside a record, a line starting with ``FileName:`` or
-      ``RelativeFilename:`` records the last quoted token on that line.
+    * inside a record, a line starting with ``FileName:``, ``Filename:`` or
+      ``RelativeFilename:`` records the last quoted token on that line;
+    * inside a record, a line starting with ``Content:`` is an embedded media
+      record when the line itself carries data or the next non-empty line starts
+      with a quoted payload (measured: this host's ``fbxmaya`` writes
+      ``Content: ,`` followed by the base64 payload on the next line, and writes
+      no ``Content:`` line at all for media that is not embedded);
+    * a line starting with ``NodeAttribute:`` whose quoted tokens include the
+      class ``Camera`` or ``Light`` is a camera or light node record, which a
+      static reference handoff must not carry.
 
-    A record that names no file is still a texture record -- a material input
-    that cannot be carried -- which is why the importer refuses on
-    ``texture_records`` and not only on ``texture_references``. The rule is
-    line based on purpose: the SDK writes a nested ``Properties70`` block before
-    the name lines, so names that follow it are outside the record and
-    ``texture_references`` can be lower than the names a human would read.
+    A texture record is not a refusal reason: the entry may carry material
+    assignments, and a recorded file name is a reference, not a copied file. The
+    facts a refusal is based on are the embedded media records and the image
+    files the handoff directory holds (the caller checks the directory).
     """
     texture_records = []
     video_records = []
     files = []
+    embedded_media = []
+    content_records = 0
+    camera_records = 0
+    light_records = 0
     current = None
+    depth = 0
+    pending_content = None
     for number, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line:
             continue
+        if pending_content is not None:
+            # The payload of a ``Content:`` line: a quoted base64 string on the
+            # line that follows it. A line that is not a payload belongs to the
+            # record and is handled below.
+            if line.startswith('"'):
+                payload = line.strip('"')
+                pending_content["payload_characters"] = len(payload)
+                embedded_media.append(pending_content)
+                pending_content = None
+                continue
+            pending_content = None
         if line == "}":
-            current = None
+            # Only the brace that closes the record itself ends the walk: the
+            # SDK writes a nested ``Properties70`` block before the name and
+            # ``Content`` lines, so a nested closing brace ends nothing.
+            if current is not None:
+                depth -= 1
+                if depth <= 0:
+                    current = None
+                    depth = 0
             continue
         if line.startswith(_TEXTURE_RECORD_HEAD):
             current = {"kind": "Texture", "line": number, "header": line,
                        "file_names": []}
+            depth = 1
             texture_records.append(current)
             continue
         if line.startswith(_VIDEO_RECORD_HEAD):
             current = {"kind": "Video", "line": number, "header": line,
                        "file_names": []}
+            depth = 1
             video_records.append(current)
             continue
+        if line.startswith(_NODE_ATTRIBUTE_HEAD):
+            classes = _QUOTED_RE.findall(line)
+            if _CAMERA_CLASS in classes:
+                camera_records += 1
+            if _LIGHT_CLASS in classes:
+                light_records += 1
+            continue
         if current is None:
+            continue
+        if line.endswith("{"):
+            depth += 1
+        if line.startswith(_CONTENT_HEAD):
+            content_records += 1
+            remainder = line[len(_CONTENT_HEAD):].strip().strip(",").strip()
+            record = {"kind": current["kind"], "line": number,
+                      "header": current["header"], "payload_characters": 0,
+                      "same_line": bool(remainder)}
+            if remainder:
+                record["payload_characters"] = len(remainder.strip('"'))
+                embedded_media.append(record)
+            else:
+                pending_content = record
             continue
         if any(line.startswith(head) for head in _FILE_NAME_HEADS):
             quoted = _QUOTED_RE.findall(line)
@@ -291,6 +425,11 @@ def scan_fbx_texture_records(text):
         "texture_references": len([record for record in texture_records
                                    if record["file_names"]]),
         "video_references": len(video_records),
+        "content_records": content_records,
+        "embedded_media_records": len(embedded_media),
+        "embedded_media": embedded_media,
+        "camera_records": camera_records,
+        "light_records": light_records,
         "files": files,
         "texture_files": texture_files,
         "video_files": video_files,
@@ -364,6 +503,46 @@ _BINARY_NODE_MARKERS = tuple(
                  "Objects", "Connections", "Takes"))
 
 
+def scan_fbx_binary_media(raw):
+    """Best-effort embedded media and camera/light records of a binary FBX.
+
+    Embedded media is an ``Content`` node whose value is an FBX raw byte array
+    (property type ``R``) with a non-zero length, inside a ``Texture`` or
+    ``Video`` object. Camera and light node attributes are counted from the
+    class tokens ``Camera`` and ``Light`` in the byte stream. Both are string
+    table heuristics on a format this contract does not accept as a handoff, so
+    the caller reports them as heuristic evidence.
+    """
+    embedded = []
+    marker = _CONTENT_HEAD[:-1].encode("ascii")
+    for match in re.finditer(re.escape(marker), raw):
+        start = match.start()
+        if raw[start - 1:start] != bytes((len(marker),)):
+            continue
+        kind, node = _binary_enclosing_node(raw, start)
+        if kind not in ("Texture", "Video"):
+            continue
+        index = match.end()
+        if raw[index:index + 1] != b"R":
+            continue
+        length = int.from_bytes(raw[index + 1:index + 5], "little")
+        if length <= 0:
+            continue
+        embedded.append({"kind": kind, "node": node, "line": None,
+                         "header": "{0} node {1}".format(kind, node),
+                         "payload_characters": length, "same_line": False})
+    classes = []
+    for name in (_CAMERA_CLASS, _LIGHT_CLASS):
+        token = name.encode("ascii")
+        count = 0
+        for match in re.finditer(re.escape(token), raw):
+            start = match.start()
+            if raw[start - 1:start] == bytes((len(token),)):
+                count += 1
+        classes.append(count)
+    return embedded, classes[0], classes[1]
+
+
 def _binary_enclosing_node(raw, offset, window=1 << 14):
     """``(name, offset)`` of the nearest FBX node header preceding ``offset``."""
     best = None
@@ -382,9 +561,11 @@ def scan_fbx_file(path):
 
     ``texture_references`` counts the *file* texture records the scan found and
     ``files`` holds one recorded name per record, relative names preferred.
-    ``format`` is ``unknown`` for a file that is not FBX at all, and a binary
-    scan is reported as heuristic evidence rather than as proof of a texture
-    free handoff.
+    ``embedded_media_records`` and ``camera_records``/``light_records`` are the
+    facts a static reference handoff is judged on; a texture record is
+    informational. ``format`` is ``unknown`` for a file that is not FBX at all,
+    and a binary scan is reported as heuristic evidence (``media_heuristic``)
+    rather than as proof.
     """
     sniffed = sniff_fbx_file(path)
     scan = {"source": str(path), "exists": sniffed["exists"],
@@ -392,6 +573,9 @@ def scan_fbx_file(path):
             "format": sniffed["format"], "magic": sniffed["magic"],
             "error": sniffed["error"], "binary": sniffed["format"] == "binary",
             "texture_records": 0, "texture_references": 0, "video_references": 0,
+            "content_records": 0, "embedded_media_records": 0,
+            "embedded_media": [], "media_heuristic": False,
+            "camera_records": 0, "light_records": 0,
             "files": [], "texture_files": [], "video_files": [], "image_files": [],
             "image_references": 0, "records": [], "video_records": [],
             "allowed": False, "note": ""}
@@ -399,17 +583,23 @@ def scan_fbx_file(path):
         return scan
     if sniffed["format"] == "ascii":
         scan.update(scan_fbx_texture_records(read_fbx_text(path)))
-        scan["note"] = "ascii FBX: texture objects parsed from the document text"
+        scan["note"] = "ascii FBX: texture, media and node attribute records parsed"
     elif sniffed["format"] == "binary":
         with open(path, "rb") as handle:
             raw = handle.read()
         records = scan_fbx_binary_records(raw)
+        embedded, cameras, lights = scan_fbx_binary_media(raw)
         names = _unique([name for record in records for name in record["file_names"]])
         scan["records"] = records
         scan["texture_records"] = len(records)
         scan["texture_references"] = len([record for record in records
                                           if record["file_names"]])
         scan["video_references"] = 0
+        scan["embedded_media"] = embedded
+        scan["embedded_media_records"] = len(embedded)
+        scan["camera_records"] = cameras
+        scan["light_records"] = lights
+        scan["media_heuristic"] = True
         scan["files"] = names
         scan["texture_files"] = names
         scan["video_files"] = []
@@ -421,6 +611,21 @@ def scan_fbx_file(path):
         scan["note"] = ("not an FBX file: the header matches neither the ASCII "
                         "nor the binary FBX magic")
     return scan
+
+
+def image_files_beside(path):
+    """Image files the handoff's own directory holds, sorted by name.
+
+    A static reference handoff must not deliver image data, and the directory
+    the exporter owns is the place a copied or baked image would land. The
+    caller compares this list with the exporter's own ``output.image_files``.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    return sorted(name for name in names if is_image_file_name(name))
 
 
 def is_image_file_name(value):
@@ -484,10 +689,16 @@ def load_manifest(path):
 
 
 def manifest_summary(manifest):
-    """Scope, world and scale summary the importer reports before importing."""
+    """Scope, world, conventions and scale summary the importer reports."""
     world = manifest.get("world") if isinstance(manifest.get("world"), dict) else {}
     scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     scale = manifest.get("scale") if isinstance(manifest.get("scale"), dict) else {}
+    conventions = manifest.get("conventions")
+    if not isinstance(conventions, dict):
+        conventions = None
+    component_filter = manifest.get("filter")
+    if not isinstance(component_filter, dict):
+        component_filter = None
     return {
         "schema": manifest.get("schema"),
         "generated_utc": manifest.get("generated_utc"),
@@ -499,6 +710,8 @@ def manifest_summary(manifest):
             "linear_unit": world.get("linear_unit"),
             "world_partition": world.get("world_partition"),
         },
+        "conventions": conventions,
+        "filter": component_filter,
         "scope": {
             "kind": scope.get("kind"),
             "persistent_level": scope.get("persistent_level"),
@@ -730,17 +943,43 @@ def matrix3_transpose(matrix):
 
 
 def carry_world_matrix(candidate, world_matrix):
-    """A world matrix carried through ``candidate`` (``ue -> maya``).
+    """A Maya node matrix carried through ``candidate`` (``maya -> maya``).
 
     The candidate is a point map, so carrying a transform composes it with the
     transposed map: the result's rows are the Maya images of the object's local
-    axes and its fourth row is the mapped position.
+    axes and its fourth row is the mapped position. This is the operation the
+    importer applies when it moves an imported level into another world; it is
+    *not* the relation between an Unreal world matrix and the node matrix the
+    handoff writes, which is :func:`expected_node_matrix`.
     """
     rows = matrix3(candidate)
     linear = matrix4_linear(world_matrix)
     carried = matrix3_multiply(linear, matrix3_transpose(rows))
     position = matrix3_apply(rows, matrix4_translation(world_matrix))
     return matrix4_from_linear_and_translation(carried, position)
+
+
+def expected_node_matrix(candidate, world_matrix, frame=ENGINE_HANDOFF_LOCAL_FRAME,
+                         conversion=None):
+    """The node matrix a handoff writes for an Unreal world matrix.
+
+    ``frame . L_ue . candidate``, with the position mapped by ``candidate`` and
+    then by ``conversion`` when the geometry was moved into another Maya world.
+    ``frame`` is the local frame factor the file's own axis convention implies
+    (:data:`ENGINE_HANDOFF_LOCAL_FRAME`); ``None`` reports the expectation as
+    unavailable rather than comparing against a factor that was never measured.
+    """
+    if frame is None:
+        return None
+    rows = matrix3(candidate)
+    linear = matrix3_multiply(matrix3_multiply(matrix3(frame), matrix4_linear(world_matrix)),
+                              rows)
+    position = matrix3_apply(rows, matrix4_translation(world_matrix))
+    if conversion is not None:
+        rows = matrix3(conversion)
+        linear = matrix3_multiply(linear, matrix3_transpose(rows))
+        position = matrix3_apply(rows, position)
+    return matrix4_from_linear_and_translation(linear, position)
 
 
 def uncarry_world_matrix(candidate, world_matrix):
@@ -757,6 +996,66 @@ def uncarry_world_matrix(candidate, world_matrix):
 
 def vector_length(vector):
     return math.sqrt(sum(float(value) * float(value) for value in vector))
+
+
+def candidate_matrix_by_name(name):
+    """The point map of the named axis candidate (``maya = M . ue``)."""
+    for candidate in AXIS_CANDIDATES:
+        if candidate["name"] == name:
+            return matrix3(candidate["matrix"])
+    raise ValueError("no axis candidate named {0!r}".format(name))
+
+
+def world_target_map(world):
+    """The axis candidate name that places geometry in ``world``."""
+    for name, candidate, _note in WORLD_TARGETS:
+        if name == world:
+            return candidate
+    raise ValueError(
+        "unknown world {0!r}; the worlds are {1}".format(
+            world, ", ".join(name for name, _candidate, _note in WORLD_TARGETS)))
+
+
+def world_target_note(world):
+    """The explanatory note of one world target."""
+    for name, _candidate, note in WORLD_TARGETS:
+        if name == world:
+            return note
+    raise ValueError("unknown world {0!r}".format(world))
+
+
+def world_conversion_matrix(from_world, to_world):
+    """The Maya to Maya map that moves geometry from one world into another.
+
+    ``from_world`` maps Unreal points onto Maya points as ``p_maya = S . p_ue``
+    and ``to_world`` as ``p_maya = T . p_ue``, so the conversion applied inside
+    Maya is ``A = T . S^-1``. Both named maps have determinant ``-1``, so ``A``
+    is a proper rotation (determinant ``+1``) and the geometry keeps its
+    handedness; the returned ``(matrix, determinant)`` lets the caller report
+    that instead of asserting it.
+    """
+    source = candidate_matrix_by_name(world_target_map(from_world))
+    target = candidate_matrix_by_name(world_target_map(to_world))
+    inverse = matrix3_inverse(source)
+    if inverse is None:
+        raise ValueError("the {0!r} map is singular".format(from_world))
+    matrix = matrix3_multiply(target, inverse)
+    return matrix, matrix3_determinant(matrix)
+
+
+def matrix3_rotation_angle_degrees(matrix):
+    """Angle of a proper rotation, or ``None`` for a matrix that is not one.
+
+    The trace of a rotation is ``1 + 2 cos(angle)``; a matrix whose determinant
+    is not ``+1`` describes a reflection or a scale, which has no single angle.
+    """
+    rows = matrix3(matrix)
+    determinant = matrix3_determinant(rows)
+    if abs(determinant - 1.0) > 1e-6:
+        return None
+    trace = sum(rows[axis][axis] for axis in range(3))
+    cosine = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
+    return math.degrees(math.acos(cosine))
 
 
 def angle_between_degrees(first, second):
@@ -873,10 +1172,15 @@ def fit_linear_map(unreal_points, maya_points):
 def orientation_measurable(local_size, relative_tolerance=1e-3):
     """Whether a mesh's own axes are unambiguous.
 
-    A mesh whose local bounding box has three distinct extents pins its axes.
-    For anything else a symmetry rotation can produce the same geometry with a
-    different node matrix, so the orientation comparison is reported as skipped
-    rather than as passed.
+    A mesh whose identification size has three distinct extents pins its axes.
+    The caller passes that size -- the shape's local bounding-box extents scaled
+    by the node's own axis scale factors -- because a non-uniform scale makes
+    axes distinguishable that a symmetric mesh alone would leave ambiguous: a
+    cube scaled ``(2, 0.5, 0.25)`` has images of different lengths on all three
+    axes, so a map that permutes them changes the geometry and has to be
+    reported. For anything else a symmetry rotation can produce the same
+    geometry with a different node matrix, so the orientation comparison is
+    reported as skipped rather than as passed.
     """
     if not local_size or len(local_size) != 3:
         return False
@@ -888,7 +1192,9 @@ def orientation_measurable(local_size, relative_tolerance=1e-3):
                for index in range(2))
 
 
-def compare_measurements(candidates, measurements, tolerances=None):
+def compare_measurements(candidates, measurements, tolerances=None,
+                         frame=ENGINE_HANDOFF_LOCAL_FRAME, conversion=None,
+                         handoff_map=ENGINE_HANDOFF_CANDIDATE):
     """Score the axis maps and compare every matched object.
 
     ``measurements`` holds one entry per exported manifest object:
@@ -896,7 +1202,18 @@ def compare_measurements(candidates, measurements, tolerances=None):
     ``ambiguous_matches``, ``problems``, ``ue_matrix`` (16 Unreal values),
     ``ue_size`` (centimetres), ``ue_offset`` (position to bounds centre),
     ``maya_matrix`` (16 Maya values or ``None``), ``maya_size``,
-    ``maya_offset`` and ``local_size``.
+    ``maya_offset``, ``local_size`` and ``identification_size``.
+
+    ``frame`` is the local frame factor the handoff's axis convention writes
+    into every node (:data:`ENGINE_HANDOFF_LOCAL_FRAME`) and ``handoff_map`` is
+    the point map that factor was measured with; the orientation check compares
+    the measured node matrix against ``frame . ue . handoff_map`` and is
+    reported as unavailable when no factor is known. The check is anchored to
+    the file's own convention on purpose: it answers whether the file wrote the
+    frames the convention promises, not which candidate explains the positions,
+    so its error is the same for every scored candidate. ``conversion`` is the
+    Maya to Maya map the caller applied to move the geometry into another world;
+    a rotated world composes it on the right of the node matrix.
 
     Every named candidate is scored on the same handoff, so the axis convention
     is measured rather than assumed, and the least-squares fit of the matched
@@ -925,18 +1242,23 @@ def compare_measurements(candidates, measurements, tolerances=None):
     usable = [entry for entry in measurements
               if entry.get("found") and entry.get("ue_matrix") and entry.get("maya_matrix")]
     missing = [entry for entry in measurements if not entry.get("found")]
+    handoff_matrix = candidate_matrix_by_name(handoff_map)
     fit = fit_linear_map([matrix4_translation(entry["ue_matrix"]) for entry in usable],
                          [matrix4_translation(entry["maya_matrix"]) for entry in usable])
 
     scored = [_score_candidate(candidate["name"], candidate.get("note", ""),
-                              matrix3(candidate["matrix"]), usable, index)
+                              matrix3(candidate["matrix"]), usable, index,
+                              frame=frame, conversion=conversion,
+                              handoff_map=handoff_matrix)
               for index, candidate in enumerate(candidates)]
     fitted = None
     if fit["available"] and fit["signed_permutation"]:
         fitted = _score_candidate(FITTED_CANDIDATE_NAME,
                                   "the least-squares fit of the measured positions, "
                                   "reported in the fit block",
-                                  matrix3(fit["matrix"]), usable, len(scored))
+                                  matrix3(fit["matrix"]), usable, len(scored),
+                                  frame=frame, conversion=conversion,
+                                  handoff_map=handoff_matrix)
     winner, decided_by = _select_winner(scored, fitted, limits)
     winner_matrix = matrix3(winner["matrix"]) if winner is not None else None
 
@@ -991,7 +1313,8 @@ def compare_measurements(candidates, measurements, tolerances=None):
                 centroid_error = vector_length(tuple(
                     expected_centroid[axis] - float(measured_centroid[axis])
                     for axis in range(3)))
-            orientation_error = _orientation_error(winner_matrix, entry)
+            orientation_error = _orientation_error(entry, handoff_matrix, frame,
+                                                   conversion)
             checked = orientation_error is not None
             if position_error > limits["position_cm"]:
                 object_problems.append(
@@ -1071,6 +1394,18 @@ def compare_measurements(candidates, measurements, tolerances=None):
     transform_check = {
         "candidate": winner["name"] if winner is not None else None,
         "best": winner["name"] if winner is not None else None,
+        "node_frame_factor": matrix3_values(frame) if frame is not None else None,
+        "world_conversion_matrix": (matrix3_values(conversion)
+                                    if conversion is not None else None),
+        "orientation_available": bool(frame is not None),
+        "orientation_note": (
+            "the orientation comparison checks each node matrix against "
+            "'frame . ue . map' with the handoff's measured local frame factor "
+            "and runs for objects whose identification size has three distinct "
+            "extents"
+            if frame is not None else
+            "no local frame factor is known for this handoff's export axis "
+            "option, so the orientation comparison is unavailable"),
         "candidates": [
             {"name": entry["name"], "note": entry["note"], "matrix": entry["matrix"],
              "determinant": entry["determinant"],
@@ -1110,7 +1445,9 @@ def compare_measurements(candidates, measurements, tolerances=None):
             "problems": problems, "warnings": warnings}
 
 
-def _score_candidate(name, note, matrix, usable, index):
+def _score_candidate(name, note, matrix, usable, index,
+                     frame=ENGINE_HANDOFF_LOCAL_FRAME, conversion=None,
+                     handoff_map=None):
     """The errors one map produces over the matched objects."""
     positions = []
     sizes = []
@@ -1132,7 +1469,7 @@ def _score_candidate(name, note, matrix, usable, index):
         centroid_error = _centroid_error(matrix, entry)
         if centroid_error is not None:
             centroids.append(centroid_error)
-        error = _orientation_error(matrix, entry)
+        error = _orientation_error(entry, handoff_map, frame, conversion)
         if error is not None:
             orientations.append(error)
     return {
@@ -1276,14 +1613,29 @@ def _camera_contract(scored, limits):
     return block
 
 
-def _orientation_error(matrix, entry):
-    """Worst axis angle for one object, or ``None`` when it cannot be measured."""
-    if not entry.get("local_size") or not orientation_measurable(entry["local_size"]):
+def _orientation_error(entry, handoff_map, frame=ENGINE_HANDOFF_LOCAL_FRAME,
+                       conversion=None):
+    """Worst axis angle for one object, or ``None`` when it cannot be measured.
+
+    The expectation is the node matrix the handoff writes,
+    ``frame . ue . handoff_map`` (or its image under ``conversion``, which a
+    rotated world composes on the right), so the comparison is against the
+    file's own convention rather than against the scored candidate: the frame
+    factor is a mirror and would otherwise report every object as 180 degrees
+    wrong on one axis. A wrong candidate still shows up in the position, size,
+    offset and centroid comparisons, which are the ones a candidate decides.
+    """
+    identification = entry.get("identification_size") or entry.get("local_size")
+    if not identification or not orientation_measurable(identification):
         return None
     if not entry.get("ue_matrix") or not entry.get("maya_matrix"):
         return None
+    if frame is None:
+        return None
+    expected_matrix = expected_node_matrix(handoff_map, entry["ue_matrix"],
+                                           frame=frame, conversion=conversion)
     # The rows of a stored linear part are the object's axis images.
-    expected = matrix4_linear(carry_world_matrix(matrix, entry["ue_matrix"]))
+    expected = matrix4_linear(expected_matrix)
     measured = matrix4_linear(entry["maya_matrix"])
     errors = [angle_between_degrees(expected_axis, measured_axis)
               for expected_axis, measured_axis in zip(expected, measured)]
@@ -1307,6 +1659,8 @@ def _object_report(entry, position_error=None, size_error=None, expected_positio
         "world_matrix": entry.get("maya_matrix"),
         "world_bounds_size_cm": _size_text(entry.get("maya_size")),
         "local_bounds_size_cm": _size_text(entry.get("local_size")),
+        "identification_size_cm": _size_text(
+            entry.get("identification_size") or entry.get("local_size")),
         "position_error_cm": position_error,
         "size_error_cm": size_error,
         "offset_error_cm": offset_error,

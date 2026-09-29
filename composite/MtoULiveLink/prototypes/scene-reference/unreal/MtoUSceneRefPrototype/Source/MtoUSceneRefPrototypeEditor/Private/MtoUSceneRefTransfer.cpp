@@ -3,6 +3,7 @@
 #include "MtoUSceneRefTransfer.h"
 
 #include "AssetExportTask.h"
+#include "Components/SceneComponent.h"
 #include "Editor.h"
 #include "Engine/Selection.h"
 #include "Engine/StaticMesh.h"
@@ -95,6 +96,72 @@ namespace
 		return Value;
 	}
 
+	/** True when the line carries a quoted token equal to Token (an FBX class token). */
+	bool HasQuotedToken(const FString& Line, const TCHAR* Token)
+	{
+		const int32 TokenLength = FCString::Strlen(Token);
+		int32 SearchFrom = 0;
+		while (SearchFrom < Line.Len())
+		{
+			const int32 Open = IndexOfQuote(Line, SearchFrom);
+			if (Open == INDEX_NONE)
+			{
+				break;
+			}
+			const int32 Close = IndexOfQuote(Line, Open + 1);
+			if (Close == INDEX_NONE)
+			{
+				break;
+			}
+			if (Close - Open - 1 == TokenLength && Line.Mid(Open + 1, TokenLength) == Token)
+			{
+				return true;
+			}
+			SearchFrom = Close + 1;
+		}
+		return false;
+	}
+
+	/** Strips the whitespace and commas that separate the tokens of an FBX record line. */
+	FString StripRecordSeparators(FString Value)
+	{
+		Value.TrimStartAndEndInline();
+		Value.RemoveFromStart(TEXT(","));
+		Value.RemoveFromEnd(TEXT(","));
+		Value.TrimStartAndEndInline();
+		return Value;
+	}
+
+	/**
+	 * The characters a `Content:` record's payload holds, or 0 when it holds none.
+	 *
+	 * The FBX SDK writes the payload of an embedded media record as a quoted string, either
+	 * on the `Content:` line itself or on the immediately following non empty line:
+	 *
+	 *     Content: ,
+	 *      "iVBORw0KGgoAAAANSUhEUg..."
+	 *
+	 * A record without embedded media carries no `Content:` line at all. The surrounding
+	 * quotes are the record's syntax, not media, so they are not counted.
+	 */
+	int32 ContentPayloadChars(const FString& ContentLine, const FString& FollowingLine)
+	{
+		FString Payload = StripRecordSeparators(ContentLine.RightChop(FCString::Strlen(TEXT("Content:"))));
+		if (Payload.IsEmpty())
+		{
+			Payload = StripRecordSeparators(FollowingLine);
+			if (!Payload.StartsWith(TEXT("\"")))
+			{
+				return 0;
+			}
+		}
+		if (Payload.Len() >= 2 && Payload.StartsWith(TEXT("\"")) && Payload.EndsWith(TEXT("\"")))
+		{
+			return Payload.Len() - 2;
+		}
+		return Payload.Len();
+	}
+
 	void SelectActors(const TArray<AActor*>& Actors)
 	{
 		GEditor->SelectNone(/*bNoteSelectionChange=*/false, /*bDeselectBSPSurfs=*/true, /*WarnAboutManyActors=*/false);
@@ -126,6 +193,56 @@ namespace
 		SelectActors(Actors);
 	}
 
+	/**
+	 * Keeps the components the resolver named out of the engine's FBX export.
+	 *
+	 * The engine's level exporter turns a skeletal mesh, camera, light or child actor
+	 * component into a node, and `bHiddenInGame` is the only caller side switch that stops
+	 * it (`FFbxExporter::ExportActor`, FbxMainExport.cpp). The guard sets the flag before the
+	 * export and puts every previous value back when it goes out of scope, including on an
+	 * early return. It writes the property directly on purpose: the flag lives for the
+	 * duration of one export, so nothing here calls Modify() or dirties a package.
+	 */
+	class FComponentSuppressionGuard
+	{
+	public:
+		explicit FComponentSuppressionGuard(const TArray<USceneComponent*>& Components)
+		{
+			PreviousValues.Reserve(Components.Num());
+			for (USceneComponent* Component : Components)
+			{
+				if (Component == nullptr)
+				{
+					continue;
+				}
+				const bool bWasHiddenInGame = Component->bHiddenInGame;
+				PreviousValues.Emplace(Component, bWasHiddenInGame);
+				Component->bHiddenInGame = true;
+				++SuppressedCount;
+			}
+		}
+
+		~FComponentSuppressionGuard()
+		{
+			for (const TPair<USceneComponent*, bool>& Previous : PreviousValues)
+			{
+				if (Previous.Key != nullptr)
+				{
+					Previous.Key->bHiddenInGame = Previous.Value;
+				}
+			}
+		}
+
+		FComponentSuppressionGuard(const FComponentSuppressionGuard&) = delete;
+		FComponentSuppressionGuard& operator=(const FComponentSuppressionGuard&) = delete;
+
+		/** Components whose flag this guard actually set. */
+		int32 SuppressedCount = 0;
+
+	private:
+		TArray<TPair<USceneComponent*, bool>> PreviousValues;
+	};
+
 	void CollectProducedFiles(const FString& Directory, TArray<FMtoUSceneRefProducedFile>& OutFiles, TArray<FString>& OutImageFiles)
 	{
 		TArray<FString> Found;
@@ -154,6 +271,25 @@ namespace
 	{
 		const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 		return static_cast<double>(Stats.UsedPhysical) / (1024.0 * 1024.0);
+	}
+
+	/**
+	 * The options every FBX level export of this prototype runs with, in one place, so the
+	 * capability probes run the exporter the transfer itself runs.
+	 */
+	UFbxExportOption* NewFbxExportOptions(bool bAscii, bool bForceFrontXAxis)
+	{
+		UFbxExportOption* Options = NewObject<UFbxExportOption>();
+		Options->bASCII = bAscii;
+		Options->BakeMaterialInputs = EFbxMaterialBakeMode::Disabled;
+		Options->VertexColor = false;
+		Options->LevelOfDetail = false;
+		Options->Collision = false;
+		Options->bExportSourceMesh = false;
+		Options->bExportMorphTargets = false;
+		Options->bExportPreviewMesh = false;
+		Options->bForceFrontXAxis = bForceFrontXAxis;
+		return Options;
 	}
 
 	using FJsonWriter = TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>;
@@ -283,59 +419,143 @@ void FMtoUSceneRefTransfer::ScanFbxTextureReferences(const FString& FilePath, FM
 	TArray<FString> Lines;
 	Text.ParseIntoArrayLines(Lines, /*bCullEmpty=*/false);
 
-	bool bInBlock = false;
-	bool bIsVideo = false;
-	bool bBlockNamesAFile = false;
-
-	auto FlushBlock = [&]()
-	{
-		if (bInBlock)
-		{
-			if (bIsVideo)
-			{
-				Out.VideoRecords++;
-			}
-			else
-			{
-				Out.TextureRecords++;
-				if (bBlockNamesAFile)
-				{
-					Out.TextureReferences++;
-				}
-			}
-		}
-		bInBlock = false;
-		bIsVideo = false;
-		bBlockNamesAFile = false;
+	// The FBX SDK writes `Properties70: { ... }` inside a texture or video record before the
+	// name lines, so a record is a brace delimited block: it opens at depth one, every line
+	// ending with `{` deepens it, and only the `}` that brings the depth back to zero ends
+	// it. Closing at the first `}` would hide every FileName and Content line below the
+	// nested block.
+	const TCHAR* const FileNameHeads[] = {
+		TEXT("FileName:"), TEXT("Filename:"), TEXT("RelativeFilename:"),
 	};
 
-	for (const FString& RawLine : Lines)
+	bool bInRecord = false;
+	bool bIsVideo = false;
+	bool bRecordNamesAFile = false;
+	int32 RecordDepth = 0;
+	FString RecordName;
+	int32 RecordContentLines = 0;
+	int32 RecordEmbeddedMedia = 0;
+
+	auto FlushRecord = [&]()
 	{
-		const FString Line = RawLine.TrimStartAndEnd();
-		if (Line.StartsWith(TEXT("Texture:")) || Line.StartsWith(TEXT("Video:")))
+		if (!bInRecord)
 		{
-			FlushBlock();
-			bInBlock = true;
-			bIsVideo = Line.StartsWith(TEXT("Video:"));
-			bBlockNamesAFile = false;
+			return;
+		}
+		if (bIsVideo)
+		{
+			Out.VideoRecords++;
+		}
+		else
+		{
+			Out.TextureRecords++;
+			if (bRecordNamesAFile)
+			{
+				Out.TextureReferences++;
+			}
+		}
+		Out.ContentRecords += RecordContentLines;
+		Out.EmbeddedMediaRecords += RecordEmbeddedMedia;
+		bInRecord = false;
+		bIsVideo = false;
+		bRecordNamesAFile = false;
+		RecordDepth = 0;
+		RecordName.Reset();
+		RecordContentLines = 0;
+		RecordEmbeddedMedia = 0;
+	};
+
+	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+	{
+		const FString Line = Lines[LineIndex].TrimStartAndEnd();
+
+		// Cameras and lights are `NodeAttribute:` records that carry the class token as a
+		// quoted `Camera` or `Light`; they can appear at any depth with no record open.
+		if (Line.StartsWith(TEXT("NodeAttribute:")))
+		{
+			if (HasQuotedToken(Line, TEXT("Camera")))
+			{
+				Out.CameraRecords++;
+			}
+			if (HasQuotedToken(Line, TEXT("Light")))
+			{
+				Out.LightRecords++;
+			}
+		}
+
+		if (!bInRecord)
+		{
+			if (Line.StartsWith(TEXT("Texture:")) || Line.StartsWith(TEXT("Video:")))
+			{
+				bInRecord = true;
+				bIsVideo = Line.StartsWith(TEXT("Video:"));
+				RecordDepth = 1;
+				RecordName = QuotedValue(Line);
+			}
 			continue;
 		}
-		if (bInBlock && (Line.StartsWith(TEXT("FileName:")) || Line.StartsWith(TEXT("RelativeFilename:"))))
+
+		if (Line.EndsWith(TEXT("{")))
 		{
-			const FString Value = LastQuotedValue(Line);
-			if (!Value.IsEmpty())
-			{
-				bBlockNamesAFile = true;
-				Out.FileNames.AddUnique(Value);
-			}
+			++RecordDepth;
 			continue;
 		}
 		if (Line == TEXT("}"))
 		{
-			FlushBlock();
+			if (--RecordDepth <= 0)
+			{
+				FlushRecord();
+			}
+			continue;
+		}
+
+		bool bNamesFile = false;
+		for (const TCHAR* Head : FileNameHeads)
+		{
+			if (Line.StartsWith(Head))
+			{
+				bNamesFile = true;
+				break;
+			}
+		}
+		if (bNamesFile)
+		{
+			const FString Value = LastQuotedValue(Line);
+			if (!Value.IsEmpty())
+			{
+				bRecordNamesAFile = true;
+				Out.FileNames.AddUnique(Value);
+			}
+			continue;
+		}
+
+		if (Line.StartsWith(TEXT("Content:")))
+		{
+			++RecordContentLines;
+			// The payload may sit on the next non empty line, so the first non empty line
+			// after this one is the candidate the payload rule looks at.
+			FString FollowingLine;
+			for (int32 Probe = LineIndex + 1; Probe < Lines.Num(); ++Probe)
+			{
+				FollowingLine = StripRecordSeparators(Lines[Probe]);
+				if (!FollowingLine.IsEmpty())
+				{
+					break;
+				}
+			}
+			const int32 PayloadChars = ContentPayloadChars(Line, FollowingLine);
+			if (PayloadChars > 0)
+			{
+				++RecordEmbeddedMedia;
+				Out.EmbeddedMedia.Add(FString::Printf(
+					TEXT("%s (Content %d chars)"),
+					RecordName.IsEmpty() ? TEXT("unnamed media record") : *RecordName,
+					PayloadChars));
+			}
+			continue;
 		}
 	}
-	FlushBlock();
+	FlushRecord();
 }
 
 void FMtoUSceneRefTransfer::ScanFbxModelNames(const FString& FilePath, TArray<FString>& OutNames)
@@ -376,6 +596,7 @@ bool FMtoUSceneRefTransfer::Run(
 {
 	Out = FMtoUSceneRefTransferResult();
 	Out.Spec = Spec;
+	Out.bForceFrontXAxis = Options.bForceFrontXAxis;
 
 	const double ScopeStart = FPlatformTime::Seconds();
 	if (!FMtoUSceneRefScope::Resolve(World, Spec, Out.Resolution))
@@ -418,16 +639,7 @@ bool FMtoUSceneRefTransfer::Run(
 	SelectActors(Out.Resolution.ExportableActors);
 
 	TStrongObjectPtr<UAssetExportTask> Task(NewObject<UAssetExportTask>());
-	TStrongObjectPtr<UFbxExportOption> FbxOptions(NewObject<UFbxExportOption>());
-	FbxOptions->bASCII = Options.bAscii;
-	FbxOptions->BakeMaterialInputs = EFbxMaterialBakeMode::Disabled;
-	FbxOptions->VertexColor = false;
-	FbxOptions->LevelOfDetail = false;
-	FbxOptions->Collision = false;
-	FbxOptions->bExportSourceMesh = false;
-	FbxOptions->bExportMorphTargets = false;
-	FbxOptions->bExportPreviewMesh = false;
-	FbxOptions->bForceFrontXAxis = Options.bForceFrontXAxis;
+	TStrongObjectPtr<UFbxExportOption> FbxOptions(NewFbxExportOptions(Options.bAscii, Options.bForceFrontXAxis));
 
 	Task->Object = &World;
 	Task->Filename = FbxPath;
@@ -439,7 +651,21 @@ bool FMtoUSceneRefTransfer::Run(
 	Task->bWriteEmptyFiles = false;
 	Task->Options = FbxOptions.Get();
 
-	const bool bExported = UExporter::RunAssetExportTask(Task.Get());
+	bool bExported = false;
+	{
+		// The guard covers exactly the export call: the engine skips every suppressed
+		// component, and the previous values come back even when the exporter fails below.
+		FComponentSuppressionGuard Suppression(Out.Resolution.SuppressedComponentInstances);
+		bExported = UExporter::RunAssetExportTask(Task.Get());
+		Out.SuppressedComponentCount = Suppression.SuppressedCount;
+	}
+	if (Out.SuppressedComponentCount != Out.Resolution.SuppressedComponents.Num())
+	{
+		Out.Warnings.Add(FString::Printf(
+			TEXT("the resolver named %d components to suppress but the export changed %d"),
+			Out.Resolution.SuppressedComponents.Num(),
+			Out.SuppressedComponentCount));
+	}
 	Out.Warnings.Append(Task->Errors);
 	RestoreSelection(PreviousSelection);
 	Out.Measurements.ExportSeconds = FPlatformTime::Seconds() - ExportStart;
@@ -472,6 +698,34 @@ bool FMtoUSceneRefTransfer::Run(
 
 	Out.bSucceeded = true;
 	return true;
+}
+
+bool FMtoUSceneRefTransfer::ProbeActorExport(
+	UWorld& World,
+	const TArray<AActor*>& Actors,
+	const FString& FbxPath,
+	const FMtoUSceneRefTransferOptions& Options)
+{
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FbxPath), /*Tree=*/true);
+
+	const TArray<AActor*> PreviousSelection = CaptureSelection();
+	SelectActors(Actors);
+
+	TStrongObjectPtr<UAssetExportTask> Task(NewObject<UAssetExportTask>());
+	TStrongObjectPtr<UFbxExportOption> FbxOptions(NewFbxExportOptions(Options.bAscii, Options.bForceFrontXAxis));
+	Task->Object = &World;
+	Task->Filename = FbxPath;
+	Task->bSelected = true;
+	Task->bReplaceIdentical = false;
+	Task->bPrompt = false;
+	Task->bAutomated = true;
+	Task->bUseFileArchive = false;
+	Task->bWriteEmptyFiles = false;
+	Task->Options = FbxOptions.Get();
+
+	const bool bExported = UExporter::RunAssetExportTask(Task.Get());
+	RestoreSelection(PreviousSelection);
+	return bExported;
 }
 
 bool FMtoUSceneRefTransfer::ProbeObjExport(
@@ -550,6 +804,20 @@ bool FMtoUSceneRefTransferResult::WriteManifest(FString& OutError) const
 	Writer->WriteValue(TEXT("world_partition"), Resolution.bWorldPartition);
 	Writer->WriteObjectEnd();
 
+	// The handoff's axis convention is the engine's own: the file is written in the
+	// engine's coordinates and the Maya side applies this measured map, which both hosts
+	// report so a reader can see which side owns the conversion.
+	Writer->WriteObjectStart(TEXT("conventions"));
+	Writer->WriteValue(TEXT("handoff"), TEXT("engine_fbx_level_export"));
+	Writer->WriteValue(TEXT("export_axis_option"),
+		bForceFrontXAxis ? TEXT("bForceFrontXAxis=true") : TEXT("bForceFrontXAxis=false"));
+	Writer->WriteValue(TEXT("engine_to_maya_point_map"),
+		bForceFrontXAxis
+			? TEXT("maya_x=-ue_y, maya_y=ue_z, maya_z=ue_x")
+			: TEXT("maya_x=ue_x, maya_y=ue_z, maya_z=ue_y"));
+	Writer->WriteValue(TEXT("engine_to_maya_determinant"), -1);
+	Writer->WriteObjectEnd();
+
 	Writer->WriteObjectStart(TEXT("scope"));
 	Writer->WriteValue(TEXT("kind"), TEXT("level_range"));
 	Writer->WriteValue(TEXT("persistent_level"), Resolution.PersistentLevelPackage);
@@ -586,6 +854,27 @@ bool FMtoUSceneRefTransferResult::WriteManifest(FString& OutError) const
 	WriteSkippedRecords(*Writer, TEXT("unsupported"), Resolution.Unsupported);
 	WriteSkippedRecords(*Writer, TEXT("skipped"), Resolution.Skipped);
 
+	// The filter is the resolver's prediction of every non static mesh component the
+	// engine's exporter would have turned into a node; the export suppresses exactly
+	// these, so the file carries the static reference geometry above.
+	Writer->WriteObjectStart(TEXT("filter"));
+	Writer->WriteValue(TEXT("policy"), TEXT("static_mesh_components_only"));
+	Writer->WriteValue(TEXT("suppressed_count"), Resolution.SuppressedComponents.Num());
+	Writer->WriteArrayStart(TEXT("suppressed_components"));
+	for (const FMtoUSceneRefSuppressedComponent& Suppressed : Resolution.SuppressedComponents)
+	{
+		Writer->WriteObjectStart();
+		Writer->WriteValue(TEXT("actor"), Suppressed.ActorLabel);
+		Writer->WriteValue(TEXT("actor_class"), Suppressed.ActorClass);
+		Writer->WriteValue(TEXT("component"), Suppressed.ComponentName);
+		Writer->WriteValue(TEXT("class"), Suppressed.ComponentClass);
+		Writer->WriteValue(TEXT("reason"), Suppressed.Reason);
+		Writer->WriteValue(TEXT("level"), Suppressed.LevelPackage);
+		Writer->WriteObjectEnd();
+	}
+	Writer->WriteArrayEnd();
+	Writer->WriteObjectEnd();
+
 	Writer->WriteObjectStart(TEXT("output"));
 	Writer->WriteValue(TEXT("directory"), Output.Directory);
 	Writer->WriteValue(TEXT("geometry_file"), Output.GeometryFile);
@@ -603,6 +892,11 @@ bool FMtoUSceneRefTransferResult::WriteManifest(FString& OutError) const
 	Writer->WriteValue(TEXT("texture_records"), Output.TextureScan.TextureRecords);
 	Writer->WriteValue(TEXT("texture_references"), Output.TextureScan.TextureReferences);
 	Writer->WriteValue(TEXT("video_references"), Output.TextureScan.VideoRecords);
+	Writer->WriteValue(TEXT("content_records"), Output.TextureScan.ContentRecords);
+	Writer->WriteValue(TEXT("embedded_media_records"), Output.TextureScan.EmbeddedMediaRecords);
+	WriteStringArray(*Writer, TEXT("embedded_media"), Output.TextureScan.EmbeddedMedia);
+	Writer->WriteValue(TEXT("camera_records"), Output.TextureScan.CameraRecords);
+	Writer->WriteValue(TEXT("light_records"), Output.TextureScan.LightRecords);
 	WriteStringArray(*Writer, TEXT("texture_reference_files"), Output.TextureScan.FileNames);
 	WriteStringArray(*Writer, TEXT("texture_reference_files_present"), Output.TextureReferenceFilesPresent);
 	WriteStringArray(*Writer, TEXT("node_names"), Output.NodeNames);

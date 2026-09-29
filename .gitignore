@@ -60,3 +60,6 @@ unreal/Releases/
 
 # Generated verification fixtures (rebuilt by the owning prototype's tests)
 unreal/Content/MtoUSceneRefFixture/
+# A World Partition fixture stores its actors and objects outside its own folder
+unreal/Content/__ExternalActors__/
+unreal/Content/__ExternalObjects__/

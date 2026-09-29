@@ -35,6 +35,14 @@ Rules the exporter must implement and report:
    never claims cell-level coverage.
 5. The scope never narrows to "the selected actors" and never widens to "every
    loaded level".
+6. The scope is **static reference geometry**: for every actor in scope the
+   exporter turns the engine's FBX level export into a static-mesh-only transfer
+   by suppressing the components that would otherwise become nodes (skeletal
+   mesh, camera, light and child-actor components) for the duration of the
+   export, and reports every suppressed component in `filter.suppressed_components`
+   with its class and reason. A node-layout prediction (how many nodes an actor
+   gets and what they are named) counts only the components that survive the
+   filter.
 
 ## Output directory
 
@@ -60,65 +68,130 @@ Options used, and why:
 
 | Option | Value | Reason |
 | --- | --- | --- |
-| `BakeMaterialInputs` | `Disabled` | No material input is rendered into a new image. This is an export setting, not evidence: the texture check below inspects the produced file. |
-| `bASCII` | `true` | The prototype's own texture check reads the file, so the verification artifact stays inspectable. Binary output is a packaging choice for a product, not a prototype one. |
+| `BakeMaterialInputs` | `Disabled` | No material input is rendered into a new image. This is an export setting, not evidence: the media rule below inspects the produced file. |
+| `bASCII` | `true` | Both hosts' own media check reads the file, so the verification artifact stays inspectable. Binary output is a packaging choice for a product, not a prototype one. |
 | `LevelOfDetail` | `0` | One LOD per mesh keeps the comparison unambiguous. |
 | `Collision` | `false` | Reference geometry only. |
 | `bExportSourceMesh` | `false` | Render geometry, not the source mesh description. |
 | `bExportMorphTargets`, `bExportPreviewMesh` | `false` | Static reference geometry has neither. |
-| `bForceFrontXAxis` | `false` | Keep the engine's own axis convention so the measured conversion is the engine's, not a prototype invention. |
+| `bForceFrontXAxis` | `false` | Keep the engine's own axis convention so the measured conversion is the engine's, not a prototype invention. This is the option the node frame factor below was measured with; `frontx` exists for the comparison only. |
 
-## Texture rule
+## Media rule
 
-The handoff must not copy, package, or auto-load textures, and must not rely on
-a flag for that claim. Therefore:
+The material assignment a model carries is part of the reference and is kept:
+a material ball, a material slot and a texture **record** are normal, and a
+recorded path is a reference, not a delivered image. What the handoff must not
+deliver is image **data**. Therefore:
 
 1. The exporter lists every file it produced and reports any image suffix
    (`.png`, `.bmp`, `.tga`, `.jpg`, `.jpeg`, `.exr`, `.hdr`, `.dds`, `.fbm`
-   directory) it finds. A non-empty list is reported, never deleted silently.
-2. The exporter scans the produced FBX text for material texture records and
-   reports `output.texture_records` (every `Texture:` record) and
-   `output.texture_references` (the records that name a file, which is what an
-   import would try to load) with the recorded file names. Zero frames is not
-   enough on its own: a record that names no file is still a material input the
-   export could not carry, so both counts are reported and the Maya side refuses
-   a handoff with either.
+   directory) it finds in its own directory. A non-empty list is a failure of the
+   media rule and is reported, never deleted silently.
+2. The exporter scans the produced FBX text and reports the records it holds:
+   `output.texture_records` (every `Texture:` record), `output.texture_references`
+   (records that name a file), `output.video_references`, `output.content_records`
+   (every `Content:` record) and `output.embedded_media_records` (records whose
+   `Content:` line carries media data). Only the last two, and the image file
+   list, are media data; the texture counts are information the report keeps for
+   the record.
 3. The Maya side re-scans the same file with its own detector before importing,
-   so neither host trusts the other's count, and refuses to import when
-   references are found unless `--allow-textures` is passed.
-4. The Maya side reports the number of `file` texture nodes and imported
-   shading networks that reference an image after import. The reference
-   geometry ends up on one gray material created by the importer.
-5. The Maya importer assigns that gray material to every imported mesh, and
-   reports the material it created.
+   lists the image files in the handoff's own directory itself, and refuses to
+   import a handoff that delivers image data unless `--allow-image-data` is
+   passed. It reports the recorded texture paths and whether they resolve to a
+   file on this machine (`media.image_paths_present`), which is a reference that
+   resolves, not an image the handoff delivered.
+4. The Maya side reports the `file` texture nodes the import created
+   (`counts.file_texture_nodes`), how many of them name an image that exists on
+   disk (`counts.image_nodes_loaded`), and the material assignment each imported
+   shape holds (the shading groups the file assigned, `materials.preserved_assignment`).
+   A run never claims "no texture was loaded" from the material it finally shows.
+5. The reference display is separate from the media question: `--shading display`
+   (the default) leaves the imported materials in place and colors the viewport
+   with a uniform gray override, `--shading material` assigns a gray lambert the
+   importer creates (`MtoU_UE_SceneRef_Gray`), and `--shading keep` changes
+   nothing. The choice never removes a `file` node or a texture record from the
+   handoff and is always reported.
 
-## Measured axis convention
+### Shared record rule
 
-The transfer preserves the level's own world space; it does not redefine it.
-The convention the file round trip actually uses was measured, not assumed
-(Maya 2024 + Maya 2024's `fbxmaya` 2020.3.4 reading an ASCII FBX from Unreal
-5.7.4), over the fixture's off-origin, rotated and non-uniformly scaled objects:
+Both hosts walk the FBX text with the same rule, so a disagreement in the counts
+is a finding rather than a formatting difference:
+
+- a line whose trimmed text starts with `Texture:` opens a texture record,
+  `Video:` opens a video record, and the record ends only when the brace depth
+  returns to zero (the SDK writes a nested `Properties70` block before the name
+  and `Content` lines, so a nested closing brace ends nothing);
+- inside a record, `FileName:`, `Filename:` and `RelativeFilename:` record the
+  last quoted token on the line;
+- inside a record, a `Content:` line is an embedded media record when it carries
+  data on the same line or when the next non-empty line starts with a quoted
+  payload (measured on this host's `fbxmaya` 2020.3.4: `Content: ,` followed by
+  the base64 payload on the next line, and no `Content:` line at all for media
+  that is not embedded);
+- a `NodeAttribute:` line whose quoted tokens include the class `Camera` or
+  `Light` is a camera or light node record. The SDK does **not** write `Camera:`
+  or `Light:` record heads, so a detector that counts those finds nothing.
+
+## Worlds and the node matrix
+
+The transfer preserves the level's own world space; the geometry is never
+rescaled and never moved to the origin. Two Maya worlds exist in this project,
+and the handoff relates to them explicitly.
+
+### The point maps
+
+Measured, not assumed (Maya 2024 + `fbxmaya` 2020.3.4 reading an ASCII FBX from
+Unreal 5.7.4), over the fixture's off-origin, rotated and non-uniformly scaled
+objects:
 
 | Export option | Unreal world `(x, y, z)` in centimetres maps to Maya |
 | --- | --- |
 | `bForceFrontXAxis = false` (engine default, the prototype's default) | `(x, z, y)` |
 | `bForceFrontXAxis = true` (console command flag `frontx`) | `(-y, z, x)` |
 
-Both were exact over every sample (residual `9.2e-13` cm and `5.7e-14` cm). The
-camera verification's documented contract is `(y, z, -x)`
-(`../camera-sync/maya/MtoUCameraSyncPrototype/scripts/mtou_camera_sync_mapping.py`),
-so the two routes do **not** share a convention: each measured map differs from
-it by a rotation, and the Maya report quantifies that difference per handoff
-(`transform_check.camera_contract`). A product that wants one world has to apply
-one documented conversion on one side; this prototype reports the mapping and
-corrects nothing.
+The camera sync prototype documents `(y, z, -x)` for its own route. All three
+maps have determinant `-1`, so each pair differs by a rotation.
 
-The file's own numbers carry the same story: a node at Unreal
-`(1500, -800, 250)` with rotation `(roll 10, pitch 0, yaw 35)` is written as
-`LclTranslation (1500, 800, 250)`, `LclRotation (10, 0, -35)`, and Maya reads it
-back at `(1500, 250, -800)`.
+### The node matrix, not just the point
 
-## Object naming
+A point map is not enough to describe what the file holds. The exporter writes
+every node in the file's own local frame, so the node matrix Maya reads back is
+
+```
+M_maya = frame . L_ue . map            (measured: every node of the fixture handoff)
+```
+
+with `frame = ((1,0,0),(0,-1,0),(0,0,1))` for `bForceFrontXAxis = false`. The
+factor was measured on 2026-09-29 over the ten object fixture handoff: every
+measured node matrix matches `frame . L_ue . map` to `1.3e-15`, while the naive
+`L_ue . map^T` is off by up to `7.7`. It is a mirror in the file's second axis
+(the up-axis conversion the Maya reader applies to each node's local space) and
+it is why the node matrix has a positive determinant while the point map does
+not. A host that compares orientations against `L_ue . map^T` compares against a
+matrix the file never contains.
+
+### The two worlds the importer can place the geometry in
+
+| `--target-world` | Result |
+| --- | --- |
+| `engine` (default) | The geometry stays in the handoff's own world, which is also the world of the product's Maya to Unreal animation route: `MtoULiveLink.py`'s `convert_transform` maps `maya (x, y, z) -> ue (x, z, y)`, its own inverse and the same map as `map` above (checked 2026-09-29). A level reference imported this way agrees with the character and prop animation the artist sends to Unreal. |
+| `camera` | Every imported root's world matrix is carried through one explicit map, `conversion = camera_map . engine_map^-1` (determinant `+1`, a 90 degree rotation about Maya's up axis), so the reference lands in the camera sync route's world. The rotation is applied to the root transforms only; the geometry below follows. |
+
+The conversion is one explicit operation, reported with its matrix, its
+determinant, its rotation angle and the number of roots it moved. Whichever world
+is asked for, the comparison reports:
+
+- `transform_check.candidate` — the point map the positions really arrived in;
+- `transform_check.engine_check` (when a conversion was applied) — a full
+  comparison measured **before** the conversion, which is what proves the file
+  arrived in the handoff's world;
+- `transform_check.node_frame_factor` — the frame factor used for the
+  orientation comparison, or `null` when the manifest declares no measured
+  export axis option;
+- `transform_check.camera_contract` — how the camera route's map scores on this
+  handoff, so the divergence is on the record.
+
+## Object naming and the container
 
 The Maya importer places every imported root node under one transform called
 `MtoU_UE_SceneRef` and inside the namespace of the same name, so a repeat run
@@ -127,6 +200,30 @@ nodes by the node name the engine wrote (actor label, or mesh name for a
 multi-component actor, plus the instance node the FBX exporter created), with
 the namespace prefix removed.
 
+## Updating the reference
+
+An update never leaves a half-replaced reference behind:
+
+1. The handoff is imported into a **staging namespace**
+   (`<container>_Incoming`, with a group of the same name inside it). The
+   previous reference is untouched while the new import is measured, and the
+   staging namespace is what makes a failed run harmless.
+2. The comparison runs in the staging namespace. Any problem — a mismatch, a
+   missing node, a refused handoff, an exception — deletes the staging namespace
+   again and keeps the previous reference exactly as it was
+   (`update.mode = "staged_swap_discarded"`, `update.discarded = true`, with the
+   discarded node names).
+3. Only when the comparison reported no problem is the previous container
+   deleted and the staging namespace **renamed** to the container's name, with
+   its group renamed to the group name the contract promises. A rename moves no
+   node, so the measurements stay valid; every recorded path is re-resolved by
+   short name inside the final container afterwards and reported
+   (`update.post_swap_paths_checked`, `update.post_swap_paths_missing`).
+4. `--dry-run` stages and verifies without swapping anything.
+5. Only the container namespace, its group and a legacy root-level group of the
+   same name are ever deleted. Nothing else in the scene is renamed, reparented,
+   reassigned or deleted.
+
 ## Manifest schema
 
 `mtou-scene-ref-manifest/1`. Written by Unreal; read by Maya.
@@ -134,15 +231,30 @@ the namespace prefix removed.
 ```json
 {
   "schema": "mtou-scene-ref-manifest/1",
-  "generated_utc": "2026-09-28T12:00:00Z",
+  "generated_utc": "2026-09-29T12:00:00Z",
   "engine_version": "5.7.4",
   "world": {"package": "/Game/.../Map", "name": "Map", "up_axis": "Z", "linear_unit": "cm", "world_partition": false},
+  "conventions": {
+    "handoff": "engine_fbx_level_export",
+    "export_axis_option": "bForceFrontXAxis=false",
+    "engine_to_maya_point_map": "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y",
+    "engine_to_maya_determinant": -1
+  },
+  "filter": {
+    "policy": "static_mesh_components_only",
+    "suppressed_count": 2,
+    "suppressed_components": [
+      {"actor": "BP_SceneRefMixed", "actor_class": "BP_SceneRefMixed_C",
+       "component": "PointLight", "class": "PointLightComponent",
+       "reason": "light component", "level": "/Game/.../Map"}
+    ]
+  },
   "scope": {
     "kind": "level_range",
     "persistent_level": "/Game/.../Map",
     "requested_sublevels": ["/Game/.../Sub"],
     "loaded_sublevels": ["/Game/.../Sub"],
-    "unloaded_sublevels": [{"package": "/Game/.../Other", "streaming_state": "not_loaded", "visible": false}],
+    "unloaded_sublevels": [{"package": "/Game/.../Other", "streaming_state": "not_in_world", "visible": false}],
     "excluded_sublevels": ["/Game/.../Third"]
   },
   "scale": {"actors": 5, "components": 6, "objects": 7, "triangles": 1234, "vertices": 987},
@@ -160,6 +272,8 @@ the namespace prefix removed.
       "exported": true,
       "note": "",
       "materials": ["/Engine/BasicShapes/BasicShapeMaterial"],
+      "triangles": 12,
+      "vertices": 8,
       "world_location_cm": {"x": 0.0, "y": 0.0, "z": 0.0},
       "world_rotation_deg": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0},
       "world_scale": {"x": 1.0, "y": 1.0, "z": 1.0},
@@ -176,11 +290,21 @@ the namespace prefix removed.
     "geometry_bytes": 123456,
     "files": [{"name": "Map.fbx", "bytes": 123456}],
     "image_files": [],
+    "texture_records": 0,
     "texture_references": 0,
-    "texture_reference_files": []
+    "video_references": 0,
+    "content_records": 0,
+    "embedded_media_records": 0,
+    "embedded_media": [],
+    "camera_records": 0,
+    "light_records": 0,
+    "texture_reference_files": [],
+    "texture_reference_files_present": [],
+    "node_names": ["SM_Pillar_Offset"]
   },
   "timing": {"scope_seconds": 0.1, "export_seconds": 1.2, "inspect_seconds": 0.2},
-  "memory": {"used_physical_mb": 1234.5}
+  "memory": {"used_physical_mb": 1234.5},
+  "warnings": []
 }
 ```
 
@@ -210,44 +334,86 @@ back.
   "schema": "mtou-scene-ref-report/1",
   "ok": true,
   "phase": "done",
-  "maya": {"version": "2024", "api": "20240200", "linear_unit": "cm", "up_axis": "y"},
-  "container": {"namespace": "MtoU_UE_SceneRef", "group": "MtoU_UE_SceneRef", "replaced": false},
-  "counts": {"manifest_objects": 7, "container_nodes": 7, "file_texture_nodes": 0, "image_nodes_loaded": 0},
-  "gray_material": {"name": "MtoU_UE_SceneRef_Gray", "type": "lambert", "color": [0.5, 0.5, 0.5]},
+  "maya": {"version": "2024", "api": "20240200", "linear_unit": "cm", "up_axis": "y", "time_unit": "film", "plugins": {"fbxmaya": "2020.3.4"}},
+  "manifest": {"schema": "...", "world": {}, "conventions": {}, "filter": {}, "scope": {}, "scale": {}, "objects_exported": 10, "objects_total": 10, "output": {}},
+  "scene": {"linear_unit": "cm", "up_axis": "y", "time_unit": "film", "playback_range": {}, "current_time": 1.0, "namespaces": [], "import_side_effects": {}, "playback_range_unchanged": true, "current_time_unchanged": true},
+  "fbx": {"file": "...", "bytes": 0, "format": "ascii", "plugin": "fbxmaya", "import_options": "v=0;", "namespace_flag": "MtoU_UE_SceneRef_Incoming", "root_nodes_parented": []},
+  "container": {"namespace": "MtoU_UE_SceneRef", "group": "MtoU_UE_SceneRef", "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "staging_namespace": "MtoU_UE_SceneRef_Incoming", "staging_group_path": "...", "previous_existed": false, "swapped": true, "kept_existing": false, "namespace_created": true},
+  "update": {"mode": "staged_swap", "staging_namespace": "...", "existing_container": false, "swapped": true, "discarded": false, "stale_staging_removed": false, "discarded_nodes": [], "swap_seconds": 0.1, "post_swap_paths_checked": true, "post_swap_paths_missing": []},
+  "counts": {"manifest_objects": 10, "manifest_objects_total": 10, "container_nodes": 30, "file_texture_nodes": 0, "image_nodes_loaded": 0, "meshes_assigned": 8, "matched_objects": 10, "matched_by_name": 7, "matched_by_transform_count": 3},
+  "media": {"handoff_directory": "...", "image_files_in_handoff_directory": [], "embedded_media_records": 0, "embedded_media": [], "content_records": 0, "texture_records": 0, "texture_references": 0, "camera_records": 0, "light_records": 0, "media_heuristic": false, "file_nodes_created": 0, "image_nodes_loaded": 0, "image_paths_present": [], "allowed": false},
+  "texture_scan": {"source": "<file>", "format": "ascii", "texture_records": 0, "texture_references": 0, "video_references": 0, "content_records": 0, "embedded_media_records": 0, "embedded_media": [], "camera_records": 0, "light_records": 0, "files": [], "allowed": false},
+  "world": {"target": "engine", "target_map": "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y", "target_note": "...", "conversion_applied": false, "conversion_matrix": null, "conversion_determinant": null, "conversion_rotation_deg": null, "conversion_seconds": null, "objects_converted": 0, "manifest_conventions": {}, "engine_check": null},
+  "materials": {"mode": "display", "gray_material": null, "display": {"color": [0.5, 0.5, 0.5], "shapes_overridden": 8, "shapes": [], "note": "..."}, "preserved_assignment": [{"shape": "...", "shading_groups": []}], "imported_material_nodes": {}, "file_nodes": []},
   "transform_check": {
-    "candidate": "maya_x=ue_y, maya_y=ue_z, maya_z=-ue_x",
-    "candidates": [{"name": "...", "matrix": [9 floats], "max_position_error_cm": 0.0, "max_orientation_error_deg": 0.0, "max_size_error_cm": 0.0}],
-    "best": "...", "matched": true, "max_position_error_cm": 0.0, "max_size_error_cm": 0.0
+    "candidate": "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y",
+    "candidates": [{"name": "...", "matrix": [9 floats], "max_position_error_cm": 0.0, "max_size_error_cm": 0.0, "max_offset_error_cm": 0.0, "max_centroid_error_cm": 0.0, "max_orientation_error_deg": 0.0, "orientation_objects": 2}],
+    "best": "...", "matched": true, "decided_by": "candidate", "winner": {},
+    "node_frame_factor": [9 floats], "world_conversion_matrix": null,
+    "orientation_available": true, "orientation_note": "...",
+    "max_position_error_cm": 0.0, "max_size_error_cm": 0.0,
+    "max_offset_error_cm": 0.0, "max_centroid_error_cm": 0.0,
+    "max_orientation_error_deg": 0.0,
+    "fit": {}, "camera_contract": {}, "tolerances": {}, "objects_compared": 10, "objects_missing": 0
   },
   "objects": [
-    {"node_name": "...", "path": "...", "matched_id": "...", "world_matrix": [16 floats], "world_bounds_size_cm": {"x": 0.0, "y": 0.0, "z": 0.0}, "position_error_cm": 0.0, "size_error_cm": 0.0, "offset_error_cm": 0.0, "centroid_error_cm": 0.0, "found": true}
+    {"node_name": "...", "path": "...", "matched_id": "...", "found": true, "matched_by": "name",
+     "world_matrix": [16 floats], "world_bounds_size_cm": {}, "local_bounds_size_cm": {},
+     "identification_size_cm": {}, "position_error_cm": 0.0, "size_error_cm": 0.0,
+     "offset_error_cm": 0.0, "centroid_error_cm": 0.0, "orientation_error_deg": null,
+     "orientation_checked": false, "centroid_checked": true, "problems": []}
   ],
-  "texture_scan": {"source": "<file>", "texture_references": 0, "files": []},
-  "timing": {"import_seconds": 0.0, "verify_seconds": 0.0},
-  "memory": {"process_rss_mb": 0.0},
-  "problems": []
+  "timing": {"staging_seconds": 0.0, "import_seconds": 0.0, "verify_seconds": 0.0, "total_seconds": 0.0},
+  "memory": {"process_rss_mb": 0.0, "process_rss_available": true, "source": "..."},
+  "problems": [],
+  "warnings": []
 }
 ```
+
+`transform_check.candidate` names the point map the positions arrived in; the
+orientation comparison is anchored to the handoff's own convention
+(`frame . L_ue . map`, with `node_frame_factor` reported) and is reported as
+unavailable for an object whose identification size does not have three distinct
+extents, or for a handoff whose export axis option was never measured.
+
+### What the counts mean
+
+`counts.container_nodes` is every node the container namespace holds;
+`counts.meshes_assigned` is the number of mesh **shapes** in it (a shape shared
+by several instances of one mesh is one shape and is counted once);
+`counts.file_texture_nodes` is the `file` nodes the import created and
+`counts.image_nodes_loaded` is how many of them name an image that exists on this
+machine; `counts.matched_objects`, `counts.matched_by_name` and
+`counts.matched_by_transform_count` describe how the manifest objects were
+matched. The exporter's `scale` block counts objects, triangles and vertices
+*before* the export, so it can differ from what the file holds after the engine
+welded duplicated render vertices away.
 
 ## Commands
 
 Exporter (Unreal, editor command line, console command surface):
 
 ```
-MtoUSceneRef.Export <scope_name>=<level_package> [sublevel=<package> [sublevel=<package> ...]] [out=<dir>] [obj_probe]
+MtoUSceneRef.Export [textured] [obj] [frontx] [out=<dir>]
+MtoUSceneRef.ExportLevel <level_package> [sublevel=<package> ...] [out=<dir>] [frontx] [obj]
+MtoUSceneRef.Peer <mayapy> <peer script> [out=<dir>] [scope=<name>] [world=camera] [shading=material|keep] [dryrun] [allowimagedata]
+MtoUSceneRef.BuildFixture
 ```
 
 Importer (Maya):
 
 ```
-<mayapy> MtoUSceneRefPrototype.py --fbx <file> --manifest <file> --report <file> [--container <name>] [--allow-textures] [--keep-existing]
+<mayapy> MtoUSceneRefPrototype.py --fbx <file> --manifest <file> --report <file>
+    [--container <name>] [--target-world engine|camera]
+    [--shading display|material|keep] [--allow-image-data] [--dry-run] [--json]
 ```
 
 ## Non-goals
 
 - No animation, no skeletal meshes, no camera or light transfer: this reference
-  is static geometry only. The camera route keeps its own contract.
+  is static geometry only, and the exporter suppresses the components that would
+  otherwise carry them. The camera route keeps its own contract.
 - No reference origin offset. The prototype transfers the level's own world
-  space; an offset would have to be shared with the camera and the animated
-  objects, which is out of scope for this verification.
+  space; an origin offset would have to be shared with the camera and the
+  animated objects, which is out of scope for this verification.
 - No product protocol, package, or installation change.

@@ -33,12 +33,17 @@ bool RunMayaSceneRefPeer(
 	void* PipeWrite = nullptr;
 	FPlatformProcess::CreatePipe(PipeRead, PipeWrite);
 
+	// The caller's pass-through flags reach the Maya CLI exactly as it spells them.
+	const FString ExtraArguments = Request.ExtraArguments.Num() > 0
+		? TEXT(" ") + FString::Join(Request.ExtraArguments, TEXT(" "))
+		: FString();
 	const FString ProcessArgs = FString::Printf(
-		TEXT("\"%s\" --fbx \"%s\" --manifest \"%s\" --report \"%s\""),
+		TEXT("\"%s\" --fbx \"%s\" --manifest \"%s\" --report \"%s\"%s"),
 		*Request.PeerScriptPath,
 		*Request.FbxPath,
 		*Request.ManifestPath,
-		*Request.ReportPath);
+		*Request.ReportPath,
+		*ExtraArguments);
 
 	// Only the child's output pipe is inherited; the peer prints its own progress.
 	FProcHandle Process = FPlatformProcess::CreateProc(

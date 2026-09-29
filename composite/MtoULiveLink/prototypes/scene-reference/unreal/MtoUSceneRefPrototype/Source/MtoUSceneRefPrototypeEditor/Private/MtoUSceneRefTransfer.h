@@ -36,6 +36,18 @@ public:
 		FMtoUSceneRefTransferResult& Out);
 
 	/**
+	 * Runs the engine's FBX level exporter over exactly these actors and nothing else, with
+	 * the options the transfer itself uses. Returns what the engine's export task returned:
+	 * a refusal the engine alone produces (a Level Instance) is measured here instead of
+	 * predicted from the resolver's report.
+	 */
+	static bool ProbeActorExport(
+		UWorld& World,
+		const TArray<AActor*>& Actors,
+		const FString& FbxPath,
+		const FMtoUSceneRefTransferOptions& Options);
+
+	/**
 	 * Runs the official OBJ level exporter over the same resolution.
 	 *
 	 * Used by the capability probe: the OBJ path is the other official level export,

@@ -40,32 +40,13 @@ namespace
 	}
 
 	/**
-	 * The engine's own filter from `IsSomethingToExport`/`ExportActor`: a component the
-	 * FBX exporter will turn into a node. Predicts the node layout, so it has to match.
+	 * A static mesh component the engine's `ExportActor` turns into a node: it must carry
+	 * a mesh and must not be hidden. Every other branch (skeletal mesh, camera, light,
+	 * child actor) is suppressed before the export, so it contributes no node.
 	 */
-	bool ComponentQualifiesForExport(const USceneComponent* Component)
+	bool IsExportedStaticMeshComponent(const UStaticMeshComponent& Component)
 	{
-		if (Component == nullptr || Component->bHiddenInGame)
-		{
-			return false;
-		}
-		if (const UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component))
-		{
-			return MeshComponent->GetStaticMesh() != nullptr;
-		}
-		if (const USkeletalMeshComponent* SkeletalComponent = Cast<USkeletalMeshComponent>(Component))
-		{
-			return SkeletalComponent->GetSkeletalMeshAsset() != nullptr;
-		}
-		if (Component->IsA<UCameraComponent>() || Component->IsA<ULightComponent>())
-		{
-			return true;
-		}
-		if (const UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(Component))
-		{
-			return ChildActorComponent->GetChildActor() != nullptr;
-		}
-		return false;
+		return !Component.bHiddenInGame && Component.GetStaticMesh() != nullptr;
 	}
 
 	int32 CountExportComponents(const AActor& Actor)
@@ -73,9 +54,12 @@ namespace
 		int32 Count = 0;
 		for (UActorComponent* ActorComponent : Actor.GetComponents())
 		{
-			if (ComponentQualifiesForExport(Cast<USceneComponent>(ActorComponent)))
+			if (const UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(ActorComponent))
 			{
-				++Count;
+				if (IsExportedStaticMeshComponent(*MeshComponent))
+				{
+					++Count;
+				}
 			}
 		}
 		return Count;
@@ -133,6 +117,62 @@ void FMtoUSceneRefScope::ReportSkipped(
 	Entry.ActorClass = Actor.GetClass()->GetName();
 	Entry.Reason = Reason;
 	(bUnsupported ? Out.Unsupported : Out.Skipped).Add(Entry);
+}
+
+const TCHAR* FMtoUSceneRefScope::SuppressionReason(const USceneComponent& Component)
+{
+	// A component the caller hid is out of the file with or without this transfer, so it
+	// is not a suppression this run performs.
+	if (Component.bHiddenInGame || Component.IsA<UStaticMeshComponent>())
+	{
+		return nullptr;
+	}
+	// The order mirrors FFbxExporter::ExportActor's own branch order (FbxMainExport.cpp),
+	// so a reason always names the engine branch this component would have reached.
+	if (const USkeletalMeshComponent* SkeletalComponent = Cast<USkeletalMeshComponent>(&Component))
+	{
+		return SkeletalComponent->GetSkeletalMeshAsset() != nullptr ? TEXT("skeletal mesh component") : nullptr;
+	}
+	if (Component.IsA<UCameraComponent>())
+	{
+		return TEXT("camera component");
+	}
+	if (Component.IsA<ULightComponent>())
+	{
+		return TEXT("light component");
+	}
+	if (const UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(&Component))
+	{
+		return ChildActorComponent->GetChildActor() != nullptr ? TEXT("child actor component") : nullptr;
+	}
+	return nullptr;
+}
+
+void FMtoUSceneRefScope::CollectSuppressed(const AActor& Actor, const FString& LevelPackage, FMtoUSceneRefResolution& Out)
+{
+	for (UActorComponent* ActorComponent : Actor.GetComponents())
+	{
+		USceneComponent* SceneComponent = Cast<USceneComponent>(ActorComponent);
+		if (SceneComponent == nullptr)
+		{
+			continue;
+		}
+		const TCHAR* Reason = SuppressionReason(*SceneComponent);
+		if (Reason == nullptr)
+		{
+			continue;
+		}
+
+		FMtoUSceneRefSuppressedComponent Record;
+		Record.ActorLabel = Actor.GetActorLabel();
+		Record.ActorClass = Actor.GetClass()->GetName();
+		Record.ComponentName = SceneComponent->GetName();
+		Record.ComponentClass = SceneComponent->GetClass()->GetName();
+		Record.Reason = Reason;
+		Record.LevelPackage = LevelPackage;
+		Out.SuppressedComponents.Add(Record);
+		Out.SuppressedComponentInstances.Add(SceneComponent);
+	}
 }
 
 void FMtoUSceneRefScope::CollectObject(
@@ -352,6 +392,19 @@ bool FMtoUSceneRefScope::Resolve(UWorld& World, const FMtoUSceneRefScopeSpec& Sp
 			}
 			Out.Actors.Add(Actor);
 
+			if (Actor->IsChildActor())
+			{
+				// The engine exports a child actor through its parent's child actor
+				// component, never as a node of its own; selecting it here would place its
+				// geometry at the top of the file with a node nothing predicts.
+				ReportSkipped(*Actor, TEXT("child actor of a child actor component"), /*bUnsupported=*/false, Out);
+				continue;
+			}
+
+			// Everything this actor could contribute besides its static mesh components is
+			// named here, and only here, so the export can keep it out of the file.
+			CollectSuppressed(*Actor, LevelPackage, Out);
+
 			if (const ALevelInstance* LevelInstance = Cast<ALevelInstance>(Actor))
 			{
 				// The engine's FBX level exporter refuses these with its own warning.
@@ -391,23 +444,17 @@ bool FMtoUSceneRefScope::Resolve(UWorld& World, const FMtoUSceneRefScopeSpec& Sp
 			}
 			else
 			{
-				// Blueprint actors and every other actor type export all their components.
-				TArray<USceneComponent*> Qualifying;
+				// Blueprint actors and every other actor type export their components; the
+				// filter keeps only the static mesh components, the ones the node layout
+				// below predicts.
 				for (UActorComponent* ActorComponent : Actor->GetComponents())
 				{
-					if (USceneComponent* SceneComponent = Cast<USceneComponent>(ActorComponent))
+					if (UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(ActorComponent))
 					{
-						if (ComponentQualifiesForExport(SceneComponent))
+						if (IsExportedStaticMeshComponent(*Component))
 						{
-							Qualifying.Add(SceneComponent);
+							MeshComponents.Add(Component);
 						}
-					}
-				}
-				for (USceneComponent* QualifyingComponent : Qualifying)
-				{
-					if (UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(QualifyingComponent))
-					{
-						MeshComponents.Add(Component);
 					}
 				}
 			}
@@ -421,8 +468,9 @@ bool FMtoUSceneRefScope::Resolve(UWorld& World, const FMtoUSceneRefScopeSpec& Sp
 				continue;
 			}
 
-			// Predicts the node layout the engine writes: a single qualifying component keeps
-			// the actor node, several get one child node named after the component.
+			// Predicts the node layout the engine writes for the components the filter
+			// leaves: a single static mesh component keeps the actor node (named after the
+			// actor), several get one child node each, named after the component.
 			const bool bMultipleExportComponents = CountExportComponents(*Actor) > 1;
 			for (UStaticMeshComponent* Component : MeshComponents)
 			{

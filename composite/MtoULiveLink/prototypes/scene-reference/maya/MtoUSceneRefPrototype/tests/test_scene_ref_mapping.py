@@ -8,6 +8,7 @@ hosts share, so the test states what the rule counts and what it ignores.
 """
 
 import json
+import math
 import os
 import shutil
 import sys
@@ -372,36 +373,126 @@ class TextureScanTextTest(unittest.TestCase):
     def test_the_engine_fragment_control(self):
         scan = mapping.scan_fbx_texture_records(ENGINE_FRAGMENT)
         self.assertEqual(scan["texture_records"], 2)
-        self.assertEqual(scan["texture_references"], 1)
+        self.assertEqual(scan["texture_references"], 2)
         self.assertEqual(scan["video_references"], 1)
         self.assertEqual(scan["files"], ["assets/textures/wall_brick.png",
-                                         "textures/wall_brick.png"])
+                                         "textures/wall_brick.png",
+                                         "handoff/assets/door.png",
+                                         "assets/door.png",
+                                         "Take_001.tak"])
         self.assertEqual(scan["texture_files"], ["assets/textures/wall_brick.png",
-                                                 "textures/wall_brick.png"])
-        self.assertEqual(scan["video_files"], [])
+                                                 "textures/wall_brick.png",
+                                                 "handoff/assets/door.png",
+                                                 "assets/door.png"])
+        self.assertEqual(scan["video_files"], ["Take_001.tak"])
         self.assertEqual(scan["image_files"], ["assets/textures/wall_brick.png",
-                                               "textures/wall_brick.png"])
+                                               "textures/wall_brick.png",
+                                               "handoff/assets/door.png",
+                                               "assets/door.png"])
+        self.assertEqual(scan["content_records"], 0)
+        self.assertEqual(scan["embedded_media_records"], 0)
+        self.assertEqual(scan["camera_records"], 0)
+        self.assertEqual(scan["light_records"], 0)
         self.assertEqual(len(scan["records"]), 2)
         self.assertEqual(scan["records"][0]["line"], 21)
         self.assertEqual(scan["records"][0]["file_names"],
                          ["assets/textures/wall_brick.png", "textures/wall_brick.png"])
-        self.assertEqual(scan["records"][1]["file_names"], [])
+        self.assertEqual(scan["records"][1]["file_names"],
+                         ["handoff/assets/door.png", "assets/door.png"])
 
-    def test_a_nested_block_ends_the_record_under_the_rule(self):
+    def test_a_nested_block_does_not_end_the_record(self):
+        # The SDK writes a nested Properties70 block before the name lines; the
+        # record ends only at the brace that closes it, so the names that follow
+        # the nested block belong to the record.
         scan = mapping.scan_fbx_texture_records(ENGINE_FRAGMENT)
-        # The Maya style record names its files after Properties70, which the
-        # contract's line rule treats as the end of the record, so it is a
-        # texture record with no name -- and the importer still refuses it.
         self.assertEqual(scan["records"][1]["header"],
                          'Texture: 2443664220208, "Texture::file1", "" {')
-        self.assertEqual(scan["records"][1]["file_names"], [])
-        self.assertNotIn("handoff/assets/door.png", scan["files"])
+        self.assertEqual(scan["records"][1]["file_names"],
+                         ["handoff/assets/door.png", "assets/door.png"])
+        self.assertIn("assets/door.png", scan["texture_files"])
 
     def test_the_take_clip_is_not_a_texture(self):
         scan = mapping.scan_fbx_texture_records(ENGINE_FRAGMENT)
-        self.assertNotIn("Take_001.tak", scan["files"])
+        self.assertIn("Take_001.tak", scan["video_files"])
+        self.assertNotIn("Take_001.tak", scan["texture_files"])
         self.assertEqual(scan["video_records"][0]["header"],
                          'Video: 12, "Video::Take_001", "Clip" {')
+
+    def test_embedded_media_is_detected_on_the_following_line(self):
+        # Measured layout: the SDK writes ``Content: ,`` and the base64 payload
+        # on the next line.
+        payload = "iVBORw0KGgoAAAANSUhEUg"
+        text = ('Objects:  {\n'
+                '\tVideo: 12, "Video::file1", "Clip" {\n'
+                '\t\tType: "Clip"\n'
+                '\t\tProperties70:  {\n'
+                '\t\t\tP: "Path", "KString", "XRefUrl", "", "textures/probe.png"\n'
+                '\t\t}\n'
+                '\t\tFilename: "textures/probe.png"\n'
+                '\t\tRelativeFilename: "probe.png"\n'
+                '\t\tContent: ,\n'
+                '\t\t "' + payload + '"\n'
+                '\t}\n'
+                '\tTexture: 13, "Texture::file1", "" {\n'
+                '\t\tMedia: "Video::file1"\n'
+                '\t}\n'
+                '}\n')
+        scan = mapping.scan_fbx_texture_records(text)
+        self.assertEqual(scan["content_records"], 1)
+        self.assertEqual(scan["embedded_media_records"], 1)
+        self.assertEqual(scan["embedded_media"][0]["kind"], "Video")
+        self.assertEqual(scan["embedded_media"][0]["payload_characters"], len(payload))
+        self.assertFalse(scan["embedded_media"][0]["same_line"])
+        # The record the payload belongs to stays open and still ends normally.
+        self.assertEqual(scan["texture_records"], 1)
+        self.assertEqual(scan["texture_references"], 0)
+
+    def test_embedded_media_on_the_same_line_is_detected(self):
+        text = ('Objects:  {\n'
+                '\tVideo: 12, "Video::file1", "Clip" {\n'
+                '\t\tContent: ,"QUJDRA=="\n'
+                '\t}\n'
+                '}\n')
+        scan = mapping.scan_fbx_texture_records(text)
+        self.assertEqual(scan["embedded_media_records"], 1)
+        self.assertTrue(scan["embedded_media"][0]["same_line"])
+        self.assertEqual(scan["embedded_media"][0]["payload_characters"], 8)
+
+    def test_an_empty_content_record_carries_no_media(self):
+        text = ('Objects:  {\n'
+                '\tVideo: 12, "Video::file1", "Clip" {\n'
+                '\t\tFilename: "probe.png"\n'
+                '\t\tContent: ,\n'
+                '\t}\n'
+                '}\n')
+        scan = mapping.scan_fbx_texture_records(text)
+        self.assertEqual(scan["content_records"], 1)
+        self.assertEqual(scan["embedded_media_records"], 0)
+        self.assertEqual(scan["video_files"], ["probe.png"])
+
+    def test_camera_and_light_node_attributes_are_counted(self):
+        text = ('Objects:  {\n'
+                '\tNodeAttribute: 1, "NodeAttribute::probe_cam1", "Camera" {\n'
+                '\t\tTypeFlags: "Camera"\n'
+                '\t}\n'
+                '\tNodeAttribute: 2, "NodeAttribute::", "Light" {\n'
+                '\t\tTypeFlags: "Light"\n'
+                '\t}\n'
+                '\tNodeAttribute: 3, "NodeAttribute::box", "Mesh" {\n'
+                '\t\tTypeFlags: "Mesh"\n'
+                '\t}\n'
+                '}\n')
+        scan = mapping.scan_fbx_texture_records(text)
+        self.assertEqual(scan["camera_records"], 1)
+        self.assertEqual(scan["light_records"], 1)
+        self.assertEqual(scan["texture_records"], 0)
+
+    def test_the_camera_and_light_heads_are_not_record_heads(self):
+        # The FBX SDK writes cameras and lights as NodeAttribute records, so a
+        # ``Camera:`` or ``Light:`` line head must not be counted as one.
+        text = 'Objects:  {\n\tCamera: "Camera::x", "Camera" {\n\t}\n}\n'
+        scan = mapping.scan_fbx_texture_records(text)
+        self.assertEqual(scan["camera_records"], 0)
 
     def test_the_definitions_template_and_comments_are_ignored(self):
         scan = mapping.scan_fbx_texture_records(ENGINE_FRAGMENT)
@@ -491,10 +582,26 @@ class FbxFileScanTest(unittest.TestCase):
         self.assertTrue(scan["exists"] and scan["readable"])
         self.assertEqual(scan["format"], "ascii")
         self.assertFalse(scan["binary"])
+        self.assertFalse(scan["media_heuristic"])
         self.assertEqual(scan["texture_records"], 2)
+        self.assertEqual(scan["embedded_media_records"], 0)
+        self.assertEqual(scan["camera_records"], 0)
+        self.assertEqual(scan["light_records"], 0)
         self.assertEqual(scan["files"], ["assets/textures/wall_brick.png",
-                                         "textures/wall_brick.png"])
+                                         "textures/wall_brick.png",
+                                         "handoff/assets/door.png",
+                                         "assets/door.png",
+                                         "Take_001.tak"])
         self.assertGreater(scan["bytes"], 0)
+
+    def test_the_image_files_beside_a_handoff_are_listed(self):
+        self._write("watermark.png", "not a real png")
+        self._write("handoff.fbx", CLEAN_FRAGMENT)
+        self._write("notes.txt", "not an image")
+        listed = mapping.image_files_beside(str(self.directory / "handoff.fbx"))
+        self.assertEqual(listed, ["watermark.png"])
+        self.assertEqual(mapping.image_files_beside(str(self.directory / "missing.fbx")),
+                         ["watermark.png"])
 
     def test_a_clean_handoff_reports_nothing(self):
         path = self._write("clean.fbx", CLEAN_FRAGMENT)
@@ -743,28 +850,159 @@ class ManifestTest(unittest.TestCase):
         self.assertTrue(any("min/max" in problem for problem in problems))
 
 
+class WorldConversionTest(unittest.TestCase):
+    """The explicit conversion between the two Maya worlds."""
+
+    def test_the_worlds_name_measured_maps(self):
+        self.assertEqual(mapping.world_target_map(mapping.WORLD_ENGINE), ENGINE)
+        self.assertEqual(mapping.world_target_map(mapping.WORLD_CAMERA), CAMERA)
+        self.assertTrue(mapping.world_target_note(mapping.WORLD_CAMERA))
+        with self.assertRaises(ValueError):
+            mapping.world_target_map("nowhere")
+
+    def test_the_conversion_carries_engine_world_points_into_the_camera_world(self):
+        engine = candidate_matrix(ENGINE)
+        camera = candidate_matrix(CAMERA)
+        conversion, determinant = mapping.world_conversion_matrix(
+            mapping.WORLD_ENGINE, mapping.WORLD_CAMERA)
+        close(self, determinant, 1.0)
+        self.assertIsNone(mapping.matrix3_rotation_angle_degrees(camera))
+        close(self, mapping.matrix3_rotation_angle_degrees(conversion), 90.0)
+        for point in ((0.0, 0.0, 0.0), (1500.0, -800.0, 250.0), (-10.0, 5.0, 700.0)):
+            engine_maya = mapping.matrix3_apply(engine, point)
+            camera_maya = mapping.matrix3_apply(camera, point)
+            converted = mapping.matrix3_apply(conversion, engine_maya)
+            close(self, mapping.vector_length(
+                tuple(converted[axis] - camera_maya[axis] for axis in range(3))), 0.0)
+
+    def test_the_conversion_round_trips(self):
+        there, _ = mapping.world_conversion_matrix(mapping.WORLD_ENGINE,
+                                                   mapping.WORLD_CAMERA)
+        back, _ = mapping.world_conversion_matrix(mapping.WORLD_CAMERA,
+                                                  mapping.WORLD_ENGINE)
+        identity = mapping.matrix3_multiply(there, back)
+        for row in range(3):
+            for column in range(3):
+                close(self, identity[row][column], 1.0 if row == column else 0.0)
+        world = [1.0, 0.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0,
+                 120.0, -40.0, 30.0, 1.0]
+        carried = mapping.carry_world_matrix(there, world)
+        restored = mapping.carry_world_matrix(back, carried)
+        for index in range(16):
+            close(self, restored[index], world[index])
+
+    def test_an_unknown_world_is_refused(self):
+        with self.assertRaises(ValueError):
+            mapping.world_conversion_matrix(mapping.WORLD_ENGINE, "nowhere")
+
+
+class ExpectedNodeMatrixTest(unittest.TestCase):
+    """The relation between an Unreal world matrix and the node matrix a file holds."""
+
+    def setUp(self):
+        self.frame = mapping.matrix3(mapping.ENGINE_HANDOFF_LOCAL_FRAME)
+        self.engine = candidate_matrix(ENGINE)
+        # A rotated, non-uniformly scaled, off-origin object: the frame factor
+        # only shows up against the point map when the axes are not already
+        # aligned with the map.
+        rotation = math.radians(30.0)
+        cosine, sine = math.cos(rotation), math.sin(rotation)
+        rotated = (cosine, sine, 0.0, -sine, cosine, 0.0, 0.0, 0.0, 1.0)
+        scales = mapping.matrix3((2.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.25))
+        linear = mapping.matrix3_multiply(rotated, scales)
+        self.world = mapping.matrix4_from_linear_and_translation(
+            linear, (1500.0, -800.0, 250.0))
+
+    def test_the_expected_matrix_is_the_frame_composition(self):
+        expected = mapping.expected_node_matrix(self.engine, self.world)
+        linear = mapping.matrix3_multiply(
+            mapping.matrix3_multiply(self.frame, mapping.matrix4_linear(self.world)),
+            self.engine)
+        close(self, mapping.matrix3_determinant(mapping.matrix4_linear(expected)),
+              abs(mapping.matrix3_determinant(mapping.matrix4_linear(self.world))))
+        for row in range(3):
+            for column in range(3):
+                close(self, expected[row * 4 + column], linear[row][column])
+        position = mapping.matrix4_translation(expected)
+        for axis in range(3):
+            close(self, position[axis],
+                  mapping.matrix3_apply(self.engine,
+                                        mapping.matrix4_translation(self.world))[axis])
+
+    def test_the_frame_factor_is_not_the_point_map(self):
+        # The two differ: carrying the world matrix through the point map is a
+        # different matrix, which is what the fixture measured (up to 7.7 off).
+        carried = mapping.carry_world_matrix(self.engine, self.world)
+        expected = mapping.expected_node_matrix(self.engine, self.world)
+        self.assertGreater(max(abs(carried[index] - expected[index])
+                               for index in range(16)), 1.0)
+
+    def test_a_conversion_composes_on_the_right(self):
+        conversion, _determinant = mapping.world_conversion_matrix(
+            mapping.WORLD_ENGINE, mapping.WORLD_CAMERA)
+        base = mapping.expected_node_matrix(self.engine, self.world)
+        converted = mapping.expected_node_matrix(self.engine, self.world,
+                                                 conversion=conversion)
+        carried = mapping.carry_world_matrix(conversion, base)
+        for index in range(16):
+            close(self, converted[index], carried[index])
+
+    def test_an_unmeasured_frame_factor_is_unavailable(self):
+        self.assertIsNone(mapping.expected_node_matrix(self.engine, self.world,
+                                                       frame=None))
+
+    def test_a_rotation_angle_needs_a_proper_rotation(self):
+        self.assertIsNone(mapping.matrix3_rotation_angle_degrees(
+            mapping.matrix3((1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0))))
+        self.assertIsNone(mapping.matrix3_rotation_angle_degrees(
+            mapping.matrix3((2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))))
+
+
 class ComparisonTest(unittest.TestCase):
     """The comparison half: what a good, a wrong and a missing object report."""
 
-    def _camera_candidate(self, name=CAMERA):
-        return candidate_matrix(name)
+    def _handoff_values(self, maya_matrix, maya_size, maya_offset, maya_centroid,
+                        map_name=ENGINE, frame=mapping.ENGINE_HANDOFF_LOCAL_FRAME,
+                        map_matrix=None):
+        """The Unreal values a handoff in ``map_name`` would have produced.
+
+        The relation a file really uses is ``frame . L_ue . map`` with the
+        position mapped by ``map``; inverting it here is what makes the
+        synthetic scenes handoffs rather than arbitrary matrix pairs.
+        """
+        matrix = map_matrix if map_matrix is not None else candidate_matrix(map_name)
+        inverse = mapping.matrix3_inverse(matrix)
+        frame_inverse = mapping.matrix3_inverse(mapping.matrix3(frame))
+        unreal_matrix = mapping.matrix4_from_linear_and_translation(
+            mapping.matrix3_multiply(
+                mapping.matrix3_multiply(frame_inverse,
+                                         mapping.matrix4_linear(maya_matrix)),
+                inverse),
+            mapping.matrix3_apply(inverse, mapping.matrix4_translation(maya_matrix)))
+        return {
+            "unreal_matrix": unreal_matrix,
+            "unreal_size": mapping.expected_axis_sizes(inverse, maya_size),
+            "unreal_offset": mapping.matrix3_apply(inverse, maya_offset),
+            "unreal_centroid": mapping.matrix3_apply(inverse, maya_centroid),
+        }
 
     def _measurement(self, name, maya_matrix, maya_size, local_size, unreal_matrix=None,
                      unreal_size=None, entry_id=None, maya_offset=None,
-                     maya_centroid=None):
-        matrix = self._camera_candidate()
-        inverse = mapping.matrix3_inverse(matrix)
-        if unreal_matrix is None:
-            unreal_matrix = mapping.uncarry_world_matrix(matrix, maya_matrix)
-        if unreal_size is None:
-            unreal_size = mapping.expected_axis_sizes(inverse, maya_size)
+                     maya_centroid=None, map_name=ENGINE):
         if maya_offset is None:
             maya_offset = (0.0, 0.0, 0.0)
-        unreal_offset = mapping.matrix3_apply(inverse, maya_offset)
-        position = mapping.matrix4_translation(maya_matrix)
         if maya_centroid is None:
-            maya_centroid = position
-        unreal_centroid = mapping.matrix3_apply(inverse, maya_centroid)
+            maya_centroid = mapping.matrix4_translation(maya_matrix)
+        derived = self._handoff_values(maya_matrix, maya_size, maya_offset, maya_centroid,
+                                       map_name=map_name)
+        if unreal_matrix is None:
+            unreal_matrix = derived["unreal_matrix"]
+        if unreal_size is None:
+            unreal_size = derived["unreal_size"]
+        unreal_offset = derived["unreal_offset"]
+        unreal_centroid = derived["unreal_centroid"]
         return {
             "node_name": name,
             "matched_id": entry_id or "id:{0}".format(name),
@@ -784,21 +1022,46 @@ class ComparisonTest(unittest.TestCase):
             "local_size": local_size,
         }
 
-    def _scene_for(self, map_name):
-        """The four reference objects as a handoff in ``map_name`` would present them."""
-        return self._scene_for_values(candidate_matrix(map_name))
+    def _scene_in_world(self, world):
+        """The same handoff moved into ``world`` by the explicit conversion.
 
-    def _scene_for_values(self, map_to_use):
-        """The four reference objects, carried through one map into Unreal terms."""
+        This is what the importer does to an imported level: every root's world
+        matrix is carried through the conversion, so the geometry stays the same
+        and only the world it is expressed in changes.
+        """
+        conversion, determinant = mapping.world_conversion_matrix(
+            mapping.WORLD_ENGINE, world)
+        close(self, abs(determinant), 1.0)
         scene = []
         for entry in self._scene():
             entry = dict(entry)
-            entry["ue_matrix"] = mapping.uncarry_world_matrix(
-                map_to_use, entry["maya_matrix"])
-            inverse = mapping.matrix3_inverse(map_to_use)
-            entry["ue_size"] = mapping.expected_axis_sizes(inverse, entry["maya_size"])
-            entry["ue_offset"] = mapping.matrix3_apply(inverse, entry["maya_offset"])
-            entry["ue_centroid"] = mapping.matrix3_apply(inverse, entry["maya_centroid"])
+            entry["maya_matrix"] = mapping.carry_world_matrix(conversion,
+                                                              entry["maya_matrix"])
+            entry["maya_size"] = mapping.expected_axis_sizes(conversion,
+                                                             entry["maya_size"])
+            entry["maya_offset"] = list(mapping.matrix3_apply(conversion,
+                                                              entry["maya_offset"]))
+            entry["maya_centroid"] = list(mapping.matrix3_apply(conversion,
+                                                                entry["maya_centroid"]))
+            scene.append(entry)
+        return scene, conversion
+
+    def _scene_in_map_values(self, map_to_use, frame=None):
+        """The same objects as a handoff whose file used an arbitrary map.
+
+        Used for conventions whose node frame factor was never measured, which
+        is exactly the case the orientation comparison reports as unavailable.
+        """
+        scene = []
+        for entry in self._scene():
+            entry = dict(entry)
+            values = self._handoff_values(entry["maya_matrix"], entry["maya_size"],
+                                          entry["maya_offset"], entry["maya_centroid"],
+                                          map_name=None, map_matrix=map_to_use)
+            entry["ue_matrix"] = values["unreal_matrix"]
+            entry["ue_size"] = values["unreal_size"]
+            entry["ue_offset"] = values["unreal_offset"]
+            entry["ue_centroid"] = values["unreal_centroid"]
             scene.append(entry)
         return scene
 
@@ -846,13 +1109,13 @@ class ComparisonTest(unittest.TestCase):
                               maya_offset=(-50.0, -50.0, -50.0)),
         ]
 
-    def test_a_correct_scene_matches_the_camera_candidate(self):
+    def test_a_correct_handoff_matches_the_engine_candidate(self):
         result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, self._scene())
         check = result["transform_check"]
-        self.assertEqual(check["candidate"], CAMERA)
-        self.assertEqual(check["best"], CAMERA)
+        self.assertEqual(check["candidate"], ENGINE)
+        self.assertEqual(check["best"], ENGINE)
         self.assertEqual(check["decided_by"], "candidate")
-        self.assertEqual(check["winner"]["name"], CAMERA)
+        self.assertEqual(check["winner"]["name"], ENGINE)
         self.assertEqual(check["winner"]["source"], "candidate")
         self.assertTrue(check["matched"])
         self.assertEqual(check["objects_compared"], len(self._scene()))
@@ -864,8 +1127,8 @@ class ComparisonTest(unittest.TestCase):
         self.assertTrue(check["fit"]["available"])
         self.assertTrue(check["fit"]["signed_permutation"])
         close(self, check["fit"]["determinant"], -1.0)
-        self.assertEqual(check["fit"]["permutation"], [1, 2, 0])
-        self.assertEqual(check["fit"]["signs"], [1, 1, -1])
+        self.assertEqual(check["fit"]["permutation"], [0, 2, 1])
+        self.assertEqual(check["fit"]["signs"], [1, 1, 1])
 
     def test_the_candidate_list_scores_every_axis_map(self):
         result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, self._scene())
@@ -874,19 +1137,23 @@ class ComparisonTest(unittest.TestCase):
         self.assertEqual(len(scores), len(mapping.AXIS_CANDIDATES))
         for name, entry in scores.items():
             self.assertEqual(entry["objects_compared"], len(self._scene()), name)
-        self.assertLess(scores[CAMERA]["max_position_error_cm"], 1e-6)
+        self.assertLess(scores[ENGINE]["max_position_error_cm"], 1e-6)
         self.assertGreater(scores[IDENTITY]["max_position_error_cm"], 100.0)
-        self.assertGreater(scores[ENGINE]["max_position_error_cm"], 100.0)
-        self.assertGreater(scores[CLASSIC]["max_orientation_error_deg"], 10.0)
+        self.assertGreater(scores[CAMERA]["max_position_error_cm"], 100.0)
+        # The orientation comparison is anchored to the file's own convention,
+        # so it is a property of the handoff and not of the scored candidate.
+        orientations = {entry["max_orientation_error_deg"] for entry in scores.values()}
+        self.assertEqual(len(orientations), 1)
+        self.assertLess(orientations.pop(), 1e-6)
         camera_contract = tc["camera_contract"]
         self.assertEqual(camera_contract["candidate"], CAMERA)
-        self.assertLess(camera_contract["max_position_error_cm"], 1e-6)
-        self.assertTrue(camera_contract["within_tolerance"])
+        self.assertGreater(camera_contract["max_position_error_cm"], 100.0)
+        self.assertFalse(camera_contract["within_tolerance"])
         self.assertEqual(len(camera_contract["matrix"]), 9)
         self.assertTrue(camera_contract["note"])
 
     def test_a_scene_in_the_engine_map_names_the_engine_candidate(self):
-        scene = self._scene_for(ENGINE)
+        scene = self._scene()
         result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene)
         tc = result["transform_check"]
         self.assertEqual(tc["best"], ENGINE)
@@ -904,7 +1171,7 @@ class ComparisonTest(unittest.TestCase):
         self.assertIn("does not correct", contract["note"])
 
     def test_the_classic_candidate_alone_is_not_the_engine_match(self):
-        scene = self._scene_for(ENGINE)
+        scene = self._scene()
         result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene)
         scores = {entry["name"]: entry for entry in
                   result["transform_check"]["candidates"]}
@@ -916,8 +1183,11 @@ class ComparisonTest(unittest.TestCase):
         # A signed permutation that is not one of the named candidates still
         # places every object exactly; the fit has to decide it.
         unknown = mapping.matrix3((-1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0))
-        scene = self._scene_for_values(unknown)
-        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene)
+        scene = self._scene_in_map_values(unknown)
+        # A convention the project never measured has no node frame factor, so
+        # the orientation comparison reports itself unavailable instead of
+        # comparing against the engine handoff's factor.
+        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene, frame=None)
         tc = result["transform_check"]
         self.assertEqual(tc["best"], mapping.FITTED_CANDIDATE_NAME)
         self.assertEqual(tc["decided_by"], "fit")
@@ -926,7 +1196,9 @@ class ComparisonTest(unittest.TestCase):
         self.assertEqual(result["problems"], [])
         self.assertTrue(tc["fit"]["available"] and tc["fit"]["signed_permutation"])
         self.assertLess(tc["fit"]["max_position_error_cm"], 1e-6)
+        self.assertFalse(tc["orientation_available"])
         for entry in result["objects"]:
+            self.assertFalse(entry["orientation_checked"], entry["node_name"])
             self.assertLess(entry["position_error_cm"], 1e-6, entry["node_name"])
             self.assertLess(entry["size_error_cm"], 1e-6, entry["node_name"])
             self.assertEqual(entry["problems"], [])
@@ -934,9 +1206,12 @@ class ComparisonTest(unittest.TestCase):
             self.assertGreater(score["max_position_error_cm"], 100.0, name)
 
     def test_the_fit_may_not_decide_when_it_is_not_a_signed_permutation(self):
-        scene = self._scene_for_values(
+        # A handoff whose positions follow a map with a scale in it: the fit can
+        # explain them, but not as a signed permutation, so no map is reported
+        # as the match and every object keeps its mismatch.
+        scene = self._scene_in_map_values(
             mapping.matrix3((1.1, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0)))
-        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene)
+        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene, frame=None)
         tc = result["transform_check"]
         self.assertNotEqual(tc["best"], mapping.FITTED_CANDIDATE_NAME)
         self.assertFalse(tc["matched"])
@@ -967,7 +1242,7 @@ class ComparisonTest(unittest.TestCase):
 
     def test_a_wrong_position_is_reported_with_both_values(self):
         scene = self._scene()
-        camera = self._camera_candidate()
+        camera = candidate_matrix(ENGINE)
         # Move the manifest's Unreal position 25 cm along the object's maya -Z.
         offset = mapping.matrix3_inverse(camera)
         delta = mapping.matrix3_apply(offset, (0.0, 0.0, -25.0))
@@ -1130,7 +1405,7 @@ class ComparisonTest(unittest.TestCase):
         # The wall's own axes are turned a further 90 degrees about Maya's up
         # axis: X goes to -Z and Z goes to X, while the position is unchanged.
         expected = mapping.matrix4_linear(
-            mapping.carry_world_matrix(self._camera_candidate(), scene[2]["ue_matrix"]))
+            mapping.expected_node_matrix(candidate_matrix(ENGINE), scene[2]["ue_matrix"]))
         rotated = [tuple(-value for value in expected[2]), expected[1], expected[0]]
         scene[2]["maya_matrix"] = mapping.matrix4_from_linear_and_translation(
             mapping.matrix3(rotated), mapping.matrix4_translation(scene[2]["maya_matrix"]))
@@ -1171,6 +1446,56 @@ class ComparisonTest(unittest.TestCase):
             self.assertIn("POSITION_MISMATCH", problem)
         for entry in result["transform_check"]["candidates"]:
             self.assertGreater(entry["max_position_error_cm"], 1000.0, entry["name"])
+
+    def test_a_converted_scene_matches_the_camera_candidate(self):
+        # The same non-origin handoff moved into the camera route's world by the
+        # explicit conversion: the comparison names the camera map and every
+        # check, including the orientation one, still holds.
+        scene, conversion = self._scene_in_world(mapping.WORLD_CAMERA)
+        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene,
+                                              conversion=conversion)
+        tc = result["transform_check"]
+        self.assertEqual(tc["candidate"], CAMERA)
+        self.assertEqual(tc["decided_by"], "candidate")
+        self.assertTrue(tc["matched"])
+        self.assertEqual(result["problems"], [])
+        self.assertLess(tc["max_position_error_cm"], 1e-6)
+        self.assertLess(tc["max_size_error_cm"], 1e-6)
+        self.assertLess(tc["max_offset_error_cm"], 1e-6)
+        self.assertLess(tc["max_centroid_error_cm"], 1e-6)
+        self.assertEqual(tc["world_conversion_matrix"], mapping.matrix3_values(conversion))
+        self.assertTrue(tc["orientation_available"])
+        for entry in result["objects"]:
+            self.assertFalse(entry["centroid_checked"] is None, entry["node_name"])
+        checked = [entry for entry in result["objects"] if entry["orientation_checked"]]
+        # Three of the five fixture objects have identification sizes with three
+        # distinct extents; the cube-like rock and wedge are reported as skipped.
+        self.assertEqual(len(checked), 3)
+        for entry in checked:
+            self.assertLess(entry["orientation_error_deg"], 1e-6, entry["node_name"])
+
+    def test_a_converted_scene_without_the_conversion_reports_the_orientation_wrong(self):
+        # The positions alone cannot tell the two worlds apart under their own
+        # candidate; the node frames are what the missing conversion breaks, so
+        # the orientation comparison is what reports it.
+        scene, _conversion = self._scene_in_world(mapping.WORLD_CAMERA)
+        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, scene)
+        self.assertFalse(result["transform_check"]["matched"])
+        self.assertEqual(result["transform_check"]["candidate"], CAMERA)
+        self.assertTrue(any("ORIENTATION_MISMATCH" in problem
+                            for problem in result["problems"]),
+                        json.dumps(result["problems"]))
+
+    def test_a_handoff_without_a_measured_frame_reports_the_check_unavailable(self):
+        result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, self._scene(),
+                                              frame=None)
+        check = result["transform_check"]
+        self.assertFalse(check["orientation_available"])
+        self.assertIsNone(check["node_frame_factor"])
+        self.assertIn("unavailable", check["orientation_note"])
+        self.assertTrue(check["matched"])
+        for entry in result["objects"]:
+            self.assertFalse(entry["orientation_checked"], entry["node_name"])
 
     def test_no_objects_compares_nothing(self):
         result = mapping.compare_measurements(mapping.AXIS_CANDIDATES, [])

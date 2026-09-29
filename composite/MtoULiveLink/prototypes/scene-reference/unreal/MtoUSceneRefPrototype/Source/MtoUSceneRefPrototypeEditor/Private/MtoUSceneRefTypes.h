@@ -7,6 +7,7 @@
 
 class AActor;
 class UStaticMeshComponent;
+class USceneComponent;
 
 /** What a scope member is, for the support report. */
 enum class EMtoUSceneRefCategory : uint8
@@ -70,6 +71,27 @@ struct FMtoUSceneRefSkipped
 	FString Reason;
 };
 
+/**
+ * One component the transfer keeps out of the produced file.
+ *
+ * The engine's FBX level exporter turns every non hidden mesh, camera, light and child
+ * actor component of a selected actor into a node. The handoff is static reference
+ * geometry, so the resolver names the components to suppress (`bHiddenInGame`) and the
+ * export applies and restores exactly that list.
+ */
+struct FMtoUSceneRefSuppressedComponent
+{
+	FString ActorLabel;
+	FString ActorClass;
+	FString ComponentName;
+	/** Runtime class of the component, e.g. PointLightComponent. */
+	FString ComponentClass;
+	/** Stable reason this component is not static reference geometry. */
+	FString Reason;
+	/** Package of the level the owning actor lives in. */
+	FString LevelPackage;
+};
+
 /** A requested streaming sublevel that is not loaded. */
 struct FMtoUSceneRefUnloadedLevel
 {
@@ -107,6 +129,18 @@ struct FMtoUSceneRefResolution
 	/** Actors the exporter must select; the engine skips non-geometry on its own. */
 	TArray<AActor*> ExportableActors;
 	TArray<FMtoUSceneRefObject> Objects;
+	/**
+	 * Non static mesh components in scope the export must suppress, because the engine's
+	 * exporter would otherwise turn each of them into a camera, light, skeletal mesh or
+	 * child actor node. The export applies and restores the flag for exactly these.
+	 */
+	TArray<FMtoUSceneRefSuppressedComponent> SuppressedComponents;
+	/**
+	 * The components behind SuppressedComponents, in the same order. The export drives
+	 * these directly; the records above are what the manifest reports. Transient, like
+	 * Actors: it points into the loaded world and is valid only while that world is.
+	 */
+	TArray<USceneComponent*> SuppressedComponentInstances;
 	TArray<FMtoUSceneRefSkipped> Skipped;
 	TArray<FMtoUSceneRefSkipped> Unsupported;
 	int32 RequestedSublevelsMissing = 0;
@@ -132,6 +166,19 @@ struct FMtoUSceneRefTextureScan
 	int32 TextureReferences = 0;
 	/** `Video:` records, which usually mirror the same media. */
 	int32 VideoRecords = 0;
+	/** `Content:` lines inside a texture or video record, embedded payload or not. */
+	int32 ContentRecords = 0;
+	/**
+	 * Records whose `Content:` line carries a payload, on the same line or on the
+	 * immediately following non empty line. Non zero means the handoff embeds media.
+	 */
+	int32 EmbeddedMediaRecords = 0;
+	/** One descriptor per embedded media record, e.g. `Video::T_Rock (Content 4096 chars)`. */
+	TArray<FString> EmbeddedMedia;
+	/** `NodeAttribute:` records whose class token is exactly `Camera`. */
+	int32 CameraRecords = 0;
+	/** `NodeAttribute:` records whose class token is exactly `Light`. */
+	int32 LightRecords = 0;
 	/** Every file name the records mention, in the order they were found. */
 	TArray<FString> FileNames;
 };
@@ -170,6 +217,11 @@ struct FMtoUSceneRefTransferResult
 	FMtoUSceneRefOutput Output;
 	FMtoUSceneRefMeasurements Measurements;
 	FDateTime GeneratedUtc = FDateTime::UtcNow();
+
+	/** The export option the run used; the manifest's convention block reports it. */
+	bool bForceFrontXAxis = false;
+	/** Components whose bHiddenInGame the export set and restored for its own duration. */
+	int32 SuppressedComponentCount = 0;
 
 	int32 TriangleCount = 0;
 	int32 VertexCount = 0;

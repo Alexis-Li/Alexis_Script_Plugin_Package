@@ -271,6 +271,36 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   lists, and the pending product decisions. No product code, protocol, or
   package changed, and Issue #52 remains open pending those decisions.
 
+- **2026-09-29:** Closed the five follow-ups the Issue #53 evaluation listed. The
+  media rule was corrected: a material assignment and a recorded texture path are
+  kept and reported, and only image data refuses a handoff (an image file in the
+  directory the exporter owns, or media embedded in the FBX), measured both ways
+  on a texture-driven material and on an injected `Content:` payload. The world
+  contract was checked and made explicit: the product's animation route sends
+  Maya coordinates to Unreal with `(x, z, y)`, the same self-inverse map as the
+  engine's FBX handoff, so the reference already agrees with the artist's
+  character and props; the camera route's `(y, z, -x)` is the divergent one, and
+  the reference import now delivers that world through one verified conversion
+  (`--target-world camera`, determinant `+1`, 90 degrees about the up axis) while
+  defaulting to the handoff's own world. The node matrix relation was measured
+  and corrected (`frame . L_ue . map`, matching every fixture node to `1.3e-15`
+  where the naive `L_ue . map^T` is off by up to `7.7`), which finally lets the
+  orientation comparison run. A mixed Blueprint actor's light, camera, child
+  actor and skeletal mesh components are suppressed for the export and reported,
+  instead of reaching the file unannounced. Updates are now staged: the handoff
+  is imported into a staging namespace, verified there, and only then renamed
+  into the container, so a failed or dry run leaves the previous reference
+  exactly as it was. The object kinds the evaluation listed as missing were
+  measured: Nanite render data, a landscape exported by the engine's own branch
+  (7938 polygons written against 0 triangles reported by the scope), a level
+  instance refused by the engine, and World Partition cells that are not
+  streamed in absent from the scope. The user's own character level was exported
+  and verified on both hosts in both worlds. Ten Unreal automation tests, 103
+  Maya pure tests in both interpreters and 251 Maya host checks pass. The
+  [acceptance record](issue-53-scene-reference-acceptance.md) owns the evidence,
+  the support list, the known limits and the pending decisions. No product code,
+  protocol, or package changed, and Issue #53 remains open.
+
 - **2026-09-28:** Verified Issue #53 with a bounded two-host scene-reference
   prototype. Unreal resolves an explicit level scope (the loaded level plus the
   sublevels the caller names), exports it through its own FBX level exporter and

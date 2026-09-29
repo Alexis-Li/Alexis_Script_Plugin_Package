@@ -14,6 +14,12 @@ struct FMtoUSceneRefPeerRequest
 	FString ManifestPath;
 	FString ReportPath;
 	FString LogPath;
+	/**
+	 * Arguments the caller passes through to the Maya CLI verbatim, appended after the
+	 * `--report` argument on its command line, each already spelled the way the peer
+	 * script expects it (`--target-world camera`, `--shading keep`, `--dry-run`, ...).
+	 */
+	TArray<FString> ExtraArguments;
 	double TimeoutSeconds = 600.0;
 };
 
