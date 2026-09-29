@@ -597,6 +597,278 @@ bool FMtoUCameraSyncSubsequenceTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncEvalIdentityTest,
+	"MtoUCameraSyncPrototype.EvalIdentityConvergence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The evaluation identity separates a paused target from the transport serial: a slow
+ * report for the still-current target pairs even after a heartbeat superseded its
+ * publication, a report the timeline has left cannot move the witness, a replayed
+ * publication never pairs twice, and the final target has to converge within the wait.
+ */
+bool FMtoUCameraSyncEvalIdentityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FPrototypeWorld Fixture;
+	if (!TestTrue(TEXT("editor world"), Fixture.Create()))
+	{
+		return false;
+	}
+
+	const FFrameRate DisplayRate(24, 1);
+	const FFrameRate TickResolution(24000, 1);
+	ULevelSequence* Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+	ACineCameraActor* CameraA = SpawnCamera(
+		*Fixture.World, FVector(0.0, 0.0, 100.0), FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+	ACineCameraActor* CameraB = SpawnCamera(
+		*Fixture.World, FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+	AActor* Witness = SpawnMarker(*Fixture.World, TEXT("witness"), FVector::ZeroVector);
+	if (!TestNotNull(TEXT("camera A"), CameraA) || !TestNotNull(TEXT("camera B"), CameraB)
+		|| !TestNotNull(TEXT("pose witness"), Witness))
+	{
+		return false;
+	}
+	Witness->Tags.Remove(FName(MarkerTagName));
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraA, TEXT("CamA")),
+		1001 * 1000, 1026 * 1000);
+	AddCut(*Sequence, BindActor(*Sequence, *Fixture.World, *CameraB, TEXT("CamB")),
+		1026 * 1000, 1051 * 1000);
+
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	if (!TestTrue(TEXT("loopback port reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+
+	FMtoUCameraSyncSession Session;
+	FString Error;
+	if (!TestTrue(TEXT("session starts"), Session.Start(*Fixture.World, *Sequence, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	Session.SetPoseWitnessTarget(Witness);
+	Session.SetDisplayFrame(1001.0);
+
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	TestNotNull(TEXT("socket subsystem"), Sockets);
+	if (!Sockets)
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+
+	auto ConnectClient = [Sockets, &Config](FSocket*& OutSocket) -> bool
+	{
+		OutSocket = Sockets->CreateSocket(NAME_Stream, TEXT("MtoU evaluation client"));
+		if (!OutSocket)
+		{
+			return false;
+		}
+		const TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+		bool bValidAddress = false;
+		Address->SetIp(TEXT("127.0.0.1"), bValidAddress);
+		Address->SetPort(Config.Port);
+		const bool bConnected = bValidAddress && OutSocket->Connect(*Address);
+		if (!bConnected)
+		{
+			OutSocket->Close();
+			Sockets->DestroySocket(OutSocket);
+			OutSocket = nullptr;
+		}
+		return bConnected;
+	};
+	auto SendLine = [](FSocket* Socket, const FString& Line)
+	{
+		const FString Text = Line + TEXT("\n");
+		const FTCHARToUTF8 Utf8(*Text);
+		int32 Sent = 0;
+		Socket->Send(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), Sent);
+	};
+	auto WaitFor = [&Session](TFunctionRef<bool()> Predicate, double Delta = 0.02)
+	{
+		for (int32 Attempt = 0; Attempt < 200 && !Predicate(); ++Attempt)
+		{
+			Session.Pump(Delta);
+			FPlatformProcess::Sleep(0.005f);
+		}
+		return Predicate();
+	};
+
+	FSocket* Client = nullptr;
+	if (!TestTrue(TEXT("a synthetic client connects"), ConnectClient(Client)))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	SendLine(Client, TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
+		TEXT("\"host\":\"evaluation-test\",\"scene_fps\":24,\"time_unit\":\"film\"}"));
+	TestTrue(TEXT("the client is greeted"), WaitFor([&Session]() { return Session.IsGreeted(); }));
+
+	// One report line for a publication, with every field taken from that publication.
+	auto PoseLine = [Sequence](const TSharedPtr<FJsonObject>& Published,
+		int64 ReportSession, int64 ReportSerial, double MayaOrigin, double PoseValue)
+	{
+		const TSharedPtr<FJsonObject> Time = GetObject(Published, TEXT("time"));
+		const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
+		const double DisplayFrame = GetNumber(Time, TEXT("display_frame"), 0.0);
+		// Equal rates with the fixture's playback start of 1001.
+		const double MayaFrame = MayaOrigin + (DisplayFrame - 1001.0);
+		return FString::Printf(
+			TEXT("{\"type\":\"applied\",\"session\":%lld,\"sequence\":\"%s\",\"frame_serial\":%lld,")
+			TEXT("\"eval_serial\":%lld,\"eval_identity\":\"%s\",\"maya_frame\":%.9f,")
+			TEXT("\"unreal_display_frame\":%.9f,\"unreal_camera_path\":\"%s\",")
+			TEXT("\"maya_origin_frame\":%.9f,\"status\":\"applied\",\"detail\":[],\"camera\":{},")
+			TEXT("\"markers\":[],\"pose\":{\"sampled_maya_frame\":%.9f,\"translate_x\":%.9f}}"),
+			ReportSession, *Sequence->GetName(), ReportSerial,
+			static_cast<int64>(GetNumber(Published, TEXT("eval_serial"), 0.0)),
+			*Published->GetStringField(TEXT("eval_identity")),
+			MayaFrame, DisplayFrame, *Camera->GetStringField(TEXT("path")),
+			MayaOrigin, MayaFrame, PoseValue);
+	};
+
+	const TSharedPtr<FJsonObject> FirstFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the first target is published"), FirstFrame.IsValid()))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 FirstEvalSerial = static_cast<int64>(GetNumber(FirstFrame, TEXT("eval_serial"), -1.0));
+	const int64 FirstSerial = static_cast<int64>(GetNumber(FirstFrame, TEXT("frame_serial"), -1.0));
+	TestTrue(TEXT("the first target carries an evaluation serial"), FirstEvalSerial >= 1);
+	TestFalse(TEXT("the first target starts unpaired"), Session.IsCurrentTargetPaired());
+
+	// A heartbeat republishes the same target: the transport serial advances while the
+	// evaluation generation stays, so an in-flight report is not invalidated.
+	Session.Pump(0.2);
+	TestEqual(TEXT("a heartbeat keeps the evaluation serial"),
+		Session.GetEvalSerial(), FirstEvalSerial);
+	TestTrue(TEXT("a heartbeat advances the transport serial"),
+		Session.GetFrameSerial() > FirstSerial);
+
+	const int64 PairedBeforeSlowReport = Session.GetPairedPoseCount();
+	Session.HandleClientLine(
+		PoseLine(FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
+	TestEqual(TEXT("a slow report for the current target pairs"),
+		Session.GetPairedPoseCount(), PairedBeforeSlowReport + 1);
+	TestTrue(TEXT("the witness carries the paired value"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 5.0, 1e-6));
+	TestTrue(TEXT("the current target is paired"), Session.IsCurrentTargetPaired());
+
+	Session.HandleClientLine(
+		PoseLine(FirstFrame, Session.GetConnectionSessionId(), FirstSerial, 1001.0, 5.0));
+	TestEqual(TEXT("a replayed publication never pairs twice"),
+		Session.GetPairedPoseCount(), PairedBeforeSlowReport + 1);
+
+	// The timeline moves to the second shot while a fresh, unpaired publication of the
+	// first one is still in flight. It is read in the same tick, before the new frame
+	// is published, and must still be judged against the target that is current now.
+	Session.Pump(0.2);
+	const TSharedPtr<FJsonObject> InFlightFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("a heartbeat publication of the current target exists"), InFlightFrame.IsValid()))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 InFlightSerial = static_cast<int64>(GetNumber(InFlightFrame, TEXT("frame_serial"), -1.0));
+	TestTrue(TEXT("the in-flight publication carries a fresh serial"), InFlightSerial > FirstSerial);
+	TestEqual(TEXT("the in-flight publication repeats the evaluation serial"),
+		static_cast<int64>(GetNumber(InFlightFrame, TEXT("eval_serial"), -1.0)), FirstEvalSerial);
+
+	const int64 RejectedBeforeJump = Session.GetRejectedPoseCount();
+	Session.SetDisplayFrame(1030.0);
+	SendLine(Client, PoseLine(InFlightFrame, Session.GetConnectionSessionId(), InFlightSerial, 1001.0, 7.0));
+	TestTrue(TEXT("a report the timeline has left is refused before the new frame is published"),
+		WaitFor([&Session, RejectedBeforeJump]()
+		{
+			return Session.GetRejectedPoseCount() > RejectedBeforeJump;
+		}));
+	TestTrue(TEXT("the witness keeps the last converged value"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 5.0, 1e-6));
+	TestFalse(TEXT("the new target is not paired by the old report"),
+		Session.IsCurrentTargetPaired());
+
+	const TSharedPtr<FJsonObject> SecondFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the second target is published"), SecondFrame.IsValid()))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 SecondEvalSerial = static_cast<int64>(GetNumber(SecondFrame, TEXT("eval_serial"), -1.0));
+	TestTrue(TEXT("the second target starts its own generation"),
+		SecondEvalSerial > FirstEvalSerial);
+	TestTrue(TEXT("the second target has a different identity"),
+		SecondFrame->GetStringField(TEXT("eval_identity"))
+			!= FirstFrame->GetStringField(TEXT("eval_identity")));
+
+	// The final target converges once its own report arrives.
+	const int64 PairedBeforeConvergence = Session.GetPairedPoseCount();
+	Session.HandleClientLine(PoseLine(SecondFrame, Session.GetConnectionSessionId(),
+		static_cast<int64>(GetNumber(SecondFrame, TEXT("frame_serial"), -1.0)), 1001.0, 9.0));
+	TestEqual(TEXT("the final target converges"), Session.GetPairedPoseCount(),
+		PairedBeforeConvergence + 1);
+	TestTrue(TEXT("the final target is paired"), Session.IsCurrentTargetPaired());
+	TestTrue(TEXT("the witness carries the converged value"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 9.0, 1e-6));
+
+	// Reconnect: the former connection's report is refused although every other identity
+	// condition (generation, serial, time, camera) is valid, and the same report pairs
+	// once it carries the current session identity.
+	const int64 OldSessionId = Session.GetConnectionSessionId();
+	Client->Close();
+	Sockets->DestroySocket(Client);
+	Client = nullptr;
+	TestTrue(TEXT("the first connection is dropped"), WaitFor([&Session]()
+	{
+		return !Session.HasClient();
+	}));
+
+	FSocket* SecondClient = nullptr;
+	if (!TestTrue(TEXT("a second client connects"), ConnectClient(SecondClient)))
+	{
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	SendLine(SecondClient, TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\",\"version\":2,")
+		TEXT("\"host\":\"evaluation-test\",\"scene_fps\":24,\"time_unit\":\"film\"}"));
+	TestTrue(TEXT("the second connection is greeted and publishes"), WaitFor([&Session, OldSessionId]()
+	{
+		return Session.HasClient() && Session.GetConnectionSessionId() == OldSessionId + 1
+			&& Session.GetLastPublishedFrame().IsValid();
+	}, 0.12));
+
+	const TSharedPtr<FJsonObject> ReconnectedFrame = Session.GetLastPublishedFrame();
+	if (!TestTrue(TEXT("the new connection has a published frame"), ReconnectedFrame.IsValid()))
+	{
+		SecondClient->Close();
+		Sockets->DestroySocket(SecondClient);
+		Session.Stop(TEXT("test finished"));
+		return false;
+	}
+	const int64 RejectedBeforeOldSession = Session.GetRejectedPoseCount();
+	Session.HandleClientLine(PoseLine(ReconnectedFrame, OldSessionId,
+		static_cast<int64>(GetNumber(ReconnectedFrame, TEXT("frame_serial"), -1.0)), 1001.0, 3.0));
+	TestEqual(TEXT("a former connection's report is refused with every other condition valid"),
+		Session.GetRejectedPoseCount(), RejectedBeforeOldSession + 1);
+	TestTrue(TEXT("the former connection cannot move the witness"),
+		FMath::IsNearlyEqual(Witness->GetActorLocation().Y, 9.0, 1e-6));
+
+	const int64 PairedBeforeCurrentSession = Session.GetPairedPoseCount();
+	Session.HandleClientLine(PoseLine(ReconnectedFrame, Session.GetConnectionSessionId(),
+		static_cast<int64>(GetNumber(ReconnectedFrame, TEXT("frame_serial"), -1.0)), 1001.0, 3.0));
+	TestEqual(TEXT("the same report pairs with the current session identity"),
+		Session.GetPairedPoseCount(), PairedBeforeCurrentSession + 1);
+
+	SecondClient->Close();
+	Sockets->DestroySocket(SecondClient);
+	Session.Stop(TEXT("test finished"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FMtoUCameraSyncTrailingByteTest,
 	"MtoUCameraSyncPrototype.TrailingByteCount",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -830,7 +1102,7 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	const FString FixtureJson = FString::Printf(
 		TEXT("{\"host\":\"127.0.0.1\",\"port\":%u,\"scene_fps\":24.0,\"maya_start_frame\":1001.0,"
 			"\"camera_name\":\"MtoU_UE_Camera\",\"frames_to_apply\":6,\"render\":false,"
-			"\"evidence_dir\":\"%s\",\"protocol\":{\"name\":\"MtoUCameraSync\",\"version\":1}}"),
+			"\"evidence_dir\":\"%s\",\"protocol\":{\"name\":\"MtoUCameraSync\",\"version\":2}}"),
 		static_cast<uint32>(Config.Port), *Evidence.Replace(TEXT("\\"), TEXT("/")));
 	if (!TestTrue(TEXT("fixture written"), SaveJson(FixturePath, FixtureJson)))
 	{
@@ -947,6 +1219,23 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	SaveJson(PeerLogPath, PeerOutput);
 	FPlatformProcess::ClosePipe(PeerPipeRead, PeerPipeWrite);
 	Session.Pump(0.0);
+	// The acceptance condition is convergence, not one early pair: the target that is
+	// current when the session stops has to have been answered by the real client.
+	const double ConvergenceDeadline = FPlatformTime::Seconds() + 15.0;
+	while (FPlatformTime::Seconds() < ConvergenceDeadline && !Session.IsCurrentTargetPaired())
+	{
+		Session.Pump(0.02);
+		FPlatformProcess::Sleep(0.005f);
+	}
+	TestTrue(TEXT("the final evaluation target converged within the wait"),
+		Session.IsCurrentTargetPaired());
+	TestEqual(TEXT("the converged generation is the latest sampled target"),
+		Session.GetLastPairedEvalSerial(), Session.GetEvalSerial());
+	// Captured here because the reconnect below starts a fresh connection identity,
+	// which resets the pairing history on purpose.
+	const bool bConvergedBeforeReplay = Session.IsCurrentTargetPaired();
+	const int64 ConvergedEvalSerial = Session.GetEvalSerial();
+	const int64 ConvergedPairedEvalSerial = Session.GetLastPairedEvalSerial();
 	const int32 PeerAppliedReports = Session.GetAppliedReports().Num();
 	const int64 PairedBeforeReplay = Session.GetPairedPoseCount();
 	const double WitnessBeforeReplay = PoseWitness ? PoseWitness->GetActorLocation().Y : 0.0;
@@ -970,6 +1259,19 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 			PoseWitness && FMath::IsNearlyEqual(PoseWitness->GetActorLocation().Y,
 				WitnessBeforeReplay, 1e-6));
 	}
+	// The witness holds the pose of the converged generation, not of an earlier shot.
+	double ConvergedPose = WitnessBeforeReplay;
+	for (const FMtoUCameraSyncSession::FAppliedReport& Applied : Session.GetAppliedReports())
+	{
+		if (Applied.bPosePaired)
+		{
+			ConvergedPose = Applied.PoseTranslateX;
+		}
+	}
+	TestTrue(TEXT("the witness holds the converged generation's pose"),
+		PoseWitness && FMath::IsNearlyEqual(PoseWitness->GetActorLocation().Y, ConvergedPose, 1e-6));
+	TestTrue(TEXT("the converged pose is the keyed witness value at the final target"),
+		FMath::IsNearlyEqual(ConvergedPose, 9.0, 1e-6));
 	// Reconnect the transport and replay a valid pose from the first connection.
 	// A new connection gets a new session identity even when it uses the same port.
 	for (int32 Attempt = 0; Attempt < 20 && Session.HasClient(); ++Attempt)
@@ -993,7 +1295,7 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	if (bConnectedAgain)
 	{
 		const FString Hello = TEXT("{\"type\":\"hello\",\"protocol\":\"MtoUCameraSync\","
-			"\"version\":1,\"host\":\"reconnect-test\",\"scene_fps\":24,"
+			"\"version\":2,\"host\":\"reconnect-test\",\"scene_fps\":24,"
 			"\"time_unit\":\"film\"}\n");
 		const FTCHARToUTF8 HelloBytes(*Hello);
 		int32 Sent = 0;
@@ -1011,6 +1313,8 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 			Session.GetConnectionSessionId(), 2ll);
 		TestTrue(TEXT("reconnection publishes its own evaluated frame"),
 			Session.GetPublishedFrameCount() > PublishedBeforeReconnect);
+		TestEqual(TEXT("a new connection starts with an empty pairing history"),
+			Session.GetLastPairedEvalSerial(), 0ll);
 		const int64 RejectedBeforeOldSession = Session.GetRejectedPoseCount();
 		const FString OldPoseLine = PairedReportJson + TEXT("\n");
 		const FTCHARToUTF8 OldPoseBytes(*OldPoseLine);
@@ -1052,6 +1356,36 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 		Session.GetRejectedCommandTypes().Num(), 0);
 	TestEqual(TEXT("client JSON lines have no discarded suffix"),
 		Session.GetClientLineAnomalyCount(), 0ll);
+
+	// Every frame the real client applied echoes the evaluation identity it answered.
+	bool bEchoedEvaluationIdentity = true;
+	int32 AppliedWithIdentity = 0;
+	if (bResultLoaded && PeerResult.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Applied = nullptr;
+		if (PeerResult->TryGetArrayField(TEXT("applied"), Applied) && Applied)
+		{
+			for (const TSharedPtr<FJsonValue>& Entry : *Applied)
+			{
+				const TSharedPtr<FJsonObject> Object = Entry->AsObject();
+				FString Identity;
+				double EvalSerial = 0.0;
+				if (!Object->TryGetStringField(TEXT("eval_identity"), Identity) || Identity.IsEmpty()
+					|| !Object->TryGetNumberField(TEXT("eval_serial"), EvalSerial)
+					|| EvalSerial < 1.0)
+				{
+					bEchoedEvaluationIdentity = false;
+				}
+				else
+				{
+					++AppliedWithIdentity;
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("every applied frame echoes the evaluation identity"),
+		bEchoedEvaluationIdentity);
+	TestEqual(TEXT("every applied frame carries the echo"), AppliedWithIdentity, AppliedReports);
 
 	// Per-frame comparison between the published payload and what Maya actually applied.
 	double MaxMarkerDelta = 0.0;
@@ -1154,7 +1488,14 @@ bool FMtoUCameraSyncMayaPeerTest::RunTest(const FString& Parameters)
 	Report->SetNumberField(TEXT("failed_sends"), Session.GetFailedSendCount());
 	Report->SetNumberField(TEXT("paired_poses"), Session.GetPairedPoseCount());
 	Report->SetNumberField(TEXT("rejected_poses"), Session.GetRejectedPoseCount());
+	Report->SetNumberField(TEXT("eval_serial"), Session.GetEvalSerial());
+	Report->SetNumberField(TEXT("last_paired_eval_serial"), Session.GetLastPairedEvalSerial());
+	Report->SetBoolField(TEXT("converged"), bConvergedBeforeReplay);
+	Report->SetNumberField(TEXT("converged_eval_serial"), ConvergedEvalSerial);
+	Report->SetNumberField(TEXT("converged_paired_eval_serial"), ConvergedPairedEvalSerial);
+	Report->SetNumberField(TEXT("applied_reports_dropped"), Session.GetAppliedReportsDropped());
 	Report->SetNumberField(TEXT("pose_witness_ue_y"), WitnessBeforeReplay);
+	Report->SetNumberField(TEXT("converged_pose"), ConvergedPose);
 	TArray<TSharedPtr<FJsonValue>> AppliedValues;
 	for (const FMtoUCameraSyncSession::FAppliedReport& Applied : Session.GetAppliedReports())
 	{

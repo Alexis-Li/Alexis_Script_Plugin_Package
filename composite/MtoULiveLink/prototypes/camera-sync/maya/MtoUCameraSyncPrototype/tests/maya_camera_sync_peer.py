@@ -103,6 +103,8 @@ def applied_entry(report, frame, expected):
     gate = read_back.get("defaultResolution") or {}
     return {
         "frame_serial": report.get("frame_serial"),
+        "eval_serial": report.get("eval_serial"),
+        "eval_identity": report.get("eval_identity"),
         "status": report.get("status"),
         "detail": report.get("detail"),
         "maya_frame": report.get("maya_frame"),

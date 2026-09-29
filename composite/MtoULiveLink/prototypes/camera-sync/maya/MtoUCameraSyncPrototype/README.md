@@ -72,15 +72,18 @@ a missing required field is answered with a stable error category
 `UNSUPPORTED_PROTOCOL`, `UNSUPPORTED_TIME_AUTHORITY`) and **no** part of that
 frame is applied.
 
-* `session`: `protocol` (`MtoUCameraSync`), `version` (1), `port`,
+* `session`: `protocol` (`MtoUCameraSync`), `version` (2), `port`,
   `time_authority` (`unreal`), `sequence`, `display_rate{numerator,
   denominator}`, `tick_resolution`, `playback_range{start,end}`,
   `output_resolution{x,y}`, `camera_cut`, and optionally
   `far_clip_fallback_cm` and `marker_names`.
-* `frame`: `session`, `sequence`, `frame_serial`, `time{display_frame,
-  seconds, source_frame, tick, display_rate}`, `camera_cut`,
+* `frame`: `session`, `sequence`, `frame_serial`, `eval_serial`, `eval_identity`,
+  `time{display_frame, seconds, source_frame, tick, display_rate}`, `camera_cut`,
   `output_resolution`, `camera`, `view`, `projection`, `markers[...]`. Every
   frame is a complete state, so a dropped frame never leaves a partial camera.
+  `eval_serial`/`eval_identity` name the evaluation target; they are echoed back
+  in the `applied` report so the publisher can tell "a report for the target
+  that is still current" apart from "a report the timeline has left".
 * `camera`: `location{x,y,z}` plus either `right`/`up`/`forward` or
   `rotation{roll,pitch,yaw}`; required `focal_length_mm`, `sensor_width_mm`,
   `sensor_height_mm`; optional `sensor_horizontal_offset_mm`,
@@ -94,8 +97,9 @@ frame is applied.
   the protocol's structural guarantee that Maya cannot steer Unreal's time; the
   follower records such an `error` line and keeps following.
 
-`applied` carries `session`, `sequence`, `frame_serial`, `maya_frame`,
-the explicit Maya origin, Unreal display frame and camera path,
+`applied` carries `session`, `sequence`, `frame_serial`, `eval_serial`,
+`eval_identity`, `maya_frame`, the explicit Maya origin, Unreal display frame
+and camera path,
 `status` (`applied` or `rejected`), `detail`,
 `markers[{name, unreal_ndc, maya_ndc, delta}]` and `camera`, whose keys are the
 Maya attribute names read back from the node (`focalLength`,

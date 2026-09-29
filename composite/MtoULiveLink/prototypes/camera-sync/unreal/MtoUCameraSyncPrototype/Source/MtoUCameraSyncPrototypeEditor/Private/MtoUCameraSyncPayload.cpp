@@ -264,6 +264,8 @@ TSharedRef<FJsonObject> MtoUCameraSyncSerializeFrame(const FMtoUCameraSyncFrameS
 	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("type"), TEXT("frame"));
 	Object->SetNumberField(TEXT("frame_serial"), static_cast<double>(Frame.Serial));
+	Object->SetNumberField(TEXT("eval_serial"), static_cast<double>(Frame.EvalSerial));
+	Object->SetStringField(TEXT("eval_identity"), Frame.EvalIdentity);
 	Object->SetStringField(TEXT("sequence"), Frame.SequenceName);
 	Object->SetStringField(TEXT("sequence_path"), Frame.SequencePath);
 	Object->SetObjectField(TEXT("output_resolution"), MtoUCameraSyncObject(

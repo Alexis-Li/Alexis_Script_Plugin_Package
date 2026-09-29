@@ -5,7 +5,11 @@ camera cuts and subsequence shots), Maya applies it to one camera and follows
 the Unreal time. The editor mode follows the user's open Sequencer. An opt-in
 test peer samples one keyed Maya joint and returns a pose witness with the
 camera frame identity; Unreal only applies a matching witness to a disposable
-actor. This verifies a small paused-frame loop, not product pose streaming.
+actor. The prototype protocol is **v2**: frames carry an evaluation identity
+(`eval_serial`, `eval_identity`) that is separate from the transport serial, so
+a slow report for a still-current paused target still pairs and acceptance
+requires the final target to converge. This verifies a small paused-frame loop,
+not product pose streaming or continuous playback.
 
 This is verification scaffolding, not a product. It does not change the
 MtoULiveLink product, its protocol (v9), its packages, or its supported
@@ -91,8 +95,11 @@ playback ranges on either side, and no client message can move the Unreal time.
   Maya follows explicit origins across differing rates and non-zero starts,
   evaluating subframes without rounding.
 - An opt-in keyed-joint pose witness returned to Unreal with the same session,
-  serial, camera and time identity. Old, duplicate and mismatched reports cannot
-  move the disposable Unreal witness actor; reconnects receive a new identity.
+  evaluation identity, serial, camera and time. Old, duplicate and mismatched
+  reports cannot move the disposable Unreal witness actor; reconnects receive a
+  new identity, and heartbeats for an unchanged target never invalidate a
+  report that is in flight. A stopped timeline has to converge: the target that
+  is current when following ends must have been answered.
 - World transform, focal length, film back, film offsets, film fit, f-stop,
   focus distance, depth-of-field enablement, near clip, and the Maya resolution
   gate, which follows the film aperture's pixel extent rather than the full
@@ -123,8 +130,13 @@ The earlier apparent trailing data came from the Unreal receiver constructing
 an unbounded string from a length-delimited UTF-8 conversion. The receiver now
 uses the converter's explicit length. The real editor/Maya test requires zero
 `client_line_anomalies`, zero `client_trailing_bytes`, every application report
-intact, and zero failed sends. A deliberately malformed multibyte suffix is
-also checked for an exact UTF-8 byte count.
+intact, zero failed sends, and that the final evaluation target converged within
+a bounded wait. A deliberately malformed multibyte suffix is also checked for an
+exact UTF-8 byte count.
+
+Per pump, Unreal processes at most 64 client lines with the remainder left in
+the receive buffer, and its report evidence queue is capped; both bounds keep a
+slow or flooding client from turning one editor tick into unbounded work.
 
 ## Related records
 

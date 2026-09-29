@@ -28,6 +28,8 @@ public:
 	struct FAppliedReport
 	{
 		int64 Serial = 0;
+		int64 EvalSerial = 0;
+		FString EvalIdentity;
 		FString Status;
 		double MayaFrame = 0.0;
 		bool bPosePaired = false;
@@ -83,7 +85,13 @@ public:
 	const TArray<FAppliedReport>& GetAppliedReports() const { return AppliedReports; }
 	int64 GetPairedPoseCount() const { return PairedPoses; }
 	int64 GetRejectedPoseCount() const { return RejectedPoses; }
+	int64 GetEvalSerial() const { return EvalSerial; }
+	int64 GetFrameSerial() const { return FrameSerial; }
+	int64 GetLastPairedEvalSerial() const { return LastPairedEvalSerial; }
 	int64 GetConnectionSessionId() const { return ConnectionSessionId; }
+	/** True once a pose report answered the evaluation target currently sampled. */
+	bool IsCurrentTargetPaired() const { return EvalSerial > 0 && LastPairedEvalSerial == EvalSerial; }
+	int64 GetAppliedReportsDropped() const { return AppliedReportsDropped; }
 	const TArray<FString>& GetRejectedCommandTypes() const { return RejectedCommandTypes; }
 	const FString& GetLastError() const { return LastError; }
 	const TSharedPtr<FJsonObject>& GetLastPublishedFrame() const { return LastPublishedFrame; }
@@ -98,9 +106,12 @@ private:
 	void ApplyTimeToPlayer();
 	bool BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FString& OutError);
 	bool PublishCurrentFrame();
+	FString BuildEvalIdentity(const FMtoUCameraSyncFrameSample& Frame) const;
+	void RefreshEvalTarget();
 	FMtoUCameraSyncCutSample DescribeCut(double DisplayFrame) const;
 	bool AcceptClient(FSocket* Socket, const FIPv4Endpoint& Endpoint);
 	void ReadClientLines();
+	void DropClient();
 	void SendJson(const TSharedRef<FJsonObject>& Object);
 	void SendError(const FString& Category, const FString& Detail);
 	double PlaybackEndDisplayFrame() const;
@@ -134,14 +145,20 @@ private:
 
 	double SecondsSincePublish = 0.0;
 	int64 FrameSerial = 0;
+	int64 EvalSerial = 0;
+	double LastEvalTargetDisplayFrame = -1.0;
+	FString PendingEvalIdentity;
 	int64 ConnectionSessionId = 0;
 	int64 PublishedFrames = 0;
 	int64 FailedSends = 0;
 	int64 ClientLineAnomalies = 0;
 	int64 ClientTrailingBytes = 0;
+	int64 ClientLinesProcessed = 0;
 	int64 PairedPoses = 0;
 	int64 RejectedPoses = 0;
 	int64 LastPairedSerial = 0;
+	int64 LastPairedEvalSerial = 0;
+	int64 AppliedReportsDropped = 0;
 	FString LastClientLineAnomaly;
 	bool bCameraMissingReported = false;
 

@@ -289,6 +289,23 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   owns the evidence, the support list and the pending decisions. No product
   code, protocol, or package changed, and Issue #53 remains open.
 
+- **2026-09-29:** Closed the timing and convergence gaps the Issue #52 review
+  found. The prototype protocol is v2: frames carry an evaluation identity
+  (`eval_serial`, `eval_identity`) separate from the transport serial, Unreal
+  samples the target before it reads client reports, and a report is judged
+  against the current target instead of the publication it answered. A paused
+  target's heartbeats no longer supersede work in flight, a replayed
+  publication never pairs twice, per-tick client lines and the report evidence
+  queue are bounded, and acceptance requires the stopped timeline to converge
+  within a bounded wait. Unreal's seven prototype tests, Maya 63/63 pure tests
+  in both interpreters and 56/56 host checks, and a real editor/Maya session
+  (6 frames applied, 5 pose reports paired, 1 superseded in flight, converged,
+  0 anomalous lines, marker delta ≤ 1.0887e-07 NDC) pass on stock UE 5.7.4 and
+  Maya 2024. The [acceptance record](issue-52-camera-sync-acceptance.md) owns
+  the evidence and the next step: a real C01 paused-positioning integration
+  through the product pose path, which needs the product protocol integration
+  design first.
+
 ## Stable Records
 
 - [Architecture](architecture.md)

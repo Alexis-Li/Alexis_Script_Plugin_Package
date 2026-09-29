@@ -171,6 +171,7 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
     sensor_width_mm = 24.89
     sensor_height_mm = 10.41
     focal_length_mm = 35.0
+    sequence_name = "MtoU_CameraSync"
     location = (1200.0, 300.0, 420.0)
     rotation = (0.0, -6.0, 32.0)
     camera = build_camera(
@@ -213,6 +214,10 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
             frame_markers.append(entry)
         frame = {
             "frame_serial": index + 1,
+            "eval_serial": index + 1,
+            "eval_identity": "{0}@{1}/{2}".format(
+                sequence_name, int(round(display_frame * display_numerator)),
+                "CineCameraActor"),
             "repeat": 2,
             "time": {"display_frame": display_frame,
                      "seconds": (display_frame - float(playback_start))
@@ -283,7 +288,7 @@ def build_fixture(port=DEFAULT_PORT, scene_fps=24.0, maya_start_frame=1001.0,
             "camera_cut": {"camera": "CineCameraActor", "stage": "root"},
             "marker_names": [marker["name"] for marker in markers],
             "time_authority": "unreal",
-            "sequence": "MtoU_CameraSync",
+            "sequence": sequence_name,
         },
         "frames": frames,
         "expected": expected,

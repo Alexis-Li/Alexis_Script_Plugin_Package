@@ -3,7 +3,8 @@
 Scope: this document fixes the prototype's wire schema and its Unreal → Maya
 parameter mapping so both hosts can be implemented and checked independently.
 It is not a product protocol; the MtoU Live Link protocol stays at v9 and is not
-touched by the prototype.
+touched by the prototype. The prototype's own version is **2**: version 1 had no
+evaluation identity, so its receipt pairing depended on the transport serial.
 
 ## Roles
 
@@ -30,7 +31,7 @@ touched by the prototype.
 | `type` | When | Payload |
 | --- | --- | --- |
 | `session` | once after `hello` | `protocol`, `version`, `session`, `port`, `time_authority`, `sequence`, `display_rate`, `tick_resolution`, `playback_range`, `output_resolution`, `aperture_resolution`, `resolution_source`, `far_clip_fallback_cm`, `camera_cut`, `marker_names` |
-| `frame` | every update | `session`, `frame_serial`, `sequence`, `time`, `camera_cut`, `output_resolution`, `aperture_resolution`, `resolution_source`, `camera`, `view`, `projection`, `markers` |
+| `frame` | every update | `session`, `frame_serial`, `eval_serial`, `eval_identity`, `sequence`, `time`, `camera_cut`, `output_resolution`, `aperture_resolution`, `resolution_source`, `camera`, `view`, `projection`, `markers` |
 | `error` | on a rejected message | `category`, `detail` |
 | `end` | on shutdown | `reason` |
 
@@ -39,7 +40,7 @@ touched by the prototype.
 | `type` | Purpose |
 | --- | --- |
 | `hello` | `protocol`, `version`, `host`, `scene_fps`, `time_unit` |
-| `applied` | `session`, `sequence`, `frame_serial`, `maya_frame`, `maya_origin_frame`, `unreal_display_frame`, `unreal_camera_path`, `status`, `detail`, `camera`, `gate`, `markers`; the opt-in test peer also sends `pose{sampled_maya_frame,translate_x}` |
+| `applied` | `session`, `sequence`, `frame_serial`, `eval_serial`, `eval_identity`, `maya_frame`, `maya_origin_frame`, `unreal_display_frame`, `unreal_camera_path`, `status`, `detail`, `camera`, `gate`, `markers`; the opt-in test peer also sends `pose{sampled_maya_frame,translate_x}` |
 | `bye` | leave the session |
 
 Any other client message is answered with
@@ -53,17 +54,41 @@ initial object is recorded with its discarded UTF-8 byte count
 (`client_line_anomalies`, `client_trailing_bytes`,
 `last_client_line_anomaly`). The initial object may still be used as a camera
 application report, but its pose is never paired. A new TCP connection gets a
-new `session` identity, so a report from a former connection cannot be paired.
+new `session` identity, so a report from a former connection cannot be paired
+even when every other identity field is current.
 
-A keyed-joint witness is paired only when its report answers the latest `frame`
-message: `session`, `frame_serial`, `sequence`, `unreal_display_frame`,
-`unreal_camera_path`, `maya_frame` and `pose.sampled_maya_frame` must all match
-that publication. Every publication carries a new `frame_serial`, so a report
-superseded by the next one — after a camera cut or a time change — is refused
-and counted instead of moving the witness. The cross-host test observed that
-refusal for a pose in flight across a camera cut and for deliberately replayed
-reports; after a reconnect the former connection's report is refused because
-the session identity changed.
+### Evaluation identity and transport serial
+
+`frame_serial` counts publications and always increases, including heartbeats
+that repeat an unchanged target. `eval_serial` counts **evaluation targets**:
+it increases only when the sampled target actually changes (a jump, a camera
+cut, a shot change, a different sequence time or a different evaluated camera).
+`eval_identity` is the readable form of that target:
+`<sequence>@<tick>/<camera object path>`.
+
+A keyed-joint witness is paired when its report answers the target sampled for
+the current pump:
+
+- Unreal samples the target, then processes client reports, then publishes. A
+  report is therefore judged against the target that is current *now*, not
+  against whichever publication it happened to answer. A report the timeline
+  has already left — for example one that arrives in the same tick that moved
+  from shot A to shot B, before B's frame was published — is refused and
+  counted.
+- `session`, `eval_serial`, `eval_identity`, `sequence`, `unreal_display_frame`,
+  `unreal_camera_path`, `maya_frame` and `pose.sampled_maya_frame` must all
+  match, and `frame_serial` must be a publication of this connection that was
+  not paired before. A report may answer an earlier heartbeat of the same
+  target: heartbeats repeat a target and do not supersede work in flight.
+- Replaying the same publication never pairs twice, and a new connection never
+  inherits the previous connection's pairing history.
+- Acceptance is convergence, not one lucky pair: after the timeline stops, the
+  target that is current must be answered within a bounded wait. `eval_serial`
+  and `last_paired_eval_serial` expose that condition, and the tests assert it.
+- Transport work is bounded per pump (64 client lines; the remainder stays in
+  the receive buffer for the next tick) and the report evidence queue is capped
+  (512 entries, evictions counted as `applied_reports_dropped`), so a slow or
+  flooding client cannot grow an unbounded backlog of stale targets.
 
 ## Time model
 

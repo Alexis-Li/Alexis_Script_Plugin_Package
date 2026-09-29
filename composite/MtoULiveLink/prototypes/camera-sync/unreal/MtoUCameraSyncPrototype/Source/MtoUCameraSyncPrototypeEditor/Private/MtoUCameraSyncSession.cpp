@@ -84,7 +84,17 @@ bool ExtractFirstJsonObject(const FString& Line, FString& OutObject)
 	}
 	return false;
 }
-const int32 ProtocolVersion = 1;
+/**
+ * The prototype protocol version. Version 2 separates the evaluation identity
+ * (target generation) from the transport serial: the frame carries `eval_serial`
+ * and `eval_identity`, and only a report answering the current target may move
+ * the pose witness.
+ */
+const int32 ProtocolVersion = 2;
+/** Bounded transport work per pump; the remainder is processed on the next tick. */
+const int32 MaxClientLinesPerPump = 64;
+/** Bounded evidence queue; evictions are counted instead of growing without limit. */
+const int32 MaxStoredAppliedReports = 512;
 
 FString FrameTimeToJsonLine(const TSharedRef<FJsonObject>& Object)
 {
@@ -242,12 +252,7 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 		End->SetStringField(TEXT("type"), TEXT("end"));
 		End->SetStringField(TEXT("reason"), Reason);
 		SendJson(End);
-		ClientSocket->Close();
-		if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
-		{
-			Sockets->DestroySocket(ClientSocket);
-		}
-		ClientSocket = nullptr;
+		DropClient();
 	}
 	if (Listener)
 	{
@@ -283,8 +288,9 @@ void FMtoUCameraSyncSession::Pump(double DeltaSeconds)
 		return;
 	}
 
-	ReadClientLines();
-
+	// The Sequencer target is sampled before client reports are processed, so a
+	// report for a frame that has already been replaced on the editor timeline
+	// is judged against the new target instead of the stale publication.
 	if (bEditorSource)
 	{
 		const TSharedPtr<ISequencer> Sequencer = EditorSequencer.Pin();
@@ -316,7 +322,15 @@ void FMtoUCameraSyncSession::Pump(double DeltaSeconds)
 		}
 	}
 
-	ApplyTimeToPlayer();
+	// The evaluation target is made current before any client report is processed:
+	// a report for a frame the timeline has already left is judged against the new
+	// target instead of the publication it happened to answer.
+	if (!bEditorSource)
+	{
+		ApplyTimeToPlayer();
+	}
+	RefreshEvalTarget();
+	ReadClientLines();
 
 	if (bGreeted)
 	{
@@ -344,6 +358,53 @@ void FMtoUCameraSyncSession::ApplyTimeToPlayer()
 	ResolvedPlayer->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
 		FFrameTime::FromDecimal(CurrentDisplayFrame), EUpdatePositionMethod::Jump));
 	LastAppliedDisplayFrame = CurrentDisplayFrame;
+}
+
+FString FMtoUCameraSyncSession::BuildEvalIdentity(const FMtoUCameraSyncFrameSample& Frame) const
+{
+	return FString::Printf(TEXT("%s@%lld/%s"),
+		*Frame.SequenceName, Frame.Time.Tick, *Frame.Camera.Path);
+}
+
+void FMtoUCameraSyncSession::RefreshEvalTarget()
+{
+	ULevelSequencePlayer* ResolvedPlayer = Player.Get();
+	const TSharedPtr<ISequencer> Sequencer = EditorSequencer.Pin();
+	if (!Sequence.IsValid() || (!ResolvedPlayer && !Sequencer.IsValid()))
+	{
+		return;
+	}
+
+	// The editor evaluates on its own tick, so a moved playhead can still report the
+	// previous shot's camera. One forced evaluation keeps the resolved camera in step
+	// with the sampled time before the target is compared against a client report.
+	if (Sequencer.IsValid()
+		&& !FMath::IsNearlyEqual(LastEvalTargetDisplayFrame, CurrentDisplayFrame, 1e-6))
+	{
+		LastEvalTargetDisplayFrame = CurrentDisplayFrame;
+		Sequencer->ForceEvaluate();
+	}
+
+	const FQualifiedFrameTime Current = Sequencer.IsValid()
+		? Sequencer->GetGlobalTime() : ResolvedPlayer->GetCurrentTime();
+	UCameraComponent* CutCamera = Sequencer.IsValid()
+		? Sequencer->GetLastEvaluatedCameraCut().Get()
+		: ResolvedPlayer->GetActiveCameraComponent();
+	UCameraComponent* Camera = CutCamera ? CutCamera : FallbackCamera.Get();
+
+	FMtoUCameraSyncFrameSample Target;
+	Target.SequenceName = Sequence->GetName();
+	Target.Time.Tick = FFrameRate::TransformTime(Current.Time, Current.Rate, TickResolution).FrameNumber.Value;
+	Target.Camera.Path = Camera ? Camera->GetPathName() : FString();
+
+	// A heartbeat repeats a target and keeps its evaluation serial. Only a real jump,
+	// cut or camera change starts a new generation and supersedes in-flight results.
+	const FString Identity = BuildEvalIdentity(Target);
+	if (Identity != PendingEvalIdentity)
+	{
+		PendingEvalIdentity = Identity;
+		++EvalSerial;
+	}
 }
 
 void FMtoUCameraSyncSession::SetDisplayFrame(double DisplayFrame)
@@ -423,11 +484,27 @@ bool FMtoUCameraSyncSession::AcceptClient(FSocket* Socket, const FIPv4Endpoint& 
 	ClientSocket = Socket;
 	++ConnectionSessionId;
 	LastPairedSerial = 0;
+	LastPairedEvalSerial = 0;
 	LastPublishedFrame.Reset();
 	ClientHost = Endpoint.ToString();
 	ReceiveBytes.Reset();
 	bGreeted = false;
 	return true;
+}
+
+void FMtoUCameraSyncSession::DropClient()
+{
+	if (!ClientSocket)
+	{
+		return;
+	}
+	ClientSocket->Close();
+	if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
+	{
+		Sockets->DestroySocket(ClientSocket);
+	}
+	ClientSocket = nullptr;
+	bGreeted = false;
 }
 
 void FMtoUCameraSyncSession::ReadClientLines()
@@ -438,22 +515,36 @@ void FMtoUCameraSyncSession::ReadClientLines()
 	}
 	if (ClientSocket->GetConnectionState() != SCS_Connected)
 	{
-		ClientSocket->Close();
-		if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
-		{
-			Sockets->DestroySocket(ClientSocket);
-		}
-		ClientSocket = nullptr;
-		bGreeted = false;
+		DropClient();
 		return;
 	}
 
+	int32 LinesHandled = 0;
 	uint32 Pending = 0;
-	while (ClientSocket && ClientSocket->HasPendingData(Pending) && Pending > 0)
+	while (ClientSocket && LinesHandled < MaxClientLinesPerPump)
 	{
+		const bool bHasPendingData = ClientSocket->HasPendingData(Pending) && Pending > 0;
+		if (!bHasPendingData
+			&& !ClientSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::Zero()))
+		{
+			break;
+		}
+
 		uint8 Buffer[4096];
 		int32 Read = 0;
-		if (!ClientSocket->Recv(Buffer, sizeof(Buffer), Read, ESocketReceiveFlags::None) || Read <= 0)
+		if (!ClientSocket->Recv(Buffer, sizeof(Buffer), Read, ESocketReceiveFlags::None))
+		{
+			if (!bHasPendingData && Read == 0)
+			{
+				// Readable with nothing to read is the end of the stream. A client that
+				// closes cleanly leaves the socket readable, and the engine's connection
+				// state keeps reporting it as connected, so the EOF has to be probed.
+				DropClient();
+				return;
+			}
+			break;
+		}
+		if (Read <= 0)
 		{
 			break;
 		}
@@ -480,9 +571,17 @@ void FMtoUCameraSyncSession::ReadClientLines()
 				if (!Line.IsEmpty())
 				{
 					HandleClientLine(Line);
+					++LinesHandled;
+					++ClientLinesProcessed;
 				}
 			}
 			LineStart = Index + 1;
+			if (LinesHandled >= MaxClientLinesPerPump)
+			{
+				// The remainder stays buffered for the next pump instead of growing an
+				// unbounded backlog of stale targets inside one editor tick.
+				break;
+			}
 		}
 		if (LineStart > 0)
 		{
@@ -588,8 +687,12 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 	{
 		FAppliedReport Report;
 		double Serial = 0.0;
+		double EvalSerialValue = 0.0;
 		Object->TryGetNumberField(TEXT("frame_serial"), Serial);
+		Object->TryGetNumberField(TEXT("eval_serial"), EvalSerialValue);
 		Report.Serial = static_cast<int64>(Serial);
+		Report.EvalSerial = static_cast<int64>(EvalSerialValue);
+		Object->TryGetStringField(TEXT("eval_identity"), Report.EvalIdentity);
 		Object->TryGetStringField(TEXT("status"), Report.Status);
 		Object->TryGetNumberField(TEXT("maya_frame"), Report.MayaFrame);
 		Report.RawJson = AcceptedJson;
@@ -633,13 +736,21 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 					|| SessionId != static_cast<double>(ConnectionSessionId)
 					|| !Sequence.IsValid() || SequenceName != Sequence->GetName()
 					|| CameraPath != (*PublishedCamera)->GetStringField(TEXT("path"))
-					|| Report.Serial != FrameSerial || Report.Serial <= LastPairedSerial
+					|| Report.Serial <= 0 || Report.Serial > FrameSerial
+					|| Report.Serial <= LastPairedSerial
+					|| Report.EvalSerial != EvalSerial
+					|| Report.EvalIdentity != PendingEvalIdentity
+					|| !FMath::IsNearlyEqual(PublishedDisplayFrame, CurrentDisplayFrame, 1e-5)
 					|| !FMath::IsNearlyEqual(UnrealFrame, PublishedDisplayFrame, 1e-5)
 					|| !FMath::IsNearlyEqual(Report.MayaFrame, ExpectedMayaFrame, 1e-5)
 					|| !FMath::IsNearlyEqual(SampledMayaFrame, ExpectedMayaFrame, 1e-5)
 					|| !FMath::IsFinite(PoseValue))
 				{
-					Report.PairingError = TEXT("stale, mismatched, or unevaluated pose report");
+					// A report is judged against the target sampled for this pump, not
+					// against whichever publication it happened to answer: a slow report
+					// for a still-current target pairs, a report the target has left does
+					// not, and a replayed publication never pairs twice.
+					Report.PairingError = TEXT("superseded, replayed, or mismatched pose report");
 				}
 			}
 			if (Report.PairingError.IsEmpty())
@@ -647,6 +758,7 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 				Report.bPosePaired = true;
 				Report.PoseTranslateX = PoseValue;
 				LastPairedSerial = Report.Serial;
+				LastPairedEvalSerial = Report.EvalSerial;
 				++PairedPoses;
 				if (AActor* Target = PoseWitnessTarget.Get())
 				{
@@ -659,22 +771,21 @@ void FMtoUCameraSyncSession::HandleClientLine(const FString& Line)
 				++RejectedPoses;
 			}
 		}
+		if (AppliedReports.Num() >= MaxStoredAppliedReports)
+		{
+			// The report list is evidence, not session state: the oldest entries are
+			// evicted and counted instead of growing without limit on a long session.
+			const int32 Evicted = AppliedReports.Num() - MaxStoredAppliedReports + 1;
+			AppliedReports.RemoveAt(0, Evicted, EAllowShrinking::No);
+			AppliedReportsDropped += Evicted;
+		}
 		AppliedReports.Add(Report);
 		return;
 	}
 
 	if (Type == TEXT("bye"))
 	{
-		if (ClientSocket)
-		{
-			ClientSocket->Close();
-			if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
-			{
-				Sockets->DestroySocket(ClientSocket);
-			}
-			ClientSocket = nullptr;
-		}
-		bGreeted = false;
+		DropClient();
 		return;
 	}
 
@@ -736,6 +847,10 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 		return false;
 	}
 
+	// The published frame must carry the identity of the target the receipts are
+	// judged against, so it is derived here through the same path.
+	RefreshEvalTarget();
+
 	UCameraComponent* CutCamera = Sequencer.IsValid()
 		? Sequencer->GetLastEvaluatedCameraCut().Get()
 		: ResolvedPlayer->GetActiveCameraComponent();
@@ -748,6 +863,8 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 
 	FMtoUCameraSyncFrameSample Frame;
 	Frame.Serial = FrameSerial + 1;
+	Frame.EvalSerial = EvalSerial;
+	Frame.EvalIdentity = PendingEvalIdentity;
 	Frame.SequenceName = Sequence->GetName();
 	Frame.SequencePath = Sequence->GetPathName();
 	Frame.OutputResolution = Config.OutputResolution;
@@ -795,6 +912,7 @@ bool FMtoUCameraSyncSession::BuildFrame(FMtoUCameraSyncFrameSample& OutFrame, FS
 		}
 	}
 
+	Frame.EvalIdentity = BuildEvalIdentity(Frame);
 	OutFrame = Frame;
 	return true;
 }
@@ -836,13 +954,7 @@ void FMtoUCameraSyncSession::SendJson(const TSharedRef<FJsonObject>& Object)
 	if (ClientSocket->GetConnectionState() != SCS_Connected)
 	{
 		// The client left: dropping the socket is not a session transport error.
-		ClientSocket->Close();
-		if (ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
-		{
-			Sockets->DestroySocket(ClientSocket);
-		}
-		ClientSocket = nullptr;
-		bGreeted = false;
+		DropClient();
 		return;
 	}
 	Object->SetStringField(TEXT("protocol"), ProtocolName);

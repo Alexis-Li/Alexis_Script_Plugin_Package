@@ -21,7 +21,7 @@
 
 namespace
 {
-	const TCHAR* LogCategory = TEXT("MtoUMultiSubject");
+	const TCHAR* ReceiverLogCategory = TEXT("MtoUMultiSubject");
 
 	/** The byte length of a UTF-8 line, which is what the 1 MiB bound applies to. */
 	int64 Utf8Length(const FString& Line)
@@ -135,7 +135,7 @@ bool FMtoUMultiSubjectReceiver::Start(
 	bRunning = true;
 	bStarted = true;
 	UE_LOG(LogTemp, Display, TEXT("%s: listening 127.0.0.1:%u scenario=%s targets=%d"),
-		LogCategory, BoundPort, *Config.Scenario, Targets.Num());
+		ReceiverLogCategory, BoundPort, *Config.Scenario, Targets.Num());
 	return true;
 }
 
@@ -195,7 +195,7 @@ void FMtoUMultiSubjectReceiver::Stop(const FString& Reason)
 	bReady = false;
 	World = nullptr;
 	UE_LOG(LogTemp, Display, TEXT("%s: stopped (%s) after %d applied frames"),
-		LogCategory, *Reason, AppliedFrames);
+		ReceiverLogCategory, *Reason, AppliedFrames);
 }
 
 void FMtoUMultiSubjectReceiver::HandleWorldCleanup(
@@ -211,7 +211,7 @@ void FMtoUMultiSubjectReceiver::HandleWorldCleanup(
 	{
 		return;
 	}
-	UE_LOG(LogTemp, Display, TEXT("%s: world cleanup ends the session"), LogCategory);
+	UE_LOG(LogTemp, Display, TEXT("%s: world cleanup ends the session"), ReceiverLogCategory);
 	Stop(TEXT("world_cleanup"));
 }
 
@@ -248,7 +248,7 @@ void FMtoUMultiSubjectReceiver::AcceptPendingClient()
 	ClientSocket = Accepted;
 	ReceiveBytes.Reset();
 	ClientDescription = TEXT("127.0.0.1");
-	UE_LOG(LogTemp, Display, TEXT("%s: client connected"), LogCategory);
+	UE_LOG(LogTemp, Display, TEXT("%s: client connected"), ReceiverLogCategory);
 }
 
 void FMtoUMultiSubjectReceiver::ReadClientLines()
@@ -499,7 +499,7 @@ void FMtoUMultiSubjectReceiver::HandleInit(const TSharedPtr<FJsonObject>& Object
 
 	SendJson(FMtoUMultiSubjectProtocol::MakeReady(SessionId));
 	UE_LOG(LogTemp, Display, TEXT("%s: session %lld ready (%s)"),
-		LogCategory, SessionId, *Config.Scenario);
+		ReceiverLogCategory, SessionId, *Config.Scenario);
 }
 
 bool FMtoUMultiSubjectReceiver::BeginSession(const FMtoUInitMessage& Init, FString& OutError)
@@ -781,7 +781,7 @@ void FMtoUMultiSubjectReceiver::CloseClient(const FString& Reason)
 	if (bRunning)
 	{
 		UE_LOG(LogTemp, Display, TEXT("%s: client closed (%s) after %d applied frames"),
-			LogCategory, *Reason, AppliedFrames);
+			ReceiverLogCategory, *Reason, AppliedFrames);
 	}
 }
 
@@ -806,7 +806,7 @@ void FMtoUMultiSubjectReceiver::SendJson(const TSharedRef<FJsonObject>& Object)
 			// A reply that cannot be delivered is a failed client: never leave a
 			// half-written reply on the wire.
 			UE_LOG(LogTemp, Warning, TEXT("%s: a reply could not be sent; closing the client"),
-				LogCategory);
+				ReceiverLogCategory);
 			CloseClient(TEXT("reply could not be sent"));
 			return;
 		}

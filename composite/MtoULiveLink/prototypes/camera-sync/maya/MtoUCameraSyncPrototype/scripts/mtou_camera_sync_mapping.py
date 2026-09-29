@@ -59,16 +59,28 @@ is desqueezed into the rendered pixels the NDC is measured on.
 
 Time model
 ----------
-``maya_time = maya_start_frame + (display_frame - playback_range.start) *
-scene_fps / display_rate``. A non-integral result is reported as
-``quantized=True`` and applied at the nearest integer frame.
+``maya_time = maya_origin_frame + (display_frame - playback_range.start) *
+scene_fps / display_rate``. The origin is an explicit follower setting, so the
+result never depends on Maya's current frame at connection time. A non-integral
+result is reported as ``subframe`` and applied as the fractional frame Maya
+2024 evaluates directly; it is never rounded.
+
+Evaluation identity
+-------------------
+Frame validation requires the evaluation identity that protocol version 2
+introduced (``eval_serial``, ``eval_identity``). It names the target generation,
+separately from the transport ``frame_serial``, and the follower echoes it in
+every ``applied`` report.
 """
 
 import json
 import math
 
 PROTOCOL_NAME = "MtoUCameraSync"
-PROTOCOL_VERSION = 1
+#: Version 2 adds the evaluation identity (`eval_serial`, `eval_identity`) that
+#: separates a target generation from the transport serial, so heartbeats for a
+#: paused target no longer supersede a report that is still in flight.
+PROTOCOL_VERSION = 2
 
 MM_PER_INCH = 25.4
 CENTIMETRES_PER_INCH = 2.54
@@ -381,8 +393,9 @@ def project_point_ndc(point_maya, camera_matrix, focal_length_mm,
 _SESSION_FIELDS = ("protocol", "version", "port", "time_authority", "sequence",
                    "display_rate", "tick_resolution", "playback_range",
                    "output_resolution", "camera_cut")
-_FRAME_FIELDS = ("session", "sequence", "frame_serial", "time", "camera_cut",
-                 "output_resolution", "camera", "view", "projection", "markers")
+_FRAME_FIELDS = ("session", "sequence", "frame_serial", "eval_serial", "eval_identity",
+                 "time", "camera_cut", "output_resolution", "camera", "view",
+                 "projection", "markers")
 _ERROR_FIELDS = ("category", "detail")
 _END_FIELDS = ("reason",)
 
@@ -577,6 +590,10 @@ def _validate_camera(camera):
 
 def _validate_frame(message):
     require_number(get_field(message, "frame_serial"), "frame_serial")
+    require_number(get_field(message, "eval_serial"), "eval_serial")
+    identity = get_field(message, "eval_identity")
+    if not isinstance(identity, str) or not identity:
+        raise PayloadError(ERR_INVALID_FIELD, "eval_identity must be a non-empty string")
     time_payload = require_mapping(message["time"], "time")
     require_number(get_field(time_payload, "display_frame"), "time.display_frame")
     display_rate = optional_field(time_payload, "display_rate")

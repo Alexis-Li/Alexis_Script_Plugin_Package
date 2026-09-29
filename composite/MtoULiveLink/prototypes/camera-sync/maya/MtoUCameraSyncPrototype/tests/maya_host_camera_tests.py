@@ -143,6 +143,10 @@ def main(argv=None):
 
         check("frame was applied", applied["status"] == "applied",
               str(applied["status"]) + " " + str(applied["detail"]))
+        check("report echoes the evaluation identity",
+              applied["eval_serial"] == frame["eval_serial"] and
+              applied["eval_identity"] == frame["eval_identity"],
+              "{0!r} / {1!r}".format(applied["eval_serial"], applied["eval_identity"]))
         check("subframe was applied without quantization",
               applied["camera"]["subframe"],
               "display frame {0}".format(frame["time"]["display_frame"]))
@@ -317,6 +321,7 @@ def main(argv=None):
               driver.state == applier.STATE_FOLLOWING, str(driver.state))
 
         seen = {}
+        frames_by_serial = {frame["frame_serial"]: frame for frame in fixture["frames"]}
         deadline = time.time() + 60.0
         while time.time() < deadline and len(seen) < args.frames:
             driver.pump()
@@ -340,6 +345,11 @@ def main(argv=None):
         check("the wire reports carry the applied values",
               all(seen[serial]["camera"] and "focalLength" in seen[serial]["camera"]
                   for serial in seen))
+        check("the wire reports echo the evaluation identity",
+              all(seen[serial]["eval_serial"] == frames_by_serial[serial]["eval_serial"] and
+                  seen[serial]["eval_identity"] == frames_by_serial[serial]["eval_identity"]
+                  for serial in seen),
+              str({serial: seen[serial].get("eval_identity") for serial in seen}))
         socket_worst = max(abs(value) for serial in seen
                            for marker in seen[serial]["markers"]
                            for value in (marker["delta"] or [])) if seen else None

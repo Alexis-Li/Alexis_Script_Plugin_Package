@@ -158,6 +158,8 @@ struct FMtoUCameraSyncProjectionSample
 struct FMtoUCameraSyncFrameSample
 {
 	int64 Serial = 0;
+	int64 EvalSerial = 0;
+	FString EvalIdentity;
 	FString SequenceName;
 	FString SequencePath;
 	FIntPoint OutputResolution = FIntPoint(1920, 1080);

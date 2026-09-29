@@ -422,7 +422,7 @@ def session_payload(**overrides):
     payload = {
         "type": "session",
         "protocol": "MtoUCameraSync",
-        "version": 1,
+        "version": mapping.PROTOCOL_VERSION,
         "port": 54330,
         "time_authority": "unreal",
         "sequence": "MtoU_CameraSync",
@@ -469,6 +469,8 @@ def frame_payload(**overrides):
         "session": "MtoU_CameraSync",
         "sequence": 1,
         "frame_serial": 7,
+        "eval_serial": 3,
+        "eval_identity": "MtoU_CameraSync@24000/CineCameraActor",
         "time": {"display_frame": 130.0, "seconds": 1.0, "source_frame": 130,
                  "tick": 24000, "display_rate": {"numerator": 30, "denominator": 1}},
         "camera_cut": {"camera": "CineCameraActor", "stage": "root"},
@@ -520,6 +522,25 @@ class ValidationTest(unittest.TestCase):
         with self.assertRaises(mapping.PayloadError) as caught:
             mapping.validate_message(payload)
         self.assertIn("frame_serial", caught.exception.detail)
+
+    def test_evaluation_identity_is_required(self):
+        for field in ("eval_serial", "eval_identity"):
+            payload = frame_payload()
+            del payload[field]
+            with self.assertRaises(mapping.PayloadError) as caught:
+                mapping.validate_message(payload)
+            self.assertEqual(caught.exception.category, mapping.ERR_MISSING_FIELD)
+            self.assertIn(field, caught.exception.detail)
+        self.assertEqual(
+            mapping.validate_message(frame_payload())["eval_identity"],
+            "MtoU_CameraSync@24000/CineCameraActor")
+
+    def test_evaluation_identity_must_be_a_non_empty_string(self):
+        for value in ("", 7, None, ["id"]):
+            with self.assertRaises(mapping.PayloadError) as caught:
+                mapping.validate_message(frame_payload(eval_identity=value))
+            self.assertEqual(caught.exception.category, mapping.ERR_INVALID_FIELD)
+            self.assertIn("eval_identity", caught.exception.detail)
 
     def test_missing_camera_field_is_rejected(self):
         for field in ("focal_length_mm", "sensor_width_mm", "sensor_height_mm"):
@@ -580,7 +601,10 @@ class ValidationTest(unittest.TestCase):
 
     def test_protocol_authority_and_version_are_enforced(self):
         with self.assertRaises(mapping.PayloadError) as caught:
-            mapping.validate_message(session_payload(version=2))
+            mapping.validate_message(session_payload(version=mapping.PROTOCOL_VERSION + 1))
+        self.assertEqual(caught.exception.category, mapping.ERR_UNSUPPORTED_PROTOCOL)
+        with self.assertRaises(mapping.PayloadError) as caught:
+            mapping.validate_message(session_payload(version=1))
         self.assertEqual(caught.exception.category, mapping.ERR_UNSUPPORTED_PROTOCOL)
         with self.assertRaises(mapping.PayloadError) as caught:
             mapping.validate_message(session_payload(protocol="MtoULiveLink"))
