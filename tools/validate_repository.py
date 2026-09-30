@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from _repo_tools import ROOT, emit, maya_version
+from issue_report import validate_archive
 
 REQUIRED_PATHS = (
     ".github/workflows",
@@ -20,6 +21,8 @@ REQUIRED_PATHS = (
     "docs/unreal-development.md",
     "docs/release-process.md",
     "docs/project-history/README.md",
+    "docs/agents/issue-tracker.md",
+    "tools/issue_report.py",
     "maya/AGENTS.md",
     "maya/scripts",
     "maya/tools",
@@ -323,6 +326,16 @@ def _validate_nested_git(root: Path, errors: list[str]) -> None:
             )
 
 
+def _validate_issue_archives(root: Path, errors: list[str]) -> None:
+    for path in sorted((root / "docs" / "project-history").rglob("*comment-archive.json")):
+        try:
+            archive = json.loads(path.read_text(encoding="utf-8-sig"))
+            problems = validate_archive(archive)
+        except (OSError, UnicodeError, ValueError) as exc:
+            problems = [str(exc)]
+        errors.extend(f"{path.relative_to(root).as_posix()}: {problem}" for problem in problems)
+
+
 def validate(root: Path = ROOT) -> dict:
     root = root.resolve()
     errors: list[str] = []
@@ -355,6 +368,7 @@ def validate(root: Path = ROOT) -> dict:
             errors.append("version-control-visible generated file: {0}".format(relative_path))
 
     _validate_nested_git(root, errors)
+    _validate_issue_archives(root, errors)
 
     if (root / "maya" / "scripts").is_dir():
         _validate_shelf_scripts(root, errors)

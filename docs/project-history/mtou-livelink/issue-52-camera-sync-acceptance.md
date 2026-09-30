@@ -73,6 +73,16 @@ orthographic and simultaneous multi-camera sessions remain outside scope.
 
 ## Product boundary and remaining acceptance
 
+The [2026-09-29 review, now consolidated on the issue](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
+also identifies an unverified shutdown risk at the `ad3a85e` implementation:
+`Stop()` drains `PendingClients` before stopping/joining the listener, which can
+enqueue another socket in between. This is a source/lifecycle finding, not a
+host-observed leak or crash. Stop and join the listener before final queue
+cleanup, then exercise connection arrival during shutdown and repeated starts
+and stops. The review reran 63 pure mapping tests and inspected prior host
+reports; it did not rebuild or rerun the UE suite. This 2026-09-30 record update
+does not add a host verification run.
+
 The smallest plausible product would keep UE as camera and time authority,
 Maya as pose authority, one active perspective camera, an explicit time origin,
 exact subframe evaluation, and an identity-checked reply. Each data kind has one

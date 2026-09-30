@@ -122,6 +122,18 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 
 - For requested issue/spec tracking, use GitHub Issues through `gh` and read
   `docs/agents/issue-tracker.md`. Routine implementation does not require a ticket.
+- All agents must use that document's report protocol for issue delivery,
+  review, re-verification, and consolidation. Generate and validate formal
+  reports with `tools/issue_report.py` before publishing. Record the exact
+  scope, implementation/review baseline, evidence provenance, open blockers,
+  and next action; self-tests and partial acceptance do not establish whole-issue
+  acceptance. When work is delegated, the coordinating agent publishes the
+  consolidated result and supplies this protocol to participating agents.
+- Maintain one current handoff per issue. Preserve source reports before
+  replacement, keep referenced current records consistent, and distinguish
+  defects, unverified risks, acceptance gaps, and proposals for later work.
+  Consolidation must not silently change scope or acceptance. These requirements
+  apply regardless of the skill used to produce the underlying work.
 - For issue classification, read `docs/agents/triage-labels.md`.
 - For terminology or architecture work, read `docs/agents/domain.md` and relevant
   context/decision records. These workflows do not mandate extra artifacts for

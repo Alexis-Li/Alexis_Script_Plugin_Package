@@ -57,6 +57,22 @@ negotiation and visual check before any integration.
 
 ## Product boundary
 
+The 2026-09-29 review of `5b825055316ede3cf22efc12e5c7f183db4ce02b`,
+preserved as comment `5883765955` in [the source archive](issue-54-comment-archive.json),
+accepts the bounded fixture evidence and reran 21 pure protocol tests; host and
+build results were inspected from existing reports. The current issue remains
+open for real paired assets and identity/time/exit evidence. Inbound old-frame
+isolation after renegotiation, same-frame edits, reverse seeks/loops, and exit
+with no previous animation driver are not established by the four-frame
+fixtures. An undriven component may retain its last preview pose after exit.
+These gaps must remain distinct from the deferred product implementation. The
+record reconciliation on 2026-09-30 did not rerun host checks.
+
+#47 owns a combined integration decision after #52–54 have the agreed runnable
+prototype evidence, support limits and outstanding-work descriptions. Product
+reuse of #55's necessary-bone mapping is a candidate migration contract; the
+prototype's exact whole-skeleton comparison does not yet establish it.
+
 The product still has one Maya `_CharacterScene`/`_StreamingSession` root and
 snapshot, one UE Binding Actor/`MtoU_Character` SubjectKey, one pending frame,
 and one cache owner. A product implementation would require an explicit pair

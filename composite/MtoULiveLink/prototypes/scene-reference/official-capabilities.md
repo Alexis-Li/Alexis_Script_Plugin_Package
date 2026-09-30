@@ -98,9 +98,12 @@ A texture-driven material in the scope therefore produces texture *records* in
 the file, and Maya's FBX plugin has no option to skip materials or textures —
 its import preset (`plug-ins/fbx/plug-ins/FBX/Presets/import/…fbximportpreset`)
 lists geometry, animation, cameras, lights and constraints, and no shading
-switch. The reference workflow must decide on the record, not on the flag, which
-is why the prototype inspects the produced file and refuses to import a textured
-handoff.
+switch. The prototype therefore inspects actual image data separately from
+texture references: material assignments and external image paths are permitted;
+image files in the handoff directory or payload-bearing embedded media refuse a
+normal import. The Maya report records path resolution separately from that
+decision. Gray display is a viewport/material policy, not proof that external
+paths cannot resolve.
 
 ## Object classes
 
@@ -130,7 +133,10 @@ for any non-game world. `bShouldBeLoaded` only decides in a game world, and
 `bShouldBeVisibleInEditor` only affects PIE. A "requested but not loaded"
 sublevel therefore appears in the editor as a level package the loaded world
 does not hold at all, and that is the case the prototype tests; World Partition
-cells that are not streamed in are the other case, and are reported the same way.
+cells that are not streamed in are another case. The current resolver does not
+inventory their unloaded actor descriptors or cells, so they are not completely
+reported by the traditional sublevel checks. A `world_partition` flag alone
+does not establish scope completeness.
 
 ## Maya side
 
@@ -179,3 +185,10 @@ in one uniform gray, places it in the handoff's world or in the camera route's
 world by one explicit conversion, compares what Maya holds against the manifest,
 and only then replaces the previous reference. Nothing in this route needs a new
 dependency, a new host, or a change to the product's protocol.
+
+This describes the intended success path. The current importer has confirmed
+swap recovery, namespace ownership and partial-import cleanup defects; Landscape
+manifest verification and World Partition completeness remain unaccepted. See
+the [current acceptance record](../../../../docs/project-history/mtou-livelink/issue-53-scene-reference-acceptance.md)
+for the review evidence and completion conditions before relying on repeat import
+or failure recovery.

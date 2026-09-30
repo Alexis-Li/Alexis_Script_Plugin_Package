@@ -60,4 +60,6 @@ implementation cannot support both.
 
 See [development conventions](docs/development-conventions.md) for the shared
 workflow and the [Unreal plugin guide](docs/unreal-development.md) for project
-navigation.
+navigation. For issue-based delivery, review and handoff, follow the
+[issue report workflow](docs/agents/issue-tracker.md), which includes draft
+generation and validation commands.

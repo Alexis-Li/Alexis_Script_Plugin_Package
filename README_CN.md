@@ -55,4 +55,5 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
    修改单个项目时，只运行该项目自身的测试、静态检查、构建和打包检查。
 
 通用流程见[开发约定](docs/development-conventions.md)，Unreal 项目导航见
-[Unreal 插件指南](docs/unreal-development.md)。
+[Unreal 插件指南](docs/unreal-development.md)。通过工单交付、审核或交接时，遵循
+[工单报告流程](docs/agents/issue-tracker.md)，其中包含草稿生成与校验命令。

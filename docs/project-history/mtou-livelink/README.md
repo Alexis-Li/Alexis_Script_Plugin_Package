@@ -269,37 +269,20 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   [acceptance record](issue-52-camera-sync-acceptance.md) owns the measured
   differences, the official-capability review, the supported and unsupported
   lists, and the pending product decisions. No product code, protocol, or
-  package changed, and Issue #52 remains open pending those decisions.
+  package changed. Issue #52 remains open for natural editor-loop and
+  full recovery acceptance; product decisions are deferred separately.
 
-- **2026-09-29:** Closed the five follow-ups the Issue #53 evaluation listed. The
-  media rule was corrected: a material assignment and a recorded texture path are
-  kept and reported, and only image data refuses a handoff (an image file in the
-  directory the exporter owns, or media embedded in the FBX), measured both ways
-  on a texture-driven material and on an injected `Content:` payload. The world
-  contract was checked and made explicit: the product's animation route sends
-  Maya coordinates to Unreal with `(x, z, y)`, the same self-inverse map as the
-  engine's FBX handoff, so the reference already agrees with the artist's
-  character and props; the camera route's `(y, z, -x)` is the divergent one, and
-  the reference import now delivers that world through one verified conversion
-  (`--target-world camera`, determinant `+1`, 90 degrees about the up axis) while
-  defaulting to the handoff's own world. The node matrix relation was measured
-  and corrected (`frame . L_ue . map`, matching every fixture node to `1.3e-15`
-  where the naive `L_ue . map^T` is off by up to `7.7`), which finally lets the
-  orientation comparison run. A mixed Blueprint actor's light, camera, child
-  actor and skeletal mesh components are suppressed for the export and reported,
-  instead of reaching the file unannounced. Updates are now staged: the handoff
-  is imported into a staging namespace, verified there, and only then renamed
-  into the container, so a failed or dry run leaves the previous reference
-  exactly as it was. The object kinds the evaluation listed as missing were
-  measured: Nanite render data, a landscape exported by the engine's own branch
-  (7938 polygons written against 0 triangles reported by the scope), a level
-  instance refused by the engine, and World Partition cells that are not
-  streamed in absent from the scope. The user's own character level was exported
-  and verified on both hosts in both worlds. Ten Unreal automation tests, 103
-  Maya pure tests in both interpreters and 251 Maya host checks pass. The
-  [acceptance record](issue-53-scene-reference-acceptance.md) owns the evidence,
-  the support list, the known limits and the pending decisions. No product code,
-  protocol, or package changed, and Issue #53 remains open.
+- **2026-09-29:** Extended the Issue #53 FBX prototype with the image-data
+  policy, explicit world conversion, mixed-Blueprint filtering, staged updates
+  and real-level checks. The final review accepts useful bounded evidence but
+  confirms swap rollback, namespace ownership and partial-import cleanup defects;
+  Landscape fails Maya manifest verification, and unloaded World Partition
+  content lacks a complete inventory. Issue #53 remains open for those fixes and
+  acceptance gaps. The [acceptance record](issue-53-scene-reference-acceptance.md)
+  separates development results from review probes and owns the current support
+  boundary; the [comment archive](issue-53-comment-archive.json) retains the
+  original reports. Combined product integration belongs to #47 after #52–54
+  have their agreed prototype evidence.
 
 - **2026-09-28:** Verified Issue #53 with a bounded two-host scene-reference
   prototype. Unreal resolves an explicit level scope (the loaded level plus the
@@ -311,8 +294,9 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   non-uniformly scaled and Blueprint-component samples, matched with a position
   error of `0.0 cm`, a size error of `4.5e-13 cm` and an axis-fit residual of
   `9.2e-13 cm`, so no geometry is mirrored. The handoff writes one file with no
-  image files and no texture records, and a texture-driven material makes the
-  exporter write a record that the Maya side refuses. The measured axis
+  image files and no texture records. Material texture records are permitted
+  under the current image-data policy; image files and embedded media remain
+  rejected. The measured axis
   convention is `(x, z, y)` by default and `(-y, z, x)` with the forced front
   axis, neither of which is the camera route's `(y, z, -x)`, so the two routes
   need one explicit conversion. The [acceptance record](issue-53-scene-reference-acceptance.md)
@@ -337,7 +321,8 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   converged, 0 anomalous lines, marker delta ≤ 1.0887e-07 NDC) pass on stock
   UE 5.7.4 and Maya 2024. The [acceptance
   record](issue-52-camera-sync-acceptance.md) owns the evidence. The natural
-  editor-loop check is the prototype's next step; the real C01
+  editor-loop check, full recovery acceptance and an unverified listener
+  shutdown ordering risk remain; the real C01
   paused-positioning integration through the product pose path and the product
   protocol design are deferred to a unified decision under Issue #47, after the
   #52/#53/#54 prototypes have landed.
@@ -364,6 +349,9 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Issue #51 garment comparison development acceptance](issue-51-garment-comparison-acceptance.md)
 - [Issue #52 Unreal to Maya camera verification](issue-52-camera-sync-acceptance.md)
 - [Issue #53 scene reference verification](issue-53-scene-reference-acceptance.md)
+- [Issue #54 two-subject verification](issue-54-multi-subject-acceptance.md)
+- [Issue #53 original comment archive](issue-53-comment-archive.json)
+- [Issue #54 original comment archive](issue-54-comment-archive.json)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project
