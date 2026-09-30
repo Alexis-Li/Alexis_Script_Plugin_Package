@@ -375,6 +375,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Issue #54 two-subject verification](issue-54-multi-subject-acceptance.md)
 - [Issue #53 original comment archive](issue-53-comment-archive.json)
 - [Issue #54 original comment archive](issue-54-comment-archive.json)
+- [Issue #52 original comment archive](issue-52-comment-archive.json)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project
