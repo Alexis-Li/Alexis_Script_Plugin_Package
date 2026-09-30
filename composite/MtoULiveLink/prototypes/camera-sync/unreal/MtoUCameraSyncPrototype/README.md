@@ -54,6 +54,8 @@ that fixture only.
 | `MtoUCameraSyncPrototype.SubsequenceTime` | A master sequence with a subsequence shot, evaluated through the engine while the master time stays authoritative |
 | `MtoUCameraSyncPrototype.EditorSequencer` | An open editor Sequence, two camera cuts, focused shot with root time, and no second time writer |
 | `MtoUCameraSyncPrototype.RealMayaPeer` | Opt-in: follows the real editor with Maya over a socket, pairs one keyed-joint pose witness, rejects stale/reconnected reports and checks intact JSON lines. Requires `-MtoUCameraSyncMayapy=`, `-MtoUCameraSyncPeer=` and `-MtoUEvidence=` |
+| `MtoUCameraSyncPrototype.ShutdownWindow` | Repeated start/stop with connections arriving during `Stop()`: every accepted socket is closed, the port is released, and the adopted client receives the `end` line |
+| `MtoUCameraSyncPrototype.EditorLoopFollow` | Opt-in natural editor loop: the module's own ticker drives the session (nothing pumps it by hand) while a live Maya peer follows a playhead drag, a camera cut, a camera edited while parked, a sequence close and reopen, a dropped and rejoined connection, and three start/stop cycles. Requires the same three command line flags; the peer script is `maya_camera_sync_live_peer.py` beside `-MtoUCameraSyncPeer=` |
 | `MtoUCameraSyncPrototype.TrailingByteCount` | A deliberately malformed UTF-8 line is counted in bytes, not characters |
 
 Run them with:
@@ -71,6 +73,11 @@ Run them with:
 - The editor mode only observes the user's Sequencer, including its playhead;
   stopping follow leaves that editor time alone. The isolated-player mode
   destroys its transient player and restores pre-animated state.
+- Ending a session sends `end`, shuts the write side down and reads what the
+  client already sent before the socket goes away, so the client can tell a
+  deliberate end from a lost connection. A client that stops accepting a line
+  loses the connection instead of holding an editor tick; the listener thread is
+  stopped and joined before the last accepted sockets are closed.
 - The joint witness does not use the MtoULiveLink product's pose channel, and
   continuous editor playback latency and a drop policy are not verified.
 - Nothing here is packaged, versioned or documented as a product feature.

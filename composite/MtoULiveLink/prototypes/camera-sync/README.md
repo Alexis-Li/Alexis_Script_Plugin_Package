@@ -103,6 +103,12 @@ playback ranges on either side, and no client message can move the Unreal time.
   report that is in flight, yet still carry a pose that was edited at the parked
   frame. A stopped timeline has to converge: the target that is current when
   following ends must have been answered.
+- The natural editor loop, not only driven tests: the module's own ticker
+  advances the session while a live Maya process follows a playhead drag across
+  the camera cut, a camera edited at the parked frame, a closed and reopened
+  sequence, a dropped and rejoined connection, and repeated start/stop cycles.
+  Every session ends with the target that is current answered, and Maya reports
+  what it released (time, resolution gate, camera, socket, callback).
 - World transform, focal length, film back, film offsets, film fit, f-stop,
   focus distance, depth-of-field enablement, near clip, and the Maya resolution
   gate, which follows the film aperture's pixel extent rather than the full
@@ -145,6 +151,14 @@ discards its partial line. The report evidence queue is capped as well. Both
 bounds keep a slow or flooding client from turning one editor tick into
 unbounded work, and the buffered remainder still drains when the sender has gone
 silent.
+
+Stopping follow closes the listener thread before it closes the sockets that
+thread accepted, so a connection arriving inside the shutdown window cannot
+outlive the session; the host check hammers the port while the session stops and
+requires every connection to be closed and the port to be free afterwards. The
+client receives the `end` line on a half-closed stream, and a client that stops
+accepting a line is dropped instead of holding an editor tick for the send
+deadline.
 
 ## Related records
 

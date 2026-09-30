@@ -237,7 +237,10 @@ bool FMtoUCameraSyncSession::StartListener(FString& OutError)
 {
 	const TSharedRef<FIPv4Endpoint> Endpoint =
 		MakeShared<FIPv4Endpoint>(FIPv4Address(127, 0, 0, 1), Config.Port);
-	Listener = MakeUnique<FTcpListener>(*Endpoint);
+	// The listener sleeps between connection polls; the join in Stop() waits for that
+	// poll to return, so the listener uses a short interval instead of the one-second
+	// default. Stopping follow stays inside an editor tick instead of stalling it.
+	Listener = MakeUnique<FTcpListener>(*Endpoint, FTimespan::FromMilliseconds(20));
 	if (!Listener->IsActive())
 	{
 		Listener.Reset();
@@ -257,14 +260,31 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 	{
 		return;
 	}
+	// Shutdown latency is part of this prototype's acceptance: every phase below is
+	// bounded, and the numbers are logged so a host run can show it.
+	const double StopStarted = FPlatformTime::Seconds();
+	double EndSentAt = StopStarted;
+	double ListenerJoinedAt = StopStarted;
 	if (ClientSocket)
 	{
 		const TSharedRef<FJsonObject> End = MakeShared<FJsonObject>();
 		End->SetStringField(TEXT("type"), TEXT("end"));
 		End->SetStringField(TEXT("reason"), Reason);
 		SendJson(End);
-		DropClient();
+		EndClient();
 	}
+	EndSentAt = FPlatformTime::Seconds();
+	// The listener thread has to be stopped and joined *before* the queue it feeds is
+	// drained: FTcpListener::Stop() only clears its running flag (the join happens when
+	// the listener is destroyed), so a socket accepted in that window used to arrive
+	// after the drain and stay open. Destroying the listener first leaves no writer for
+	// PendingClients, which makes the drain below the last word on every accepted socket.
+	if (Listener)
+	{
+		Listener->Stop();
+		Listener.Reset();
+	}
+	ListenerJoinedAt = FPlatformTime::Seconds();
 	// Connections the listener queued but the game thread never adopted.
 	FPendingClient Pending;
 	while (PendingClients.Dequeue(Pending))
@@ -272,12 +292,8 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 		if (Pending.Socket)
 		{
 			DestroyClientSocket(*Pending.Socket);
+			++PendingClientsClosedOnStop;
 		}
-	}
-	if (Listener)
-	{
-		Listener->Stop();
-		Listener.Reset();
 	}
 	if (ULevelSequencePlayer* ResolvedPlayer = Player.Get())
 	{
@@ -294,6 +310,10 @@ void FMtoUCameraSyncSession::Stop(const FString& Reason)
 	bRunning = false;
 	bPlaying = false;
 	bGreeted = false;
+	UE_LOG(LogTemp, Display,
+		TEXT("[MtoUCameraSyncPrototype] stop: end=%.3fs join=%.3fs total=%.3fs (%s)"),
+		EndSentAt - StopStarted, ListenerJoinedAt - EndSentAt,
+		FPlatformTime::Seconds() - StopStarted, *Reason);
 }
 
 void FMtoUCameraSyncSession::SetFallbackCamera(UCameraComponent* Camera)
@@ -581,6 +601,40 @@ void FMtoUCameraSyncSession::DropClient()
 	// Partial input belongs to the connection that sent it; a new client must not inherit
 	// half a line from the previous one.
 	ReceiveBytes.Reset();
+}
+
+void FMtoUCameraSyncSession::EndClient()
+{
+	if (!ClientSocket)
+	{
+		return;
+	}
+	// Tell the client the stream is over and read what it already sent before the
+	// socket goes away. Closing a connection with unread input makes the peer's stack
+	// reset it, and a reset can discard the "end" line that tells Maya to release its
+	// scene; the drain below is bounded, so an editor tick cannot be held up by a
+	// client that keeps talking.
+	ClientSocket->Shutdown(ESocketShutdownMode::Write);
+	const double Deadline = FPlatformTime::Seconds() + 0.2;
+	uint8 Buffer[1024];
+	while (FPlatformTime::Seconds() < Deadline)
+	{
+		uint32 Pending = 0;
+		if (!(ClientSocket->HasPendingData(Pending) && Pending > 0)
+			&& !ClientSocket->Wait(ESocketWaitConditions::WaitForRead,
+				FTimespan::FromMilliseconds(5)))
+		{
+			// Nothing left to read: the client has stopped sending.
+			break;
+		}
+		int32 Read = 0;
+		if (!ClientSocket->Recv(Buffer, sizeof(Buffer), Read, ESocketReceiveFlags::None)
+			|| Read <= 0)
+		{
+			break;
+		}
+	}
+	DropClient();
 }
 
 void FMtoUCameraSyncSession::ReadClientLines()
@@ -1103,10 +1157,12 @@ void FMtoUCameraSyncSession::SendJson(const TSharedRef<FJsonObject>& Object)
 	// The accepted socket is non-blocking, so a send can be refused or partially
 	// accepted while the client drains its buffer. A half-written line would be a
 	// malformed message for the client, so every line is either fully sent or the
-	// session reports the failure.
+	// session reports the failure and drops the connection.
 	int32 Offset = 0;
 	int32 Attempts = 0;
-	const double Deadline = FPlatformTime::Seconds() + 2.0;
+	// A client that cannot take a few kilobytes within this window is stalled, not
+	// briefly full: the line would be malformed for it either way.
+	const double Deadline = FPlatformTime::Seconds() + 0.25;
 	while (Offset < Utf8.Length() && FPlatformTime::Seconds() < Deadline)
 	{
 		int32 Sent = 0;
@@ -1114,6 +1170,15 @@ void FMtoUCameraSyncSession::SendJson(const TSharedRef<FJsonObject>& Object)
 		if (!ClientSocket->Send(reinterpret_cast<const uint8*>(Utf8.Get()) + Offset,
 			Utf8.Length() - Offset, Sent) || Sent <= 0)
 		{
+			// A connection that refuses this instant is worth waiting for; a reset or
+			// closed one never becomes writable again, and retrying it would stall the
+			// editor for the whole deadline on every tick.
+			ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+			const ESocketErrors Error = Sockets ? Sockets->GetLastErrorCode() : SE_NO_ERROR;
+			if (Error != SE_EWOULDBLOCK && Error != SE_NO_ERROR)
+			{
+				break;
+			}
 			if (Attempts >= 2000)
 			{
 				break;
@@ -1128,6 +1193,10 @@ void FMtoUCameraSyncSession::SendJson(const TSharedRef<FJsonObject>& Object)
 		++FailedSends;
 		LastError = FString::Printf(
 			TEXT("TRANSPORT: sent %d of %d bytes in %d attempts"), Offset, Utf8.Length(), Attempts);
+		// The client never took this line, so it is following a state this session can
+		// no longer describe. Dropping it reports that instead of leaving a connection
+		// that eats a send deadline on every tick.
+		DropClient();
 	}
 }
 

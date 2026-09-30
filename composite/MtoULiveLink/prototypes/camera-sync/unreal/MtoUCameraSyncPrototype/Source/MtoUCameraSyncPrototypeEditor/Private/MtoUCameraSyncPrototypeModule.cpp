@@ -1,5 +1,7 @@
 // MtoU camera sync prototype (Issue 52 verification). Editor-only prototype code.
 
+#include "MtoUCameraSyncPrototypeModule.h"
+
 #include "Containers/Ticker.h"
 #include "Editor.h"
 #include "Engine/World.h"
@@ -13,39 +15,6 @@
 #include "MtoUCameraSyncSession.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/StrongObjectPtr.h"
-
-/**
- * Editor-side entry point of the prototype: owns one optional session and exposes the
- * console commands a user runs while Maya is connected. The automation tests drive the
- * same session object directly.
- */
-class FMtoUCameraSyncPrototypeModule : public IModuleInterface
-{
-public:
-	virtual void StartupModule() override;
-	virtual void ShutdownModule() override;
-
-	/** Starts a session on the given editor world. Returns nullptr and fills OutError on failure. */
-	FMtoUCameraSyncSession* StartSession(
-		UWorld& World,
-		ULevelSequence& Sequence,
-		const FMtoUCameraSyncSession::FConfig& Config,
-		FString& OutError);
-	FMtoUCameraSyncSession* StartEditorSession(
-		UWorld& World, const TSharedRef<ISequencer>& Sequencer,
-		const FMtoUCameraSyncSession::FConfig& Config, FString& OutError);
-	void StopSession(const FString& Reason);
-	FMtoUCameraSyncSession* GetSession() const { return Session.Get(); }
-
-private:
-	bool Tick(float DeltaSeconds);
-	void RegisterConsoleCommands();
-	void UnregisterConsoleCommands();
-
-	TSharedPtr<FMtoUCameraSyncSession> Session;
-	FTSTicker::FDelegateHandle TickerHandle;
-	TArray<IConsoleObject*> ConsoleCommands;
-};
 
 void FMtoUCameraSyncPrototypeModule::StartupModule()
 {

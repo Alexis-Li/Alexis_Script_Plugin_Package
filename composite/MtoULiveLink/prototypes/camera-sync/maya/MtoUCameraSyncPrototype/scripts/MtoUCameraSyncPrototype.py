@@ -191,6 +191,7 @@ class CameraSyncFollower(object):
         self._last_signature = None
         self._socket = None
         self._buffer = b""
+        self._peer_closed = False
         self._pending = []
         self._start_time = None
         self._scene_fps = None
@@ -199,6 +200,8 @@ class CameraSyncFollower(object):
         self._camera_shape = None
         self._created_camera = False
         self._script_job = None
+        self._scene_resolution_before = None
+        self._reused_camera_before = None
         self.idle_pump_note = ""
         self.server_errors = []
         self._undo_state = None
@@ -254,7 +257,16 @@ class CameraSyncFollower(object):
                               "cannot connect to {0}:{1}: {2}".format(
                                   self.host, self.port, error))
         self._buffer = b""
-        self._send(self.hello_message())
+        self._peer_closed = False
+        try:
+            self._send(self.hello_message())
+        except OSError as error:
+            # The publisher can reset the connection while this client is still
+            # introducing itself; that is a transport failure, not a crash.
+            detail = "{0}: {1}".format(CATEGORY_TRANSPORT, error)
+            self._fail(detail)
+            self.stop()
+            raise SyncRefused(CATEGORY_TRANSPORT, detail)
         deadline = time.time() + self.connect_timeout
         while time.time() < deadline:
             try:
@@ -264,16 +276,38 @@ class CameraSyncFollower(object):
                 self.stop()
                 raise SyncRefused(CATEGORY_HANDSHAKE,
                                   "undecodable server line: {0}".format(error))
+            except OSError as error:
+                # A publisher that ends a session and closes the socket immediately can
+                # reset it while the client is still reading, so a reconnect attempt can
+                # fail here as well as in pump(). Either way it is a transport failure,
+                # not a crash.
+                detail = "{0}: {1}".format(CATEGORY_TRANSPORT, error)
+                self._fail(detail)
+                self.stop()
+                raise SyncRefused(CATEGORY_TRANSPORT, detail)
             if messages:
                 # Frames may share a batch with the session; they are applied
                 # here rather than dropped.
                 self._ingest(messages)
+            self._handle_closed_peer()
             if self.state == STATE_FOLLOWING:
                 return self.session
+            if self.state == STATE_STOPPED:
+                # The publisher can end the session inside the handshake (a user stopping
+                # follow right after Maya connects). The connection was accepted and then
+                # released, so this attempt is over; waiting for a session that will
+                # never come would only turn it into a timeout.
+                raise SyncRefused(CATEGORY_HANDSHAKE,
+                                  "{0}: the publisher ended the session during the "
+                                  "handshake ({1})".format(CATEGORY_HANDSHAKE, self.detail))
             if self.state == STATE_FAILED:
                 detail = self.error
                 self.stop()
-                raise SyncRefused(CATEGORY_HANDSHAKE, detail)
+                # A failure raised by a report send is a transport failure even though
+                # it interrupted the handshake.
+                raise SyncRefused(
+                    CATEGORY_TRANSPORT if CATEGORY_TRANSPORT in detail
+                    else CATEGORY_HANDSHAKE, detail)
         self._fail("{0}: no session message within {1}s".format(
             CATEGORY_HANDSHAKE, self.connect_timeout))
         self.stop()
@@ -295,6 +329,14 @@ class CameraSyncFollower(object):
                     if message["type"] == "end":
                         self._fail("the publisher ended the session before it "
                                    "started: {0}".format(message.get("reason")))
+                    else:
+                        # A publisher that refuses this connection (one client at a
+                        # time) will never send a session, so waiting for one until the
+                        # timeout would make every reconnect attempt ten seconds slower
+                        # than it has to be.
+                        self._fail("{0}: the publisher refused this connection: "
+                                   "{1}".format(CATEGORY_HANDSHAKE,
+                                                message.get("category")))
                     continue
             self._handle(message)
         while self.state == STATE_FOLLOWING and self._pending:
@@ -308,6 +350,14 @@ class CameraSyncFollower(object):
         self.state = STATE_FOLLOWING
         self.detail = "following on port {0}".format(self.port)
 
+    def _handle_closed_peer(self):
+        """A closed stream is only a failure when the publisher did not end the session."""
+        if not self._peer_closed:
+            return
+        self._peer_closed = False
+        if self.state != STATE_STOPPED:
+            self._fail("{0}: the publisher closed the connection".format(CATEGORY_TRANSPORT))
+
     def pump(self, max_messages=16):
         """Process pending server messages. Safe to call from an idle event."""
         if not self.connected:
@@ -318,10 +368,12 @@ class CameraSyncFollower(object):
             self._reject_undecodable(error)
             return 1
         except OSError as error:
-            self._fail("{0}: {1}".format(CATEGORY_TRANSPORT, error))
+            if self.state != STATE_STOPPED:
+                self._fail("{0}: {1}".format(CATEGORY_TRANSPORT, error))
             return 0
         if messages:
             self._ingest(messages)
+        self._handle_closed_peer()
         return len(messages)
 
     def _reject_undecodable(self, error):
@@ -349,6 +401,26 @@ class CameraSyncFollower(object):
         except OSError:
             pass
 
+    def abort(self, reason="client dropped the connection"):
+        """Drop the transport without the ``bye`` handshake.
+
+        This is what a client that crashes or loses its network looks like to the
+        publisher: a closed socket instead of a protocol goodbye. The follower's
+        session state is untouched, so ``stop()`` still releases the scene; only
+        the caller decides whether the session is over.
+        """
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+        self._socket = None
+        self._buffer = b""
+        self._peer_closed = False
+        self._pending = []
+        self.detail = reason
+        return reason
+
     def stop(self, reason="client stopped"):
         """Restore the timeline and remove everything this session created."""
         summary = {"reason": reason}
@@ -363,6 +435,7 @@ class CameraSyncFollower(object):
                 pass
         self._socket = None
         self._buffer = b""
+        self._peer_closed = False
         self._pending = []
         self.detach_idle_pump()
         if self._start_time is not None:
@@ -379,8 +452,12 @@ class CameraSyncFollower(object):
                     summary["camera_removed"] = self._camera_transform
                 except RuntimeError as error:
                     summary["camera_remove_error"] = str(error)
+        elif self._reused_camera_before is not None:
+            self._restore_reused_camera(summary)
         self._camera_transform = None
         self._camera_shape = None
+        if self._scene_resolution_before is not None:
+            self._restore_scene_resolution(summary)
         if self._undo_state is False:
             try:
                 cmds().undoInfo(state=False)
@@ -402,7 +479,13 @@ class CameraSyncFollower(object):
     # ------------------------------------------------------------- transport
 
     def _receive(self, timeout, max_messages=64):
-        """Decode complete lines. Raises OSError on a lost connection."""
+        """Decode complete lines. Raises OSError on a lost connection.
+
+        When the publisher closes the connection with complete lines already read, those
+        lines are returned instead of being thrown away: the closing line is among them,
+        and it is what tells this client the session ended on purpose rather than being
+        lost. ``_peer_closed`` records that the stream is over.
+        """
         messages = []
         if self._socket is None:
             return messages
@@ -421,6 +504,9 @@ class CameraSyncFollower(object):
                 return messages
             chunk = self._socket.recv(65536)
             if not chunk:
+                self._peer_closed = True
+                if messages:
+                    return messages
                 raise OSError("publisher closed the connection")
             self._buffer += chunk
             deadline = time.time() + timeout
@@ -439,11 +525,25 @@ class CameraSyncFollower(object):
 
     # ---------------------------------------------------------------- frames
 
+    def _send_report(self, report):
+        """Make one report best-effort: a lost connection is a failure, not a raise.
+
+        A publisher that closed the connection (or reset it) while a frame was being
+        applied must be reported as a transport failure; the caller's retry loop is
+        what decides whether the session continues.
+        """
+        try:
+            self._send(report)
+            return True
+        except OSError as error:
+            self._fail("{0}: {1}".format(CATEGORY_TRANSPORT, error))
+            return False
+
     def _handle(self, message):
         kind = message["type"]
         if kind == "frame":
             report = self.apply_frame(message)
-            self._send(report)
+            self._send_report(report)
         elif kind == "end":
             self.detail = "publisher ended the session: {0}".format(
                 message.get("reason"))
@@ -474,12 +574,73 @@ class CameraSyncFollower(object):
             self._camera_transform = name
             self._camera_shape = shapes[0]
             self._created_camera = False
+            self._capture_reused_camera()
         else:
             self._camera_transform = cmds().createNode("transform", name=name)
             self._camera_shape = cmds().createNode(
                 "camera", name=name + "Shape", parent=self._camera_transform)
             self._created_camera = True
         return (self._camera_transform, self._camera_shape)
+
+    def _capture_reused_camera(self):
+        """Remember the state of a camera this session borrows instead of creating.
+
+        The session only ever deletes a camera it created. A node that already
+        carries the session name is reused, so its managed attributes and its
+        world placement are captured here and written back by ``stop()``: a
+        borrowed node has to look the same after the session as it did before.
+        """
+        if self._reused_camera_before is not None or not self._camera_shape:
+            return
+        state = {"attributes": {}}
+        for attribute in MANAGED_ATTRIBUTES:
+            state["attributes"][attribute] = cmds().getAttr(
+                "{0}.{1}".format(self._camera_shape, attribute))
+        state["world_matrix"] = [float(value) for value in
+                                 cmds().xform(self._camera_transform, query=True,
+                                              worldSpace=True, matrix=True)]
+        self._reused_camera_before = state
+
+    def _restore_reused_camera(self, summary):
+        """Write the borrowed camera's attributes and placement back."""
+        state = self._reused_camera_before
+        self._reused_camera_before = None
+        if not state or not self._camera_shape or not cmds().objExists(self._camera_shape):
+            summary["reused_camera_restored"] = False
+            return
+        try:
+            for attribute, value in sorted(state["attributes"].items()):
+                plug = "{0}.{1}".format(self._camera_shape, attribute)
+                _unlock(plug)
+                cmds().setAttr(plug, value)
+            cmds().xform(self._camera_transform, worldSpace=True,
+                         matrix=list(state["world_matrix"]))
+            summary["reused_camera_restored"] = self._camera_shape
+        except RuntimeError as error:
+            summary["reused_camera_restore_error"] = str(error)
+
+    def _capture_scene_resolution(self):
+        """Remember the scene gate the first frame is about to overwrite."""
+        if self._scene_resolution_before is not None:
+            return
+        state = {}
+        for plug in ("defaultResolution.width", "defaultResolution.height",
+                     "defaultResolution.pixelAspect",
+                     "defaultResolution.deviceAspectRatio"):
+            state[plug] = cmds().getAttr(plug)
+        self._scene_resolution_before = state
+
+    def _restore_scene_resolution(self, summary):
+        """Put the scene's own resolution gate back."""
+        state = self._scene_resolution_before
+        self._scene_resolution_before = None
+        try:
+            for plug, value in sorted(state.items()):
+                _unlock(plug)
+                cmds().setAttr(plug, value)
+            summary["resolution_restored"] = dict(state)
+        except RuntimeError as error:
+            summary["resolution_restore_error"] = str(error)
 
     def apply_frame(self, frame, session=None):
         """Apply one frame atomically. Returns the ``applied`` report payload.
@@ -656,8 +817,10 @@ class CameraSyncFollower(object):
         Maya's film fit uses ``defaultResolution.deviceAspectRatio``, which does
         not follow ``width``/``height`` when they are set through the API, so
         the prototype writes it as well; otherwise a non-16:9 gate would keep
-        framing with the previous aspect.
+        framing with the previous aspect. The scene's own gate is captured on
+        the first write and restored by ``stop()``.
         """
+        self._capture_scene_resolution()
         for plug, value in (("defaultResolution.width", int(round(resolution[0]))),
                             ("defaultResolution.height", int(round(resolution[1]))),
                             ("defaultResolution.pixelAspect", 1.0),

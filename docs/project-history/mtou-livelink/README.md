@@ -327,6 +327,29 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   protocol design are deferred to a unified decision under Issue #47, after the
   #52/#53/#54 prototypes have landed.
 
+- **2026-09-30:** Closed the two items the Issue #52 review left open. The
+  listener thread is now stopped and joined before the last accepted sockets are
+  closed; a session ends its client deliberately (send `end`, shut the write
+  side down, read what the client already sent) and drops a client that stalls a
+  send; and Maya now restores its own current frame, the scene resolution gate
+  and a borrowed camera's attributes and placement on stop. The natural editor
+  loop became a check of its own: the module's editor ticker drives the session
+  while a real mayapy peer follows a 20-step playhead drag (focals 50 → 85
+  across the cut, 10 fractional times evaluated exactly), a camera edited to
+  120 mm at the parked frame, a closed and reopened sequence, a client-initiated
+  drop and immediate rejoin, and three start/stop cycles — every step ended with
+  the target that was current answered (worst marker delta 7.505e-07 NDC). Six
+  connection lifetimes each released Maya completely; 96 connections over six
+  shutdown-window cycles were all closed, with stops measured at 0.004–0.026 s.
+  The round found and fixed four transport defects the driven tests had not
+  reached. Unreal 11/11 prototype Automation checks, a real editor/Maya session
+  (marker delta ≤ 1.0887e-07 NDC, converged, 0 anomalies), Maya 63/63 pure tests
+  in both interpreters and 90/90 host checks pass on stock UE 5.7.4 and Maya
+  2024. The [acceptance record](issue-52-camera-sync-acceptance.md) owns the
+  evidence. The interactive-Maya idle-pump callback and continuous-playback
+  measurements remain unverified, and product integration still belongs to
+  Issue #47 after the #52/#53/#54 samples.
+
 ## Stable Records
 
 - [Architecture](architecture.md)

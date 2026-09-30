@@ -95,6 +95,9 @@ public:
 	/** True once a pose report answered the evaluation target currently sampled. */
 	bool IsCurrentTargetPaired() const { return EvalSerial > 0 && LastPairedEvalSerial == EvalSerial; }
 	int64 GetAppliedReportsDropped() const { return AppliedReportsDropped; }
+	/** Accepted sockets the listener queued and Stop() closed without adopting them. */
+	int64 GetPendingClientsClosedOnStop() const { return PendingClientsClosedOnStop; }
+	bool IsRunning() const { return bRunning; }
 	const TArray<FString>& GetRejectedCommandTypes() const { return RejectedCommandTypes; }
 	const FString& GetLastError() const { return LastError; }
 	const TSharedPtr<FJsonObject>& GetLastPublishedFrame() const { return LastPublishedFrame; }
@@ -131,6 +134,8 @@ private:
 	/** Receives more input within the per-pump byte budget; false when none is available. */
 	bool ReceiveClientBytes(int32& BytesReceived);
 	void DropClient();
+	/** Sends the closing line, ends the stream and reads what the client already sent. */
+	void EndClient();
 	void SendJson(const TSharedRef<FJsonObject>& Object);
 	void SendError(const FString& Category, const FString& Detail);
 	double PlaybackEndDisplayFrame() const;
@@ -194,6 +199,7 @@ private:
 	int64 LastPairedSerial = 0;
 	int64 LastPairedEvalSerial = 0;
 	int64 AppliedReportsDropped = 0;
+	int64 PendingClientsClosedOnStop = 0;
 	FString LastClientLineAnomaly;
 	bool bCameraMissingReported = false;
 

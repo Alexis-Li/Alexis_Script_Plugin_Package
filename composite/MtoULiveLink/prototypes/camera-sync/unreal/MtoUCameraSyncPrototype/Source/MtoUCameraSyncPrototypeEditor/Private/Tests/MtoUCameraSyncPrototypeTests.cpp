@@ -18,6 +18,8 @@
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "LevelSequence.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
@@ -25,7 +27,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "Modules/ModuleManager.h"
 #include "MtoUCameraSyncCapture.h"
+#include "MtoUCameraSyncPrototypeModule.h"
 #include "MtoUCameraSyncSession.h"
 #include "MovieScene.h"
 #include "MovieSceneTrack.h"
@@ -313,6 +317,86 @@ bool SendLoopbackLine(FSocket& Socket, const FString& Line)
 	return SendLoopbackBytes(Socket, reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
 }
 
+/**
+ * Reads whatever the server sends until the connection is closed, and reports whether
+ * that happened inside the timeout. A listening socket that is destroyed resets the
+ * connections still waiting in its backlog, so both a close and a reset count.
+ */
+bool ClientSeesServerClose(FSocket& Socket, double TimeoutSeconds, FString& OutReceived)
+{
+	const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds;
+	uint8 Buffer[1024];
+	while (FPlatformTime::Seconds() < Deadline)
+	{
+		uint32 Pending = 0;
+		if (!(Socket.HasPendingData(Pending) && Pending > 0)
+			&& !Socket.Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(10)))
+		{
+			continue;
+		}
+		int32 Read = 0;
+		if (!Socket.Recv(Buffer, sizeof(Buffer), Read, ESocketReceiveFlags::None) || Read <= 0)
+		{
+			return true;
+		}
+		OutReceived += FString(Read, reinterpret_cast<const ANSICHAR*>(Buffer));
+	}
+	return false;
+}
+
+/**
+ * Keeps connecting to the prototype's port while the game thread stops the session, so
+ * connections really do arrive inside the shutdown window instead of all being queued
+ * before it. The producer is this one thread, the consumer is the game thread.
+ */
+class FShutdownWindowHammer : public FRunnable
+{
+public:
+	FShutdownWindowHammer(uint16 InPort, double InSeconds)
+		: Port(InPort), Seconds(InSeconds)
+	{
+	}
+
+	virtual uint32 Run() override
+	{
+		const double Deadline = FPlatformTime::Seconds() + Seconds;
+		while (FPlatformTime::Seconds() < Deadline && !bStopping)
+		{
+			FSocket* Client = nullptr;
+			if (ConnectLoopbackClient(Port, Client))
+			{
+				Clients.Enqueue(Client);
+			}
+			FPlatformProcess::Sleep(0.002f);
+		}
+		bFinished = true;
+		return 0;
+	}
+
+	void RequestStop() { bStopping = true; }
+	bool IsFinished() const { return bFinished; }
+	/** Drains the sockets this thread opened; game thread only. */
+	int32 Drain(TArray<FSocket*>& OutSockets)
+	{
+		FSocket* Client = nullptr;
+		while (Clients.Dequeue(Client))
+		{
+			if (Client)
+			{
+				OutSockets.Add(Client);
+			}
+		}
+		return OutSockets.Num();
+	}
+
+private:
+	TQueue<FSocket*, EQueueMode::Spsc> Clients;
+	uint16 Port = 0;
+	double Seconds = 0.0;
+	FThreadSafeBool bStopping = false;
+	FThreadSafeBool bFinished = false;
+};
+
 /** Pumps the session until the predicate holds or the attempt budget runs out. */
 bool PumpUntil(FMtoUCameraSyncSession& Session, TFunctionRef<bool()> Predicate,
 	int32 Attempts = 200, double Delta = 0.02)
@@ -377,7 +461,1107 @@ FString EvalIdentityDigestPart(const FString& Identity)
 	int32 Hash = INDEX_NONE;
 	return Identity.FindLastChar(TEXT('#'), Hash) ? Identity.Mid(Hash) : FString();
 }
+/**
+ * One observed step of the natural editor-loop check: what was done, whether the
+ * evaluation target that was current afterwards had been answered, and how long that
+ * took. ``bAlreadyConverged`` separates "was converged when the step ended" from "had
+ * to wait for the client".
+ */
+struct FLoopStep
+{
+	FString Name;
+	FString Detail;
+	bool bOk = true;
+	bool bAlreadyConverged = false;
+	double WaitedSeconds = -1.0;
+	int64 PublishedFrames = 0;
+	int64 EvalSerialBefore = 0;
+	int64 EvalSerialAfter = 0;
+	int64 ConnectionSessionsBefore = 0;
+	int64 ConnectionSessionsAfter = 0;
+};
+
+/** State shared by the latent commands of the editor-loop check. */
+struct FEditorLoopState
+{
+	UWorld* World = nullptr;
+	ULevelSequence* Sequence = nullptr;
+	ACineCameraActor* CameraA = nullptr;
+	ACineCameraActor* CameraB = nullptr;
+	AActor* PoseWitness = nullptr;
+	TArray<TWeakObjectPtr<AActor>> OwnedActors;
+	// The toolkit owns the authoritative Sequencer reference; this check pins it only
+	// while it uses it, because a second persistent shared reference keeps FSequencer
+	// alive after the editor closed it and the engine asserts on that.
+	TWeakPtr<ISequencer> Sequencer;
+	TArray<TSharedPtr<FJsonValue>> Steps;
+	FString Evidence;
+	FString ResultPath;
+	FString ControlPath;
+	FString PeerLogPath;
+	FString PeerScript;
+	FString MayapyPath;
+	FString PeerOutput;
+	TSharedPtr<FJsonObject> PeerResult;
+	double PeerResultLoadedAt = 0.0;
+	void* PeerPipeRead = nullptr;
+	void* PeerPipeWrite = nullptr;
+	FProcHandle PeerProcess;
+	uint16 Port = 0;
+	int32 DragSteps = 0;
+	int32 DragStepsTarget = 20;
+	bool bEditorOpened = false;
+	bool bPeerStarted = false;
+	bool bSetupFailed = false;
+	bool bExitRequested = false;
+	/** True when the check observed the session with no client while the client rejoined. */
+	bool bSawClientGap = false;
+	double StepStarted = 0.0;
+	TArray<double> DragFrames;
+	TArray<double> DragFocals;
+	FLoopStep Current;
+};
+
+/** The prototype module that owns the session and pumps it from the editor ticker. */
+FMtoUCameraSyncPrototypeModule* EditorLoopModule()
+{
+	return FModuleManager::GetModulePtr<FMtoUCameraSyncPrototypeModule>(
+		TEXT("MtoUCameraSyncPrototypeEditor"));
+}
+
+/** The session the prototype module currently owns, if any. */
+FMtoUCameraSyncSession* EditorLoopSession(FEditorLoopState& State)
+{
+	FMtoUCameraSyncPrototypeModule* Module = EditorLoopModule();
+	return Module ? Module->GetSession() : nullptr;
+}
+
+/**
+ * The shared state as a mutable reference. Latent commands capture their state by copy,
+ * which makes the captured shared reference const; the state itself is still mutable.
+ */
+FEditorLoopState& LoopState(const TSharedRef<FEditorLoopState>& State)
+{
+	return State.Get();
+}
+
+/** Starts a follow session exactly as the console command does. */
+bool EditorLoopStart(FEditorLoopState& State, FString& OutError)
+{
+	const TSharedPtr<ISequencer> Sequencer = State.Sequencer.Pin();
+	if (!Sequencer.IsValid() || !State.World)
+	{
+		OutError = TEXT("no open Level Sequence editor");
+		return false;
+	}
+	FMtoUCameraSyncPrototypeModule* Module = EditorLoopModule();
+	if (!Module)
+	{
+		OutError = TEXT("the prototype module is not loaded");
+		return false;
+	}
+	FMtoUCameraSyncSession::FConfig Config;
+	Config.Port = State.Port;
+	Config.OutputResolution = FIntPoint(1920, 1080);
+	FMtoUCameraSyncSession* Session = Module->StartEditorSession(
+		*State.World, Sequencer.ToSharedRef(), Config, OutError);
+	if (Session)
+	{
+		Session->SetPoseWitnessTarget(State.PoseWitness);
+	}
+	return Session != nullptr;
+}
+
+/** Records the state a step starts from, before the step changes anything. */
+void ArmLoopStep(FEditorLoopState& State, const TCHAR* Name)
+{
+	State.Current = FLoopStep();
+	State.Current.Name = Name;
+	State.StepStarted = FPlatformTime::Seconds();
+	if (FMtoUCameraSyncSession* Session = EditorLoopSession(State))
+	{
+		State.Current.PublishedFrames = Session->GetPublishedFrameCount();
+		State.Current.EvalSerialBefore = Session->GetEvalSerial();
+		State.Current.ConnectionSessionsBefore = Session->GetConnectionSessionId();
+		State.Current.bAlreadyConverged = Session->IsCurrentTargetPaired();
+	}
+}
+
+/** Closes a step, writing what the session and the client did while it ran. */
+void FinishLoopStep(FEditorLoopState& State, bool bOk, const FString& Detail)
+{
+	FLoopStep& Step = State.Current;
+	Step.bOk = bOk;
+	Step.Detail = Detail;
+	Step.WaitedSeconds = FPlatformTime::Seconds() - State.StepStarted;
+	if (FMtoUCameraSyncSession* Session = EditorLoopSession(State))
+	{
+		Step.EvalSerialAfter = Session->GetEvalSerial();
+		Step.ConnectionSessionsAfter = Session->GetConnectionSessionId();
+	}
+	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("step"), Step.Name);
+	Object->SetBoolField(TEXT("ok"), Step.bOk);
+	Object->SetBoolField(TEXT("already_converged"), Step.bAlreadyConverged);
+	Object->SetNumberField(TEXT("waited_seconds"), Step.WaitedSeconds);
+	Object->SetNumberField(TEXT("published_frames"), Step.PublishedFrames);
+	Object->SetNumberField(TEXT("eval_serial_before"), Step.EvalSerialBefore);
+	Object->SetNumberField(TEXT("eval_serial_after"), Step.EvalSerialAfter);
+	Object->SetNumberField(TEXT("connection_sessions_before"), Step.ConnectionSessionsBefore);
+	Object->SetNumberField(TEXT("connection_sessions_after"), Step.ConnectionSessionsAfter);
+	Object->SetStringField(TEXT("detail"), Step.Detail);
+	State.Steps.Add(MakeShared<FJsonValueObject>(Object));
+	// Live progress: a stalled host check is diagnosable from the editor log instead of
+	// only from the report written at the end.
+	UE_LOG(LogTemp, Display,
+		TEXT("[MtoUCameraSyncPrototype] editor loop step '%s': ok=%d already_converged=%d ")
+		TEXT("waited=%.3fs eval %lld->%lld connections %lld->%lld (%s)"),
+		*Step.Name, Step.bOk ? 1 : 0, Step.bAlreadyConverged ? 1 : 0, Step.WaitedSeconds,
+		Step.EvalSerialBefore, Step.EvalSerialAfter,
+		Step.ConnectionSessionsBefore, Step.ConnectionSessionsAfter, *Step.Detail);
+}
+
+/** The interaction that started this step created a new target that is now answered. */
+bool LoopStepConverged(FEditorLoopState& State)
+{
+	FMtoUCameraSyncSession* Session = EditorLoopSession(State);
+	return Session && Session->IsRunning() && Session->IsCurrentTargetPaired()
+		&& Session->GetEvalSerial() != State.Current.EvalSerialBefore;
+}
+
+/** The target the session samples right now has been answered. */
+bool LoopCurrentConverged(FEditorLoopState& State)
+{
+	FMtoUCameraSyncSession* Session = EditorLoopSession(State);
+	return Session && Session->IsRunning() && Session->IsCurrentTargetPaired();
+}
+
+/** Moves the editor playhead the way a drag does: one step per editor frame. */
+void SetEditorPlayhead(FEditorLoopState& State, double DisplayFrame)
+{
+	if (const TSharedPtr<ISequencer> Sequencer = State.Sequencer.Pin())
+	{
+		Sequencer->SetGlobalTime(FFrameTime::FromDecimal(DisplayFrame * 1000.0));
+	}
+}
+
+/** Writes the control file the live peer polls for instructions. */
+bool WritePeerControl(FEditorLoopState& State, const FString& Action)
+{
+	return SaveJson(State.ControlPath, FString::Printf(
+		TEXT("{\"actions\":[{\"action\":\"%s\"}]}"), *Action));
+}
+
+/**
+ * The peer's result file, when it has been written. The peers replace this file as the
+ * session progresses and the latent commands poll it every frame, so it is re-read at
+ * most ten times a second; the teardown asks for a forced read because it has to see
+ * the file the peer wrote before it exited, not a copy from the last poll.
+ */
+bool LoadPeerResult(FEditorLoopState& State, TSharedPtr<FJsonObject>& OutResult,
+	bool bForceReload = false)
+{
+	const double Now = FPlatformTime::Seconds();
+	if (!bForceReload && State.PeerResult.IsValid() && Now - State.PeerResultLoadedAt < 0.1)
+	{
+		OutResult = State.PeerResult;
+		return true;
+	}
+	TSharedPtr<FJsonObject> Loaded;
+	if (!LoadJson(State.ResultPath, Loaded))
+	{
+		return false;
+	}
+	State.PeerResult = Loaded;
+	State.PeerResultLoadedAt = Now;
+	OutResult = Loaded;
+	return true;
+}
+
+/** How many connection lifetimes the live peer has finished so far. */
+int32 PeerCycleCount(FEditorLoopState& State)
+{
+	TSharedPtr<FJsonObject> Result;
+	const TArray<TSharedPtr<FJsonValue>>* Cycles = nullptr;
+	if (!LoadPeerResult(State, Result) || !Result->TryGetArrayField(TEXT("cycles"), Cycles)
+		|| !Cycles)
+	{
+		return 0;
+	}
+	return Cycles->Num();
+}
+
+/**
+ * How many connection lifetimes the peer has *finished*. A cycle is only complete once
+ * it carries its restore record, which the peer writes when the session released the
+ * scene; counting started cycles would treat a session that is still following as done.
+ */
+int32 PeerCycleComplete(FEditorLoopState& State)
+{
+	TSharedPtr<FJsonObject> Result;
+	const TArray<TSharedPtr<FJsonValue>>* Cycles = nullptr;
+	if (!LoadPeerResult(State, Result) || !Result->TryGetArrayField(TEXT("cycles"), Cycles)
+		|| !Cycles)
+	{
+		return 0;
+	}
+	int32 Complete = 0;
+	for (const TSharedPtr<FJsonValue>& Value : *Cycles)
+	{
+		const TSharedPtr<FJsonObject> Cycle = Value->AsObject();
+		const TSharedPtr<FJsonObject> Restore = Cycle.IsValid()
+			? GetObject(Cycle, TEXT("restore")) : nullptr;
+		if (Restore.IsValid() && Restore->HasTypedField<EJson::Boolean>(TEXT("restored")))
+		{
+			++Complete;
+		}
+	}
+	return Complete;
+}
+
+/** The reason the peer's most recent *finished* connection lifetime ended. */
+FString PeerLastDisconnect(FEditorLoopState& State)
+{
+	TSharedPtr<FJsonObject> Result;
+	const TArray<TSharedPtr<FJsonValue>>* Cycles = nullptr;
+	if (!LoadPeerResult(State, Result) || !Result->TryGetArrayField(TEXT("cycles"), Cycles)
+		|| !Cycles)
+	{
+		return FString();
+	}
+	for (int32 Index = Cycles->Num() - 1; Index >= 0; --Index)
+	{
+		const TSharedPtr<FJsonObject> Cycle = (*Cycles)[Index]->AsObject();
+		const TSharedPtr<FJsonObject> Restore = Cycle.IsValid()
+			? GetObject(Cycle, TEXT("restore")) : nullptr;
+		if (!Restore.IsValid() || !Restore->HasTypedField<EJson::Boolean>(TEXT("restored")))
+		{
+			continue;
+		}
+		FString Reason;
+		Cycle->TryGetStringField(TEXT("disconnect"), Reason);
+		return Reason;
+	}
+	return FString();
+}
+
+/** Fails the step and the test when a wait ran out. */
+void LoopTimeout(FAutomationTestBase& Test, FEditorLoopState& State, const FString& What)
+{
+	Test.AddError(FString::Printf(TEXT("editor loop step '%s': %s did not happen in time"),
+		*State.Current.Name, *What));
+	FinishLoopStep(State, false, FString::Printf(TEXT("timeout waiting for %s"), *What));
+}
+
 }  // namespace
+
+// Natural editor-loop check: the prototype module owns the session and the editor's own
+// ticker advances it, so nothing here pumps or forces an evaluation by hand. The same
+// commands a user runs drive start and stop, the playhead moves the way a drag moves it,
+// the camera is edited while the timeline is parked, the sequence editor is closed and
+// reopened, the Maya client drops its connection and rejoins, and the session is started
+// and stopped repeatedly. Each step has to end with the target that is current answered
+// by the real Maya peer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncEditorLoopTest,
+	"MtoUCameraSyncPrototype.EditorLoopFollow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncEditorLoopTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FString MayapyPath;
+	FString PeerPath;
+	FString Evidence;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCameraSyncMayapy="), MayapyPath))
+	{
+		AddInfo(TEXT("Editor loop host check not requested; supply MtoUCameraSyncMayapy, ")
+			TEXT("MtoUCameraSyncPeer and MtoUEvidence."));
+		return true;
+	}
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCameraSyncPeer="), PeerPath)
+		|| !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+		|| !FPaths::FileExists(MayapyPath) || !FPaths::FileExists(PeerPath))
+	{
+		AddError(TEXT("the editor loop check requires existing mayapy/peer paths and an ")
+			TEXT("evidence directory"));
+		return false;
+	}
+
+	TSharedRef<FEditorLoopState> State = MakeShared<FEditorLoopState>();
+	State->MayapyPath = MayapyPath;
+	State->Evidence = FPaths::Combine(Evidence, TEXT("editor-loop"));
+	State->ResultPath = FPaths::Combine(State->Evidence, TEXT("editor-loop-peer.json"));
+	State->ControlPath = FPaths::Combine(State->Evidence, TEXT("editor-loop-control.json"));
+	State->PeerLogPath = FPaths::Combine(State->Evidence, TEXT("editor-loop-peer.log"));
+	State->PeerScript = FPaths::Combine(FPaths::GetPath(PeerPath),
+		TEXT("maya_camera_sync_live_peer.py"));
+	State->Port = ReserveLoopbackPort();
+	FMtoUCameraSyncEditorLoopTest* Self = this;
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (!IFileManager::Get().MakeDirectory(*State->Evidence, true)
+			&& !IFileManager::Get().DirectoryExists(*State->Evidence))
+		{
+			Self->AddError(TEXT("the editor loop evidence directory could not be created"));
+			State->bSetupFailed = true;
+			return true;
+		}
+		if (!FPaths::FileExists(State->PeerScript))
+		{
+			Self->AddError(FString::Printf(TEXT("the live peer script is missing: %s"),
+				*State->PeerScript));
+			State->bSetupFailed = true;
+			return true;
+		}
+		State->World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!Self->TestNotNull(TEXT("editor world"), State->World)
+			|| !Self->TestTrue(TEXT("loopback port reserved"), State->Port != 0))
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+
+		const FFrameRate DisplayRate(24, 1);
+		const FFrameRate TickResolution(24000, 1);
+		State->Sequence = MakeSequence(DisplayRate, TickResolution, 1001 * 1000, 1051 * 1000);
+		State->CameraA = SpawnCamera(*State->World, FVector(0.0, 0.0, 100.0),
+			FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+		State->CameraB = SpawnCamera(*State->World, FVector(300.0, 200.0, 150.0),
+			FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f, 800.0f);
+		if (!Self->TestNotNull(TEXT("camera A"), State->CameraA)
+			|| !Self->TestNotNull(TEXT("camera B"), State->CameraB))
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+		ACineCameraActor* Cameras[] = {State->CameraA, State->CameraB};
+		for (ACineCameraActor* Camera : Cameras)
+		{
+			UCineCameraComponent* Component = Camera->GetCineCameraComponent();
+			Component->Filmback.SensorWidth = 24.96f;
+			Component->Filmback.SensorHeight = 18.72f;
+			Component->Filmback.SensorAspectRatio = 1.333333f;
+			State->OwnedActors.Add(Camera);
+		}
+		State->OwnedActors.Add(SpawnMarker(*State->World, TEXT("m_center"),
+			FVector(900.0, 0.0, 100.0)));
+		State->OwnedActors.Add(SpawnMarker(*State->World, TEXT("m_upper_left"),
+			FVector(1400.0, -500.0, 300.0)));
+		State->OwnedActors.Add(SpawnMarker(*State->World, TEXT("m_lower_right"),
+			FVector(1600.0, 420.0, -120.0)));
+		State->PoseWitness = SpawnMarker(*State->World, TEXT("pose_witness"),
+			FVector::ZeroVector);
+		if (State->PoseWitness)
+		{
+			State->PoseWitness->Tags.Remove(FName(MarkerTagName));
+			State->OwnedActors.Add(State->PoseWitness);
+		}
+		AddCut(*State->Sequence, BindActor(*State->Sequence, *State->World,
+			*State->CameraA, TEXT("CamA")), 1001 * 1000, 1026 * 1000);
+		AddCut(*State->Sequence, BindActor(*State->Sequence, *State->World,
+			*State->CameraB, TEXT("CamB")), 1026 * 1000, 1051 * 1000);
+		State->bEditorOpened = ULevelSequenceEditorBlueprintLibrary::OpenLevelSequence(
+			State->Sequence);
+		if (!Self->TestTrue(TEXT("the real Level Sequence editor opens"), State->bEditorOpened))
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+		IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+			->FindEditorForAsset(State->Sequence, false);
+		State->Sequencer = AssetEditor
+			&& AssetEditor->GetEditorName() == FName(TEXT("LevelSequenceEditor"))
+			? static_cast<ILevelSequenceEditorToolkit*>(AssetEditor)->GetSequencer() : nullptr;
+		if (!Self->TestTrue(TEXT("the open toolkit exposes Sequencer"), State->Sequencer.IsValid()))
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+		SetEditorPlayhead(LoopState(State), 1001.0);
+		WritePeerControl(LoopState(State), TEXT("clear"));
+
+		// The peer is a real mayapy process, so the follower side of every step is a real
+		// Maya scene rather than a socket fixture.
+		const FString ProcessArgs = FString::Printf(
+			TEXT("\"%s\" --port %u --result \"%s\" --control \"%s\" --start-frame 1001 ")
+			TEXT("--budget 240 --idle-exit 12 --max-applied 40"),
+			*State->PeerScript, static_cast<uint32>(State->Port), *State->ResultPath,
+			*State->ControlPath);
+		FPlatformProcess::CreatePipe(State->PeerPipeRead, State->PeerPipeWrite);
+		State->PeerProcess = FPlatformProcess::CreateProc(
+			*State->MayapyPath, *ProcessArgs, false, true, true, nullptr, 0, nullptr,
+			State->PeerPipeWrite, nullptr);
+		if (!Self->TestTrue(TEXT("the live Maya peer starts"), State->PeerProcess.IsValid()))
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+		State->bPeerStarted = true;
+
+		FString Error;
+		if (!Self->TestTrue(TEXT("following starts through the module"),
+			EditorLoopStart(LoopState(State), Error)))
+		{
+			Self->AddError(Error);
+			State->bSetupFailed = true;
+		}
+		Self->AddInfo(FString::Printf(
+			TEXT("editor loop check on port %u; the module ticker owns the session")
+			TEXT(" and nothing in this test pumps it"), static_cast<uint32>(State->Port)));
+		return true;
+	}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+			return !State->bSetupFailed && Session && Session->IsGreeted();
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the Maya peer's greeting"));
+			return true;
+		}, 40.0f));
+
+	// The drag: one playhead step per editor frame, so the session, the editor evaluation
+	// and the client all advance on the editor's own tick.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("drag the playhead"));
+		State->DragSteps = 0;
+		State->DragFrames.Reset();
+		State->DragFocals.Reset();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(*State);
+		if (!Session)
+		{
+			Self->AddError(TEXT("the session disappeared during the drag"));
+			State->bSetupFailed = true;
+			return true;
+		}
+		// Sampled before the next step, so the list holds what the client was actually
+		// sent while the playhead moved, not the positions this test asked for.
+		if (const TSharedPtr<FJsonObject>& Published = Session->GetLastPublishedFrame())
+		{
+			const TSharedPtr<FJsonObject> Time = GetObject(Published, TEXT("time"));
+			const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
+			const double DisplayFrame = GetNumber(Time, TEXT("display_frame"), -1.0);
+			if (DisplayFrame >= 0.0)
+			{
+				State->DragFrames.AddUnique(DisplayFrame);
+			}
+			const double Focal = GetNumber(Camera, TEXT("focal_length_mm"), -1.0);
+			if (Focal > 0.0)
+			{
+				State->DragFocals.AddUnique(Focal);
+			}
+		}
+		if (State->DragSteps >= State->DragStepsTarget)
+		{
+			return true;
+		}
+		SetEditorPlayhead(*State, 1002.0 + State->DragSteps * 1.5);
+		++State->DragSteps;
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool { return State->bSetupFailed || LoopStepConverged(LoopState(State)); },
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the drag's final target to be answered"));
+			return true;
+		}, 20.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		const bool bConverged = LoopStepConverged(LoopState(State));
+		Self->TestTrue(TEXT("the dragged target was answered by the client"), bConverged);
+		Self->TestTrue(FString::Printf(
+			TEXT("the drag published the frames it passed through (%d distinct)"),
+			State->DragFrames.Num()), State->DragFrames.Num() >= 8);
+		Self->TestTrue(FString::Printf(
+			TEXT("the drag crossed the cut into the second camera (focals seen: %s)"),
+			*FString::JoinBy(State->DragFocals, TEXT(", "),
+				[](double Value) { return FString::Printf(TEXT("%.1f"), Value); })),
+			State->DragFocals.Contains(50.0) && State->DragFocals.Contains(85.0));
+		FinishLoopStep(LoopState(State), bConverged, FString::Printf(
+			TEXT("dragged %d steps over %d published frames, focals %s"),
+			State->DragSteps, State->DragFrames.Num(),
+			*FString::JoinBy(State->DragFocals, TEXT("/"),
+				[](double Value) { return FString::Printf(TEXT("%.1f"), Value); })));
+		if (State->Steps.Num() > 0)
+		{
+			const TSharedPtr<FJsonObject> Step = State->Steps.Last()->AsObject();
+			TArray<TSharedPtr<FJsonValue>> Frames;
+			for (const double Frame : State->DragFrames)
+			{
+				Frames.Add(MakeShared<FJsonValueNumber>(Frame));
+			}
+			TArray<TSharedPtr<FJsonValue>> Focals;
+			for (const double Focal : State->DragFocals)
+			{
+				Focals.Add(MakeShared<FJsonValueNumber>(Focal));
+			}
+			Step->SetArrayField(TEXT("published_display_frames"), Frames);
+			Step->SetArrayField(TEXT("published_focals_mm"), Focals);
+		}
+		return true;
+	}));
+
+	// Park on the second cut. The playhead moves, the editor evaluates, the session
+	// samples and the client answers, all on the editor's own tick.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("park on the second cut"));
+		SetEditorPlayhead(LoopState(State), 1030.0);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool { return State->bSetupFailed || LoopStepConverged(LoopState(State)); },
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the parked target to be answered"));
+			return true;
+		}, 20.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		FString PublishedPath;
+		int64 PublishedFrames = 0;
+		if (Session)
+		{
+			PublishedFrames = Session->GetPublishedFrameCount();
+			if (const TSharedPtr<FJsonObject>& Published = Session->GetLastPublishedFrame())
+			{
+				const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
+				PublishedPath = Camera.IsValid()
+					? Camera->GetStringField(TEXT("path")) : FString();
+			}
+		}
+		const bool bConverged = LoopStepConverged(*State);
+		Self->TestTrue(TEXT("the parked target was answered by the client"), bConverged);
+		Self->TestEqual(TEXT("the published camera is the second cut's camera"),
+			PublishedPath, State->CameraB && State->CameraB->GetCineCameraComponent()
+				? State->CameraB->GetCineCameraComponent()->GetPathName() : FString());
+		FinishLoopStep(LoopState(State), bConverged, FString::Printf(
+			TEXT("parked at 1030 on %s after %lld published frames"),
+			*PublishedPath, PublishedFrames));
+		return true;
+	}));
+
+	// A camera edited while the timeline is parked: same time, new content, so the
+	// evaluation identity has to move and the client has to answer the new target.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("edit the evaluated camera while parked"));
+		UCineCameraComponent* Component = State->CameraB
+			? State->CameraB->GetCineCameraComponent() : nullptr;
+		if (!Component)
+		{
+			Self->AddError(TEXT("the second camera has no cine camera component"));
+			State->bSetupFailed = true;
+			return true;
+		}
+		Component->SetCurrentFocalLength(120.0f);
+		Component->PostEditChange();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool { return State->bSetupFailed || LoopStepConverged(LoopState(State)); },
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the edited camera's new target to be answered"));
+			return true;
+		}, 20.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		const bool bNewTarget = Session
+			&& Session->GetEvalSerial() > State->Current.EvalSerialBefore;
+		double PublishedFocal = 0.0;
+		if (Session)
+		{
+			if (const TSharedPtr<FJsonObject>& Published = Session->GetLastPublishedFrame())
+			{
+				const TSharedPtr<FJsonObject> Camera = GetObject(Published, TEXT("camera"));
+				PublishedFocal = GetNumber(Camera, TEXT("focal_length_mm"), 0.0);
+			}
+		}
+		const bool bConverged = LoopStepConverged(LoopState(State));
+		Self->TestTrue(TEXT("the paused edit started a new evaluation target"), bNewTarget);
+		Self->TestTrue(TEXT("the edited camera was answered"), bConverged);
+		Self->TestEqual(TEXT("the published camera carries the edited focal length"),
+			PublishedFocal, 120.0);
+		FinishLoopStep(LoopState(State), bNewTarget && bConverged,
+			FString::Printf(TEXT("focal length now %.1f"), PublishedFocal));
+		return true;
+	}));
+
+	// Close the sequence the way the user does; following has to end by itself.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("close the sequence"));
+		ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			FMtoUCameraSyncSession* Session = EditorLoopSession(*State);
+			return State->bSetupFailed
+				|| ((!Session || !Session->IsRunning())
+					&& PeerCycleComplete(*State) >= 1);
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, *State, TEXT("following to end when the sequence closes"));
+			return true;
+		}, 25.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(*State);
+		const bool bStopped = !Session || !Session->IsRunning();
+		Self->TestTrue(TEXT("closing the sequence ended following"), bStopped);
+		// Whether the peer read the closing line or only saw the stream end, it has to
+		// have released Maya completely on its own side.
+		const FString Disconnect = PeerLastDisconnect(LoopState(State));
+		Self->TestTrue(FString::Printf(
+			TEXT("the peer released its scene after the sequence closed (%s)"), *Disconnect),
+			Disconnect == TEXT("publisher_end") || Disconnect == TEXT("lost_connection"));
+		FinishLoopStep(LoopState(State), bStopped, FString::Printf(
+			TEXT("following stopped; peer cycle 1 ended with %s"), *Disconnect));
+		return true;
+	}));
+
+	// Reopen it and start following again: the same asset, a new session, and a client
+	// that has to come back on its own.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("reopen the sequence and follow again"));
+		State->bEditorOpened = ULevelSequenceEditorBlueprintLibrary::OpenLevelSequence(
+			State->Sequence);
+		IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+			->FindEditorForAsset(State->Sequence, false);
+		State->Sequencer = AssetEditor
+			&& AssetEditor->GetEditorName() == FName(TEXT("LevelSequenceEditor"))
+			? static_cast<ILevelSequenceEditorToolkit*>(AssetEditor)->GetSequencer() : nullptr;
+		Self->TestTrue(TEXT("the reopened toolkit exposes Sequencer"),
+			State->Sequencer.IsValid());
+		if (!State->Sequencer.IsValid())
+		{
+			State->bSetupFailed = true;
+			return true;
+		}
+		SetEditorPlayhead(LoopState(State), 1030.0);
+		FString Error;
+		if (!Self->TestTrue(TEXT("following restarts through the module"),
+			EditorLoopStart(LoopState(State), Error)))
+		{
+			Self->AddError(Error);
+			State->bSetupFailed = true;
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+			return State->bSetupFailed
+				|| (Session && Session->IsGreeted() && Session->GetPublishedFrameCount() > 0);
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the client to rejoin the new session"));
+			return true;
+		}, 40.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool { return State->bSetupFailed || LoopStepConverged(LoopState(State)); },
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the reopened session's target to be answered"));
+			return true;
+		}, 20.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		const bool bConverged = LoopStepConverged(LoopState(State));
+		Self->TestTrue(TEXT("the reopened session converged with the client"), bConverged);
+		Self->TestEqual(TEXT("the reopened session has its own connection identity"),
+			Session ? Session->GetConnectionSessionId() : 0ll, 1ll);
+		FinishLoopStep(LoopState(State), bConverged, FString::Printf(
+			TEXT("peer cycles so far: %d, disconnect %s"), PeerCycleCount(LoopState(State)),
+			*PeerLastDisconnect(LoopState(State))));
+		return true;
+	}));
+
+	// Manual reconnect: the client drops the transport without a goodbye, keeps
+	// following on a fresh connection, and the session must survive both.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		ArmLoopStep(LoopState(State), TEXT("client drops the connection and rejoins"));
+		Self->TestTrue(TEXT("the drop instruction is written"),
+			WritePeerControl(LoopState(State), TEXT("drop")));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			FMtoUCameraSyncSession* Session = EditorLoopSession(*State);
+			if (State->bSetupFailed || !Session)
+			{
+				return State->bSetupFailed;
+			}
+			// The client rejoins immediately, so the session may never be observed with
+			// no client at all: it adopts the new connection and notices the old one in
+			// the same pump. What has to be observable is the replacement connection and
+			// the peer's own record that it dropped the transport.
+			if (!Session->HasClient())
+			{
+				State->bSawClientGap = true;
+			}
+			return PeerLastDisconnect(LoopState(State)) == TEXT("client_drop")
+				&& Session->GetConnectionSessionId()
+					>= State->Current.ConnectionSessionsBefore + 1;
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, *State, TEXT("the dropped connection to be replaced"));
+			return true;
+		}, 25.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+			return State->bSetupFailed
+				|| (Session && Session->GetConnectionSessionId() >= 2
+					&& Session->GetPublishedFrameCount() > State->Current.PublishedFrames
+					&& Session->IsCurrentTargetPaired());
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the client to rejoin after the drop"));
+			return true;
+		}, 40.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		const bool bRejoined = Session && Session->GetConnectionSessionId() >= 2
+			&& Session->IsCurrentTargetPaired() && Session->IsRunning()
+			&& Session->GetLastError().IsEmpty();
+		Self->TestTrue(TEXT("the session survived the dropped connection"), bRejoined);
+		Self->TestEqual(TEXT("the rejoined client is a new connection identity"),
+			Session ? Session->GetConnectionSessionId() : 0ll, 2ll);
+		FinishLoopStep(LoopState(State), bRejoined, FString::Printf(
+			TEXT("connection identities %lld, published frames %lld, client gap observed %s, ")
+			TEXT("last error '%s'"),
+			Session ? Session->GetConnectionSessionId() : 0ll,
+			Session ? Session->GetPublishedFrameCount() : 0ll,
+			State->bSawClientGap ? TEXT("yes") : TEXT("no"),
+			Session ? *Session->GetLastError() : TEXT("")));
+		return true;
+	}));
+
+	// Repeated start and stop: every stop has to leave the port usable and the target
+	// answered, and every restart has to bring the client back.
+	for (int32 Cycle = 0; Cycle < 3; ++Cycle)
+	{
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, Cycle]()
+		{
+			if (State->bSetupFailed) { return true; }
+			ArmLoopStep(LoopState(State), *FString::Printf(TEXT("stop cycle %d"), Cycle + 1));
+			return true;
+		}));
+		ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+			[State]() -> bool { return State->bSetupFailed || LoopCurrentConverged(LoopState(State)); },
+			[Self, State]() -> bool
+			{
+				LoopTimeout(*Self, LoopState(State), TEXT("the target before stopping to be answered"));
+				return true;
+			}, 20.0f));
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, Cycle]()
+		{
+			if (State->bSetupFailed) { return true; }
+			FMtoUCameraSyncPrototypeModule* Module = EditorLoopModule();
+			if (!Module)
+			{
+				Self->AddError(TEXT("the prototype module disappeared"));
+				State->bSetupFailed = true;
+				return true;
+			}
+			Module->StopSession(TEXT("editor loop stop cycle"));
+			FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+			const bool bStopped = !Session || !Session->IsRunning();
+			Self->TestTrue(TEXT("the module stopped the session"), bStopped);
+			// The port is free again: a client that arrives now is refused.
+			FSocket* PostStop = nullptr;
+			const bool bConnected = ConnectLoopbackClient(State->Port, PostStop);
+			Self->TestFalse(TEXT("the stopped session released its port"), bConnected);
+			CloseLoopbackClient(PostStop);
+			FinishLoopStep(LoopState(State), bStopped, FString::Printf(
+				TEXT("cycle %d stopped, peer cycles %d"), Cycle + 1, PeerCycleCount(LoopState(State))));
+			return true;
+		}));
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, Cycle]()
+		{
+			if (State->bSetupFailed) { return true; }
+			ArmLoopStep(LoopState(State), *FString::Printf(TEXT("restart cycle %d"), Cycle + 1));
+			FString Error;
+			if (!Self->TestTrue(TEXT("following restarts after a stop"),
+				EditorLoopStart(LoopState(State), Error)))
+			{
+				Self->AddError(Error);
+				State->bSetupFailed = true;
+			}
+			return true;
+		}));
+		ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+			[State]() -> bool
+			{
+				FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+				return State->bSetupFailed
+					|| (Session && Session->IsGreeted()
+						&& Session->GetConnectionSessionId() >= 1
+						&& Session->GetPublishedFrameCount() > 0);
+			},
+			[Self, State]() -> bool
+			{
+				LoopTimeout(*Self, LoopState(State), TEXT("the client to return for the next cycle"));
+				return true;
+			}, 40.0f));
+		ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+			[State]() -> bool { return State->bSetupFailed || LoopStepConverged(LoopState(State)); },
+			[Self, State]() -> bool
+			{
+				LoopTimeout(*Self, LoopState(State), TEXT("the restarted session's target to be answered"));
+				return true;
+			}, 20.0f));
+		ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, Cycle]()
+		{
+			if (State->bSetupFailed) { return true; }
+			FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+			const bool bConverged = LoopStepConverged(LoopState(State));
+			Self->TestTrue(TEXT("the restarted session converged"), bConverged);
+			FinishLoopStep(LoopState(State), bConverged, FString::Printf(
+				TEXT("cycle %d restarted, peer cycles %d"), Cycle + 1, PeerCycleCount(LoopState(State))));
+			return true;
+		}));
+	}
+
+	// The last stop, and the evidence the Maya side produced on its own.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		Self->TestTrue(TEXT("the exit instruction is written"),
+			WritePeerControl(LoopState(State), TEXT("exit")));
+		ArmLoopStep(LoopState(State), TEXT("final stop"));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool { return State->bSetupFailed || LoopCurrentConverged(LoopState(State)); },
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the final target to be answered"));
+			return true;
+		}, 20.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		if (State->bSetupFailed) { return true; }
+		const bool bConverged = LoopCurrentConverged(LoopState(State));
+		Self->TestTrue(TEXT("the final target was answered before stopping"), bConverged);
+		if (FMtoUCameraSyncPrototypeModule* Module = EditorLoopModule())
+		{
+			Module->StopSession(TEXT("editor loop finished"));
+		}
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		Self->TestTrue(TEXT("the final stop ended the session"),
+			!Session || !Session->IsRunning());
+		FinishLoopStep(LoopState(State), bConverged, TEXT("final stop"));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+		[State]() -> bool
+		{
+			if (State->bSetupFailed || !State->bPeerStarted)
+			{
+				return true;
+			}
+			State->PeerOutput += FPlatformProcess::ReadPipe(State->PeerPipeRead);
+			return !State->PeerProcess.IsValid()
+				|| !FPlatformProcess::IsProcRunning(State->PeerProcess);
+		},
+		[Self, State]() -> bool
+		{
+			LoopTimeout(*Self, LoopState(State), TEXT("the Maya peer to exit"));
+			return true;
+		}, 45.0f));
+
+	// Collect the peer's own evidence, write the run report and release everything the
+	// check created. This is the teardown command: RunTest returned long before it.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+	{
+		int32 ReturnCode = 0;
+		if (State->PeerProcess.IsValid())
+		{
+			FPlatformProcess::WaitForProc(State->PeerProcess);
+			FPlatformProcess::GetProcReturnCode(State->PeerProcess, &ReturnCode);
+			FPlatformProcess::CloseProc(State->PeerProcess);
+		}
+		if (State->PeerPipeRead)
+		{
+			State->PeerOutput += FPlatformProcess::ReadPipe(State->PeerPipeRead);
+			FPlatformProcess::ClosePipe(State->PeerPipeRead, State->PeerPipeWrite);
+			State->PeerPipeRead = nullptr;
+			State->PeerPipeWrite = nullptr;
+		}
+		SaveJson(State->PeerLogPath, State->PeerOutput);
+
+		TSharedPtr<FJsonObject> PeerResult;
+		const bool bPeerResult = LoadPeerResult(LoopState(State), PeerResult, true);
+		Self->TestTrue(TEXT("the Maya peer wrote its result"), bPeerResult);
+		Self->TestEqual(TEXT("the Maya peer exit code"), ReturnCode, 0);
+		Self->TestTrue(TEXT("the Maya peer reported success"), bPeerResult
+			&& PeerResult->HasTypedField<EJson::Boolean>(TEXT("ok"))
+			&& PeerResult->GetBoolField(TEXT("ok")));
+		Self->TestTrue(TEXT("the peer followed several connection lifetimes"),
+			PeerCycleCount(LoopState(State)) >= 5);
+
+		int32 CyclesWithRestore = 0;
+		int32 CyclesEndedByPublisher = 0;
+		int32 CyclesDroppedByClient = 0;
+		double WorstMarkerDelta = 0.0;
+		bool bSawFirstCut = false;
+		bool bSawEditedCamera = false;
+		int32 RejectedFrames = 0;
+		int32 SubframeApplications = 0;
+		TArray<TSharedPtr<FJsonValue>> CycleEvidence;
+		const TArray<TSharedPtr<FJsonValue>>* Cycles = nullptr;
+		if (bPeerResult && PeerResult->TryGetArrayField(TEXT("cycles"), Cycles) && Cycles)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Cycles)
+			{
+				const TSharedPtr<FJsonObject> Cycle = Value->AsObject();
+				if (!Cycle.IsValid())
+				{
+					continue;
+				}
+				const TSharedPtr<FJsonObject> Restore = GetObject(Cycle, TEXT("restore"));
+				if (Restore.IsValid() && Restore->HasTypedField<EJson::Boolean>(
+					TEXT("restored")) && Restore->GetBoolField(TEXT("restored")))
+				{
+					++CyclesWithRestore;
+				}
+				FString Disconnect;
+				Cycle->TryGetStringField(TEXT("disconnect"), Disconnect);
+				if (Disconnect == TEXT("publisher_end")) { ++CyclesEndedByPublisher; }
+				if (Disconnect == TEXT("client_drop")) { ++CyclesDroppedByClient; }
+				RejectedFrames += static_cast<int32>(
+					GetNumber(Cycle, TEXT("frames_rejected"), 0.0));
+				SubframeApplications += static_cast<int32>(
+					GetNumber(Cycle, TEXT("frames_subframe"), 0.0));
+				WorstMarkerDelta = FMath::Max(WorstMarkerDelta,
+					GetNumber(Cycle, TEXT("max_marker_delta"), 0.0));
+				const TArray<TSharedPtr<FJsonValue>>* Focals = nullptr;
+				if (Cycle->TryGetArrayField(TEXT("focal_lengths"), Focals) && Focals)
+				{
+					for (const TSharedPtr<FJsonValue>& Focal : *Focals)
+					{
+						if (FMath::IsNearlyEqual(Focal->AsNumber(), 50.0, 1e-3))
+						{
+							bSawFirstCut = true;
+						}
+						if (FMath::IsNearlyEqual(Focal->AsNumber(), 120.0, 1e-3))
+						{
+							bSawEditedCamera = true;
+						}
+					}
+				}
+				CycleEvidence.Add(Value);
+			}
+		}
+		Self->TestEqual(TEXT("every connection lifetime released Maya completely"),
+			CyclesWithRestore, PeerCycleCount(LoopState(State)));
+		Self->TestTrue(TEXT("the publisher ended several sessions"), CyclesEndedByPublisher >= 3);
+		Self->TestEqual(TEXT("the client dropped exactly one connection"),
+			CyclesDroppedByClient, 1);
+		Self->TestEqual(TEXT("the client applied every published frame"), RejectedFrames, 0);
+		Self->TestTrue(FString::Printf(
+			TEXT("fractional playhead positions reached Maya (%d applied)"),
+			SubframeApplications), SubframeApplications > 0);
+		Self->TestTrue(TEXT("the first cut reached Maya"), bSawFirstCut);
+		Self->TestTrue(TEXT("the camera edited while parked reached Maya"), bSawEditedCamera);
+		Self->TestTrue(FString::Printf(
+			TEXT("Maya and Unreal agree on the markers (worst delta %.9f)"), WorstMarkerDelta),
+			WorstMarkerDelta > 0.0 && WorstMarkerDelta < 1e-6);
+
+		FMtoUCameraSyncSession* Session = EditorLoopSession(LoopState(State));
+		if (Session)
+		{
+			Self->TestEqual(TEXT("no client line carried discarded bytes"),
+				Session->GetClientLineAnomalyCount(), 0ll);
+			Self->TestEqual(TEXT("no send failed"), Session->GetFailedSendCount(), 0ll);
+			Self->TestEqual(TEXT("the client never tried to control time"),
+				Session->GetRejectedCommandTypes().Num(), 0);
+		}
+
+		const TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
+		Report->SetStringField(TEXT("check"), TEXT("natural editor loop"));
+		Report->SetNumberField(TEXT("port"), State->Port);
+		Report->SetNumberField(TEXT("peer_exit_code"), ReturnCode);
+		Report->SetNumberField(TEXT("peer_cycles"), PeerCycleCount(LoopState(State)));
+		Report->SetNumberField(TEXT("cycles_with_full_restore"), CyclesWithRestore);
+		Report->SetNumberField(TEXT("worst_marker_ndc_delta"), WorstMarkerDelta);
+		Report->SetNumberField(TEXT("subframe_applications"), SubframeApplications);
+		Report->SetArrayField(TEXT("steps"), State->Steps);
+		Report->SetStringField(TEXT("peer_output_tail"), State->PeerOutput.Right(4000));
+		Report->SetArrayField(TEXT("peer_cycle_evidence"), CycleEvidence);
+		if (PeerResult.IsValid())
+		{
+			Report->SetObjectField(TEXT("peer_result"), PeerResult);
+		}
+		Self->TestTrue(TEXT("the editor loop report is written"),
+			SaveJson(FPaths::Combine(State->Evidence, TEXT("editor-loop-report.json")),
+				JsonToText(Report)));
+		Self->AddInfo(FString::Printf(
+			TEXT("editor loop: %d steps, %d peer cycles, %d with a full Maya restore, ")
+			TEXT("worst marker delta %.9f"),
+			State->Steps.Num(), PeerCycleCount(LoopState(State)), CyclesWithRestore, WorstMarkerDelta));
+
+		if (FMtoUCameraSyncPrototypeModule* Module = EditorLoopModule())
+		{
+			Module->StopSession(TEXT("editor loop teardown"));
+		}
+		if (State->bEditorOpened)
+		{
+			ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence();
+		}
+		for (const TWeakObjectPtr<AActor>& Actor : State->OwnedActors)
+		{
+			if (Actor.IsValid())
+			{
+				Actor->Destroy();
+			}
+		}
+		return true;
+	}));
+	return true;
+}
 
 // The evaluated camera is read through public engine API and reported with the units the
 // Maya side consumes: focal length mm, sensor mm, apertures inches, distances cm.
@@ -1302,6 +2486,144 @@ bool FMtoUCameraSyncClientBufferTest::RunTest(const FString& Parameters)
 	}
 
 	Session.Stop(TEXT("test finished"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUCameraSyncShutdownWindowTest,
+	"MtoUCameraSyncPrototype.ShutdownWindow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCameraSyncShutdownWindowTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("editor world"), World)) { return false; }
+	ULevelSequence* Sequence = MakeSequence(FFrameRate(24, 1), FFrameRate(24000, 1),
+		1001 * 1000, 1051 * 1000);
+	ACineCameraActor* Camera = SpawnCamera(*World, FVector(0.0, 0.0, 100.0),
+		FRotator::ZeroRotator, 50.0f, 2.0f, 400.0f);
+	if (!TestNotNull(TEXT("camera"), Camera)) { return false; }
+	AddCut(*Sequence, BindActor(*Sequence, *World, *Camera, TEXT("CamA")),
+		1001 * 1000, 1051 * 1000);
+
+	// The listener runs on its own thread, so connections can arrive while the game
+	// thread is inside Stop(): it has to close the listener thread first and only then
+	// drain what the listener queued, otherwise the last accepted socket is leaked.
+	// Every cycle below stops the session with a burst of unadopted connections.
+	const uint16 Port = ReserveLoopbackPort();
+	const int32 Cycles = 6;
+	const int32 BurstClients = 12;
+	int64 ClosedByStop = 0;
+	int64 ClientsClosed = 0;
+	int64 ClientsOpened = 0;
+	if (!TestTrue(TEXT("loopback port reserved"), Port != 0))
+	{
+		Camera->Destroy();
+		return false;
+	}
+
+	for (int32 Cycle = 0; Cycle < Cycles; ++Cycle)
+	{
+		FMtoUCameraSyncSession Session;
+		FMtoUCameraSyncSession::FConfig Config;
+		Config.Port = Port;
+		FString Error;
+		if (!TestTrue(TEXT("session starts on the reused port"),
+			Session.Start(*World, *Sequence, Config, Error)))
+		{
+			AddError(Error);
+			break;
+		}
+
+		FSocket* Leader = nullptr;
+		const bool bLeaderConnected = ConnectLoopbackClient(Port, Leader);
+		TestTrue(TEXT("the leading client connects"), bLeaderConnected);
+		if (bLeaderConnected)
+		{
+			++ClientsOpened;
+			TestTrue(TEXT("the leading client is adopted"), PumpUntil(Session,
+				[&Session]() { return Session.HasClient(); }, 400, 0.01));
+			TestTrue(TEXT("the adopted client greets"), GreetLoopbackClient(Session, *Leader));
+		}
+
+		TArray<FSocket*> Burst;
+		for (int32 Index = 0; Index < BurstClients; ++Index)
+		{
+			FSocket* Client = nullptr;
+			if (ConnectLoopbackClient(Port, Client))
+			{
+				Burst.Add(Client);
+				++ClientsOpened;
+			}
+		}
+		TestTrue(TEXT("the burst connects while the session is running"), Burst.Num() > 0);
+
+		// Connections that arrive while Stop() is running are the actual risk: the
+		// listener thread accepts them there, so the hammer below connects for the whole
+		// duration of the stop instead of stopping before it.
+		FShutdownWindowHammer Hammer(Port, 0.25);
+		FRunnableThread* HammerThread =
+			FRunnableThread::Create(&Hammer, TEXT("MtoU shutdown window"), 0, TPri_Normal);
+		TestNotNull(TEXT("the connection hammer starts"), HammerThread);
+		Session.Stop(TEXT("shutdown window check"));
+		TestFalse(TEXT("the session is stopped"), Session.IsRunning());
+		if (HammerThread)
+		{
+			Hammer.RequestStop();
+			HammerThread->WaitForCompletion();
+			delete HammerThread;
+		}
+		TArray<FSocket*> Late;
+		Hammer.Drain(Late);
+		ClientsOpened += Late.Num();
+		Burst.Append(Late);
+		AddInfo(FString::Printf(TEXT("cycle %d: %d clients, %d of them connected during the stop"),
+			Cycle, Burst.Num() + 1, Late.Num()));
+		for (FSocket* Client : Burst)
+		{
+			FString Received;
+			if (ClientSeesServerClose(*Client, 5.0, Received))
+			{
+				++ClientsClosed;
+			}
+			else
+			{
+				AddError(FString::Printf(
+					TEXT("a connection the listener queued stayed open after stop (cycle %d)"),
+					Cycle));
+			}
+			CloseLoopbackClient(Client);
+		}
+		if (Leader)
+		{
+			FString Received;
+			if (ClientSeesServerClose(*Leader, 5.0, Received))
+			{
+				++ClientsClosed;
+				TestTrue(TEXT("the adopted client was told the session ended"),
+					Received.Contains(TEXT("\"type\":\"end\"")));
+			}
+			else
+			{
+				AddError(TEXT("the adopted connection stayed open after stop"));
+			}
+			CloseLoopbackClient(Leader);
+		}
+		ClosedByStop += Session.GetPendingClientsClosedOnStop();
+
+		// A stopped session leaves the port free: a late client is refused.
+		FSocket* PostStop = nullptr;
+		const bool bPostStopConnected = ConnectLoopbackClient(Port, PostStop);
+		TestFalse(TEXT("no listener accepts clients after stop"), bPostStopConnected);
+		CloseLoopbackClient(PostStop);
+	}
+
+	TestEqual(TEXT("every connection of every cycle was closed"), ClientsClosed, ClientsOpened);
+	AddInfo(FString::Printf(
+		TEXT("%lld connections over %d start/stop cycles; queued sockets closed by Stop(): %lld"),
+		ClientsOpened, Cycles, ClosedByStop));
+	Camera->Destroy();
 	return true;
 }
 

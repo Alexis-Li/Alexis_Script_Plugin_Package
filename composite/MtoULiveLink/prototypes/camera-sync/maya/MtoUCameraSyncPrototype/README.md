@@ -19,6 +19,7 @@ Nothing here imports or depends on the product's `MtoULiveLink.py`.
 | `tests/test_camera_sync_mapping.py` | Pure unit tests; runs under CPython 3 and under mayapy. |
 | `tests/maya_host_camera_tests.py` | mayapy host checks in a disposable scene plus the opt-in Arnold render check. |
 | `tests/maya_camera_sync_peer.py` | Opt-in cross-host peer: connects to a real publisher and writes a phase tracked result JSON. |
+| `tests/maya_camera_sync_live_peer.py` | Long-run peer for the natural editor-loop check: follows whatever the open Unreal Sequencer publishes across several connection lifetimes, drops the connection on request, rejoins, and records what every session released. |
 | `tests/mock_camera_sync_server.py` | Fixture driven fake Unreal publisher, and the fixture authoring side (including the Unreal-side marker NDC). |
 | `tests/maya_render_marker_check.py` | Rendered framing check: renders the synced camera with Arnold and compares marker centroids with the projection maths. |
 | `tests/__init__.py` | Makes the folder importable for unittest discovery. |
@@ -38,6 +39,9 @@ python -m unittest discover \
 # 2. mayapy host checks (disposable scene, JSON evidence)
 "$MAYAPY" composite/MtoULiveLink/prototypes/camera-sync/maya/MtoUCameraSyncPrototype/tests/maya_host_camera_tests.py \
   --result host_result.json
+#    applies a representative payload, exercises the borrowed-camera and
+#    repeated enter/exit paths against one publisher, and checks that every
+#    session releases the time, the resolution gate, the camera and its socket
 #    ... add --render to also run the Arnold framing check
 "$MAYAPY" .../tests/maya_host_camera_tests.py --result host_result.json --render --render-dir render_evidence
 
@@ -50,6 +54,13 @@ python -m unittest discover \
 python .../tests/mock_camera_sync_server.py --write-fixture fixture.json --frames 3 --port 54388
 python .../tests/mock_camera_sync_server.py --fixture fixture.json --applied-log applied.json
 "$MAYAPY" .../tests/maya_camera_sync_peer.py --fixture fixture.json --result result.json
+
+# 5. long-run peer for the Unreal editor-loop check (the Unreal test starts this
+#    itself with the port, result and control paths it owns)
+"$MAYAPY" .../tests/maya_camera_sync_live_peer.py --port 54330 \
+  --result live.json --control control.json --idle-exit 12
+#    writes {"actions":[{"action":"drop"}]} to the control file to make the
+#    client drop the transport without `bye`, and "exit" to end the peer
 ```
 
 `MtoUCameraSyncPrototype.py` can also be run on its own, which is the manual
@@ -166,16 +177,34 @@ The peer's result JSON renames those to the Unreal side's vocabulary
   state exactly as it was. A frame that repeats the previous state (the
   publisher's heartbeat) does not touch Maya at all, which keeps the undo queue
   clean.
-* `stop()` restores the Maya current time captured at session start, deletes
-  the camera this session created (a pre-existing node of the same name is
-  reused, never deleted), detaches the idle pump and reports a summary. A lost
-  connection reports the reason and leaves Maya usable.
+* `stop()` releases everything one session owns: the Maya current time captured
+  at session start, the scene resolution gate the frames overwrote
+  (`defaultResolution` including its device aspect), the camera, the idle pump
+  and the socket. A camera this session created is deleted; a pre-existing node
+  that already carried the session's name is reused and gets its attributes and
+  placement written back, so a borrowed node looks the same after the session.
+  The summary reports each of those (`restored_time`, `resolution_restored`,
+  `camera_removed` or `reused_camera_restored`). A lost connection reports the
+  reason and leaves Maya usable, and followed by `stop()` the scene is released
+  the same way.
+
+Repeating sessions is safe: `stop()` clears the camera, resolution, callback and
+socket state, and `connect()` captures a fresh start time, so the second session
+behaves exactly like the first. `abort()` drops the transport without the `bye`
+handshake, which is what a client that crashes or loses its network looks like
+to the publisher; the session state stays intact so `stop()` still releases the
+scene. A reconnect attempt that the publisher refuses, resets, or ends during
+the handshake is reported as a transport or handshake failure instead of raising
+through the caller or waiting for a session that will not come.
 
 ## Host notes and limits
 
-Batch mayapy has no idle events; call `pump()` there. The interactive Maya
-follower can use `--idle-pump`. The disposable camera and previous current frame
-are restored on stop, and the scene is never saved by this prototype.
+Batch mayapy has no idle events and creates no scriptJobs, so `attach_idle_pump`
+reports that the idle path is unavailable and `pump()` is the headless driver;
+the callback lifecycle is therefore not host-verified here. The interactive Maya
+follower can use `--idle-pump`. The disposable camera, the previous current
+frame and the scene resolution gate are restored on stop, and the scene is never
+saved by this prototype.
 
 The keyed-joint witness verifies one sampled value and its time identity. It
 does not use the MtoULiveLink product's pose channel or prove full-character

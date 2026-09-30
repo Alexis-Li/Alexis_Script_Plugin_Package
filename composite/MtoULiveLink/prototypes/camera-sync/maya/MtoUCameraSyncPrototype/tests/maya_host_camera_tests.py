@@ -138,6 +138,7 @@ def main(argv=None):
         follower.session = dict(mock.session_message(fixture, 0))
         range_before = (float(cmds.playbackOptions(query=True, minTime=True)),
                         float(cmds.playbackOptions(query=True, maxTime=True)))
+        resolution_before = _resolution_snapshot(cmds)
         applied = follower.apply_frame(frame, follower.session)
         transform, shape = follower.camera_nodes
 
@@ -303,9 +304,14 @@ def main(argv=None):
 
         stop_summary = follower.stop()
         checks.record("stop", stop_summary)
+        checks.record("scene_resolution_before", resolution_before)
+        checks.record("scene_resolution_after", _resolution_snapshot(cmds))
         check("stop restored the captured time",
               abs(float(cmds.currentTime(query=True)) - fixture["maya_start_frame"]) <= 1e-9,
               str(cmds.currentTime(query=True)))
+        check("stop restored the scene resolution gate",
+              _resolution_snapshot(cmds) == resolution_before,
+              "{0} vs {1}".format(_resolution_snapshot(cmds), resolution_before))
         check("stop removed the camera it created",
               not cmds.objExists(fixture["camera_name"]))
         check("stop left no scriptJob", not (cmds.scriptJob(listJobs=True) or []),
@@ -434,6 +440,144 @@ def main(argv=None):
               abs(float(cmds.currentTime(query=True)) - fixture["maya_start_frame"]) <= 1e-9,
               str(transport_stop))
 
+        # ------------------------------------------------- borrowed camera
+        # A node that already carries the session's camera name is reused instead of
+        # deleted, so the session has to write its own values back on stop: a borrowed
+        # node must look exactly as it did before the session.
+        report["phase"] = "borrowed"
+        borrowed_name = "MtoUBorrowedCamera"
+        borrowed_transform = cmds.createNode("transform", name=borrowed_name)
+        borrowed_shape = cmds.createNode("camera", name=borrowed_name + "Shape",
+                                        parent=borrowed_transform)
+        cmds.xform(borrowed_transform, worldSpace=True,
+                   matrix=[0.9659258, 0.2588190, 0.0, 0.0,
+                           -0.2588190, 0.9659258, 0.0, 0.0,
+                           0.0, 0.0, 1.0, 0.0,
+                           120.0, 45.0, -240.0, 1.0])
+        cmds.setAttr(borrowed_shape + ".focalLength", 35.0)
+        cmds.setAttr(borrowed_shape + ".fStop", 11.0)
+        cmds.setAttr(borrowed_shape + ".farClipPlane", 4321.0)
+        cmds.setAttr(borrowed_shape + ".displayResolution", False)
+        borrowed_before = _camera_snapshot(cmds, borrowed_transform, borrowed_shape, applier)
+        borrowed_follower = applier.CameraSyncFollower(
+            port=1, camera_name=borrowed_name,
+            maya_origin_frame=fixture["maya_start_frame"])
+        borrowed_follower._scene_fps = 24.0
+        borrowed_follower._start_time = float(cmds.currentTime(query=True))
+        borrowed_follower._undo_state = bool(cmds.undoInfo(query=True, state=True))
+        borrowed_follower.session = dict(mock.session_message(fixture, 0))
+        borrowed_report = borrowed_follower.apply_frame(frame, borrowed_follower.session)
+        check("a pre-existing camera of the session's name is accepted",
+              borrowed_report["status"] == "applied",
+              str(borrowed_report.get("detail")))
+        check("the borrowed camera is the existing node",
+              borrowed_follower.camera_nodes == (borrowed_name, borrowed_shape),
+              str(borrowed_follower.camera_nodes))
+        checks.record("borrowed_during", _camera_snapshot(
+            cmds, borrowed_transform, borrowed_shape, applier))
+        borrowed_summary = borrowed_follower.stop()
+        checks.record("borrowed_stop", borrowed_summary)
+        checks.record("borrowed_before", borrowed_before)
+        checks.record("borrowed_after", _camera_snapshot(
+            cmds, borrowed_transform, borrowed_shape, applier))
+        check("the borrowed camera still exists after stop",
+              cmds.objExists(borrowed_name) and cmds.objExists(borrowed_shape))
+        borrowed_after = _camera_snapshot(cmds, borrowed_transform, borrowed_shape, applier)
+        checks.record("borrowed_after", borrowed_after)
+        check("stop restored the borrowed camera's attributes",
+              _camera_differences(borrowed_before, borrowed_after) == [],
+              str(_camera_differences(borrowed_before, borrowed_after)))
+
+        # -------------------------------------------- repeated enter and exit
+        # The natural user path: connect, follow, stop, connect again. Every cycle has
+        # to release its connection, its camera, its idle callback, the scene gate and
+        # the current time, and a later cycle has to work exactly as the first did.
+        report["phase"] = "cycles"
+        cycles_fixture = mock.build_fixture(scene_fps=24.0,
+                                            maya_start_frame=fixture["maya_start_frame"],
+                                            frames_to_apply=2, port=0)
+        # One socket session after another, each ended by the client's own stop: the
+        # publisher only closes a connection it has fully read, and a fresh session has
+        # to start exactly as the first one did.
+        cycles_fixture["single_session"] = False
+        cycles_fixture["maya_origin_frame"] = fixture["maya_start_frame"]
+        publisher = mock.MockPublisher(cycles_fixture, host="127.0.0.1", port=0)
+        port = publisher.start()
+        cycle_records = []
+        cycles = 3
+        range_before_cycles = (float(cmds.playbackOptions(query=True, minTime=True)),
+                               float(cmds.playbackOptions(query=True, maxTime=True)))
+        gate_before_cycles = _resolution_snapshot(cmds)
+        witness_keys_before_cycles = int(
+            cmds.keyframe(witness, query=True, keyframeCount=True) or 0)
+        for cycle in range(cycles):
+            cycle_start = float(fixture["maya_start_frame"]) - 7.0 - cycle
+            cmds.currentTime(cycle_start)
+            follower_cycle = applier.CameraSyncFollower(
+                port=port, maya_origin_frame=fixture["maya_start_frame"])
+            job = follower_cycle.attach_idle_pump(force=True)
+            follower_cycle.connect()
+            deadline = time.time() + 30.0
+            while time.time() < deadline and follower_cycle.frames_applied < 2:
+                follower_cycle.pump()
+                time.sleep(0.002)
+            summary = follower_cycle.stop()
+            record = {
+                "index": cycle,
+                "idle_job": job,
+                "idle_note": follower_cycle.idle_pump_note,
+                "job_reference_cleared": follower_cycle._script_job is None,
+                "script_jobs_listed": cmds.scriptJob(listJobs=True) is not None,
+                "script_jobs": list(cmds.scriptJob(listJobs=True) or []),
+                "frames_applied": follower_cycle.frames_applied,
+                "connected": follower_cycle.connected,
+                "state": follower_cycle.state,
+                "camera_exists": bool(cmds.objExists(applier.DEFAULT_CAMERA_NAME)),
+                "current_time": float(cmds.currentTime(query=True)),
+                "expected_time": cycle_start,
+                "resolution": _resolution_snapshot(cmds),
+                "stop": summary,
+            }
+            cycle_records.append(record)
+        checks.record("cycles", cycle_records)
+        publisher.stop()
+        for record in cycle_records:
+            label = "cycle {0}".format(record["index"])
+            check("{0} applied the publisher's frames".format(label),
+                  record["frames_applied"] >= 2, str(record["frames_applied"]))
+            check("{0} released its connection".format(label),
+                  record["connected"] is False, str(record["connected"]))
+            check("{0} removed its camera".format(label),
+                  record["camera_exists"] is False, str(record["camera_exists"]))
+            check("{0} restored the current time".format(label),
+                  abs(record["current_time"] - record["expected_time"]) <= 1e-9,
+                  "{0} vs {1}".format(record["current_time"], record["expected_time"]))
+            check("{0} restored the scene resolution gate".format(label),
+                  record["resolution"] == gate_before_cycles,
+                  "{0} vs {1}".format(record["resolution"], gate_before_cycles))
+            check("{0} left no scriptJob behind".format(label),
+                  record["script_jobs"] == [], str(record["script_jobs"]))
+            check("{0} released its callback reference".format(label),
+                  record["job_reference_cleared"] is True,
+                  "{0} ({1})".format(record["job_reference_cleared"], record["idle_note"]))
+        check("repeated sessions left the playback range alone",
+              (float(cmds.playbackOptions(query=True, minTime=True)),
+               float(cmds.playbackOptions(query=True, maxTime=True))) == range_before_cycles)
+        check("repeated sessions left the keyed witness alone",
+              int(cmds.keyframe(witness, query=True, keyframeCount=True) or 0)
+              == witness_keys_before_cycles)
+        check("repeated sessions removed every camera they created",
+              not cmds.objExists(applier.DEFAULT_CAMERA_NAME))
+        checks.record("cycles_applied_reports", len(publisher.applied))
+        expected_reports = cycles * sum(int(frame.get("repeat", 1))
+                                        for frame in cycles_fixture["frames"])
+        check("every cycle reported its frames to the publisher",
+              len(publisher.applied) == expected_reports,
+              "{0} reports for {1} cycles ({2} expected per cycle)".format(
+                  len(publisher.applied), cycles, expected_reports // cycles))
+        checks.record("script_jobs_listed_in_batch",
+                      any(record["script_jobs_listed"] for record in cycle_records))
+
         # ------------------------------------------------------- render check
         if args.render:
             report["phase"] = "render"
@@ -473,6 +617,55 @@ def main(argv=None):
     for failure in checks.failures:
         print("FAILED " + failure)
     return 0 if report["ok"] else 1
+
+
+def _resolution_snapshot(cmds):
+    """The scene's own resolution gate, which a session must leave untouched."""
+    return {plug: cmds.getAttr(plug) for plug in (
+        "defaultResolution.width",
+        "defaultResolution.height",
+        "defaultResolution.pixelAspect",
+        "defaultResolution.deviceAspectRatio")}
+
+
+def _camera_snapshot(cmds, transform, shape, applier):
+    """The camera state a session owns, plus the placement it writes."""
+    state = {"attributes": {attribute: cmds.getAttr("{0}.{1}".format(shape, attribute))
+                            for attribute in applier.MANAGED_ATTRIBUTES}}
+    state["world_matrix"] = [float(value) for value in
+                             cmds.xform(transform, query=True, worldSpace=True,
+                                        matrix=True)]
+    return state
+
+
+def _same_value(first, second, tolerance=1e-9):
+    """Floats compare with a tolerance; everything else exactly."""
+    if isinstance(first, bool) or isinstance(second, bool):
+        return first == second
+    if isinstance(first, (int, float)) and isinstance(second, (int, float)):
+        return abs(float(first) - float(second)) <= tolerance
+    return first == second
+
+
+def _camera_differences(before, after):
+    """The camera keys that changed, so a failed restore names what it changed."""
+    differences = []
+    for key in sorted(set(before["attributes"]) | set(after["attributes"])):
+        first = before["attributes"].get(key)
+        second = after["attributes"].get(key)
+        if not _same_value(first, second):
+            differences.append("{0}: {1!r} -> {2!r}".format(key, first, second))
+    first_matrix = before["world_matrix"]
+    second_matrix = after["world_matrix"]
+    if len(first_matrix) != len(second_matrix):
+        differences.append("world_matrix length {0} -> {1}".format(
+            len(first_matrix), len(second_matrix)))
+    else:
+        for index, (first, second) in enumerate(zip(first_matrix, second_matrix)):
+            if not _same_value(first, second):
+                differences.append("world_matrix[{0}]: {1!r} -> {2!r}".format(
+                    index, first, second))
+    return differences
 
 
 def _refuses_seconds(cmds, applier):
