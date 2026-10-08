@@ -8,7 +8,9 @@ assignment the file carries while showing the geometry in one uniform gray,
 places it in the handoff's world (or converts it into the camera route's world on
 request), and compares what Maya actually holds against the manifest so neither
 host is trusted about the result. The previous reference is replaced only after
-the comparison passed.
+the comparison passed and the new container resolved every recorded path; a
+takeover that fails on the way is rolled back, and the report says which state
+the scene is in.
 
 `transfer.md` is the frozen contract; this folder implements the Maya half of
 its "Maya report schema", "Media rule", "Worlds and the node matrix", "Object
@@ -83,10 +85,15 @@ report to stdout; without it the run prints a short summary.
    world matrix and world bounding box, and compares them with the manifest:
    position, world box size, pivot-to-bounds-centre offset, surface centroid and
    the node matrix's axis angles.
-7. Replaces the previous reference only when the comparison reported no problem:
-   the old container is deleted and the staging namespace is renamed into the
-   container's name. On any problem the staging namespace is deleted again and
-   the previous reference stays exactly as it was.
+7. Replaces the previous reference only when the comparison reported no
+   problem, and never before the new one is in place: the previous, owned
+   container is renamed aside into a free `<container>_Retiring` name, the
+   staging namespace takes the container's name, every recorded path is
+   re-resolved inside it, and only then is the retired reference deleted. A
+   failure anywhere on that path rolls the takeover back — the container this run
+   created is deleted and the retired reference is renamed back. On any earlier
+   problem the staging namespace is deleted again and the previous reference
+   stays exactly as it was.
 
 ## Container naming, and the one host limit
 
@@ -98,18 +105,37 @@ exists), so the group lives *inside* its own namespace and its full name is
 `|MtoU_UE_SceneRef:MtoU_UE_SceneRef`. The report carries both parts plus the
 group's full path.
 
-A run works in a **staging namespace**, `<container>_Incoming`, with a group of
-the same name inside it. The previous reference is untouched while the new import
-is measured; when the comparison reports no problem the previous container
-(namespace + group, plus a legacy root-level group of that name) is deleted and
-the staging namespace is **renamed** to the container's name
-(`cmds.namespace(rename=...)`), with its group renamed to
-`<container>:<container>`. A rename moves no node, so the measurements stay valid
-and a level costs two string operations instead of a per-node swap; every
-recorded path is then re-resolved by short name inside the final container and
-reported. A run that fails, or `--dry-run`, deletes the staging namespace and
-keeps the previous reference exactly as it was; a staging namespace left behind
-by an interrupted run is deleted and reported (`update.stale_staging_removed`).
+A run works in a **staging namespace**: the first free name of the
+`<container>_Incoming`, `<container>_Incoming_1`, ... family, with a group of the
+same name inside it, so a namespace of that name that belongs to the scene is
+neither emptied nor reused. The group carries this tool's ownership mark (the
+string attribute `mtouSceneRefContainer`, value
+`mtou-scene-ref-container/1 <namespace>`), and that mark is what makes a
+container replaceable: a namespace, group or root-level node of the container's
+name without it is refused (`CONTAINER_NOT_OWNED`) instead of deleted, and so is
+another top-level transform inside an owned namespace.
+
+The previous reference is untouched while the new import is measured. When the
+comparison reports no problem the previous, owned container (namespace + group,
+or a legacy root-level group of that name) is **renamed aside** into a free
+`<container>_Retiring` name, the staging namespace is **renamed** to the
+container's name (`cmds.namespace(rename=...)`), its group is renamed to
+`<container>:<container>` and its mark is rewritten for that name. A rename moves
+no node, so the measurements stay valid and a level costs three string operations
+instead of a per-node swap; every recorded path is then re-resolved by short name
+inside the final container, and only when none is missing is the retired
+reference deleted. A failure in that sequence — the namespace rename, the group
+rename, or a recorded path that does not resolve — deletes the container this run
+created and renames the retired reference back, so the previous reference is
+never lost, and `update.rolled_back` with `update.rollback` says what happened.
+
+A run that fails earlier, or `--dry-run`, deletes the staging namespace again; a
+staging namespace or a retiring namespace an interrupted run left behind is
+recovered before the next run proceeds (deleted, or renamed back to the
+container's name) and reported in `update.recovery`. `container.kept_existing`
+and `container.after_run` are read from the scene at the end of the run — the
+previous reference is looked up by UUID — so the report states what the scene
+holds rather than what the run intended.
 
 What this host's `fbxmaya` plugin actually accepts is recorded in the report:
 
@@ -301,14 +327,17 @@ handoff is ASCII.
   take on this host. The importer captures the session state before the import,
   restores the frame rate, playback range and current time afterwards, and
   records every difference it had to undo in `scene.import_side_effects`.
-* The import happens in the staging namespace `<container>_Incoming` first, and
-  the previous reference is only replaced after the comparison passed. A failed
-  or `--dry-run` run deletes the staging namespace again and leaves the previous
-  reference exactly as it was; the report says which of the two happened in
-  `update`.
-* Only the container namespace, its group, its staging namespace and a legacy
-  root-level group of the same name are created, replaced or deleted. Nothing
-  outside them is renamed, reparented, reassigned or deleted.
+* The import happens in the run's own staging namespace first, and the previous
+  reference is only replaced after the comparison passed and the new container
+  resolved every recorded path. A failed or `--dry-run` run deletes the staging
+  namespace again and leaves the previous reference exactly as it was; a takeover
+  that fails after the rename is rolled back and the retired reference is put
+  back. The report says which of those happened in `update` and names the state
+  the scene is in, by UUID, in `container`.
+* Only nodes carrying this tool's ownership mark, and the staging and retiring
+  namespaces this tool created, are created, replaced or deleted. Nothing else is
+  renamed, reparented, reassigned or deleted: a same-named namespace this tool
+  does not own is refused, and a staging name it does not own is avoided.
 * The gray material is only created when `--shading material` asks for it, in the
   root namespace, and reused by later runs. If a node of that name exists and is
   not a lambert, the run refuses instead of renaming or replacing an object it
@@ -400,7 +429,7 @@ additions are `decided_by`, `winner`, `camera_contract`, `node_frame_factor`,
 
 ## Evidence
 
-`tests/maya_host_scene_ref_tests.py` (165 checks) authors its own reference
+`tests/maya_host_scene_ref_tests.py` (274 checks) authors its own reference
 geometry and handoffs, synthesizes the manifest from the measured scene values
 through the documented axis map, and asserts on a disposable scene: the clean
 handoff imports with every object matched by name and every error inside
@@ -411,11 +440,17 @@ frame rate, current time and root objects -- exactly as they were; the
 least-squares fit, its reflection determinant and its permutation; a manifest
 value that is 25 cm wrong, one that names a node the scene does not hold, and
 one whose node name was renamed so it can only be matched by world position;
-the refusal of a textured handoff and its allowed import; refusals for a
-non-FBX file, a missing file, a manifest with another schema, malformed manifest
-JSON, a manifest in metres, a manifest world that is not Z up, a scene in inches
-and an unusable container name; the contract's report shape; and the command
-line entry point in its own process, which writes its own report and exits 0.
+the refusal of a handoff that delivers image data and its allowed import;
+refusals for a non-FBX file, a missing file, a manifest with another schema,
+malformed manifest JSON, a manifest in metres, a manifest world that is not Z up,
+a scene in inches and an unusable container name; the update contract under
+injected failures, where a namespace rename, a group rename and a final path read
+back that does not resolve are all rolled back with the previous reference
+intact, a partial import cleans up its own staging namespace, a namespace of the
+container's or the staging name this tool does not own is refused or avoided, and
+a namespace an interrupted run left behind is recovered; the contract's report
+shape; and the command line entry point in its own process, which writes its own
+report and exits 0.
 
 The self authored fixtures also pin the round trip: with four reference objects
 placed off the origin and three of them rotated, the imported Maya world

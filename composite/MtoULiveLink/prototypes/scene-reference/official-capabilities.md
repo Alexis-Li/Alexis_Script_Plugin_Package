@@ -1,4 +1,4 @@
-# Official level export capability for a texture-free Maya reference
+# Official level export capability for a Maya reference that delivers no image data
 
 Reviewed 2026-09-28 against the installed Unreal Engine 5.7.4 source tree and
 the Maya 2024 installation on this machine. Every claim below is either a quote
@@ -56,7 +56,7 @@ export at all; it is not a filter either.
 
 ## Texture behaviour of the two candidate paths
 
-**OBJ is not usable as a texture-free handoff.** `ULevelExporterOBJ::ExportText`
+**OBJ is not usable as an image-data-free handoff.** `ULevelExporterOBJ::ExportText`
 asks `"Would you like to export the materials as images (slower)?"`, and outside
 that dialog the reply is forced to *yes*:
 
@@ -119,11 +119,11 @@ derived from the triangles, not from the render vertex list.
 | Blueprint actors | `ExportActor(actor, true, …)`; every qualifying component becomes a child node when there is more than one | yes, with a two-component Blueprint actor |
 | `UInstancedStaticMeshComponent` | `ExportInstancedMeshToFbx`: one child node per instance named by its index, instance transform relative to the component | yes, three instances |
 | Actor with several mesh components | one child node per component, named after the component | yes |
-| `ALandscapeProxy` | explicit landscape branch (`ExportLandscapeToFbx`), per-component quads in world space | measured (2026-09-29) with a programmatic 64x64, one component landscape: the engine wrote `Vertices: *4096` and `PolygonVertexIndex: *23814` (7938 polygons) for the actor while the scope's own landscape record counted no triangles at all -- the geometry it exports is real, the prototype's scale numbers are not its geometry count |
+| `ALandscapeProxy` | explicit landscape branch (`ExportLandscapeToFbx`): one mesh per landscape actor, built from `FLandscapeComponentDataInterface` vertices at `ALandscapeProxy::ExportLOD` with two triangles per quad and the component's relative location added | measured (2026-09-29) with a programmatic 64x64, one component landscape: the engine wrote `Vertices: *4096` and `PolygonVertexIndex: *23814` (7938 polygons) for the actor. Measured again (2026-10-08) with a resolver that walks the same source: the manifest's bounds, surface centroid, triangle and vertex counts describe that geometry, and the Maya importer validates the handoff with size error `0.0 cm` and surface-centroid error `6.4e-13 cm` over `7938` triangles. The actor's own collision/editor bounds are no longer used, which is what the first handoff failed its size check on (`512 cm`). Only this fixture landscape is verified; a production terrain with a visibility layer, several components or another export LOD is not |
 | `ALevelInstance` | **refused**: `IsSomethingToExport` warns `"Exporting Level Instances to FBX is not supported."` and the export skips it | measured (2026-09-29) with a real level instance over a saved sublevel: the scope reports it as unsupported with that reason, produces no object and selects nothing; an isolated export of only the instance answers success while writing no file, and the refusal message appears exactly once |
 | Nanite | no separate actor class; the mesh branch exports the hi-res mesh description when `bExportSourceMesh` and `IsNaniteEnabled()`; the OBJ path always uses LOD 0 | measured (2026-09-29) with a duplicated engine cube whose `NaniteSettings.bEnabled` reads back true (`source_model=valid`, no hi-res mesh description): the file carries the render data (48 triangles, 54 vertices at LOD 0), the node arrives in Maya and matches, and no warning mentions it. With `bExportSourceMesh` off the Nanite-data branch (`FbxMainExport.cpp:5469-5488`) cannot be taken, so what the handoff carries is render geometry |
 | Lights, cameras, emitters | exported as nodes, not geometry | reported as skipped non-geometry by the scope resolver |
-| World Partition | cells stream like streaming levels; content that is not streamed in is not in the world | measured (2026-09-29) on a fixture level built from the engine's `OpenWorld` template: as authored (streaming enabled in the editor, no streaming source) all three placed actors are absent from the loaded world and the scope holds only the template's always-loaded actor, which is exactly how not-streamed content appears; with `UWorldPartition::SetEnableStreaming(false)` the three placed actors enter the scope and the export writes four objects, and the manifest reports `world_partition: true`. The template's own 2 km landscape (1 landscape + 64 streaming proxies) was deleted by the fixture builder so the scope measured is the one it authored |
+| World Partition | cells stream like streaming levels; content that is not streamed in is not in the world | measured (2026-09-29) on a fixture level built from the engine's `OpenWorld` template: as authored (streaming enabled in the editor, no streaming source) all three placed actors are absent from the loaded world and the scope holds only the template's always-loaded actor, which is exactly how not-streamed content appears; with `UWorldPartition::SetEnableStreaming(false)` the three placed actors enter the scope and the export writes four objects, and the manifest reports `world_partition: true`. The template's own 2 km landscape (1 landscape + 64 streaming proxies) was deleted by the fixture builder so the scope measured is the one it authored. Measured again (2026-10-08) with a read-only descriptor inventory: the partition's actor descriptors are walked without loading anything, their spawned state is counted, and the manifest carries `scope.completeness` plus `scope.world_partition` (descriptor, spawned, unspawned authored and generated-HLOD counts, and the unspawned actor paths). The same fixture reports `76` descriptors, `9` spawned and `3` authored actors absent with streaming on, `12` spawned and `0` authored actors absent with streaming off, the other `64` being generated HLOD proxies in both states; the Maya peer turns the first case into a `SCOPE_LOADED_ONLY` warning naming those counts |
 
 ## Editor-world streaming
 
@@ -133,10 +133,18 @@ for any non-game world. `bShouldBeLoaded` only decides in a game world, and
 `bShouldBeVisibleInEditor` only affects PIE. A "requested but not loaded"
 sublevel therefore appears in the editor as a level package the loaded world
 does not hold at all, and that is the case the prototype tests; World Partition
-cells that are not streamed in are another case. The current resolver does not
-inventory their unloaded actor descriptors or cells, so they are not completely
-reported by the traditional sublevel checks. A `world_partition` flag alone
-does not establish scope completeness.
+cells that are not streamed in are another case, and the resolver now answers it
+from the partition itself: it walks the world partition's actor descriptor
+containers (a read-only operation that loads no content), counts how many
+descriptors the loaded world has spawned, names the unspawned authored actors and
+counts generated HLOD proxies apart, and writes `scope.completeness`
+(`confirmed` / `not_confirmed`) with that inventory into the manifest. A
+`world_partition` flag alone would not establish scope completeness; the
+inventory and its spawned/absent counts do, and the Maya peer reports the
+unconfirmed case as a `SCOPE_LOADED_ONLY` warning. What this does not cover: the
+recorded path list is capped at 200 entries, it reports actor descriptors rather
+than streamed cell geometry, and a `not_confirmed` scope is still exactly the
+content the loaded cells had spawned.
 
 ## Maya side
 
@@ -186,9 +194,14 @@ world by one explicit conversion, compares what Maya holds against the manifest,
 and only then replaces the previous reference. Nothing in this route needs a new
 dependency, a new host, or a change to the product's protocol.
 
-This describes the intended success path. The current importer has confirmed
-swap recovery, namespace ownership and partial-import cleanup defects; Landscape
-manifest verification and World Partition completeness remain unaccepted. See
-the [current acceptance record](../../../../docs/project-history/mtou-livelink/issue-53-scene-reference-acceptance.md)
-for the review evidence and completion conditions before relying on repeat import
-or failure recovery.
+The update path is built around keeping the previous reference until a takeover
+is complete: the container group carries an ownership mark, a takeover renames
+the previous container aside instead of deleting it, deletes it only after the
+new container resolved every recorded path, and restores it when any step fails;
+a same-named namespace this tool does not own is refused, and a staging name it
+does not own is avoided. See the
+[current acceptance record](../../../../docs/project-history/mtou-livelink/issue-53-scene-reference-acceptance.md)
+for the evidence, the remaining boundaries (failure injection is host-level
+evidence, the ownership check covers top-level foreign transforms, and only the
+fixture landscape and partition states are verified) and the completion
+conditions.

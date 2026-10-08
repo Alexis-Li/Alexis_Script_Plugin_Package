@@ -61,8 +61,30 @@ from pathlib import Path
 
 DEFAULT_CONTAINER = "MtoU_UE_SceneRef"
 
-#: The namespace a run stages its import in before it replaces the reference.
+#: The namespace a run stages its import in before it replaces the reference. A
+#: run takes the first free name of this family, so a namespace or node of that
+#: name that belongs to the scene is never emptied, reused or deleted.
 STAGING_SUFFIX = "_Incoming"
+
+#: The name family a takeover moves the previous reference to, so the staged
+#: namespace can take the container's name while the old one stays restorable.
+RETIRING_SUFFIX = "_Retiring"
+
+#: How many names of one family a run looks for before it refuses to run.
+NAME_ATTEMPTS = 32
+
+#: Ownership mark written onto the container group this tool creates and onto the
+#: staging group of a run in flight. A container is replaceable only while the
+#: mark names this tool, so a namespace or node of the same name that belongs to
+#: the scene is refused instead of deleted.
+OWNERSHIP_ATTRIBUTE = "mtouSceneRefContainer"
+OWNERSHIP_TOKEN = "mtou-scene-ref-container/1"
+
+#: Node types that may sit at the top of an owned container namespace without
+#: making it a namespace this tool refuses: the FBX plugin places a 3D texture
+#: placement beside the geometry it imports, and such a node is part of the
+#: reference, not a scene object of its own.
+TOLERATED_CONTAINER_TOP_TYPES = ("place3dTexture",)
 
 #: The shading modes the caller can ask for.
 SHADING_DISPLAY = "display"
@@ -90,6 +112,7 @@ CATEGORY_IMAGE_DATA_PRESENT = "IMAGE_DATA_PRESENT"
 CATEGORY_IMPORT_FAILED = "FBX_IMPORT_FAILED"
 CATEGORY_GRAY_MATERIAL = "GRAY_MATERIAL_CONFLICT"
 CATEGORY_SWAP_FAILED = "STAGED_SWAP_FAILED"
+CATEGORY_CONTAINER_NOT_OWNED = "CONTAINER_NOT_OWNED"
 
 #: Most faces accumulated per object for the world surface centroid check. Above
 #: it the faces are sampled evenly, so a huge handoff cannot turn the check into
@@ -233,6 +256,8 @@ class SceneRefImporter(object):
         self.active_namespace = None
         self.staged = False
         self.swap_partial = False
+        self.retired = None
+        self.previous_state = None
         self.world_conversion = None
         self.frame_factor_reported = False
         self.report = {
@@ -242,14 +267,22 @@ class SceneRefImporter(object):
             "maya": {},
             "container": {"namespace": self.container, "group": self.container,
                           "group_path": None, "staging_namespace": None,
-                          "previous_existed": False, "swapped": False,
-                          "kept_existing": False, "namespace_created": False},
+                          "staging_group_path": None, "previous_existed": False,
+                          "previous_container_group": None,
+                          "previous_reference_uuid": None,
+                          "ownership_attribute": OWNERSHIP_ATTRIBUTE,
+                          "ownership_token": OWNERSHIP_TOKEN,
+                          "swapped": False, "kept_existing": False,
+                          "namespace_created": False, "after_run": None},
             "update": {"mode": None, "staging_namespace": None,
                        "existing_container": False, "swapped": False,
-                       "discarded": False, "stale_staging_removed": False,
-                       "discarded_nodes": [], "swap_seconds": None,
+                       "discarded": False, "discarded_nodes": [],
+                       "stale_staging_removed": False,
+                       "stale_staging_namespaces": [], "swap_seconds": None,
                        "post_swap_paths_checked": False,
-                       "post_swap_paths_missing": []},
+                       "post_swap_paths_missing": [], "retired": None,
+                       "retired_removal": None, "rolled_back": False,
+                       "rollback_reason": None, "recovery": None},
             "counts": {"manifest_objects": 0, "container_nodes": 0,
                        "file_texture_nodes": 0, "image_nodes_loaded": 0},
             "media": {"handoff_directory": None,
@@ -323,6 +356,10 @@ class SceneRefImporter(object):
             self.report["memory"] = {"process_rss_mb": rss,
                                      "process_rss_available": rss is not None,
                                      "source": source}
+            # The recovery report is written from the scene as it is now, never
+            # from what this run intended: whether the previous reference is still
+            # there is read back, not assumed.
+            self._record_container_state()
         self.report["ok"] = not self.report["problems"]
         if not self.report["ok"] and exit_code == EXIT_OK:
             exit_code = EXIT_CHECK_FAILED
@@ -349,6 +386,14 @@ class SceneRefImporter(object):
         self.report["manifest"] = summary
         self.report["counts"]["manifest_objects"] = summary["objects_exported"]
         self.report["counts"]["manifest_objects_total"] = summary["objects_total"]
+        categories = {}
+        for entry in mapping().exported_objects(manifest):
+            key = entry.get("category") or "unknown"
+            categories[key] = categories.get(key, 0) + 1
+        self.report["counts"]["manifest_categories"] = categories
+        coverage_warning = mapping().scope_coverage_warning(summary)
+        if coverage_warning:
+            self.report["warnings"].append(coverage_warning)
         if not summary["objects_exported"]:
             self.report["warnings"].append(
                 "NO_EXPORTED_OBJECTS: the manifest declares no exported objects, "
@@ -396,11 +441,6 @@ class SceneRefImporter(object):
                     self.target_world,
                     ", ".join(name for name, _candidate, _note
                               in mapping().WORLD_TARGETS)))
-        if not _container_name_valid(self.container + STAGING_SUFFIX):
-            raise SceneRefRefused(
-                CATEGORY_CONTAINER_NAME,
-                "the staging name {0!r} is not a plain Maya node name".format(
-                    self.container + STAGING_SUFFIX))
         try:
             maya_cmds.loadPlugin("fbxmaya", quiet=True)
         except Exception as error:  # noqa: BLE001 - reported as a refusal
@@ -560,36 +600,74 @@ class SceneRefImporter(object):
                     "not hold the manifest node names {0}".format(missing))
 
     def _stage_handoff(self):
-        """Import the handoff into the staging namespace, without touching the reference.
+        """Import the handoff into a staging namespace, without touching the reference.
 
         The staging namespace is what makes the update safe: the previous
         reference stays exactly as it was while the new import is measured, and a
-        run that fails deletes only this namespace again. Renaming the namespace
-        into the container's name is a constant time operation, so a large level
-        does not pay for a per node swap.
+        run that fails deletes only the namespace this run created. Two rules keep
+        the run off everything it does not own:
+
+        * A container is only replaceable while it carries this tool's ownership
+          mark. A namespace, group or root node of the same name that carries no
+          mark is refused, never emptied, and the refusal names what was found.
+        * The staging namespace is a free name of the ``<container>_Incoming``
+          family, so a namespace of that name that belongs to the scene is neither
+          reused nor deleted. A namespace of that family left behind by an
+          interrupted run is deleted only when it carries the mark again.
+
+        From the moment the staging namespace exists this run is responsible for
+        it: every later failure -- a refusal, a partial import, an internal error
+        -- deletes it again and reports what was removed.
         """
         maya_cmds = commands()
         namespace_before = maya_cmds.namespaceInfo(currentNamespace=True)
         state_before = self._scene_state()
-        staging = self.container + STAGING_SUFFIX
+        recovery = self._recover_previous_runs()
+        state = self._container_state(self.container)
+        if state["conflict"]:
+            raise SceneRefRefused(CATEGORY_CONTAINER_NOT_OWNED, state["conflict"],
+                                  exit_code=EXIT_CHECK_FAILED)
+        self.previous_state = state
+        staging = self._free_name(self.container + STAGING_SUFFIX)
         self.staging = staging
-        existing_namespace = bool(maya_cmds.namespace(exists=self.container))
-        existing_group = bool(self._container_group_names(self.container))
-        stale = self._remove_namespace(staging)
-        if maya_cmds.objExists(staging):
-            maya_cmds.delete(staging)
-            stale = True
+        # The container block is written before anything is imported, so a run that fails
+        # during the import still reports the previous reference it found and whether it is
+        # still there afterwards, instead of leaving those fields at their defaults.
+        previous_group = state["group"] or state["root_group"]
+        previous_uuid = None
+        if previous_group:
+            uuids = maya_cmds.ls(previous_group, uuid=True) or []
+            previous_uuid = uuids[0] if uuids else None
+        self.report["container"].update({
+            "staging_namespace": staging,
+            "staging_group_path": None,
+            "staging_group_uuid": None,
+            "previous_existed": bool(previous_group),
+            "previous_container_group": previous_group,
+            "previous_reference_uuid": previous_uuid,
+            "namespace_created": not bool(previous_group),
+            "group_path": previous_group,
+        })
         self.report["update"].update({
             "mode": "dry_run" if self.dry_run else "staged_swap",
             "staging_namespace": staging,
-            "existing_container": bool(existing_namespace or existing_group),
-            "stale_staging_removed": stale,
+            "existing_container": bool(state["group"] or state["root_group"]),
+            "previous_container_group": state["group"] or state["root_group"],
+            "stale_staging_removed": bool(recovery["stale_staging_namespaces"]),
+            "stale_staging_namespaces": recovery["stale_staging_namespaces"],
+            "recovery": recovery,
+            "previous_state": state["report"],
         })
-        if stale:
+        for removed in recovery["stale_staging_namespaces"]:
             self.report["warnings"].append(
-                "STALE_STAGING_REMOVED: a staging namespace {0} was left behind by "
-                "an earlier run and has been deleted".format(staging))
+                "STALE_STAGING_REMOVED: the staging namespace {0} was left behind by "
+                "an interrupted run of this tool and has been deleted".format(removed))
+        for entry in recovery["events"]:
+            self.report["warnings"].append(entry)
 
+        # The run owns the staging namespace from here on, including a namespace
+        # that fails halfway through creation, so every later failure cleans up.
+        self.staged = True
         maya_cmds.namespace(add=staging)
         maya_cmds.namespace(set=staging)
         try:
@@ -597,6 +675,7 @@ class SceneRefImporter(object):
         finally:
             maya_cmds.namespace(set=namespace_before)
         group = self._container_group(staging)
+        self._mark_owned(group, staging)
 
         started = time.time()
         maya_cmds.namespace(set=staging)
@@ -613,7 +692,6 @@ class SceneRefImporter(object):
             maya_cmds.namespace(set=namespace_before)
             self.report["scene"]["import_side_effects"] = self._restore_scene_state(
                 state_before)
-        self.staged = True
         self.active_namespace = staging
         roots = self._imported_roots(group, staging)
         for node in roots:
@@ -634,17 +712,11 @@ class SceneRefImporter(object):
             "root_nodes_parented": roots,
         }
         self.report["counts"]["container_nodes"] = len(self._namespace_members(staging))
-        self.report["container"] = {
-            "namespace": self.container,
-            "group": self.container,
-            "group_path": None,
-            "staging_namespace": staging,
+        group_uuid = maya_cmds.ls(group, uuid=True) or []
+        self.report["container"].update({
             "staging_group_path": group,
-            "previous_existed": bool(existing_namespace or existing_group),
-            "swapped": False,
-            "kept_existing": False,
-            "namespace_created": not existing_namespace,
-        }
+            "staging_group_uuid": group_uuid[0] if group_uuid else None,
+        })
         self.report["phase"] = "staging"
 
     def _check_import_world(self):
@@ -900,12 +972,22 @@ class SceneRefImporter(object):
         return None
 
     def _finalise(self):
-        """Replace the previous reference with the staged one, or keep it.
+        """Replace the previous reference with the staged one, or put it back.
 
-        The swap runs only after the comparison reported no problem, and it is a
-        namespace rename: the previous reference is deleted, the staging
-        namespace takes the container's name, and the staged group is renamed to
-        the group name the contract promises.
+        The swap runs only after the comparison reported no problem, and it never
+        deletes the previous reference before the new one has taken its place:
+
+        1. the previous, owned container is renamed into a free retiring name --
+           renamed, not deleted, so it can be put back by name;
+        2. the staging namespace takes the container's name and its group is
+           renamed to the name the contract promises;
+        3. every recorded path is read back from the new container;
+        4. only when that read back found no missing path is the retired
+           reference deleted.
+
+        A failure in 2 or a missing path in 3 restores the retired reference,
+        deletes the half swapped container, and reports the failure with the
+        scene's real state -- the previous reference is back, so the run says so.
         """
         update = self.report["update"]
         if self.dry_run or self.report["problems"]:
@@ -913,67 +995,86 @@ class SceneRefImporter(object):
             return
         started = time.time()
         maya_cmds = commands()
-        removal = self._remove_container()
-        self.swap_partial = True
+        self.retired = self._retire_container()
+        update["retired"] = self.retired
+        failure = None
         try:
             maya_cmds.namespace(rename=(self.staging, self.container))
-        except Exception as error:  # noqa: BLE001 - reported with the staging intact
-            raise SceneRefRefused(
-                CATEGORY_SWAP_FAILED,
-                "the staging namespace {0} could not be renamed to {1}: {2}".format(
-                    self.staging, self.container, error),
-                exit_code=EXIT_CHECK_FAILED)
-        staging_group = self.container + ":" + self.staging
-        try:
-            maya_cmds.rename(staging_group, self.container + ":" + self.container)
-        except Exception as error:  # noqa: BLE001 - the namespace name is the contract
-            raise SceneRefRefused(
-                CATEGORY_SWAP_FAILED,
-                "the staged group {0} could not be renamed to {1}: {2}".format(
-                    staging_group, self.container + ":" + self.container, error),
-                exit_code=EXIT_CHECK_FAILED)
-        self.swap_partial = False
-        self.active_namespace = self.container
-        self.staged = False
+        except Exception as error:  # noqa: BLE001 - reported, previous kept
+            failure = ("the staging namespace {0} could not be renamed to {1}: "
+                       "{2}".format(self.staging, self.container, error))
+        if failure is None:
+            self.swap_partial = True
+            try:
+                maya_cmds.rename(self.container + ":" + self.staging,
+                                 self.container + ":" + self.container)
+            except Exception as error:  # noqa: BLE001 - reported, previous kept
+                failure = ("the staged group {0}:{1} could not be renamed to {2}:{3}: "
+                           "{4}".format(self.container, self.staging, self.container,
+                                        self.container, error))
+        if failure is None:
+            self.swap_partial = False
+            self.active_namespace = self.container
+            self.staged = False
+            # The mark is rewritten for the container's own name: the group was staged
+            # under the staging name, and the next run has to find a container it can
+            # tell apart from scene content -- and, if this run is interrupted before
+            # the paths below are read back, a takeover that can still be recognised.
+            self._mark_owned(self._container_group(self.container), self.container)
+            update.update({
+                "mode": "staged_swap",
+                "swapped": True,
+                "discarded": False,
+                "swap_seconds": round(time.time() - started, 3),
+            })
+            self.report["container"].update({
+                "group_path": self._container_group(self.container),
+                "swapped": True,
+            })
+            # The measurements were taken in the staging namespace; a rename moves
+            # no node, so only the recorded paths are rehomed, and each of them is
+            # read back to prove it still resolves.
+            self._rehome_paths()
+            missing = update["post_swap_paths_missing"]
+            if not missing:
+                # The takeover is complete: the retired reference can go now.
+                if self.retired:
+                    update["retired_removal"] = self._remove_retired()
+                self.report["counts"]["container_nodes"] = len(
+                    self._namespace_members(self.container))
+                self.report["phase"] = "finalise"
+                return
+            failure = ("the swapped container does not resolve {0} recorded "
+                       "path(s): {1}".format(len(missing), missing))
+        # The previous reference is still in its retiring name: put it back and
+        # delete the container this run created, then report what happened.
+        rollback = self._rollback_swap()
         update.update({
-            "mode": "staged_swap",
-            "swapped": True,
+            "mode": "staged_swap_rolled_back",
+            "swapped": False,
             "discarded": False,
-            "swap_seconds": round(time.time() - started, 3),
-            "previous_container_removal": removal,
+            "rolled_back": True,
+            "rollback_reason": failure,
+            "rollback": rollback,
         })
-        self.report["container"].update({
-            "namespace": self.container,
-            "group": self.container,
-            "group_path": self._container_group(self.container),
-            "swapped": True,
-            "kept_existing": False,
-        })
-        # The measurements were taken in the staging namespace; a rename does not
-        # move a node, so only the recorded paths are rehomed, and each of them is
-        # read back to prove it still resolves.
-        self._rehome_paths()
-        self.report["counts"]["container_nodes"] = len(self._namespace_members(self.container))
-        self.report["phase"] = "finalise"
+        raise SceneRefRefused(CATEGORY_SWAP_FAILED, failure,
+                             exit_code=EXIT_CHECK_FAILED)
 
     def _discard_staging(self, reason):
         """Delete the staging namespace, leaving the previous reference untouched.
 
-        A failure after the namespace rename but before the group rename cannot be
-        undone -- the previous reference is already deleted at that point -- so
-        the partially swapped namespace is deleted as well and reported, instead
-        of leaving a container that answers to the contract's name but holds no
-        group.
+        This covers every failure before and during the import. The staging
+        namespace is deleted from the moment it exists, so a partial import leaves
+        no node behind; a failure that happens after the staged namespace took the
+        container's name is undone by :meth:`_finalise` itself.
         """
         if not self.staged or not self.staging:
             return
         update = self.report["update"]
         nodes = self._namespace_members(self.staging)
+        # The staging namespace is this run's own: its name was free when the run
+        # took it and it holds the group this run created with its ownership mark.
         staging_removed = self._remove_namespace(self.staging)
-        if commands().objExists(self.staging):
-            commands().delete(self.staging)
-        if self.swap_partial:
-            self._remove_container()
         self.staged = False
         self.active_namespace = None
         if not update.get("swapped"):
@@ -984,9 +1085,6 @@ class SceneRefImporter(object):
             update["discarded_nodes"] = nodes
             update["discarded_node_count"] = len(nodes)
             update["staging_namespace_removed"] = staging_removed
-            update["partial_swap_removed"] = bool(self.swap_partial)
-        self.report["container"]["kept_existing"] = bool(
-            update.get("existing_container"))
 
     def _rehome_paths(self):
         """Rewrite recorded paths after the swap, reading every one back.
@@ -1032,6 +1130,7 @@ class SceneRefImporter(object):
         measurement = {
             "node_name": entry["node_name"],
             "matched_id": entry["manifest"].get("id"),
+            "category": entry["manifest"].get("category"),
             "found": bool(entry["path"]),
             "path": entry["path"],
             "matched_by": entry["matched_by"],
@@ -1193,28 +1292,378 @@ class SceneRefImporter(object):
         scene["current_time_unchanged"] = before_time == after_time
         self.report["scene"] = scene
 
-    # -------------------------------------------------------------- helpers
+    # ------------------------------------------------- ownership and takeover
 
-    def _remove_container(self):
-        """Delete only the container namespace, its group and the legacy root group."""
+    def _container_state(self, name):
+        """What the scene holds under ``name``, and whether it may be replaced.
+
+        The answer comes from the nodes themselves, never from the name alone: a
+        container is replaceable only while the group inside it -- or, for a build
+        that wrote no group yet, the root level node of that name -- carries the
+        ownership mark this tool writes with ``name``. Everything else found under
+        that name is reported as foreign, so the caller can refuse instead of
+        deleting scene content.
+        """
         maya_cmds = commands()
-        removal = {"namespace_removed": False, "group_removed": False,
-                   "namespace_existed": bool(maya_cmds.namespace(exists=self.container)),
-                   "group_existed": bool(self._container_group_names(self.container))}
-        if removal["namespace_existed"]:
-            maya_cmds.namespace(removeNamespace=self.container,
-                                deleteNamespaceContent=True)
-            removal["namespace_removed"] = True
-        for node in self._container_group_names(self.container):
-            if maya_cmds.objExists(node):
-                maya_cmds.delete(node)
-                removal["group_removed"] = True
-        return removal
+        mark = _ownership_mark(name)
+        state = {"name": name,
+                 "namespace": bool(maya_cmds.namespace(exists=name)),
+                 "group": None, "root_group": None,
+                 "incomplete": [], "placement_nodes": [], "foreign_nodes": [],
+                 "conflict": None}
+        for path in _namespace_top_nodes(name):
+            token = _ownership_token(path)
+            short = _short_node_name(path)
+            if token == mark and short == name:
+                state["group"] = path
+            elif token is not None:
+                # A marked group of another name inside this namespace is what an
+                # interrupted takeover leaves behind; it is this tool's, so it is
+                # recovered instead of refused.
+                state["incomplete"].append(path)
+            elif _node_type_in(path, TOLERATED_CONTAINER_TOP_TYPES):
+                state["placement_nodes"].append(path)
+            else:
+                state["foreign_nodes"].append(path)
+        for path in _root_nodes(name):
+            token = _ownership_token(path)
+            if token == mark:
+                state["root_group"] = path
+            elif token is not None:
+                state["incomplete"].append(path)
+            else:
+                state["foreign_nodes"].append(path)
+        if state["foreign_nodes"]:
+            state["conflict"] = (
+                "the name {0!r} is used by nodes this tool does not own and never "
+                "deletes: {1}; rename or remove them, or run with another "
+                "--container".format(name, _node_summary(state["foreign_nodes"])))
+        elif state["incomplete"]:
+            state["conflict"] = (
+                "the namespace {0!r} holds a group without this tool's ownership "
+                "mark naming it: {1}; the run does not touch it".format(
+                    name, _node_summary(state["incomplete"])))
+        elif state["namespace"] and not state["group"]:
+            state["conflict"] = (
+                "the namespace {0!r} exists but holds no container group with this "
+                "tool's ownership mark ({1}), so it cannot be told apart from scene "
+                "content; rename or remove it, or run with another --container".format(
+                    name, OWNERSHIP_ATTRIBUTE))
+        state["report"] = {
+            "namespace": state["namespace"],
+            "group": state["group"],
+            "root_group": state["root_group"],
+            "incomplete": state["incomplete"],
+            "placement_nodes": state["placement_nodes"],
+            "foreign_nodes": state["foreign_nodes"],
+            "owned": bool(state["group"] or state["root_group"]),
+        }
+        return state
+
+    def _mark_owned(self, node, name):
+        """Write this tool's ownership mark for ``name`` onto a group it created."""
+        maya_cmds = commands()
+        if not maya_cmds.attributeQuery(OWNERSHIP_ATTRIBUTE, node=node, exists=True):
+            maya_cmds.addAttr(node, longName=OWNERSHIP_ATTRIBUTE, dataType="string")
+        maya_cmds.setAttr(node + "." + OWNERSHIP_ATTRIBUTE,
+                          _ownership_mark(name), type="string")
+
+    def _free_name(self, base):
+        """The first free name of ``base``, ``base_1``, ... no namespace or node uses.
+
+        A run only ever takes a free name, so a namespace or node of the same name
+        that belongs to the scene is never emptied, reused or deleted.
+        """
+        maya_cmds = commands()
+        for index in range(NAME_ATTEMPTS):
+            candidate = base if index == 0 else "{0}_{1}".format(base, index)
+            if not _container_name_valid(candidate):
+                continue
+            if maya_cmds.namespace(exists=candidate):
+                continue
+            if _root_nodes(candidate) or maya_cmds.objExists(candidate):
+                continue
+            return candidate
+        raise SceneRefRefused(
+            CATEGORY_CONTAINER_NAME,
+            "no free name of the {0!r} family is left for this run".format(base))
+
+    def _existing_family_names(self, base):
+        """Namespace names of one family that exist: ``base``, ``base_1``, ..."""
+        names = []
+        for name in commands().namespaceInfo(listOnlyNamespaces=True, recurse=True) or []:
+            text = str(name)
+            if text == base or re.fullmatch(re.escape(base) + r"_\d+", text):
+                names.append(text)
+        return sorted(names)
+
+    def _owns_marked_group(self, namespace, mark):
+        """Whether ``namespace`` holds a top level group carrying ``mark``."""
+        return bool([path for path in _namespace_top_nodes(namespace)
+                     if _ownership_token(path) == mark])
+
+    def _recover_previous_runs(self):
+        """Undo or finish what an interrupted run of this tool left behind.
+
+        Only nodes carrying this tool's ownership mark are touched. A staging
+        namespace whose run never finished is deleted, and a namespace that holds a
+        previous reference in its retiring name is put back under the container's
+        name -- unless a complete container already took that name, in which case
+        the leftover copy is deleted. Every action is reported as an event.
+        """
+        maya_cmds = commands()
+        recovery = {"stale_staging_namespaces": [], "restored_previous_reference": None,
+                    "retired_leftovers_removed": [],
+                    "interrupted_container_removed": False,
+                    "finished_interrupted_container": None, "events": []}
+        container_state = self._container_state(self.container)
+        for name in self._existing_family_names(self.container + RETIRING_SUFFIX):
+            if not self._owns_marked_group(name, _ownership_mark(self.container)):
+                continue
+            if container_state["group"] or container_state["root_group"]:
+                self._remove_namespace(name)
+                recovery["retired_leftovers_removed"].append(name)
+                recovery["events"].append(
+                    "RETIRED_LEFTOVER_REMOVED: the interrupted run's previous "
+                    "reference {0} was a copy of the complete container and has been "
+                    "deleted".format(name))
+                continue
+            if container_state["incomplete"]:
+                self._remove_namespace(self.container)
+                recovery["interrupted_container_removed"] = True
+                recovery["events"].append(
+                    "INTERRUPTED_CONTAINER_REMOVED: the half swapped namespace {0} "
+                    "was left by an interrupted run and has been deleted".format(
+                        self.container))
+            maya_cmds.namespace(rename=(name, self.container))
+            recovery["restored_previous_reference"] = name
+            recovery["events"].append(
+                "RESTORED_PREVIOUS_REFERENCE: the previous reference {0} was put "
+                "back under the container's name {1} after an interrupted "
+                "run".format(name, self.container))
+            container_state = self._container_state(self.container)
+            break
+        if not recovery["restored_previous_reference"] and container_state["incomplete"]:
+            # The container namespace holds a group this tool staged but never renamed,
+            # and no previous reference is waiting in a retiring name: the interrupted
+            # run had already deleted it, so finishing the takeover is what restores the
+            # state the contract promises instead of refusing to run at all.
+            finished = self._finish_interrupted_container(container_state)
+            recovery["finished_interrupted_container"] = finished
+            if finished:
+                recovery["events"].append(
+                    "FINISHED_INTERRUPTED_TAKEOVER: the namespace {0} was left by an "
+                    "interrupted run and its group has been renamed and marked as the "
+                    "container".format(self.container))
+                container_state = self._container_state(self.container)
+        for name in self._existing_family_names(self.container + STAGING_SUFFIX):
+            if not self._owns_marked_group(name, _ownership_mark(name)):
+                continue
+            self._remove_namespace(name)
+            recovery["stale_staging_namespaces"].append(name)
+        return recovery
+
+    def _finish_interrupted_container(self, state):
+        """Rename and re-mark the group of a container an interrupted run left behind.
+
+        The container namespace holds a group this tool staged -- its mark names the
+        staging family -- and no previous reference is waiting in a retiring name, so the
+        interrupted run had already deleted it. Completing the takeover (the group name and
+        mark the contract promises) is then the only way back to a state a later run can
+        work with. Returns whether the group was finished.
+        """
+        incomplete = list(state["incomplete"])
+        if len(incomplete) != 1:
+            return False
+        node = incomplete[0]
+        if _short_node_name(node) != self.container:
+            found = commands().ls(self.container + ":" + self.container, long=True,
+                                  type="transform") or []
+            node = found[0] if found else commands().rename(
+                node, self.container + ":" + self.container)
+        self._mark_owned(node, self.container)
+        return True
+
+    def _retire_container(self):
+        """Move the previous, owned reference to a free retiring name.
+
+        Renaming, never deleting: the previous reference keeps every node and its
+        UUID, so a takeover that fails anywhere before it is complete puts it back
+        under the container's name without changing what scene references point at.
+        """
+        state = self.previous_state or self._container_state(self.container)
+        previous_group = state["group"] or state["root_group"]
+        if not previous_group:
+            return None
+        maya_cmds = commands()
+        retired = {"previous_group": previous_group, "retired_namespace": None,
+                   "retired_root_group": None, "previous_uuid": None}
+        uuid_values = maya_cmds.ls(previous_group, uuid=True) or []
+        retired["previous_uuid"] = uuid_values[0] if uuid_values else None
+        if state["group"]:
+            name = self._free_name(self.container + RETIRING_SUFFIX)
+            maya_cmds.namespace(rename=(self.container, name))
+            retired["retired_namespace"] = name
+        if state["root_group"]:
+            name = self._free_name(self.container + RETIRING_SUFFIX)
+            maya_cmds.rename(state["root_group"], name)
+            retired["retired_root_group"] = name
+        return retired
+
+    def _remove_retired(self):
+        """Delete the retired previous reference once the takeover is complete."""
+        retired = self.retired
+        if not retired:
+            return {"removed": False, "namespace_removed": False,
+                    "root_group_removed": False, "errors": []}
+        maya_cmds = commands()
+        errors = []
+        namespace_removed = False
+        if retired.get("retired_namespace"):
+            try:
+                namespace_removed = self._remove_namespace(retired["retired_namespace"])
+            except Exception as error:  # noqa: BLE001 - reported, the run continues
+                errors.append("the retired namespace {0} could not be deleted: "
+                              "{1}".format(retired["retired_namespace"], error))
+        root_group_removed = False
+        if retired.get("retired_root_group"):
+            try:
+                if maya_cmds.objExists(retired["retired_root_group"]):
+                    maya_cmds.delete(retired["retired_root_group"])
+                    root_group_removed = True
+            except Exception as error:  # noqa: BLE001 - reported, the run continues
+                errors.append("the retired group {0} could not be deleted: {1}".format(
+                    retired["retired_root_group"], error))
+        return {"removed": bool(namespace_removed or root_group_removed),
+                "namespace_removed": namespace_removed,
+                "root_group_removed": root_group_removed, "errors": errors}
+
+    def _restore_retired(self):
+        """Put the retired previous reference back under the container's name.
+
+        A restore that the host refuses is reported, never raised: the run has to keep the
+        scene's real state on the record, and the previous reference is still in its
+        retiring name in that case.
+        """
+        retired = self.retired
+        if not retired:
+            return {"restored": False, "note": "no previous reference was retired"}
+        maya_cmds = commands()
+        restored = {"restored": False, "namespace": False, "root_group": False,
+                    "note": None, "errors": []}
+        if retired.get("retired_namespace"):
+            try:
+                maya_cmds.namespace(rename=(retired["retired_namespace"], self.container))
+                restored["namespace"] = True
+            except Exception as error:  # noqa: BLE001 - reported, never raised
+                restored["errors"].append(
+                    "the retired namespace {0} could not be renamed back to {1}: "
+                    "{2}".format(retired["retired_namespace"], self.container, error))
+        if retired.get("retired_root_group"):
+            try:
+                maya_cmds.rename(retired["retired_root_group"], self.container)
+                restored["root_group"] = True
+            except Exception as error:  # noqa: BLE001 - reported, never raised
+                restored["errors"].append(
+                    "the retired group {0} could not be renamed back to {1}: {2}".format(
+                        retired["retired_root_group"], self.container, error))
+        restored["restored"] = bool(restored["namespace"] or restored["root_group"])
+        if not restored["restored"]:
+            restored["note"] = ("the previous reference could not be put back under the "
+                                "container's name" if restored["errors"]
+                                else "the previous reference was already removed")
+        return restored
+
+    def _remove_created_container(self, accepted_marks):
+        """Delete a container namespace this run created out of its staging import.
+
+        Only a namespace that holds a marked group this run wrote is deleted: the mark it
+        staged under (the staging name), or the mark it rewrote once the group had taken the
+        container's name. A namespace with no such mark is left untouched and reported,
+        because this run cannot prove it created it.
+        """
+        maya_cmds = commands()
+        marks = [mark for mark in accepted_marks if mark]
+        result = {"namespace_removed": False, "nodes_removed": [],
+                  "skipped_reason": None, "accepted_marks": marks}
+        if not maya_cmds.namespace(exists=self.container):
+            return result
+        if not any(self._owns_marked_group(self.container, mark) for mark in marks):
+            result["skipped_reason"] = (
+                "the namespace {0!r} holds no group this run staged (accepted marks "
+                "{1}), so it is left untouched".format(self.container, marks))
+            return result
+        result["nodes_removed"] = self._namespace_members(self.container)
+        self._remove_namespace(self.container)
+        result["namespace_removed"] = True
+        return result
+
+    def _rollback_swap(self):
+        """Put the previous reference back after a takeover that did not complete.
+
+        The staged content is deleted first -- it is this run's own, and its group
+        carries the mark of the staging name -- so the retiring name is free when
+        the previous reference is renamed back under the container's name.
+        """
+        rollback = {"container_namespace_removed": False, "container_nodes_removed": [],
+                    "staging_namespace_removed": False, "container_skip_reason": None,
+                    "previous_reference_restored": False, "restore": None}
+        if self.staged and self.staging and commands().namespace(exists=self.staging):
+            self._remove_namespace(self.staging)
+            rollback["staging_namespace_removed"] = True
+        marks = [_ownership_mark(self.container)]
+        if self.staging:
+            marks.append(_ownership_mark(self.staging))
+        removal = self._remove_created_container(marks)
+        rollback["container_namespace_removed"] = removal["namespace_removed"]
+        rollback["container_nodes_removed"] = removal["nodes_removed"]
+        rollback["container_skip_reason"] = removal["skipped_reason"]
+        self.swap_partial = False
+        self.staged = False
+        self.active_namespace = None
+        restore = self._restore_retired()
+        rollback["restore"] = restore
+        rollback["previous_reference_restored"] = bool(restore.get("restored"))
+        return rollback
+
+    def _record_container_state(self):
+        """Write the container fields from the scene as it is, not from intent.
+
+        ``kept_existing`` answers a question about the scene: is the very node this
+        run found still there, read back by UUID? A completed swap deletes it, a
+        failed one keeps or restores it, and the report says which happened even
+        when the failure was not the one the run expected.
+        """
+        try:
+            maya_cmds = commands()
+            container = self.report.get("container") or {}
+            previous_uuid = container.get("previous_reference_uuid")
+            found = maya_cmds.ls(previous_uuid, long=True) if previous_uuid else None
+            state = self._container_state(self.container)
+            staging_present = bool(self.staging and maya_cmds.namespace(exists=self.staging))
+        except Exception:  # noqa: BLE001 - reporting must never fail a run
+            return
+        container["group_path"] = state["group"] or state["root_group"]
+        container["after_run"] = {
+            "namespace": state["namespace"],
+            "group_path": container["group_path"],
+            "incomplete_groups": state["incomplete"],
+            "foreign_nodes": state["foreign_nodes"],
+            "staging_namespace_present": staging_present,
+        }
+        # `None` says the run found no previous reference at all, which is a different
+        # statement from a reference that was there and is gone now.
+        container["previous_reference_present_after_run"] = (bool(found)
+                                                            if previous_uuid else None)
+        container["previous_reference_path_after_run"] = found[0] if found else None
+        container["kept_existing"] = bool(found)
+
+    # -------------------------------------------------------------- helpers
 
     def _remove_namespace(self, namespace):
         """Delete a namespace and everything in it; returns whether it existed."""
         maya_cmds = commands()
-        if not maya_cmds.namespace(exists=namespace):
+        if not namespace or not maya_cmds.namespace(exists=namespace):
             return False
         maya_cmds.namespace(removeNamespace=namespace, deleteNamespaceContent=True)
         return True
@@ -1222,7 +1671,7 @@ class SceneRefImporter(object):
     def _container_group_names(self, namespace):
         """Existing container transforms: a stale root one, and the namespaced one."""
         maya_cmds = commands()
-        names = list(maya_cmds.ls(namespace, type="transform", long=True) or [])
+        names = list(_root_nodes(namespace))
         names.extend(maya_cmds.ls(namespace + ":" + namespace,
                                   type="transform", long=True) or [])
         return names
@@ -1323,6 +1772,61 @@ def _container_name_valid(name):
     if any(character in name for character in (":", "|", " ", "\t", "\n")):
         return False
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None
+
+
+def _ownership_mark(name):
+    """The ownership value this tool writes for the namespace ``name``."""
+    return "{0} {1}".format(OWNERSHIP_TOKEN, name)
+
+
+def _ownership_token(node):
+    """The ownership value recorded on ``node``, or ``None`` when it carries none.
+
+    The mark is an ordinary string attribute, so it is read back from the node
+    itself: a node without it may belong to the scene, and the run never deletes
+    such a node. An attribute that cannot be read counts as no mark.
+    """
+    try:
+        if not commands().attributeQuery(OWNERSHIP_ATTRIBUTE, node=node,
+                                         exists=True):
+            return None
+        value = commands().getAttr(node + "." + OWNERSHIP_ATTRIBUTE)
+    except Exception:  # noqa: BLE001 - an unreadable mark is no mark
+        return None
+    return str(value) if value is not None else None
+
+
+def _namespace_top_nodes(namespace):
+    """Long paths of the DAG nodes sitting at the top of one namespace.
+
+    A node at the top of a namespace has a one step long path; anything deeper
+    hangs under one of those nodes, so only the top level answers whether the
+    namespace holds content of its own.
+    """
+    nodes = commands().ls(namespace + ":*", long=True, type="transform") or []
+    return [path for path in nodes if str(path).count("|") == 1]
+
+
+def _root_nodes(name):
+    """Long paths of the nodes carrying ``name`` at the top of the scene."""
+    nodes = commands().ls(name, type="transform", long=True) or []
+    return [path for path in nodes if str(path).count("|") == 1 and ":" not in str(path)]
+
+
+def _node_type_in(path, types):
+    """Whether the node's type is one of ``types``."""
+    try:
+        return str(commands().nodeType(path)) in types
+    except Exception:  # noqa: BLE001 - an unreadable type is not a tolerated one
+        return False
+
+
+def _node_summary(paths, limit=6):
+    """A short, readable list of node paths for a report line."""
+    shown = [str(path) for path in paths[:limit]]
+    if len(paths) > limit:
+        shown.append("... {0} more".format(len(paths) - limit))
+    return ", ".join(shown)
 
 
 def _short_node_name(path):

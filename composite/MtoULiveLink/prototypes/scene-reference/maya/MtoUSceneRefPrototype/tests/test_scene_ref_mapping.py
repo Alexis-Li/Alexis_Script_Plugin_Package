@@ -850,6 +850,97 @@ class ManifestTest(unittest.TestCase):
         self.assertTrue(any("min/max" in problem for problem in problems))
 
 
+
+class ScopeCoverageTest(unittest.TestCase):
+    """What a manifest says about the completeness of its own scope."""
+
+    def _summary(self, world_partition=False, completeness=None, partition=None):
+        scope = {"kind": "level_range", "persistent_level": "/Game/Map"}
+        if completeness is not None:
+            scope["completeness"] = completeness
+        if partition is not None:
+            scope["world_partition"] = partition
+        return {"world": {"package": "/Game/Map", "world_partition": world_partition},
+                "scope": scope}
+
+    def test_the_summary_carries_the_coverage_fields(self):
+        summary = mapping.manifest_summary({
+            "schema": mapping.MANIFEST_SCHEMA,
+            "world": {"package": "/Game/Open", "world_partition": True},
+            "scope": {"kind": "level_range", "persistent_level": "/Game/Open",
+                      "coverage": "partition_loaded_content",
+                      "completeness": "not_confirmed",
+                      "coverage_note": "only the loaded cells are in scope",
+                      "world_partition": {
+                          "detected": True, "inventory_available": True,
+                          "actor_descriptors": 76, "loaded_actor_descriptors": 9,
+                          "unloaded_actor_count": 3, "unloaded_hlod_count": 64,
+                          "unloaded_actors": ["/Game/Open.Open:PersistentLevel.A"],
+                          "inventory_truncated": False, "note": "loaded only"}},
+            "objects": []})
+        scope = summary["scope"]
+        self.assertEqual(scope["coverage"], "partition_loaded_content")
+        self.assertEqual(scope["completeness"], "not_confirmed")
+        self.assertEqual(scope["coverage_note"], "only the loaded cells are in scope")
+        partition = scope["world_partition"]
+        self.assertTrue(partition["detected"])
+        self.assertEqual(partition["actor_descriptors"], 76)
+        self.assertEqual(partition["loaded_actor_descriptors"], 9)
+        self.assertEqual(partition["unloaded_actor_count"], 3)
+        self.assertEqual(partition["unloaded_hlod_count"], 64)
+        self.assertEqual(partition["unloaded_actors"],
+                         ["/Game/Open.Open:PersistentLevel.A"])
+        self.assertFalse(partition["inventory_truncated"])
+
+    def test_a_manifest_without_a_partition_block_reports_none(self):
+        summary = mapping.manifest_summary({
+            "schema": mapping.MANIFEST_SCHEMA, "world": {},
+            "scope": {"kind": "level_range"}, "objects": []})
+        self.assertIsNone(summary["scope"]["world_partition"])
+        self.assertIsNone(summary["scope"]["completeness"])
+
+    def test_a_confirmed_scope_raises_no_warning(self):
+        self.assertIsNone(mapping.scope_coverage_warning(
+            self._summary(completeness="confirmed")))
+        self.assertIsNone(mapping.scope_coverage_warning(
+            self._summary(world_partition=True, completeness="confirmed",
+                          partition={"detected": True, "actor_descriptors": 5,
+                                     "loaded_actor_descriptors": 5,
+                                     "unloaded_actor_count": 0,
+                                     "unloaded_hlod_count": 0})))
+
+    def test_an_unconfirmed_partitioned_scope_is_warned_about(self):
+        warning = mapping.scope_coverage_warning(self._summary(
+            world_partition=True, completeness="not_confirmed",
+            partition={"detected": True, "actor_descriptors": 76,
+                       "loaded_actor_descriptors": 9, "unloaded_actor_count": 3,
+                       "unloaded_hlod_count": 64, "inventory_truncated": False}))
+        self.assertIn("SCOPE_LOADED_ONLY", warning)
+        self.assertIn("actor descriptors 76", warning)
+        self.assertIn("spawned 9", warning)
+        self.assertIn("authored actors not spawned 3", warning)
+        self.assertIn("generated HLOD proxies not spawned 64", warning)
+        self.assertNotIn("capped", warning)
+
+    def test_a_capped_inventory_is_named_as_capped(self):
+        warning = mapping.scope_coverage_warning(self._summary(
+            world_partition=True, completeness="not_confirmed",
+            partition={"detected": True, "actor_descriptors": 900,
+                       "loaded_actor_descriptors": 0, "unloaded_actor_count": 900,
+                       "unloaded_hlod_count": 0, "inventory_truncated": True}))
+        self.assertIn("capped", warning)
+
+    def test_a_partitioned_manifest_without_the_block_is_still_warned_about(self):
+        warning = mapping.scope_coverage_warning(
+            self._summary(world_partition=True, completeness="not_confirmed"))
+        self.assertIn("SCOPE_LOADED_ONLY", warning)
+        self.assertIn("no descriptor inventory", warning)
+
+    def test_a_level_range_without_a_statement_is_not_warned_about(self):
+        self.assertIsNone(mapping.scope_coverage_warning(self._summary()))
+        self.assertIsNone(mapping.scope_coverage_warning({}))
+        self.assertIsNone(mapping.scope_coverage_warning(None))
+
 class WorldConversionTest(unittest.TestCase):
     """The explicit conversion between the two Maya worlds."""
 

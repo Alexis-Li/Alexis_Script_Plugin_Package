@@ -27,6 +27,11 @@ handoffs this host authored itself:
 * the three shading modes: the display override, the gray lambert and keep;
 * the refusal paths: a file that is not FBX, a missing file, a manifest with
   another schema, and a scene or manifest that is not in centimetres;
+* the update contract under injected failures: a namespace rename, a group
+  rename and a final path read back that do not resolve all keep or restore the
+  previous reference, a partial import cleans up its own staging namespace, a
+  namespace of the container's or the staging name that this tool does not own is
+  refused or avoided, and a namespace an interrupted run left behind is swept;
 * the contract's report shape and the command line entry point in its own
   process.
 
@@ -38,6 +43,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -104,12 +110,20 @@ CONTRACT_REPORT_KEYS = {
 }
 CONTRACT_MAYA_KEYS = {"version", "api", "linear_unit", "up_axis"}
 CONTRACT_CONTAINER_KEYS = {"namespace", "group", "group_path", "staging_namespace",
-                           "staging_group_path", "previous_existed", "swapped",
-                           "kept_existing", "namespace_created"}
+                           "staging_group_path", "staging_group_uuid",
+                           "previous_existed", "previous_container_group",
+                           "previous_reference_uuid", "ownership_attribute",
+                           "ownership_token", "swapped", "kept_existing",
+                           "namespace_created", "after_run",
+                           "previous_reference_present_after_run",
+                           "previous_reference_path_after_run"}
 CONTRACT_UPDATE_KEYS = {"mode", "staging_namespace", "existing_container", "swapped",
                         "discarded", "discarded_nodes", "stale_staging_removed",
-                        "swap_seconds", "post_swap_paths_checked",
-                        "post_swap_paths_missing"}
+                        "stale_staging_namespaces", "swap_seconds",
+                        "post_swap_paths_checked", "post_swap_paths_missing",
+                        "retired", "retired_removal", "rolled_back",
+                        "rollback_reason", "recovery", "previous_container_group",
+                        "previous_state"}
 CONTRACT_MEDIA_KEYS = {"handoff_directory", "image_files_in_handoff_directory",
                        "embedded_media_records", "embedded_media", "content_records",
                        "texture_records", "texture_references", "camera_records",
@@ -125,7 +139,8 @@ CONTRACT_GRAY_KEYS = {"name", "type", "color", "shading_group", "reused",
                       "meshes_assigned", "shading_groups_replaced"}
 CONTRACT_DISPLAY_KEYS = {"color", "shapes_overridden", "shapes", "note"}
 CONTRACT_COUNT_KEYS = {"manifest_objects", "container_nodes", "file_texture_nodes",
-                       "image_nodes_loaded", "meshes_assigned"}
+                       "image_nodes_loaded", "meshes_assigned",
+                       "manifest_categories"}
 CONTRACT_CHECK_KEYS = {"candidate", "best", "candidates", "matched", "decided_by",
                        "winner", "max_position_error_cm", "max_size_error_cm",
                        "max_offset_error_cm", "max_centroid_error_cm",
@@ -133,11 +148,12 @@ CONTRACT_CHECK_KEYS = {"candidate", "best", "candidates", "matched", "decided_by
                        "world_conversion_matrix", "orientation_available",
                        "orientation_note", "fit", "camera_contract", "tolerances",
                        "objects_compared", "objects_missing"}
-CONTRACT_OBJECT_KEYS = {"node_name", "path", "matched_id", "found", "matched_by",
-                        "world_matrix", "world_bounds_size_cm", "position_error_cm",
-                        "size_error_cm", "offset_error_cm", "centroid_error_cm",
-                        "centroid_checked", "orientation_error_deg",
-                        "orientation_checked", "identification_size_cm", "problems"}
+CONTRACT_OBJECT_KEYS = {"node_name", "path", "matched_id", "category", "found",
+                        "matched_by", "world_matrix", "world_bounds_size_cm",
+                        "position_error_cm", "size_error_cm", "offset_error_cm",
+                        "centroid_error_cm", "centroid_checked",
+                        "orientation_error_deg", "orientation_checked",
+                        "identification_size_cm", "problems"}
 CONTRACT_SCAN_KEYS = {"source", "format", "texture_records", "texture_references",
                       "video_references", "files", "content_records",
                       "embedded_media_records", "embedded_media", "media_heuristic",
@@ -787,6 +803,21 @@ def node_alive(cmds, uuid):
     return bool(cmds.ls(uuid))
 
 
+def ownership_token(cmds, attribute, path):
+    """The ownership mark a node carries, or ``None`` when it carries none."""
+    if not cmds.attributeQuery(attribute, node=path, exists=True):
+        return None
+    return cmds.getAttr(path + "." + attribute)
+
+
+def family_namespaces(cmds, base, suffix):
+    """Namespaces of one name family that exist right now: ``base+suffix``, ``_1``, ..."""
+    pattern = re.compile(re.escape(base + suffix) + r"(_\d+)?$")
+    return sorted(str(name) for name in
+                  (cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True) or [])
+                  if pattern.match(str(name)))
+
+
 def object_positions(cmds, entries):
     """World positions of the report's objects, keyed by manifest node name.
 
@@ -1088,10 +1119,32 @@ def main(argv=None):
         check("the report named both container parts",
               container["namespace"] == proto.DEFAULT_CONTAINER and
               container["group"] == proto.DEFAULT_CONTAINER, json.dumps(container))
-        check("the first swap had no previous container to remove",
-              update["previous_container_removal"]["namespace_existed"] is False and
-              update["previous_container_removal"]["namespace_removed"] is False,
-              json.dumps(update.get("previous_container_removal")))
+        check("the first swap had no previous reference to retire",
+              update["retired"] is None and update["retired_removal"] is None and
+              update["rolled_back"] is False and
+              container["previous_existed"] is False and
+              container["previous_container_group"] is None and
+              container["previous_reference_uuid"] is None and
+              container["previous_reference_present_after_run"] is None,
+              json.dumps({"update": {key: update.get(key) for key in
+                                     ("retired", "retired_removal", "rolled_back")},
+                          "container": container}))
+        check("the created container group carries the ownership mark",
+              ownership_token(cmds, proto.OWNERSHIP_ATTRIBUTE,
+                              container["group_path"]) ==
+              "{0} {1}".format(proto.OWNERSHIP_TOKEN, proto.DEFAULT_CONTAINER) and
+              container["ownership_attribute"] == proto.OWNERSHIP_ATTRIBUTE and
+              container["ownership_token"] == proto.OWNERSHIP_TOKEN,
+              json.dumps({"mark": ownership_token(cmds, proto.OWNERSHIP_ATTRIBUTE,
+                                                  container["group_path"]),
+                          "attribute": container["ownership_attribute"]}))
+        check("the run left no namespace of the staging or retiring family behind",
+              not cmds.namespace(exists=staging) and
+              not family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                    proto.RETIRING_SUFFIX),
+              json.dumps({"staging": staging,
+                          "retiring": family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                                        proto.RETIRING_SUFFIX)}))
         check("the swap recorded its duration",
               isinstance(update["swap_seconds"], float) and update["swap_seconds"] >= 0.0,
               str(update["swap_seconds"]))
@@ -1402,7 +1455,8 @@ def main(argv=None):
             "update": {key: repeat_update.get(key) for key in
                        ("mode", "swapped", "existing_container", "discarded",
                         "stale_staging_removed", "post_swap_paths_missing",
-                        "previous_container_removal", "swap_seconds")},
+                        "retired", "retired_removal", "rolled_back",
+                        "swap_seconds")},
             "container": repeat_report["container"],
             "container_nodes": repeat_report["counts"]["container_nodes"],
             "previous_nodes": first_nodes,
@@ -1416,9 +1470,28 @@ def main(argv=None):
               repeat_update["swapped"] is True and
               repeat_update["existing_container"] is True and
               repeat_update["discarded"] is False and
-              repeat_update["previous_container_removal"]["namespace_existed"] is True and
-              repeat_update["previous_container_removal"]["namespace_removed"] is True,
+              repeat_update["rolled_back"] is False and
+              repeat_update["recovery"]["restored_previous_reference"] is None and
+              repeat_update["retired"]["retired_namespace"] is not None and
+              repeat_update["retired_removal"]["namespace_removed"] is True,
               json.dumps(checks.evidence["repeat_run"]["update"]))
+        check("the repeat run retired the very group it replaced",
+              repeat_report["container"]["previous_reference_uuid"] == reference_group_uuid and
+              repeat_update["retired"]["previous_uuid"] == reference_group_uuid and
+              repeat_update["retired"]["previous_group"] == reference_group,
+              json.dumps({"retired": repeat_update["retired"],
+                          "recorded": repeat_report["container"]["previous_reference_uuid"],
+                          "replaced": reference_group_uuid}))
+        check("a completed swap reports that the previous reference is gone",
+              repeat_report["container"]["kept_existing"] is False and
+              repeat_report["container"]["previous_reference_present_after_run"] is False and
+              not node_alive(cmds, reference_group_uuid) and
+              not family_namespaces(cmds, proto.DEFAULT_CONTAINER, proto.RETIRING_SUFFIX),
+              json.dumps({"kept": repeat_report["container"]["kept_existing"],
+                          "present": repeat_report["container"][
+                              "previous_reference_present_after_run"],
+                          "retiring": family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                                        proto.RETIRING_SUFFIX)}))
         check("the repeat run left no staging namespace behind",
               not cmds.namespace(exists=staging) and
               repeat_update["stale_staging_removed"] is False,
@@ -2525,6 +2598,308 @@ def main(argv=None):
               "UNSUPPORTED_SCENE_LINEAR_UNIT" in " ".join(unit_report["problems"]),
               json.dumps({"exit": unit_code, "problems": unit_report["problems"][:1]}))
         checks.record("refusals", refusal_evidence)
+
+        # ------------------------------------- swap failures and ownership
+        report["phase"] = "ownership"
+        make_production_scene(cmds)
+        seed_report, seed_code = proto.run(str(clean_fbx), str(manifest_path))
+        seed_group = cmds.ls(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER,
+                             long=True)[0]
+        seed_uuid = cmds.ls(seed_group, uuid=True)[0]
+        seed_nodes = container_nodes(cmds, proto.DEFAULT_CONTAINER)
+        seed_paths = [entry["path"] for entry in seed_report["objects"]]
+        check("the ownership section starts from one good reference",
+              seed_code == 0 and seed_report["ok"] is True and node_alive(cmds, seed_uuid),
+              json.dumps({"exit": seed_code, "problems": seed_report["problems"]}))
+
+        def injected_run(guard_target, guard_name, replacement):
+            """One import run with a single host or importer call replaced."""
+            original = getattr(guard_target, guard_name)
+            setattr(guard_target, guard_name, replacement)
+            try:
+                importer = proto.SceneRefImporter(str(clean_fbx), str(manifest_path))
+                try:
+                    run_report, run_code = importer.run()
+                except Exception:  # noqa: BLE001 - the importer promises not to raise
+                    run_report, run_code = importer.report, None
+                return run_report, run_code
+            finally:
+                setattr(guard_target, guard_name, original)
+
+        def unchanged_reference():
+            """Whether the reference this section seeded is exactly as it was."""
+            return (node_alive(cmds, seed_uuid) and
+                    container_nodes(cmds, proto.DEFAULT_CONTAINER) == seed_nodes and
+                    all(cmds.objExists(path) for path in seed_paths))
+
+        def no_leftovers():
+            """Whether no staging or retiring namespace and no half container is left."""
+            return (not cmds.namespace(exists=staging) and
+                    not family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                          proto.RETIRING_SUFFIX) and
+                    cmds.objExists(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER))
+
+        original_namespace = cmds.namespace
+
+        def fail_container_rename(*args, **kwargs):
+            rename = kwargs.get("rename")
+            if (rename and rename[1] == proto.DEFAULT_CONTAINER and
+                    rename[0].startswith(proto.DEFAULT_CONTAINER + proto.STAGING_SUFFIX)):
+                raise RuntimeError("injected namespace rename failure")
+            return original_namespace(*args, **kwargs)
+
+        rename_report, rename_code = injected_run(cmds, "namespace", fail_container_rename)
+        rename_update = rename_report["update"]
+        checks.record("swap_namespace_failure", {
+            "exit": rename_code, "phase": rename_report["phase"],
+            "problems": rename_report["problems"],
+            "update": {key: rename_update.get(key) for key in
+                       ("mode", "swapped", "rolled_back", "rollback_reason",
+                        "staging_namespace_removed", "retired")},
+            "container": rename_report["container"],
+            "previous_alive": node_alive(cmds, seed_uuid)})
+        check("a failed namespace rename is refused and reported",
+              rename_code == 1 and rename_report["phase"] == "refused" and
+              any("STAGED_SWAP_FAILED" in problem
+                  for problem in rename_report["problems"]),
+              json.dumps(checks.evidence["swap_namespace_failure"]))
+        check("a failed namespace rename does not cost the previous reference",
+              unchanged_reference() and
+              rename_report["container"]["kept_existing"] is True and
+              rename_report["container"]["previous_reference_present_after_run"] is True,
+              json.dumps({"container": rename_report["container"],
+                          "nodes": container_nodes(cmds, proto.DEFAULT_CONTAINER)}))
+        check("a failed namespace rename is rolled back and leaves nothing behind",
+              rename_update["rolled_back"] is True and
+              rename_update["swapped"] is False and
+              rename_update["rollback"]["staging_namespace_removed"] is True and
+              rename_update["rollback"]["previous_reference_restored"] is True and
+              no_leftovers(),
+              json.dumps({"update": checks.evidence["swap_namespace_failure"]["update"],
+                          "rollback": rename_update.get("rollback"),
+                          "staging_exists": cmds.namespace(exists=staging),
+                          "retiring": family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                                        proto.RETIRING_SUFFIX)}))
+
+        original_rename = cmds.rename
+
+        def fail_group_rename(*args, **kwargs):
+            if len(args) >= 2:
+                source, target = str(args[0]), str(args[1])
+                if (source.endswith(":" + proto.DEFAULT_CONTAINER + proto.STAGING_SUFFIX) and
+                        target.endswith(":" + proto.DEFAULT_CONTAINER)):
+                    raise RuntimeError("injected group rename failure")
+            return original_rename(*args, **kwargs)
+
+        group_report, group_code = injected_run(cmds, "rename", fail_group_rename)
+        group_update = group_report["update"]
+        checks.record("swap_group_failure", {
+            "exit": group_code, "phase": group_report["phase"],
+            "problems": group_report["problems"],
+            "update": {key: group_update.get(key) for key in
+                       ("mode", "swapped", "rolled_back", "rollback_reason")},
+            "rollback": group_update.get("rollback"),
+            "container": group_report["container"]})
+        check("a failed group rename is refused and reported",
+              group_code == 1 and group_report["phase"] == "refused" and
+              any("STAGED_SWAP_FAILED" in problem for problem in group_report["problems"]),
+              json.dumps(checks.evidence["swap_group_failure"]))
+        check("a failed group rename deletes the half swapped container and restores the old one",
+              group_update["swapped"] is False and group_update["rolled_back"] is True and
+              group_update["rollback"]["container_namespace_removed"] is True and
+              group_update["rollback"]["previous_reference_restored"] is True and
+              unchanged_reference() and no_leftovers(),
+              json.dumps({"update": checks.evidence["swap_group_failure"]["update"],
+                          "rollback": group_update.get("rollback")}))
+
+        original_rehome = proto.SceneRefImporter._rehome_paths
+
+        def failing_rehome(importer_self):
+            original_rehome(importer_self)
+            update = importer_self.report["update"]
+            update["post_swap_paths_missing"] = list(
+                update["post_swap_paths_missing"]) + ["injected-missing-path"]
+
+        path_report, path_code = injected_run(proto.SceneRefImporter, "_rehome_paths",
+                                              failing_rehome)
+        path_update = path_report["update"]
+        checks.record("swap_path_check_failure", {
+            "exit": path_code, "phase": path_report["phase"],
+            "problems": path_report["problems"],
+            "update": {key: path_update.get(key) for key in
+                       ("mode", "swapped", "rolled_back", "rollback_reason",
+                        "post_swap_paths_checked", "post_swap_paths_missing")},
+            "rollback": path_update.get("rollback"),
+            "container": path_report["container"]})
+        check("a final path read back that does not resolve undoes the swap",
+              path_code == 1 and path_report["phase"] == "refused" and
+              path_update["swapped"] is False and path_update["rolled_back"] is True and
+              "does not resolve" in str(path_update["rollback_reason"]),
+              json.dumps(checks.evidence["swap_path_check_failure"]))
+        check("the swapped container is deleted and the previous reference put back",
+              path_update["rollback"]["container_namespace_removed"] is True and
+              path_update["rollback"]["previous_reference_restored"] is True and
+              unchanged_reference() and no_leftovers() and
+              path_report["container"]["kept_existing"] is True and
+              path_report["container"]["previous_reference_present_after_run"] is True,
+              json.dumps({"rollback": path_update.get("rollback"),
+                          "container": path_report["container"]}))
+
+        original_file = cmds.file
+
+        def fail_import(*args, **kwargs):
+            if kwargs.get("i"):
+                cmds.createNode("transform", name="PartialFbxImport")
+                raise RuntimeError("injected partial FBX import failure")
+            return original_file(*args, **kwargs)
+
+        partial_report, partial_code = injected_run(cmds, "file", fail_import)
+        partial_update = partial_report["update"]
+        checks.record("partial_import_failure", {
+            "exit": partial_code, "phase": partial_report["phase"],
+            "problems": partial_report["problems"],
+            "update": {key: partial_update.get(key) for key in
+                       ("mode", "discarded", "discard_reason", "discarded_node_count",
+                        "discarded_nodes", "staging_namespace_removed")},
+            "container": partial_report["container"],
+            "partial_node_exists": cmds.objExists("PartialFbxImport")})
+        check("a partial import is refused",
+              partial_code == 1 and partial_report["phase"] == "refused" and
+              any("FBX_IMPORT_FAILED" in problem for problem in partial_report["problems"]),
+              json.dumps(checks.evidence["partial_import_failure"]))
+        check("a partial import leaves no staging node behind",
+              partial_update["discarded"] is True and
+              partial_update["staging_namespace_removed"] is True and
+              partial_update["discarded_node_count"] >= 1 and
+              any("PartialFbxImport" in node
+                  for node in partial_update["discarded_nodes"]) and
+              not cmds.namespace(exists=staging) and
+              not cmds.objExists("PartialFbxImport"),
+              json.dumps(checks.evidence["partial_import_failure"]))
+        check("a partial import keeps the previous reference and says so",
+              unchanged_reference() and
+              partial_report["container"]["kept_existing"] is True and
+              partial_report["container"]["previous_reference_present_after_run"] is True,
+              json.dumps(partial_report["container"]))
+
+        make_production_scene(cmds)
+        cmds.namespace(add=proto.DEFAULT_CONTAINER)
+        intruder = cmds.createNode("transform",
+                                   name=proto.DEFAULT_CONTAINER + ":ProductionAsset")
+        intruder_uuid = cmds.ls(intruder, uuid=True)[0]
+        collision_report, collision_code = proto.run(str(clean_fbx), str(manifest_path))
+        checks.record("unowned_container_collision", {
+            "exit": collision_code, "phase": collision_report["phase"],
+            "problems": collision_report["problems"],
+            "container": collision_report["container"],
+            "intruder_alive": node_alive(cmds, intruder_uuid),
+            "namespace_nodes": container_nodes(cmds, proto.DEFAULT_CONTAINER),
+            "staging_exists": cmds.namespace(exists=staging)})
+        check("a namespace of the container's name this tool does not own is refused",
+              collision_code == 1 and collision_report["phase"] == "refused" and
+              any("CONTAINER_NOT_OWNED" in problem
+                  for problem in collision_report["problems"]),
+              json.dumps(checks.evidence["unowned_container_collision"]))
+        check("the refusal left the foreign namespace and its object exactly as they were",
+              node_alive(cmds, intruder_uuid) and
+              container_nodes(cmds, proto.DEFAULT_CONTAINER) ==
+              [proto.DEFAULT_CONTAINER + ":ProductionAsset"] and
+              not cmds.namespace(exists=staging) and
+              collision_report["container"]["kept_existing"] is False and
+              collision_report["container"]["after_run"]["foreign_nodes"] != [],
+              json.dumps(checks.evidence["unowned_container_collision"]))
+
+        make_production_scene(cmds)
+        staging_name = proto.DEFAULT_CONTAINER + proto.STAGING_SUFFIX
+        cmds.namespace(add=staging_name)
+        staging_intruder = cmds.createNode("transform",
+                                           name=staging_name + ":ProductionAsset")
+        staging_intruder_uuid = cmds.ls(staging_intruder, uuid=True)[0]
+        avoid_report, avoid_code = proto.run(str(clean_fbx), str(manifest_path))
+        checks.record("unowned_staging_collision", {
+            "exit": avoid_code, "ok": avoid_report["ok"],
+            "staging_namespace": avoid_report["update"]["staging_namespace"],
+            "update": {key: avoid_report["update"].get(key) for key in
+                       ("mode", "swapped", "existing_container")},
+            "intruder_alive": node_alive(cmds, staging_intruder_uuid),
+            "namespace_nodes": container_nodes(cmds, staging_name),
+            "problems": avoid_report["problems"]})
+        check("a namespace of the staging name this tool does not own is avoided, not reused",
+              avoid_code == 0 and avoid_report["ok"] is True and
+              avoid_report["update"]["staging_namespace"] != staging_name and
+              avoid_report["update"]["staging_namespace"].startswith(staging_name) and
+              node_alive(cmds, staging_intruder_uuid) and
+              container_nodes(cmds, staging_name) == [staging_name + ":ProductionAsset"],
+              json.dumps(checks.evidence["unowned_staging_collision"]))
+        check("the avoided run still swapped its own container",
+              avoid_report["update"]["mode"] == "staged_swap" and
+              avoid_report["update"]["swapped"] is True and
+              cmds.objExists(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER) and
+              not cmds.namespace(exists=avoid_report["update"]["staging_namespace"]),
+              json.dumps(checks.evidence["unowned_staging_collision"]))
+
+        stale_name = staging_name + "_2"
+        cmds.namespace(add=stale_name)
+        stale_group = cmds.createNode("transform", name=stale_name + ":" + stale_name)
+        cmds.addAttr(stale_group, longName=proto.OWNERSHIP_ATTRIBUTE, dataType="string")
+        cmds.setAttr(stale_group + "." + proto.OWNERSHIP_ATTRIBUTE,
+                     "{0} {1}".format(proto.OWNERSHIP_TOKEN, stale_name), type="string")
+        stale_report, stale_code = proto.run(str(clean_fbx), str(manifest_path))
+        checks.record("stale_staging_sweep", {
+            "exit": stale_code, "ok": stale_report["ok"],
+            "update": {key: stale_report["update"].get(key) for key in
+                       ("staging_namespace", "stale_staging_removed",
+                        "stale_staging_namespaces")},
+            "warnings": stale_report["warnings"],
+            "stale_exists": cmds.namespace(exists=stale_name),
+            "foreign_exists": cmds.namespace(exists=staging_name),
+            "problems": stale_report["problems"]})
+        check("a staging namespace an interrupted run left behind is swept",
+              stale_code == 0 and stale_report["ok"] is True and
+              stale_report["update"]["stale_staging_removed"] is True and
+              stale_report["update"]["stale_staging_namespaces"] == [stale_name] and
+              any("STALE_STAGING_REMOVED" in warning
+                  for warning in stale_report["warnings"]) and
+              not cmds.namespace(exists=stale_name),
+              json.dumps(checks.evidence["stale_staging_sweep"]))
+        check("the sweep touches only namespaces carrying this tool's mark",
+              cmds.namespace(exists=staging_name) and
+              node_alive(cmds, staging_intruder_uuid) and
+              container_nodes(cmds, staging_name) == [staging_name + ":ProductionAsset"],
+              json.dumps(checks.evidence["stale_staging_sweep"]))
+
+        make_production_scene(cmds)
+        proto.run(str(clean_fbx), str(manifest_path))
+        interrupted_group = cmds.ls(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER,
+                                    long=True)[0]
+        interrupted_uuid = cmds.ls(interrupted_group, uuid=True)[0]
+        retiring_name = proto.DEFAULT_CONTAINER + proto.RETIRING_SUFFIX
+        cmds.namespace(rename=(proto.DEFAULT_CONTAINER, retiring_name))
+        recovery_report, recovery_code = proto.run(str(clean_fbx), str(manifest_path),
+                                                  dry_run=True)
+        recovery_update = recovery_report["update"]
+        checks.record("interrupted_takeover_recovery", {
+            "exit": recovery_code, "ok": recovery_report["ok"],
+            "recovery": recovery_update["recovery"],
+            "warnings": recovery_report["warnings"],
+            "container": recovery_report["container"],
+            "retiring_exists": cmds.namespace(exists=retiring_name),
+            "reference_alive": node_alive(cmds, interrupted_uuid),
+            "problems": recovery_report["problems"]})
+        check("an interrupted takeover is finished before the next run proceeds",
+              recovery_code == 0 and recovery_report["ok"] is True and
+              recovery_update["recovery"]["restored_previous_reference"] == retiring_name and
+              any("RESTORED_PREVIOUS_REFERENCE" in warning
+                  for warning in recovery_report["warnings"]) and
+              not cmds.namespace(exists=retiring_name) and
+              cmds.objExists(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER),
+              json.dumps(checks.evidence["interrupted_takeover_recovery"]))
+        check("the recovered reference is the one the interrupted run retired",
+              node_alive(cmds, interrupted_uuid) and
+              recovery_report["container"]["previous_reference_uuid"] == interrupted_uuid and
+              recovery_report["container"]["kept_existing"] is True and
+              recovery_report["container"]["previous_reference_present_after_run"] is True,
+              json.dumps(recovery_report["container"]))
 
         # ---------------------------------------------------- command line
         report["phase"] = "commandline"

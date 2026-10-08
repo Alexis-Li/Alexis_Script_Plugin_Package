@@ -715,6 +715,10 @@ def manifest_summary(manifest):
         "scope": {
             "kind": scope.get("kind"),
             "persistent_level": scope.get("persistent_level"),
+            "coverage": scope.get("coverage"),
+            "completeness": scope.get("completeness"),
+            "coverage_note": scope.get("coverage_note"),
+            "world_partition": _scope_world_partition(scope.get("world_partition")),
             "requested_sublevels": scope.get("requested_sublevels") or [],
             "loaded_sublevels": scope.get("loaded_sublevels") or [],
             "unloaded_sublevels": scope.get("unloaded_sublevels") or [],
@@ -733,6 +737,68 @@ def manifest_summary(manifest):
         "skipped": manifest.get("skipped") or [],
         "output": manifest.get("output") or {},
     }
+
+
+def _scope_world_partition(value):
+    """The manifest's World Partition inventory block, or ``None``.
+
+    The block is what tells a reader how complete a partitioned scope is: the
+    resolver counts the actor descriptors of the partition, says how many of them
+    the loaded world actually spawned, and names the ones it did not. A manifest
+    written before this block existed carries none, which is reported as
+    unavailable rather than read as complete.
+    """
+    if not isinstance(value, dict):
+        return None
+    return {
+        "detected": value.get("detected"),
+        "inventory_available": value.get("inventory_available"),
+        "containers": value.get("containers"),
+        "actor_descriptors": value.get("actor_descriptors"),
+        "loaded_actor_descriptors": value.get("loaded_actor_descriptors"),
+        "unloaded_actor_count": value.get("unloaded_actor_count"),
+        "unloaded_hlod_count": value.get("unloaded_hlod_count"),
+        "unloaded_actors": value.get("unloaded_actors") or [],
+        "inventory_truncated": value.get("inventory_truncated"),
+        "note": value.get("note"),
+    }
+
+
+def scope_coverage_warning(summary):
+    """A warning line when the manifest's scope is not stated as complete.
+
+    A World Partition world streams actors through cells, so a level range of a
+    partitioned world holds the actors the loaded cells have spawned. The exporter
+    decides completeness from the partition's own actor descriptors and puts that
+    decision in the manifest (``scope.completeness``, with ``scope.world_partition``
+    carrying the inventory behind it); a manifest that says ``not_confirmed`` -- or
+    that predates the block and marks the world partitioned -- is reported here
+    instead of being read as a complete level.
+    """
+    scope = (summary or {}).get("scope") or {}
+    world = (summary or {}).get("world") or {}
+    completeness = scope.get("completeness")
+    partition = scope.get("world_partition") or {}
+    if completeness == "confirmed":
+        return None
+    partitioned = bool(world.get("world_partition")) or bool(partition.get("detected"))
+    if completeness is None and not partitioned:
+        return None
+    detail = ""
+    if partition:
+        detail = (" (actor descriptors {0}, spawned {1}, authored actors not spawned {2}, "
+                  "generated HLOD proxies not spawned {3}{4})").format(
+            partition.get("actor_descriptors"),
+            partition.get("loaded_actor_descriptors"),
+            partition.get("unloaded_actor_count"),
+            partition.get("unloaded_hlod_count"),
+            ", recorded list capped" if partition.get("inventory_truncated") else "")
+    elif partitioned:
+        detail = " (the manifest carries no descriptor inventory)"
+    return ("SCOPE_LOADED_ONLY: the manifest's scope is not confirmed complete{0}; "
+            "the transfer carries only the content the loaded levels spawned and "
+            "never loads anything on its own, so the level range may be "
+            "incomplete".format(detail))
 
 
 def exported_objects(manifest):
@@ -1651,6 +1717,7 @@ def _object_report(entry, position_error=None, size_error=None, expected_positio
         "node_name": entry.get("node_name"),
         "path": entry.get("path"),
         "matched_id": entry.get("matched_id"),
+        "category": entry.get("category"),
         "found": bool(entry.get("found")),
         "matched_by": entry.get("matched_by"),
         "match_distance_cm": entry.get("match_distance_cm"),

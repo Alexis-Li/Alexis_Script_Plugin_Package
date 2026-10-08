@@ -605,6 +605,24 @@ bool FMtoUSceneRefTransfer::Run(
 		return false;
 	}
 	Out.Measurements.ScopeSeconds = FPlatformTime::Seconds() - ScopeStart;
+	if (Out.Resolution.Completeness == EMtoUSceneRefScopeCompleteness::NotConfirmed)
+	{
+		const FMtoUSceneRefWorldPartitionScope& Partition = Out.Resolution.WorldPartitionScope;
+		Out.Warnings.Add(FString::Printf(
+			TEXT("SCOPE_LOADED_ONLY: the scope holds only the content the loaded cells of the partitioned world have spawned, so its completeness is not confirmed; %s"),
+			*Partition.Note));
+		if (Partition.bInventoryAvailable)
+		{
+			const FString CapNote = Partition.bInventoryTruncated
+				? FString::Printf(TEXT("; the recorded list is capped at %d paths"),
+					MtoUSceneRefWorldPartitionInventoryLimit)
+				: FString();
+			Out.Warnings.Add(FString::Printf(
+				TEXT("WORLD_PARTITION_INVENTORY: %d of %d actor descriptor(s) over %d container(s) are authored actors that are not spawned in the loaded world, %d further descriptor(s) being generated HLOD proxies%s"),
+				Partition.UnloadedActorCount, Partition.ActorDescriptors,
+				Partition.Containers, Partition.UnloadedHlodCount, *CapNote));
+		}
+	}
 
 	TSet<FString> ComponentKeys;
 	for (const FMtoUSceneRefObject& Object : Out.Resolution.Objects)
@@ -821,6 +839,16 @@ bool FMtoUSceneRefTransferResult::WriteManifest(FString& OutError) const
 	Writer->WriteObjectStart(TEXT("scope"));
 	Writer->WriteValue(TEXT("kind"), TEXT("level_range"));
 	Writer->WriteValue(TEXT("persistent_level"), Resolution.PersistentLevelPackage);
+	// The coverage block is what a reader needs before trusting any count below it: a
+	// partitioned world's level range holds the actors its loaded cells spawned, and the
+	// inventory names how many actor descriptors are not in it.
+	const bool bPartitioned = Resolution.bWorldPartition;
+	const bool bComplete = Resolution.Completeness == EMtoUSceneRefScopeCompleteness::Confirmed;
+	Writer->WriteValue(TEXT("coverage"),
+		bPartitioned ? TEXT("partition_loaded_content") : TEXT("loaded_levels"));
+	Writer->WriteValue(TEXT("completeness"),
+		bComplete ? TEXT("confirmed") : TEXT("not_confirmed"));
+	Writer->WriteValue(TEXT("coverage_note"), Resolution.WorldPartitionScope.Note);
 	WriteStringArray(*Writer, TEXT("requested_sublevels"), Spec.RequestedSublevels);
 	WriteStringArray(*Writer, TEXT("loaded_sublevels"), Resolution.LoadedSublevels);
 	Writer->WriteArrayStart(TEXT("unloaded_sublevels"));
@@ -834,6 +862,23 @@ bool FMtoUSceneRefTransferResult::WriteManifest(FString& OutError) const
 	}
 	Writer->WriteArrayEnd();
 	WriteStringArray(*Writer, TEXT("excluded_sublevels"), Resolution.ExcludedSublevels);
+	// The inventory is read from the partition's actor descriptors without loading
+	// anything; it is the evidence behind `completeness`, not a substitute for it.
+	const FMtoUSceneRefWorldPartitionScope& Partition = Resolution.WorldPartitionScope;
+	Writer->WriteObjectStart(TEXT("world_partition"));
+	Writer->WriteValue(TEXT("detected"), Partition.bDetected);
+	Writer->WriteValue(TEXT("inventory_available"), Partition.bInventoryAvailable);
+	Writer->WriteValue(TEXT("containers"), Partition.Containers);
+	Writer->WriteValue(TEXT("actor_descriptors"), Partition.ActorDescriptors);
+	Writer->WriteValue(TEXT("loaded_actor_descriptors"), Partition.LoadedActorDescriptors);
+	Writer->WriteValue(TEXT("unloaded_actor_count"), Partition.UnloadedActorCount);
+	Writer->WriteValue(TEXT("unloaded_hlod_count"), Partition.UnloadedHlodCount);
+	Writer->WriteValue(TEXT("inventory_limit"),
+		static_cast<int32>(MtoUSceneRefWorldPartitionInventoryLimit));
+	Writer->WriteValue(TEXT("inventory_truncated"), Partition.bInventoryTruncated);
+	WriteStringArray(*Writer, TEXT("unloaded_actors"), Partition.UnloadedActors);
+	Writer->WriteValue(TEXT("note"), Partition.Note);
+	Writer->WriteObjectEnd();
 	Writer->WriteObjectEnd();
 
 	Writer->WriteObjectStart(TEXT("scale"));

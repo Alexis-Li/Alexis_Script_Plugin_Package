@@ -31,8 +31,19 @@ Rules the exporter must implement and report:
 3. A sublevel that exists in the world but was not requested is reported in
    `scope.excluded_sublevels` and contributes nothing.
 4. Unloaded World Partition cells are outside the loaded actor set for the same
-   reason as rule 2. The prototype reports whether the world is partitioned and
-   never claims cell-level coverage.
+   reason as rule 2, and a `world_partition` flag alone does not establish
+   coverage. The resolver therefore reads the partition's actor descriptors
+   (read only: no content is loaded), and the manifest carries the result as
+   `scope.coverage`, `scope.completeness` and `scope.world_partition`:
+   `actor_descriptors`, `loaded_actor_descriptors`, `unloaded_actor_count`
+   (authored actors the loaded world has not spawned), `unloaded_hlod_count`
+   (generated HLOD proxies, which carry merged copies of authored content
+   rather than content of their own), `unloaded_actors` (their paths, capped at
+   `inventory_limit`) and `inventory_truncated`. `completeness` is `confirmed`
+   when every authored descriptor is spawned in the loaded world and
+   `not_confirmed` otherwise; a Maya run reports the unconfirmed case as a
+   `SCOPE_LOADED_ONLY` warning instead of treating an empty
+   `unloaded_sublevels` list as completeness.
 5. The scope never narrows to "the selected actors" and never widens to "every
    loaded level".
 6. The scope is **static reference geometry**: for every actor in scope the
@@ -200,29 +211,62 @@ nodes by the node name the engine wrote (actor label, or mesh name for a
 multi-component actor, plus the instance node the FBX exporter created), with
 the namespace prefix removed.
 
+The container group carries an ownership mark: a string attribute
+`mtouSceneRefContainer` whose value is `mtou-scene-ref-container/1 <name>`, the
+name being the namespace the group was created for. The mark is what makes a
+container replaceable — a namespace, group or root-level node of the container's
+name that does not carry it is refused (`CONTAINER_NOT_OWNED`, exit 1) instead
+of being emptied, and a top-level transform of another type inside an owned
+namespace is refused the same way. The staging namespace is the first free name
+of the `<container>_Incoming`, `<container>_Incoming_1`, ... family, so a
+namespace of that name that belongs to the scene is neither reused nor deleted;
+the namespace a takeover moves the previous reference to uses the same rule with
+`<container>_Retiring`.
+
 ## Updating the reference
 
-An update never leaves a half-replaced reference behind:
+An update never leaves a half-replaced reference behind, and it never deletes
+the previous reference before the new one has taken its place:
 
-1. The handoff is imported into a **staging namespace**
-   (`<container>_Incoming`, with a group of the same name inside it). The
-   previous reference is untouched while the new import is measured, and the
-   staging namespace is what makes a failed run harmless.
+1. The handoff is imported into a **staging namespace** — the first free name of
+   the `<container>_Incoming`, `<container>_Incoming_1`, ... family, with a
+   group of the same name inside it. The previous reference is untouched while
+   the new import is measured, and the staging namespace is what makes a failed
+   run harmless. This run owns that namespace from the moment it exists: every
+   later failure deletes it again and reports the nodes it removed.
 2. The comparison runs in the staging namespace. Any problem — a mismatch, a
-   missing node, a refused handoff, an exception — deletes the staging namespace
-   again and keeps the previous reference exactly as it was
+   missing node, a refused handoff, a partial import, an exception — deletes the
+   staging namespace again and keeps the previous reference exactly as it was
    (`update.mode = "staged_swap_discarded"`, `update.discarded = true`, with the
    discarded node names).
-3. Only when the comparison reported no problem is the previous container
-   deleted and the staging namespace **renamed** to the container's name, with
-   its group renamed to the group name the contract promises. A rename moves no
-   node, so the measurements stay valid; every recorded path is re-resolved by
-   short name inside the final container afterwards and reported
-   (`update.post_swap_paths_checked`, `update.post_swap_paths_missing`).
-4. `--dry-run` stages and verifies without swapping anything.
-5. Only the container namespace, its group and a legacy root-level group of the
-   same name are ever deleted. Nothing else in the scene is renamed, reparented,
-   reassigned or deleted.
+3. Only when the comparison reported no problem is the previous, owned container
+   **renamed** into a free `<container>_Retiring`, ... name — renamed, not
+   deleted, so the scene keeps the very node it had, with its UUID — and the
+   staging namespace takes the container's name with its group renamed to the
+   group name the contract promises and its ownership mark rewritten for that
+   name.
+4. Every recorded path is then re-resolved by short name inside the final
+   container (`update.post_swap_paths_checked`, `update.post_swap_paths_missing`).
+   Only when none is missing is the retired reference deleted
+   (`update.retired_removal`).
+5. A failure in step 3 or a missing path in step 4 **rolls the takeover back**:
+   the container this run created is deleted, the retired reference is renamed
+   back under the container's name, and the report says so
+   (`update.rolled_back`, `update.rollback`, `update.rollback_reason`).
+6. `--dry-run` stages and verifies without swapping anything.
+7. `container.kept_existing` and `container.previous_reference_present_after_run`
+   are read from the scene at the end of the run — the previous reference is
+   looked up by UUID — so the recovery report states what the scene holds rather
+   than what the run intended. `container.after_run` names the group path the
+   container has now, any unmarked group or foreign node found under that name,
+   and whether a staging namespace is still there.
+8. An interrupted run is recovered before the next one proceeds: a marked
+   staging namespace is deleted, a reference left in a retiring name is renamed
+   back to the container's name (or finished into one when no retired copy is
+   waiting), and both are reported in `update.recovery`.
+9. Only nodes carrying this tool's ownership mark, and the staging and retiring
+   namespaces this tool created, are ever deleted. Nothing else in the scene is
+   renamed, reparented, reassigned or deleted.
 
 ## Manifest schema
 
@@ -252,10 +296,26 @@ An update never leaves a half-replaced reference behind:
   "scope": {
     "kind": "level_range",
     "persistent_level": "/Game/.../Map",
+    "coverage": "loaded_levels",
+    "completeness": "confirmed",
+    "coverage_note": "the world is not partitioned: every requested sublevel is either loaded and traversed or listed as unloaded",
     "requested_sublevels": ["/Game/.../Sub"],
     "loaded_sublevels": ["/Game/.../Sub"],
     "unloaded_sublevels": [{"package": "/Game/.../Other", "streaming_state": "not_in_world", "visible": false}],
-    "excluded_sublevels": ["/Game/.../Third"]
+    "excluded_sublevels": ["/Game/.../Third"],
+    "world_partition": {
+      "detected": false,
+      "inventory_available": false,
+      "containers": 0,
+      "actor_descriptors": 0,
+      "loaded_actor_descriptors": 0,
+      "unloaded_actor_count": 0,
+      "unloaded_hlod_count": 0,
+      "inventory_limit": 200,
+      "inventory_truncated": false,
+      "unloaded_actors": [],
+      "note": "..."
+    }
   },
   "scale": {"actors": 5, "components": 6, "objects": 7, "triangles": 1234, "vertices": 987},
   "objects": [
@@ -314,7 +374,13 @@ what the file produced against these numbers; no value in the manifest is a
 converted or interpreted value.
 
 `world_surface_centroid_cm` is the area-weighted centroid of the object's LOD 0
-triangles, in world space: `sum(area x triangle centre) / sum(area)`. It exists
+triangles, in world space: `sum(area x triangle centre) / sum(area)`. A landscape
+object is measured from the geometry the engine's landscape branch writes — the
+`FLandscapeComponentDataInterface` vertices of each landscape component at
+`ALandscapeProxy::ExportLOD`, two triangles per quad, with the component's
+relative location and the actor transform applied — so its bounds, centroid,
+triangle and vertex counts describe the file rather than the actor's own
+collision/editor bounds. It exists
 because position, bounds size and bounds offset are all blind to a mirrored
 placement, while this vector is not. It is deliberately triangle based: the
 engine's FBX exporter does not write the render vertex buffer's vertex set
@@ -338,8 +404,8 @@ back.
   "manifest": {"schema": "...", "world": {}, "conventions": {}, "filter": {}, "scope": {}, "scale": {}, "objects_exported": 10, "objects_total": 10, "output": {}},
   "scene": {"linear_unit": "cm", "up_axis": "y", "time_unit": "film", "playback_range": {}, "current_time": 1.0, "namespaces": [], "import_side_effects": {}, "playback_range_unchanged": true, "current_time_unchanged": true},
   "fbx": {"file": "...", "bytes": 0, "format": "ascii", "plugin": "fbxmaya", "import_options": "v=0;", "namespace_flag": "MtoU_UE_SceneRef_Incoming", "root_nodes_parented": []},
-  "container": {"namespace": "MtoU_UE_SceneRef", "group": "MtoU_UE_SceneRef", "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "staging_namespace": "MtoU_UE_SceneRef_Incoming", "staging_group_path": "...", "previous_existed": false, "swapped": true, "kept_existing": false, "namespace_created": true},
-  "update": {"mode": "staged_swap", "staging_namespace": "...", "existing_container": false, "swapped": true, "discarded": false, "stale_staging_removed": false, "discarded_nodes": [], "swap_seconds": 0.1, "post_swap_paths_checked": true, "post_swap_paths_missing": []},
+  "container": {"namespace": "MtoU_UE_SceneRef", "group": "MtoU_UE_SceneRef", "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "staging_namespace": "MtoU_UE_SceneRef_Incoming", "staging_group_path": "...", "staging_group_uuid": "...", "previous_existed": false, "previous_container_group": null, "previous_reference_uuid": null, "ownership_attribute": "mtouSceneRefContainer", "ownership_token": "mtou-scene-ref-container/1", "swapped": true, "kept_existing": false, "namespace_created": true, "after_run": {"namespace": true, "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "incomplete_groups": [], "foreign_nodes": [], "staging_namespace_present": false}, "previous_reference_present_after_run": null, "previous_reference_path_after_run": null},
+  "update": {"mode": "staged_swap", "staging_namespace": "...", "existing_container": false, "swapped": true, "discarded": false, "stale_staging_removed": false, "stale_staging_namespaces": [], "discarded_nodes": [], "swap_seconds": 0.1, "post_swap_paths_checked": true, "post_swap_paths_missing": [], "retired": null, "retired_removal": null, "rolled_back": false, "rollback_reason": null, "recovery": {"stale_staging_namespaces": [], "restored_previous_reference": null, "retired_leftovers_removed": [], "interrupted_container_removed": false, "finished_interrupted_container": null, "events": []}},
   "counts": {"manifest_objects": 10, "manifest_objects_total": 10, "container_nodes": 30, "file_texture_nodes": 0, "image_nodes_loaded": 0, "meshes_assigned": 8, "matched_objects": 10, "matched_by_name": 7, "matched_by_transform_count": 3},
   "media": {"handoff_directory": "...", "image_files_in_handoff_directory": [], "embedded_media_records": 0, "embedded_media": [], "content_records": 0, "texture_records": 0, "texture_references": 0, "camera_records": 0, "light_records": 0, "media_heuristic": false, "file_nodes_created": 0, "image_nodes_loaded": 0, "image_paths_present": [], "allowed": false},
   "texture_scan": {"source": "<file>", "format": "ascii", "texture_records": 0, "texture_references": 0, "video_references": 0, "content_records": 0, "embedded_media_records": 0, "embedded_media": [], "camera_records": 0, "light_records": 0, "files": [], "allowed": false},
@@ -357,7 +423,7 @@ back.
     "fit": {}, "camera_contract": {}, "tolerances": {}, "objects_compared": 10, "objects_missing": 0
   },
   "objects": [
-    {"node_name": "...", "path": "...", "matched_id": "...", "found": true, "matched_by": "name",
+    {"node_name": "...", "path": "...", "matched_id": "...", "category": "static_mesh", "found": true, "matched_by": "name",
      "world_matrix": [16 floats], "world_bounds_size_cm": {}, "local_bounds_size_cm": {},
      "identification_size_cm": {}, "position_error_cm": 0.0, "size_error_cm": 0.0,
      "offset_error_cm": 0.0, "centroid_error_cm": 0.0, "orientation_error_deg": null,

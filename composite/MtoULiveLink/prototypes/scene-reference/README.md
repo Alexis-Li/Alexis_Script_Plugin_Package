@@ -6,7 +6,9 @@ in its own namespace, keeps the material assignment the file carries, shows the
 geometry in one uniform gray, places it in the handoff's world (or, on request,
 in the camera route's world by one explicit conversion), compares what it holds
 against a manifest of the engine-evaluated world transforms, and only then
-replaces the previous reference. It exists to answer what the official export
+replaces the previous reference — and only after the new container resolved every
+recorded path, with the previous one renamed aside rather than deleted so a
+failed takeover can put it back. It exists to answer what the official export
 route really delivers, what it silently drops, and what a product would have to
 add.
 
@@ -39,7 +41,8 @@ sequenceDiagram
     MA->>MA: keep the material assignment, show the geometry in one gray override
     MA->>MA: place it in the handoff's world, or convert it into the camera route's world
     MA->>MA: compare the staged geometry against the manifest
-    MA->>MA: swap the staged namespace into the container name, or delete it and keep the old reference
+    MA->>MA: rename the previous reference aside, take the container name, resolve every recorded path, then delete the retired reference — or roll back
+    MA->>MA: report the container the scene holds now, by UUID, not what the run intended
     MA->>UE: <scope>.maya-report.json (measured matrices, bounds, fit, problems)
 ```
 
@@ -86,8 +89,8 @@ every fixture build):
 | `MtoUSceneRef_Textured` (sublevel, in the world) | one sphere with a material whose BaseColor is a texture sample parameter |
 | `MtoUSceneRef_Unloaded` (saved level, **not** in the world) | one cube that must never reach the export |
 | `MtoUSceneRef_InstanceSource` (saved level) + `MtoUSceneRef_InstanceHost` | a saved sublevel and a level that places it as a level instance (`LI_SceneRefInstance`), the case the engine refuses |
-| `MtoUSceneRef_Landscape` | one landscape actor over a 64x64 heightfield, the case the engine exports with its own branch |
-| `MtoUSceneRef_Partitioned` | a World Partition level built from the engine's `OpenWorld` template with three placed meshes, the case where content that is not streamed in is simply absent |
+| `MtoUSceneRef_Landscape` | one landscape actor over a 64x64 heightfield, the case the engine exports with its own branch and the fixture the manifest's landscape measurement is checked against in Maya |
+| `MtoUSceneRef_Partitioned` | a World Partition level built from the engine's `OpenWorld` template with three placed meshes, the case where content that is not streamed in is simply absent; it is exported twice, once as authored (a loaded-only scope that has to report itself incomplete) and once with streaming disabled |
 
 ## Supported by the prototype
 
@@ -112,9 +115,11 @@ every fixture build):
   recorded texture paths are kept and reported, not refused.
 - Maya side: one container namespace and group, the imported material assignment
   preserved, one uniform gray display override (or the gray lambert, or nothing,
-  as asked), a staged update that replaces the previous reference only after the
-  comparison passed, and a report that names every mismatch instead of skipping
-  it.
+  as asked), a staged update that keeps the previous reference until the new
+  container has taken its place and resolved every recorded path, an ownership
+  mark on the container group that makes a same-named namespace this tool does
+  not own a refusal instead of a deletion, and a report that names every mismatch
+  instead of skipping it.
 - Placement verification is five numbers per object, all compared under the map
   the handoff actually used: world position, world bounding-box size, the
   pivot-to-bounds-centre offset, the area-weighted surface centroid of the mesh's
@@ -127,11 +132,14 @@ every fixture build):
   Nanite-enabled meshes export their LOD 0 render data (the Nanite source mesh
   stays out, `bExportSourceMesh` is off) and arrive in Maya; a level instance is
   refused by the engine and reported with its reason while contributing no node;
-  a landscape is carried by the engine's own landscape branch (measured: 7938
-  polygons in the file for a 64x64 heightfield) even though the scope's own
-  record counts no triangles for it; and in a World Partition level, cells that
-  are not streamed in are absent from the loaded world and therefore from the
-  scope, which the run reports instead of loading them.
+  a landscape is carried by the engine's own landscape branch and measured from
+  the same source that branch writes (measured: `7938` triangles over a 64x64
+  heightfield, a surface with no thickness where the actor's own bounds are
+  `512 cm` thick), which is what lets Maya validate the manifest with size error
+  `0.0 cm` and surface-centroid error `6.4e-13 cm`; and in a World Partition
+  level, cells that are not streamed in are absent from the loaded world and
+  therefore from the scope, which the run reports — with the partition's own
+  actor descriptors read without loading anything — instead of loading them.
 - Two worlds, one flag: `--target-world engine` (default) keeps the geometry in
   the handoff's world, which is also the world the product's Maya to Unreal
   animation route uses; `--target-world camera` moves every imported root through
@@ -148,15 +156,21 @@ every fixture build):
   non-geometry and their components are suppressed from the export rather than
   silently delivered or dropped.
 - Unloaded World Partition cells: they are not in the loaded world, so they are
-  absent from the scope and the run says so (`world.world_partition` plus the
-  loaded actor set) instead of streaming them; the acceptance run measured a
-  partitioned level both as authored (streaming on, nothing streamed in, only
-  the always-loaded actor in scope) and with streaming disabled for the export.
+  absent from the scope and the run says so instead of streaming them. The
+  manifest carries `scope.completeness` with a read-only descriptor inventory
+  (`scope.world_partition`: descriptors, spawned, unspawned authored actors,
+  generated HLOD proxies, the unspawned paths up to a cap), and Maya reports an
+  unconfirmed scope as a `SCOPE_LOADED_ONLY` warning. Measured on the fixture:
+  `76` descriptors, `9` spawned and `3` authored actors absent with streaming on,
+  `12` spawned and `0` authored actors absent with streaming off. A
+  `confirmed` scope is a fact about the partition's descriptors, not a promise
+  that a running game would stream the same content, and the recorded path list
+  is capped at 200 entries.
 - Any texture, light or camera transfer, and any claim that the imported shading
   matches Unreal's: the material assignment arrives with the file, and the gray
   look is a display treatment on this host.
-- A texture-free claim by flag: the checks are on the produced file and on the
-  handoff directory. The official OBJ level export is measured in
+- An image-data-free claim by flag: the checks are on the produced file and on
+  the handoff directory. The official OBJ level export is measured in
   `official-capabilities.md` precisely because it cannot avoid writing baked
   images in an automated run.
 - Reference origin offsets: the prototype transfers the level's own world space.

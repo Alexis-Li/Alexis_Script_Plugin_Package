@@ -31,6 +31,16 @@ LandscapeScope, LevelInstanceRefusal, WorldPartitionScope, RealMayaPeer}`;
 `RealMayaPeer` needs `-MtoUSceneRefMayapy=`, `-MtoUSceneRefPeer=` and
 `-MtoUEvidence=` and reports that it was not requested without them.
 
+`LandscapeScope` checks its record against the geometry the engine's landscape
+branch writes (`2 x quads^2 x components` triangles, `(quads + 1)^2 x components`
+vertices, a surface thinner than the actor's own bounds and a flat fixture's
+centroid at the centre of its measured bounds) and against the manifest that the
+Maya peer reads. `WorldPartitionScope` exports the partitioned fixture twice —
+once as authored, where the loaded-only scope has to report itself
+`not_confirmed` with the unspawned authored actors named and carries a
+`SCOPE_LOADED_ONLY` warning, and once with streaming disabled, where every
+authored descriptor is spawned and the scope reports itself `confirmed`.
+
 `MtoUSceneRef.BuildFixture` can build the fixture once per editor session: a
 second build would delete fixture levels the session still holds as its world,
 which crashes the editor, so the command refuses with that reason instead. Use a
@@ -46,12 +56,25 @@ placement moves, and it is area weighted because the exported mesh does not hold
 the same vertex set as the render buffer (measured: 198 render positions against
 144 exported positions with the same 284 triangles).
 
+A landscape is measured from the source the engine's landscape branch writes —
+`FLandscapeComponentDataInterface` vertices at `ALandscapeProxy::ExportLOD`, two
+triangles per quad, the component's relative location and the actor transform
+applied — rather than from the actor's own collision/editor bounds, which include
+the terrain's thickness (measured: `8064 x 8064 x 512` cm as actor bounds against
+`8064 x 8064 x 0` cm as surface on the fixture, and the Maya peer validates the
+surface with size error `0.0` cm).
+
 It also carries the facts a static reference handoff is judged on: the
 `conventions` block (which axis option the export used and the point map that
 follows from it), the `filter` block (the policy and every component the export
-suppressed with its class and reason), and the `output` block's media records
-(texture, video, content and embedded media records, camera and light node
-records, produced files and image files, and the node names the file holds).
+suppressed with its class and reason), the `scope` block's coverage statement
+(`coverage`, `completeness`, `coverage_note` and, for a partitioned world, the
+`world_partition` inventory read from the partition's actor descriptors: the
+descriptor, spawned, unspawned authored and generated-HLOD counts, the unspawned
+paths up to `inventory_limit`, and whether the list is truncated), and the
+`output` block's media records (texture, video, content and embedded media
+records, camera and light node records, produced files and image files, and the
+node names the file holds).
 
 ## What it does to the editor
 
@@ -67,6 +90,9 @@ records, produced files and image files, and the node names the file holds).
   scope's actors; it never saves the scope's levels.
 - The fixture it builds is generated content under `/Game/MtoUSceneRefFixture`
   and is deleted and rebuilt on every fixture build.
+- Reading a partitioned world's actor descriptors is read only: the resolver
+  enumerates them, counts how many have spawned an actor and records the paths of
+  the ones that have not. It never loads, streams or activates a cell.
 
 ## Files
 

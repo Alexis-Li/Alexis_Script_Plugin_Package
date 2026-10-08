@@ -47,6 +47,31 @@ namespace
 			*FString::JoinBy(Result.Resolution.UnloadedSublevels, TEXT(", "),
 				[](const FMtoUSceneRefUnloadedLevel& Level) { return Level.Package + TEXT("(") + Level.StreamingState + TEXT(")"); }),
 			*FString::Join(Result.Resolution.ExcludedSublevels, TEXT(", ")));
+		{
+			// The coverage line is what a reader needs before trusting any count below it.
+			const FMtoUSceneRefWorldPartitionScope& Partition = Result.Resolution.WorldPartitionScope;
+			const TCHAR* Completeness =
+				Result.Resolution.Completeness == EMtoUSceneRefScopeCompleteness::Confirmed
+					? TEXT("confirmed") : TEXT("not_confirmed");
+			if (Result.Resolution.Completeness == EMtoUSceneRefScopeCompleteness::Confirmed)
+			{
+				UE_LOG(LogTemp, Display,
+					TEXT("MtoUSceneRef[%s]: scope completeness=%s partitioned=%s descriptors=%d spawned=%d unspawned=%d containers=%d: %s"),
+					*Result.Resolution.ScopeName, Completeness,
+					Partition.bDetected ? TEXT("true") : TEXT("false"),
+					Partition.ActorDescriptors, Partition.LoadedActorDescriptors,
+					Partition.UnloadedActorCount, Partition.Containers, *Partition.Note);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("MtoUSceneRef[%s]: scope completeness=%s partitioned=%s descriptors=%d spawned=%d unspawned=%d containers=%d: %s"),
+					*Result.Resolution.ScopeName, Completeness,
+					Partition.bDetected ? TEXT("true") : TEXT("false"),
+					Partition.ActorDescriptors, Partition.LoadedActorDescriptors,
+					Partition.UnloadedActorCount, Partition.Containers, *Partition.Note);
+			}
+		}
 		for (const FMtoUSceneRefSkipped& Skipped : Result.Resolution.Unsupported)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("MtoUSceneRef[%s]: unsupported %s (%s): %s"),

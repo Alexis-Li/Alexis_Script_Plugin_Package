@@ -9,6 +9,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
+#include "LandscapeProxy.h"
 #include "LevelInstance/LevelInstanceActor.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/CommandLine.h"
@@ -981,6 +982,95 @@ bool FMtoUSceneRefWorldPartitionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("a cell that is not streamed in contributes no actor to the loaded world"),
 		PlacedInWorld, 0);
 
+	// The scope states its own completeness instead of leaving an empty unloaded-sublevel list
+	// to be read as full coverage, and the inventory behind that statement is read from the
+	// partition's actor descriptors without loading anything.
+	const FMtoUSceneRefWorldPartitionScope& Inventory = AsAuthored.WorldPartitionScope;
+	TestEqual(TEXT("a scope whose cells are not streamed in reports its completeness as unconfirmed"),
+		AsAuthored.Completeness, EMtoUSceneRefScopeCompleteness::NotConfirmed);
+	TestTrue(TEXT("the partition's actor descriptors were readable without loading anything"),
+		Inventory.bInventoryAvailable);
+	TestTrue(TEXT("the inventory walked at least the partition's own container"), Inventory.Containers >= 1);
+	TestEqual(TEXT("the inventory splits the descriptors into spawned, unspawned authored actors and generated proxies"),
+		Inventory.LoadedActorDescriptors + Inventory.UnloadedActorCount +
+		Inventory.UnloadedHlodCount, Inventory.ActorDescriptors);
+	TestTrue(TEXT("the inventory names at least the placed actors the loaded world is missing"),
+		Inventory.UnloadedActorCount >= FMtoUSceneRefFixture::PartitionActorCount());
+	TestEqual(TEXT("the recorded path list holds every unspawned descriptor below the cap"),
+		Inventory.UnloadedActors.Num(),
+		FMath::Min(Inventory.UnloadedActorCount, MtoUSceneRefWorldPartitionInventoryLimit));
+	AddInfo(FString::Printf(
+		TEXT("partition inventory as streamed: descriptors=%d spawned=%d unspawned_authored=%d unspawned_hlod=%d containers=%d recorded=%d truncated=%s note=%s"),
+		Inventory.ActorDescriptors, Inventory.LoadedActorDescriptors, Inventory.UnloadedActorCount,
+		Inventory.UnloadedHlodCount, Inventory.Containers, Inventory.UnloadedActors.Num(),
+		Inventory.bInventoryTruncated ? TEXT("true") : TEXT("false"), *Inventory.Note));
+	for (const FString& Unspawned : Inventory.UnloadedActors)
+	{
+		AddInfo(FString::Printf(TEXT("partition inventory unspawned: %s"), *Unspawned));
+	}
+
+	// The review's own reproduction: with the cells not streamed in, this is the handoff the
+	// export produces, and its manifest is the artifact that has to say what it covers.
+	{
+		const FString AsStreamedDirectory = FPaths::Combine(EvidenceDirectory(), TEXT("partitioned-as-streamed"));
+		FMtoUSceneRefTransferResult AsStreamed;
+		if (!RunTransfer(*this, Spec, AsStreamedDirectory, AsStreamed))
+		{
+			RestoreHost(*this);
+			return false;
+		}
+		AddInfo(FString::Printf(TEXT("partitioned-as-streamed export: objects=%d nodes=[%s] warnings=%d"),
+			AsStreamed.Resolution.ExportedObjectCount(),
+			*FString::Join(AsStreamed.Output.NodeNames, TEXT(", ")), AsStreamed.Warnings.Num()));
+		for (const FString& Warning : AsStreamed.Warnings)
+		{
+			AddInfo(FString::Printf(TEXT("partitioned-as-streamed warning: %s"), *Warning));
+		}
+		TestEqual(TEXT("the loaded-only scope reports itself as not confirmed"),
+			AsStreamed.Resolution.Completeness, EMtoUSceneRefScopeCompleteness::NotConfirmed);
+		TestTrue(TEXT("the loaded-only run carries the SCOPE_LOADED_ONLY warning"),
+			AsStreamed.Warnings.ContainsByPredicate([](const FString& Warning)
+			{
+				return Warning.Contains(TEXT("SCOPE_LOADED_ONLY"));
+			}));
+		TSharedPtr<FJsonObject> AsStreamedManifest;
+		const FString AsStreamedManifestPath = FPaths::Combine(
+			AsStreamedDirectory, AsStreamed.Resolution.ScopeName + TEXT(".manifest.json"));
+		TestTrue(TEXT("the loaded-only manifest parses"), LoadJson(AsStreamedManifestPath, AsStreamedManifest));
+		if (AsStreamedManifest.IsValid())
+		{
+			const TSharedPtr<FJsonObject> ScopeBlock = AsStreamedManifest->GetObjectField(TEXT("scope"));
+			TestTrue(TEXT("the loaded-only manifest carries the scope block"), ScopeBlock.IsValid());
+			if (ScopeBlock.IsValid())
+			{
+				TestEqual(TEXT("the loaded-only manifest says its completeness is not confirmed"),
+					ScopeBlock->GetStringField(TEXT("completeness")), TEXT("not_confirmed"));
+				TestEqual(TEXT("the loaded-only manifest names what it covers"),
+					ScopeBlock->GetStringField(TEXT("coverage")), TEXT("partition_loaded_content"));
+				const TSharedPtr<FJsonObject> PartitionBlock = ScopeBlock->GetObjectField(TEXT("world_partition"));
+				TestTrue(TEXT("the loaded-only manifest carries the partition inventory"), PartitionBlock.IsValid());
+				if (PartitionBlock.IsValid())
+				{
+					TestTrue(TEXT("the inventory marks the partition detected"),
+						PartitionBlock->GetBoolField(TEXT("detected")));
+					TestTrue(TEXT("the inventory marks itself available"),
+						PartitionBlock->GetBoolField(TEXT("inventory_available")));
+					TestEqual(TEXT("the inventory's descriptor total is the scope's"),
+						PartitionBlock->GetIntegerField(TEXT("actor_descriptors")),
+						AsStreamed.Resolution.WorldPartitionScope.ActorDescriptors);
+					TestTrue(TEXT("the inventory counts the authored actors that are not spawned"),
+						PartitionBlock->GetIntegerField(TEXT("unloaded_actor_count")) >= 1);
+					TestTrue(TEXT("the inventory counts the generated proxies that are not spawned"),
+						PartitionBlock->GetIntegerField(TEXT("unloaded_hlod_count")) >= 0);
+					const TArray<TSharedPtr<FJsonValue>>* Unspawned = nullptr;
+					TestTrue(TEXT("the inventory records the unspawned actor paths"),
+						PartitionBlock->TryGetArrayField(TEXT("unloaded_actors"), Unspawned) &&
+						Unspawned != nullptr && Unspawned->Num() >= 1);
+				}
+			}
+		}
+	}
+
 	// Phase two, the state the export needs: with editor streaming off every actor desc
 	// becomes non spatially loaded (WorldPartition.cpp: SetForceNonSpatiallyLoaded(
 	// !IsStreamingEnabledInEditor())), so the level's content is in the world and the
@@ -1020,6 +1110,23 @@ bool FMtoUSceneRefWorldPartitionTest::RunTest(const FString& Parameters)
 		Resolution.Actors.Num(), PlacedInWorld, Resolution.ExportedObjectCount(),
 		SumTriangles(Resolution), SumVertices(Resolution),
 		Resolution.LoadedSublevels.Num(), Resolution.ExcludedSublevels.Num(), Resolution.UnloadedSublevels.Num()));
+
+	// With the level's content in the world the inventory finds nothing unspawned, and the
+	// scope states its completeness instead of leaving a reader to infer it.
+	const FMtoUSceneRefWorldPartitionScope& LoadedInventory = Resolution.WorldPartitionScope;
+	AddInfo(FString::Printf(
+		TEXT("partition inventory loaded: descriptors=%d spawned=%d unspawned_authored=%d unspawned_hlod=%d containers=%d truncated=%s note=%s"),
+		LoadedInventory.ActorDescriptors, LoadedInventory.LoadedActorDescriptors,
+		LoadedInventory.UnloadedActorCount, LoadedInventory.UnloadedHlodCount,
+		LoadedInventory.Containers,
+		LoadedInventory.bInventoryTruncated ? TEXT("true") : TEXT("false"), *LoadedInventory.Note));
+	TestEqual(TEXT("every authored actor descriptor is spawned once the level's content is loaded"),
+		LoadedInventory.UnloadedActorCount, 0);
+	TestEqual(TEXT("the generated HLOD proxies are counted apart from the authored placements"),
+		LoadedInventory.LoadedActorDescriptors + LoadedInventory.UnloadedHlodCount,
+		LoadedInventory.ActorDescriptors);
+	TestEqual(TEXT("a fully spawned partition scope reports its completeness as confirmed"),
+		Resolution.Completeness, EMtoUSceneRefScopeCompleteness::Confirmed);
 
 	const FString Directory = FPaths::Combine(EvidenceDirectory(), TEXT("partitioned"));
 	FMtoUSceneRefTransferResult Result;
@@ -1064,6 +1171,36 @@ bool FMtoUSceneRefWorldPartitionTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("the manifest records the scope's triangles"),
 				Scale->GetIntegerField(TEXT("triangles")), Result.TriangleCount);
 		}
+		const TSharedPtr<FJsonObject> ManifestScope = Manifest->GetObjectField(TEXT("scope"));
+		TestTrue(TEXT("the manifest carries the scope coverage block"), ManifestScope.IsValid());
+		if (ManifestScope.IsValid())
+		{
+			TestEqual(TEXT("the loaded manifest says its completeness is confirmed"),
+				ManifestScope->GetStringField(TEXT("completeness")), TEXT("confirmed"));
+			TestEqual(TEXT("the loaded manifest names what the scope covers"),
+				ManifestScope->GetStringField(TEXT("coverage")), TEXT("partition_loaded_content"));
+			const TSharedPtr<FJsonObject> PartitionBlock = ManifestScope->GetObjectField(TEXT("world_partition"));
+			TestTrue(TEXT("the loaded manifest carries the partition inventory"), PartitionBlock.IsValid());
+			if (PartitionBlock.IsValid())
+			{
+				TestTrue(TEXT("the loaded inventory marks the partition detected"),
+					PartitionBlock->GetBoolField(TEXT("detected")));
+				TestEqual(TEXT("the loaded inventory's descriptor total is the resolution's"),
+					PartitionBlock->GetIntegerField(TEXT("actor_descriptors")),
+					Resolution.WorldPartitionScope.ActorDescriptors);
+				TestEqual(TEXT("the loaded inventory records no unspawned authored actor"),
+					PartitionBlock->GetIntegerField(TEXT("unloaded_actor_count")), 0);
+				TestEqual(TEXT("the loaded inventory counts the generated proxies apart"),
+					PartitionBlock->GetIntegerField(TEXT("unloaded_hlod_count")),
+					LoadedInventory.UnloadedHlodCount);
+			}
+		}
+		// A confirmed scope is not reported as a gap: the warning belongs to the loaded-only case.
+		TestTrue(TEXT("the loaded run carries no SCOPE_LOADED_ONLY warning"),
+			!Result.Warnings.ContainsByPredicate([](const FString& Warning)
+			{
+				return Warning.Contains(TEXT("SCOPE_LOADED_ONLY"));
+			}));
 	}
 	AddInfo(FString::Printf(TEXT("partitioned export: objects=%d triangles=%d vertices=%d nodes=[%s] warnings=%d"),
 		Result.Resolution.ExportedObjectCount(), Result.TriangleCount, Result.VertexCount,
@@ -1237,13 +1374,40 @@ bool FMtoUSceneRefLandscapeTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("the landscape is its own category"), Object->Category, EMtoUSceneRefCategory::Landscape);
 	TestTrue(TEXT("the landscape is exported"), Object->bExported);
-	// The engine's own landscape branch writes the geometry; the resolver counts none of it,
-	// which is why a landscape's triangles are reported as unknown rather than as zero.
-	TestEqual(TEXT("the resolver counts no landscape triangles"), Object->Triangles, 0);
-	AddInfo(FString::Printf(TEXT("landscape scope record: id=%s node=%s bounds_size=%.1f/%.1f/%.1f triangles=%d vertices=%d"),
+
+	// The record has to describe the geometry the engine's landscape branch writes, not the
+	// actor's own bounds: the fixture is a flat 63x63 quad heightfield, so its surface has no
+	// thickness while the actor's editor bounds are hundreds of centimetres thick. These are
+	// the two numbers the first landscape handoff failed its Maya size and centroid checks on.
+	const ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(FindActor(Resolution, FMtoUSceneRefFixture::LandscapeActorLabel()));
+	TestNotNull(TEXT("the scope carries the landscape actor itself"), LandscapeProxy);
+	const FBox ActorBounds = LandscapeProxy != nullptr
+		? LandscapeProxy->GetComponentsBoundingBox(/*bNonColliding=*/true)
+		: FBox(ForceInit);
+	const FVector MeasuredSize = Object->WorldBounds.GetSize();
+	if (LandscapeProxy != nullptr)
+	{
+		const int32 Quads = LandscapeProxy->ComponentSizeQuads;
+		const int32 Components = LandscapeProxy->LandscapeComponents.Num();
+		const FVector Scale = LandscapeProxy->GetActorScale3D();
+		TestEqual(TEXT("the resolver counts the triangles the landscape export writes"),
+			Object->Triangles, 2 * FMath::Square(Quads) * Components);
+		TestEqual(TEXT("the resolver counts the vertices the landscape export writes"),
+			Object->Vertices, FMath::Square(Quads + 1) * Components);
+		TestTrue(TEXT("the measured footprint is the component's own patch size"),
+			FMath::IsNearlyEqual(MeasuredSize.X, Quads * FMath::Abs(Scale.X), 1.0) &&
+			FMath::IsNearlyEqual(MeasuredSize.Y, Quads * FMath::Abs(Scale.Y), 1.0));
+		TestTrue(TEXT("the flat heightfield measures as a surface, thinner than the actor's own bounds"),
+			MeasuredSize.Z + 1.0 < ActorBounds.GetSize().Z);
+		TestTrue(TEXT("the flat heightfield's surface centroid is the centre of its measured bounds"),
+			(Object->WorldSurfaceCentroid - Object->WorldBounds.GetCenter()).Size() < 1.0);
+	}
+	AddInfo(FString::Printf(TEXT("landscape scope record: id=%s node=%s measured_size=%.1f/%.1f/%.1f actor_bounds=%.1f/%.1f/%.1f centroid=%.1f/%.1f/%.1f triangles=%d vertices=%d note=%s"),
 		*Object->Id, *Object->NodeName,
-		Object->WorldBounds.GetSize().X, Object->WorldBounds.GetSize().Y, Object->WorldBounds.GetSize().Z,
-		Object->Triangles, Object->Vertices));
+		MeasuredSize.X, MeasuredSize.Y, MeasuredSize.Z,
+		ActorBounds.GetSize().X, ActorBounds.GetSize().Y, ActorBounds.GetSize().Z,
+		Object->WorldSurfaceCentroid.X, Object->WorldSurfaceCentroid.Y, Object->WorldSurfaceCentroid.Z,
+		Object->Triangles, Object->Vertices, *Object->Note));
 
 	const FString Directory = FPaths::Combine(EvidenceDirectory(), TEXT("landscape"));
 	FMtoUSceneRefTransferResult Result;
@@ -1263,6 +1427,38 @@ bool FMtoUSceneRefLandscapeTest::RunTest(const FString& Parameters)
 	// The engine's landscape branch writes a node for the actor it was given.
 	TestTrue(TEXT("the file holds the landscape node the manifest predicted"),
 		Result.Output.NodeNames.Contains(Object->NodeName));
+
+	// The manifest is the cross-host contract: the numbers the scope measured from the
+	// landscape geometry have to be the ones the Maya peer compares against the file.
+	TSharedPtr<FJsonObject> Manifest;
+	const FString ManifestPath = FPaths::Combine(Directory, Result.Resolution.ScopeName + TEXT(".manifest.json"));
+	TestTrue(TEXT("the landscape manifest parses"), LoadJson(ManifestPath, Manifest));
+	const TSharedPtr<FJsonObject> Record = FindManifestObject(Manifest, FMtoUSceneRefFixture::LandscapeActorLabel());
+	TestTrue(TEXT("the manifest holds the landscape record"), Record.IsValid());
+	if (Record.IsValid())
+	{
+		TestEqual(TEXT("the manifest records the landscape category"),
+			Record->GetStringField(TEXT("category")), TEXT("landscape"));
+		TestEqual(TEXT("the manifest records the triangles the scope measured"),
+			Record->GetIntegerField(TEXT("triangles")), Object->Triangles);
+		TestEqual(TEXT("the manifest records the vertices the scope measured"),
+			Record->GetIntegerField(TEXT("vertices")), Object->Vertices);
+		const TSharedPtr<FJsonObject> Bounds = Record->GetObjectField(TEXT("world_bounds_cm"));
+		const TSharedPtr<FJsonObject> Size = Bounds.IsValid() ? Bounds->GetObjectField(TEXT("size")) : nullptr;
+		if (Size.IsValid())
+		{
+			TestTrue(TEXT("the manifest's landscape size is the measured surface size, not the actor bounds"),
+				FMath::IsNearlyEqual(Size->GetNumberField(TEXT("z")), MeasuredSize.Z, 1.0) &&
+				FMath::IsNearlyEqual(Size->GetNumberField(TEXT("x")), MeasuredSize.X, 1.0));
+		}
+		const TSharedPtr<FJsonObject> Centroid = Record->GetObjectField(TEXT("world_surface_centroid_cm"));
+		if (Centroid.IsValid())
+		{
+			TestTrue(TEXT("the manifest's landscape centroid is the measured surface centroid"),
+				FMath::IsNearlyEqual(Centroid->GetNumberField(TEXT("x")), Object->WorldSurfaceCentroid.X, 1.0) &&
+				FMath::IsNearlyEqual(Centroid->GetNumberField(TEXT("y")), Object->WorldSurfaceCentroid.Y, 1.0));
+		}
+	}
 
 	RestoreHost(*this);
 	return true;

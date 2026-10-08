@@ -101,6 +101,58 @@ struct FMtoUSceneRefUnloadedLevel
 	bool bRequested = true;
 };
 
+/**
+ * How complete the resolved scope is, judged by the traversal itself.
+ *
+ * A level range in a world that is not partitioned is complete: every requested
+ * sublevel is either loaded and traversed or listed per item as unloaded. A World
+ * Partition world streams its actors through cells, so a level range holds exactly
+ * the actors the loaded cells have spawned, which is what `NotConfirmed` says.
+ */
+enum class EMtoUSceneRefScopeCompleteness : uint8
+{
+	Confirmed,
+	NotConfirmed,
+};
+
+/** How many unloaded actor paths the World Partition inventory records per run. */
+constexpr int32 MtoUSceneRefWorldPartitionInventoryLimit = 200;
+
+/**
+ * What a partitioned world's actor descriptors say about the scope.
+ *
+ * The resolver reads this without loading anything: the partition's descriptors
+ * are the authoring record of every actor the world contains, and the ones whose
+ * actor is not in the world are exactly the content a level range cannot carry.
+ * The inventory is reported as evidence of the gap, not as a substitute for it.
+ */
+struct FMtoUSceneRefWorldPartitionScope
+{
+	bool bDetected = false;
+	/** Whether the partition's descriptor inventory could be read at all. */
+	bool bInventoryAvailable = false;
+	/** Descriptor containers the inventory walked (the partition and its children). */
+	int32 Containers = 0;
+	/** Actor descriptors the partition holds, over every container. */
+	int32 ActorDescriptors = 0;
+	/** How many of those descriptors the loaded world has spawned. */
+	int32 LoadedActorDescriptors = 0;
+	/** Descriptors whose actor is not in the world, which the scope therefore does not hold. */
+	int32 UnloadedActorCount = 0;
+	/** Actor paths of unloaded descriptors, capped at the limit below. */
+	TArray<FString> UnloadedActors;
+	/**
+	 * Unloaded descriptors that are generated HLOD proxies rather than authored placements.
+	 *
+	 * A partitioned world also holds one HLOD actor per built proxy, and those spawn only
+	 * with HLOD streaming; they carry a merged copy of authored content instead of content
+	 * of their own, so they are counted apart from the placements a level range is missing.
+	 */
+	int32 UnloadedHlodCount = 0;
+	bool bInventoryTruncated = false;
+	FString Note;
+};
+
 /** What the caller asked for: one loaded level plus the sublevels it names. */
 struct FMtoUSceneRefScopeSpec
 {
@@ -121,6 +173,10 @@ struct FMtoUSceneRefResolution
 	FString ScopeName;
 	FString PersistentLevelPackage;
 	bool bWorldPartition = false;
+	/** What the traversal could actually cover, stated rather than implied. */
+	EMtoUSceneRefScopeCompleteness Completeness = EMtoUSceneRefScopeCompleteness::Confirmed;
+	/** The descriptor inventory behind `Completeness` for a partitioned world. */
+	FMtoUSceneRefWorldPartitionScope WorldPartitionScope;
 	TArray<FString> LoadedSublevels;
 	TArray<FString> ExcludedSublevels;
 	TArray<FMtoUSceneRefUnloadedLevel> UnloadedSublevels;
