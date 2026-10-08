@@ -213,8 +213,19 @@ resolution**, so a letterboxed render still compares like for like. `pixel` is
 the same position inside `projection.view_rect` (the aperture rectangle).
 
 Maya converts the same world location, projects it with the synced camera using
-its own film-aperture math, and reports the delta per marker. A delta larger
+its own film-aperture math and the host's read-back matrix, lens, film fit,
+offsets, squeeze and device aspect after time evaluation, and reports the delta
+per marker. A delta larger
 than the recorded tolerance is a prototype failure, not a note.
+
+Maya reports `applied` only after the read-back camera, gate and time match the
+target. A mismatch is `rejected` with `HOST_STATE_MISMATCH`; measurements in that
+rejection describe the attempted host state before transaction rollback. A
+heartbeat reads and validates the unchanged target too. Borrowing a camera with
+non-message input connections on it or its parents is refused with
+`CAMERA_INPUT_DRIVEN`, and protected write attributes are refused with
+`LOCKED_SYNC_ATTRIBUTE`, before camera/gate/time writes. These are application
+failure categories in `detail`; the wire schema and protocol version stay at 2.
 
 ## Camera cuts and subsequences
 

@@ -363,6 +363,18 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   Documentation updates are local; issue comments carry the current remotely
   accessible conclusion until remote file synchronization is authorized.
 
+- **2026-10-08:** Delivered local fixes for Issue #52 R-007–R-009: public
+  setup/run and idle-handler failures release the session; driven or protected
+  borrowed cameras/gates are refused before frame writes; projection and
+  application status use actual host read-back values with mismatch rollback.
+  Maya 2024 host/Arnold checks pass 145/145, focused safety checks 50/50,
+  mapping checks 63/63 in both interpreters, and stock UE 5.7.4 Automation
+  11/11 with real peers. The [acceptance record](issue-52-camera-sync-acceptance.md)
+  keeps reproduction/evidence boundaries. These are development self-tests;
+  independent re-verification remains required. The fix and records are local,
+  unpushed; current issue comments identify the delivery commit. Product
+  integration remains with #47 after the agreed #52–#54 prototype milestones.
+
 ## Stable Records
 
 - [Architecture](architecture.md)

@@ -20,6 +20,7 @@ can be inspected without a running Maya.
 import argparse
 import importlib.util
 import json
+import math
 import os
 import select
 import socket
@@ -45,6 +46,16 @@ CATEGORY_UNSUPPORTED_TIME_UNIT = "UNSUPPORTED_SCENE_TIME_UNIT"
 CATEGORY_CAMERA_NAME_CONFLICT = "CAMERA_NAME_CONFLICT"
 CATEGORY_TRANSPORT = "TRANSPORT_ERROR"
 CATEGORY_HANDSHAKE = "HANDSHAKE_FAILED"
+CATEGORY_CAMERA_INPUT_DRIVEN = "CAMERA_INPUT_DRIVEN"
+CATEGORY_LOCKED_ATTRIBUTE = "LOCKED_SYNC_ATTRIBUTE"
+CATEGORY_HOST_STATE_MISMATCH = "HOST_STATE_MISMATCH"
+
+RESOLUTION_PLUGS = ("defaultResolution.width", "defaultResolution.height",
+                    "defaultResolution.pixelAspect", "defaultResolution.deviceAspectRatio")
+TRANSFORM_WRITE_ATTRIBUTES = ("translateX", "translateY", "translateZ",
+                              "rotateX", "rotateY", "rotateZ",
+                              "scaleX", "scaleY", "scaleZ",
+                              "shearXY", "shearXZ", "shearYZ")
 
 # Maya time units that are frame rates, and the frames per second they mean.
 TIME_UNIT_FPS = {
@@ -153,11 +164,21 @@ def scene_linear_unit():
     return unit
 
 
-def _unlock(plug):
-    try:
-        cmds().setAttr(plug, lock=False)
-    except RuntimeError:
-        pass
+def _require_writable(plug):
+    """Refuse protected plugs, including compound locks, without unlocking them."""
+    node, attribute = plug.rsplit(".", 1)
+    while attribute:
+        if cmds().getAttr(node + "." + attribute, lock=True):
+            raise SyncRefused(CATEGORY_LOCKED_ATTRIBUTE,
+                              "{0}.{1} is locked; use a disposable unlocked camera/gate".format(
+                                  node, attribute))
+        parents = cmds().attributeQuery(attribute, node=node, listParent=True) or []
+        attribute = parents[0] if parents else None
+    if cmds().lockNode(node, query=True, lock=True)[0]:
+        raise SyncRefused(CATEGORY_LOCKED_ATTRIBUTE, "{0} is locked".format(node))
+    if not cmds().getAttr(plug, settable=True):
+        raise SyncRefused(CATEGORY_CAMERA_INPUT_DRIVEN,
+                          "{0} has an input driver; use a disposable camera/gate".format(plug))
 
 
 class CameraSyncFollower(object):
@@ -230,6 +251,16 @@ class CameraSyncFollower(object):
         }
 
     def connect(self):
+        """Connect with rollback even when setup or the handshake raises."""
+        try:
+            return self._connect()
+        except BaseException as error:
+            if self.state != STATE_FAILED:
+                self._fail(str(error))
+            self.stop()
+            raise
+
+    def _connect(self):
         """Check the scene, connect, send ``hello`` and read the session."""
         if self.connected:
             return self.session
@@ -245,7 +276,7 @@ class CameraSyncFollower(object):
         if not self._undo_state:
             # The frame transaction needs undo; the previous state is restored
             # by stop().
-            cmds().undoInfo(state=True)
+            cmds().undoInfo(stateWithoutFlush=True)
         try:
             self._socket = socket.create_connection(
                 (self.host, self.port), timeout=self.connect_timeout)
@@ -456,11 +487,12 @@ class CameraSyncFollower(object):
             self._restore_reused_camera(summary)
         self._camera_transform = None
         self._camera_shape = None
+        self._created_camera = False
         if self._scene_resolution_before is not None:
             self._restore_scene_resolution(summary)
         if self._undo_state is False:
             try:
-                cmds().undoInfo(state=False)
+                cmds().undoInfo(stateWithoutFlush=False)
             except RuntimeError:
                 pass
         self._undo_state = None
@@ -563,6 +595,7 @@ class CameraSyncFollower(object):
     def ensure_camera(self):
         """The session camera transform and shape, created once and reused."""
         if self._camera_transform and cmds().objExists(self._camera_transform):
+            self._validate_camera_inputs(self._camera_transform, self._camera_shape)
             return (self._camera_transform, self._camera_shape)
         name = self.camera_name
         if cmds().objExists(name):
@@ -571,6 +604,7 @@ class CameraSyncFollower(object):
                 raise SyncRefused(
                     CATEGORY_CAMERA_NAME_CONFLICT,
                     "{0!r} exists and is not a camera; refusing to reuse it".format(name))
+            self._validate_camera_inputs(name, shapes[0])
             self._camera_transform = name
             self._camera_shape = shapes[0]
             self._created_camera = False
@@ -581,6 +615,27 @@ class CameraSyncFollower(object):
                 "camera", name=name + "Shape", parent=self._camera_transform)
             self._created_camera = True
         return (self._camera_transform, self._camera_shape)
+
+    def _validate_camera_inputs(self, transform, shape):
+        """Borrow only static cameras and static parents; never sever a driver."""
+        nodes = [shape]
+        node = transform
+        while node:
+            nodes.append(node)
+            parents = cmds().listRelatives(node, parent=True, fullPath=True) or []
+            node = parents[0] if parents else None
+        for node in nodes:
+            connections = cmds().listConnections(
+                node, source=True, destination=False, plugs=True, connections=True) or []
+            for plug in connections[::2]:
+                if cmds().getAttr(plug, type=True) != "message":
+                    raise SyncRefused(CATEGORY_CAMERA_INPUT_DRIVEN,
+                                      "{0} has an input driver; choose another camera name "
+                                      "to create a disposable camera".format(plug))
+        for attribute in TRANSFORM_WRITE_ATTRIBUTES:
+            _require_writable(transform + "." + attribute)
+        for attribute in MANAGED_ATTRIBUTES:
+            _require_writable(shape + "." + attribute)
 
     def _capture_reused_camera(self):
         """Remember the state of a camera this session borrows instead of creating.
@@ -609,14 +664,14 @@ class CameraSyncFollower(object):
             summary["reused_camera_restored"] = False
             return
         try:
+            self._validate_camera_inputs(self._camera_transform, self._camera_shape)
             for attribute, value in sorted(state["attributes"].items()):
                 plug = "{0}.{1}".format(self._camera_shape, attribute)
-                _unlock(plug)
                 cmds().setAttr(plug, value)
             cmds().xform(self._camera_transform, worldSpace=True,
                          matrix=list(state["world_matrix"]))
             summary["reused_camera_restored"] = self._camera_shape
-        except RuntimeError as error:
+        except (RuntimeError, SyncRefused) as error:
             summary["reused_camera_restore_error"] = str(error)
 
     def _capture_scene_resolution(self):
@@ -624,9 +679,7 @@ class CameraSyncFollower(object):
         if self._scene_resolution_before is not None:
             return
         state = {}
-        for plug in ("defaultResolution.width", "defaultResolution.height",
-                     "defaultResolution.pixelAspect",
-                     "defaultResolution.deviceAspectRatio"):
+        for plug in RESOLUTION_PLUGS:
             state[plug] = cmds().getAttr(plug)
         self._scene_resolution_before = state
 
@@ -635,11 +688,12 @@ class CameraSyncFollower(object):
         state = self._scene_resolution_before
         self._scene_resolution_before = None
         try:
+            for plug in state:
+                _require_writable(plug)
             for plug, value in sorted(state.items()):
-                _unlock(plug)
                 cmds().setAttr(plug, value)
             summary["resolution_restored"] = dict(state)
-        except RuntimeError as error:
+        except (RuntimeError, SyncRefused) as error:
             summary["resolution_restore_error"] = str(error)
 
     def apply_frame(self, frame, session=None):
@@ -722,31 +776,39 @@ class CameraSyncFollower(object):
                     time_payload["display_frame"], maya_time))
 
         transform = None
+        try:
+            # Validate the entire write set before adopting/creating a camera,
+            # moving time or capturing anything that stop would write back.
+            for plug in RESOLUTION_PLUGS:
+                _require_writable(plug)
+            transform, shape = self.ensure_camera()
+        except Exception as error:
+            self.frames_rejected += 1
+            detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
+            return self._report_rejection(report, detail, frame_serial)
         if heartbeat:
             detail.append("heartbeat: identical state, Maya untouched")
         else:
-            try:
-                transform, shape = self.ensure_camera()
-            except Exception as error:
-                self.frames_rejected += 1
-                detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
-                return self._report_rejection(report, detail, frame_serial)
+            time_before = float(cmds().currentTime(query=True))
             try:
                 cmds().undoInfo(openChunk=True)
                 try:
+                    cmds().currentTime(applied_time)
                     cmds().xform(transform, worldSpace=True, matrix=list(matrix))
                     for attribute, value in sorted(attributes.items()):
                         plug = "{0}.{1}".format(shape, attribute)
-                        _unlock(plug)
                         cmds().setAttr(plug, value)
                     self._apply_resolution_gate(shape, resolution)
-                    cmds().currentTime(applied_time)
+                    self._read_frame_state(report, frame, applied_time, subframe, notes)
+                    self._verify_frame_state(report["camera"], matrix, attributes,
+                                             resolution, applied_time)
                 except Exception:
                     cmds().undoInfo(closeChunk=True)
                     try:
                         cmds().undo()
                     except RuntimeError as undo_error:
                         detail.append("frame rollback failed: {0}".format(undo_error))
+                    cmds().currentTime(time_before)
                     raise
                 else:
                     cmds().undoInfo(closeChunk=True)
@@ -756,10 +818,16 @@ class CameraSyncFollower(object):
                 return self._report_rejection(report, detail, frame_serial)
             self._last_signature = signature
 
-        transform = self._camera_transform
-        shape = self._camera_shape
-        report["camera"] = self._read_back(transform, shape, applied_time,
-                                           subframe, notes)
+        if heartbeat:
+            try:
+                self._read_frame_state(report, frame, applied_time, subframe, notes)
+                self._verify_frame_state(report["camera"], matrix, attributes,
+                                         resolution, applied_time)
+            except Exception as error:
+                self.frames_rejected += 1
+                self._last_signature = None  # the next heartbeat must repair the state
+                detail.append("rejected: {0}: {1}".format(type(error).__name__, error))
+                return self._report_rejection(report, detail, frame_serial)
         report["unreal_display_frame"] = time_payload["display_frame"]
         report["unreal_camera_path"] = camera_payload.get("path")
         report["maya_origin_frame"] = (self.maya_origin_frame if self.maya_origin_frame
@@ -770,8 +838,6 @@ class CameraSyncFollower(object):
                 "sampled_maya_frame": float(cmds().currentTime(query=True)),
                 "translate_x": float(cmds().getAttr(self.pose_node + ".translateX")),
             }
-        report["markers"] = mapping_module.marker_report(
-            frame["markers"], matrix, notes, resolution)
         for marker in report["markers"]:
             if marker["delta"] is None:
                 continue
@@ -791,6 +857,45 @@ class CameraSyncFollower(object):
         if len(self.reports) > self.max_reports:
             del self.reports[0:len(self.reports) - self.max_reports]
         return report
+
+    def _read_frame_state(self, report, frame, applied_time, subframe, notes):
+        values = self._read_back(self._camera_transform, self._camera_shape,
+                                 applied_time, subframe, notes)
+        report["camera"] = values
+        projection = {"focal_length_mm": values["focalLength"],
+                      "aperture_inches": (values["horizontalFilmAperture"],
+                                          values["verticalFilmAperture"]),
+                      "film_offset_inches": (values["horizontalFilmOffset"],
+                                             values["verticalFilmOffset"]),
+                      "film_fit": values["filmFit"],
+                      "lens_squeeze_ratio": values["lensSqueezeRatio"]}
+        gate = values["defaultResolution"]
+        # Maya's projection uses device aspect, including any pixel aspect.
+        report["markers"] = mapping().marker_report(
+            frame["markers"], values["world_matrix"], projection,
+            (gate["deviceAspectRatio"], 1.0))
+
+    def _verify_frame_state(self, values, matrix, attributes, resolution, applied_time):
+        expected = dict(attributes)
+        expected["maya_time"] = applied_time
+        expected["displayResolution"] = True
+        expected["displayGateMask"] = True
+        differences = [key for key, value in expected.items()
+                       if not math.isclose(float(values[key]), float(value),
+                                           rel_tol=0.0 if key == "maya_time" else 1e-6,
+                                           abs_tol=1e-6)]
+        if any(not math.isclose(actual, wanted, rel_tol=1e-6, abs_tol=1e-4)
+               for actual, wanted in zip(values["world_matrix"], matrix)):
+            differences.append("world_matrix")
+        gate = values["defaultResolution"]
+        if (gate["width"] != int(round(resolution[0])) or
+                gate["height"] != int(round(resolution[1])) or
+                not math.isclose(gate["deviceAspectRatio"], resolution[0] / resolution[1],
+                                 rel_tol=1e-6) or gate["pixelAspect"] != 1.0):
+            differences.append("defaultResolution")
+        if differences:
+            raise SyncRefused(CATEGORY_HOST_STATE_MISMATCH,
+                              "Maya read-back differs from the target: " + ", ".join(differences))
 
     def _report_rejection(self, report, detail, frame_serial):
         """Publish a rejected frame like any other report.
@@ -826,10 +931,8 @@ class CameraSyncFollower(object):
                             ("defaultResolution.pixelAspect", 1.0),
                             ("defaultResolution.deviceAspectRatio",
                              resolution[0] / resolution[1])):
-            _unlock(plug)
             cmds().setAttr(plug, value)
         for plug in (shape + ".displayResolution", shape + ".displayGateMask"):
-            _unlock(plug)
             cmds().setAttr(plug, True)
 
     def _read_back(self, transform, shape, applied_time, subframe, notes):
@@ -842,8 +945,8 @@ class CameraSyncFollower(object):
         values["subframe"] = bool(subframe)
         values["far_clip_substituted"] = bool(notes["far_clip_substituted"])
         values["far_clip_source"] = notes["far_clip_source"]
-        values["film_fit"] = notes["film_fit"]
-        values["lens_squeeze_ratio"] = notes["lens_squeeze_ratio"]
+        values["film_fit"] = values["filmFit"]
+        values["lens_squeeze_ratio"] = values["lensSqueezeRatio"]
         values["world_matrix"] = [float(value) for value in
                                   cmds().xform(transform, query=True,
                                                worldSpace=True, matrix=True)]
@@ -897,8 +1000,10 @@ class CameraSyncFollower(object):
         try:
             self.pump()
         except Exception as error:  # never break Maya's idle loop
-            self._idle_errors.append("{0}: {1}".format(type(error).__name__, error))
-            self.detach_idle_pump()
+            detail = "{0}: {1}".format(type(error).__name__, error)
+            self._idle_errors.append(detail)
+            self._fail(detail)
+            self.stop()
 
     # --------------------------------------------------------------- reports
 
@@ -936,11 +1041,11 @@ def run(host=DEFAULT_HOST, port=DEFAULT_PORT, duration=None, camera_name=DEFAULT
     follower = CameraSyncFollower(host=host, port=port, camera_name=camera_name,
                                   maya_origin_frame=maya_origin_frame,
                                   pose_node=pose_node)
-    follower.connect()
-    if idle_pump:
-        follower.attach_idle_pump()
-    deadline = None if duration is None else time.time() + float(duration)
     try:
+        follower.connect()
+        if idle_pump:
+            follower.attach_idle_pump()
+        deadline = None if duration is None else time.time() + float(duration)
         while follower.state == STATE_FOLLOWING:
             follower.pump()
             if on_frame is not None and follower.last_report is not None:
@@ -953,8 +1058,7 @@ def run(host=DEFAULT_HOST, port=DEFAULT_PORT, duration=None, camera_name=DEFAULT
     except KeyboardInterrupt:
         follower.stop("interrupted")
     finally:
-        if follower.state == STATE_FOLLOWING:
-            follower.stop()
+        follower.stop()
     return follower
 
 

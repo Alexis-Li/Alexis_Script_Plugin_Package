@@ -92,6 +92,10 @@ playback ranges on either side, and no client message can move the Unreal time.
 
 - One perspective cinematic camera per session, resolved through the engine's
   camera cut evaluation, in a root sequence or in a subsequence shot.
+  Maya creates a disposable camera or borrows a static, writable camera with
+  the requested name. If an existing camera or its parents have input drivers,
+  choose another `--camera-name`. Locked camera or resolution attributes are
+  refused before frame writes; use a disposable scene with a writable gate.
 - Unreal-driven timeline: editor playhead follow for paused seeks and cuts;
   isolated-player tests additionally cover play, pause, play rate and looping.
   Maya follows explicit origins across differing rates and non-zero starts,
@@ -127,6 +131,8 @@ playback ranges on either side, and no client message can move the Unreal time.
   bokeh between the two renderers.
 - Orthographic cameras, multiple simultaneous cameras on one client, and
   camera cuts owned by nested subsequences of a subsequence.
+- Borrowing Maya cameras with animation, constraints or other input drivers,
+  including driven parent transforms, or modifying locked camera/gate attributes.
 - Output resolution discovery from Movie Render Pipeline settings; the
   resolution is a prototype input and its source is reported.
 - PIE, packaged builds, and any product packaging or installation.

@@ -1,15 +1,16 @@
 # Issue #52: Unreal to Maya camera and Sequencer verification
 
-Latest independent review: 2026-10-08. **Whole-issue acceptance requires
-changes; Issue #52 remains open.** Implementation and review baseline:
-`91413946466d8f0337104f4bf087b7a4962d3428` (remote-accessible). The checkout
-started at `76a2f00c39fc9a4e82869c42e84e6511b5b25174`, whose prototype code is
-identical and whose only addition is the earlier comment archive. No
-implementation changes were made during this review.
+Current development delivery: 2026-10-08, local fixes based on
+`cd156064575be3e8fbc8a46d091ea990ed433ab1`. **R-007–R-009 are fixed pending
+independent re-verification; Issue #52 remains open.** The current issue
+handoff indexes the local fix commit and dev-02. No code or history files have
+been pushed. Latest independent review remains review-01, at
+`91413946466d8f0337104f4bf087b7a4962d3428` (remote-accessible); that review
+required changes and does not approve the newer delivery.
 
 The [current issue handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
 indexes the independent review and its complete reproduction script. This
-record is a local, unpushed update; the issue comments carry the remotely
+record and implementation are local, unpushed updates; the issue comments carry the remotely
 accessible current conclusion. Remote file
 synchronization remains pending.
 
@@ -44,9 +45,53 @@ ended a session was reported as a lost connection, and a reset during a
 handshake or a hello send could raise through the Maya client instead of being
 reported as a transport failure.
 
-## Current blockers and independent review
+## Current fix delivery and evidence
 
-All three findings were reproduced in Maya 2024, not inferred only from source.
+| Finding | Implemented behavior | Current status |
+| --- | --- | --- |
+| R-007 | Public `run()` owns setup, callback attachment and following in one unconditional cleanup scope. Direct `connect()` rolls back on setup/handshake exceptions. Failed exits retain their original exception or transport reason. An idle-handler exception fails and releases the session. Undo enablement is restored without flushing unrelated undo history. | Fixed, awaiting independent re-verification |
+| R-008 | Cameras with non-message inputs on their shape, transform or ancestors are refused before adoption/writes with `CAMERA_INPUT_DRIVEN`. Time evaluates before camera writes; reported projection uses the actual host matrix, lens, film parameters and device aspect. Camera/gate/time read-back mismatches are rejected with `HOST_STATE_MISMATCH`, with transaction/time rollback after attempted writes. A stale heartbeat is rejected and the following frame can repair it. | Fixed, awaiting independent re-verification |
+| R-009 | Protected camera, transform compound and resolution write plugs are refused before frame writes with `LOCKED_SYNC_ATTRIBUTE`; the prototype never unlocks plugs. Static unlocked borrowing and normal recovery remain supported. | Fixed, awaiting independent re-verification |
+
+These are the bounded refusal options allowed by review-01, not a new requirement
+to support animated/protected-camera borrowing. Choose a different camera name
+for a disposable camera, and use a disposable scene with a writable resolution
+gate. Prototype protocol v2 and product protocol v9 are unchanged.
+
+The final Maya host/Arnold suite executes 145 checks with zero failures: 90
+existing host checks, 50 safety regressions, and five enabled render checks.
+The safety checks also run independently through
+`mayapy tests/maya_camera_sync_safety_checks.py --result <scratch JSON>`.
+Before implementation, the original 40 added safety checks produced 25 failed
+assertions in the 130-check host suite. The expanded safety suite now passes
+50/50, including absolute subframe comparison at large frame numbers.
+Public disconnect/malformed-handshake scenarios use a real local TCP
+peer and real Maya state; hello-send/refused-handshake and callback fault
+injection supplement that evidence using mocks. They are not claims of a real
+UE crash or a real interactive scriptJob lifecycle.
+
+Final stock UE 5.7.4 Automation passes 11/11 with both real mayapy peers enabled,
+including the natural editor loop. Unreal C++ is unchanged and uses the binary
+compiled during review-01; this delivery does not claim a new engine build.
+System Python and mayapy pure mapping checks each pass 63/63. The four Arnold
+configurations pass; compared visible markers differ by at most 0.196001 px
+against 2 px tolerance. Out-of-frame markers remain excluded from pixel evidence.
+
+Evidence stays local beside the repository in
+`.tmp/issue52-fix-20261008/`: `maya-before.json`, `maya-safety.json`,
+`maya-final.json`, `render-final/`, `ue-suite-final.log`,
+`ue-automation-final/index.json` and `ue-evidence-final/`. The committed
+safety tests are portable reproduction inputs; dev-02 provides remote-readable
+key observations and archives the prior current handoff verbatim. No supplied
+C01/Backups asset was opened or modified. Interactive idle lifecycle (R-001),
+continuous-playback measurements (R-002), and product decisions (R-004–R-006)
+retain their previous boundaries. Self-tests do not close the findings or grant
+whole-issue acceptance.
+
+## Findings at the independent review baseline
+
+All three findings were reproduced in Maya 2024 at the reviewed baseline, not
+inferred only from source.
 Line references are in the Maya component's `scripts/MtoUCameraSyncPrototype.py`
 at the reviewed baseline. Passing normal fixtures do not establish complete
 recovery or correctness for a driven borrowed camera.
@@ -218,7 +263,7 @@ choice, persistent Maya-camera policy, MRQ output-resolution authority or
 exit-frame policy was made here.
 
 The official-capability, normal fixture camera-parameter and projection results
-remain useful within their stated limits. Fix and independently re-verify
-R-007–R-009 before closing #52. Natural-loop success and protocol convergence
+remain useful within their stated limits. Independently re-verify the local
+R-007–R-009 fixes before closing #52. Natural-loop success and protocol convergence
 do not establish correctness of an animated borrowed camera or every recovery
 exit. Product integration remains deferred to #47.

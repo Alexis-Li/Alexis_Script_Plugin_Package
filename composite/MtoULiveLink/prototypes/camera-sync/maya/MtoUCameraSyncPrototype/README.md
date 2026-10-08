@@ -18,6 +18,7 @@ Nothing here imports or depends on the product's `MtoULiveLink.py`.
 | `scripts/MtoUCameraSyncPrototype.py` | Maya follower, socket client, idle/`pump()` timeline driver and the `run()` entry point. |
 | `tests/test_camera_sync_mapping.py` | Pure unit tests; runs under CPython 3 and under mayapy. |
 | `tests/maya_host_camera_tests.py` | mayapy host checks in a disposable scene plus the opt-in Arnold render check. |
+| `tests/maya_camera_sync_safety_checks.py` | Focused host checks for public failure cleanup, protected/driven-camera refusal, and actual-state projection/rollback. Also included in the host suite. |
 | `tests/maya_camera_sync_peer.py` | Opt-in cross-host peer: connects to a real publisher and writes a phase tracked result JSON. |
 | `tests/maya_camera_sync_live_peer.py` | Long-run peer for the natural editor-loop check: follows whatever the open Unreal Sequencer publishes across several connection lifetimes, drops the connection on request, rejoins, and records what every session released. |
 | `tests/mock_camera_sync_server.py` | Fixture driven fake Unreal publisher, and the fixture authoring side (including the Unreal-side marker NDC). |
@@ -165,7 +166,10 @@ The peer's result JSON renames those to the Unreal side's vocabulary
   leaving it alone would keep framing with the previous aspect ratio whenever a
   non-16:9 gate is applied.
 * Marker NDC uses Maya's own film-aperture projection (see the module
-  docstring for the formula); the delta reported is `maya_ndc - unreal_ndc`.
+  docstring for the formula) with the actual world matrix, lens, film attributes
+  and device aspect read back after time evaluation. The delta reported is
+  `maya_ndc - unreal_ndc`. A read-back state that differs from the target is
+  rejected with `HOST_STATE_MISMATCH`; a failed write is rolled back.
 
 ## Scene safety
 
@@ -174,19 +178,28 @@ The peer's result JSON renames those to the Unreal side's vocabulary
   session.
 * Every frame's camera writes and its time move share one undo chunk; a failure
   inside the chunk is rolled back, so a rejected frame leaves the previous
-  state exactly as it was. A frame that repeats the previous state (the
-  publisher's heartbeat) does not touch Maya at all, which keeps the undo queue
-  clean.
+  state exactly as it was. A heartbeat does not write an unchanged state, but
+  still checks the camera and samples the pose witness. If the camera has
+  changed externally, that heartbeat reports the actual mismatch and the next
+  frame writes the target again.
+* Only a static, writable existing camera can be borrowed. Animation,
+  constraints and other non-message input connections on the camera or its
+  parents are refused with `CAMERA_INPUT_DRIVEN`; choose another
+  `--camera-name` to create a disposable camera. Locked camera attributes,
+  transform compounds and resolution plugs are refused with
+  `LOCKED_SYNC_ATTRIBUTE` before frame writes. The prototype never unlocks them.
 * `stop()` releases everything one session owns: the Maya current time captured
   at session start, the scene resolution gate the frames overwrote
   (`defaultResolution` including its device aspect), the camera, the idle pump
   and the socket. A camera this session created is deleted; a pre-existing node
   that already carried the session's name is reused and gets its attributes and
   placement written back, so a borrowed node looks the same after the session.
-  The summary reports each of those (`restored_time`, `resolution_restored`,
+  The stop result reports each of those (`restored_time`, `resolution_restored`,
   `camera_removed` or `reused_camera_restored`). A lost connection reports the
-  reason and leaves Maya usable, and followed by `stop()` the scene is released
-  the same way.
+  reason. `run()` releases the scene on every exit, including connection,
+  handshake, callback and transport failures; `connect()` rolls back failed
+  setup before raising `SyncRefused`. Direct `pump()` callers must call `stop()`
+  when following ends, including a failed state.
 
 Repeating sessions is safe: `stop()` clears the camera, resolution, callback and
 socket state, and `connect()` captures a fresh start time, so the second session
@@ -194,8 +207,8 @@ behaves exactly like the first. `abort()` drops the transport without the `bye`
 handshake, which is what a client that crashes or loses its network looks like
 to the publisher; the session state stays intact so `stop()` still releases the
 scene. A reconnect attempt that the publisher refuses, resets, or ends during
-the handshake is reported as a transport or handshake failure instead of raising
-through the caller or waiting for a session that will not come.
+the handshake raises a classified transport or handshake `SyncRefused` after
+cleanup; catch it before retrying.
 
 ## Host notes and limits
 

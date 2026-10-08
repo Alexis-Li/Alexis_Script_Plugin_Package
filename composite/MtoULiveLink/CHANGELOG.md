@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix the independent Issue #52 camera prototype's Maya failure cleanup.
+  Public run/setup exits now release session resources and restore scene/undo
+  state. Driven or protected borrowed cameras/gates are refused before writes;
+  projection evidence uses host read-back values and mismatched applications
+  are rejected and rolled back. Product components and protocol v9 are unchanged.
+
 - Drive cached playback interactively from the Unreal Binding Actor (Issue #50).
   After a validated upload, the 预览控制 group adds 暂停, 继续, a Maya source
   frame field with 定位, and a 循环 selection beside 播放/停止. Pause holds the

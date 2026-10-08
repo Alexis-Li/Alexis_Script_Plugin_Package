@@ -578,6 +578,11 @@ def main(argv=None):
         checks.record("script_jobs_listed_in_batch",
                       any(record["script_jobs_listed"] for record in cycle_records))
 
+        report["phase"] = "safety_regressions"
+        safety = load_module("maya_camera_sync_safety_checks",
+                             HERE / "maya_camera_sync_safety_checks.py")
+        safety.run_checks(cmds, applier, mock, checks)
+
         # ------------------------------------------------------- render check
         if args.render:
             report["phase"] = "render"
