@@ -41,6 +41,8 @@ struct FMtoUSessionSubject
 	int64 AppliedFrames = 0;
 	double MaxBoneDelta = 0.0;
 	double MaxRootWorldDelta = 0.0;
+	/** Target bones this subject does not drive; they keep their reference pose. */
+	TArray<FName> UndrivenBones;
 };
 
 /**
@@ -85,6 +87,12 @@ public:
 	int32 GetAppliedFrameCount() const { return AppliedFrames; }
 	int64 GetLastAppliedSerial() const { return LastAppliedSerial; }
 	double GetLastAppliedTime() const { return LastAppliedTime; }
+	/** How the last applied source time moved: first/forward/backward/hold. */
+	const FString& GetLastTimeDirection() const { return LastTimeDirection; }
+
+
+	/** One line per target naming the driver the preview replaced and how it exited. */
+	TArray<FString> DescribeDriveOwnership() const;
 	const FString& GetLastSessionEndReason() const { return LastSessionEndReason; }
 	const FString& GetLastErrorCode() const { return LastErrorCode; }
 	const TArray<FMtoUEvidenceError>& GetErrors() const { return Errors; }
@@ -107,6 +115,8 @@ private:
 	void HandleRemove(const TSharedPtr<FJsonObject>& Object);
 
 	bool BeginSession(const FMtoUInitMessage& Init, FString& OutError);
+	/** Refuses a message that names another session; returns true when refused. */
+	bool RefuseStaleSession(int64 MessageSession, const TCHAR* What);
 	void EndSession(const FString& Reason);
 	void CloseClient(const FString& Reason);
 
@@ -136,6 +146,7 @@ private:
 	double LastAppliedTime = 0.0;
 	int32 AppliedFrames = 0;
 	int64 ReceivedFrames = 0;
+	FString LastTimeDirection;
 	int32 ClientLineCount = 0;
 	uint16 BoundPort = 0;
 	bool bOversizeLine = false;

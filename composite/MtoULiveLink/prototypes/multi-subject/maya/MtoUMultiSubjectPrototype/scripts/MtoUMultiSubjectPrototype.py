@@ -238,10 +238,15 @@ class MultiSubjectSession(object):
     # ----------------------------------------------------------------- frames
 
     def step(self, time_value):
-        """Sample the active subjects at ``time_value`` and wait for the echo."""
+        """Sample the active subjects at ``time_value`` and wait for the echo.
+
+        ``time_value`` is a Maya source frame; it may move backwards or repeat,
+        because the serial - not the time - identifies the evaluation.
+        """
         records = self.active_records()
         scene.set_evaluated_time(time_value)
         serial = self.serial + 1
+        direction = protocol.time_direction(self.last_time, float(time_value))
         subjects = []
         sent = []
         for record in records:
@@ -255,10 +260,9 @@ class MultiSubjectSession(object):
                 "transforms": len(transforms),
                 "digest": digest_transforms(transforms),
             })
-        frame = protocol.make_frame(serial, float(time_value), subjects)
-        protocol.validate_frame(frame, self.summary,
-                                previous_serial=self.serial or None,
-                                previous_time=self.last_time)
+        frame = protocol.make_frame(self.session, serial, float(time_value), subjects)
+        protocol.validate_frame(frame, self.summary, session=self.session,
+                                previous_serial=self.serial or None)
         started = time.monotonic()
         self._send(frame)
         reply = self._reply(protocol.APPLIED)
@@ -269,8 +273,10 @@ class MultiSubjectSession(object):
         self.serial = serial
         self.last_time = float(time_value)
         entry = {
+            "session": self.session,
             "serial": serial,
             "time": float(time_value),
+            "time_direction": direction,
             "latency_ms": latency_ms,
             "statuses": statuses,
             "subjects": sent,
@@ -287,7 +293,7 @@ class MultiSubjectSession(object):
             raise protocol.ProtocolError(
                 protocol.CODE_REMOVE_ID_INACTIVE, "subject is not active",
                 repr(subject_id))
-        self._send(protocol.make_remove(subject_id))
+        self._send(protocol.make_remove(self.session, subject_id))
         reply = self._reply(protocol.APPLIED)
         statuses = protocol.validate_remove_reply(
             reply, self.session, subject_id,
@@ -299,6 +305,7 @@ class MultiSubjectSession(object):
                  "serial": reply.get("serial"), "time": reply.get("time")}
         self.evidence["removes"].append(entry)
         return entry
+
 
     def close(self):
         self.connection.close()
@@ -642,6 +649,19 @@ def _run_pair(args, evidence, manifest, pair, fps):
                 json.dumps(results))
         if args.scenario == "character-arms":
             _scenario_expectations(evidence, driver)
+        if args.times:
+            planned = _probe_times(args.times)[:expected_frames]
+            expected_directions = []
+            previous = None
+            for value in planned:
+                expected_directions.append(protocol.time_direction(previous, float(value)))
+                previous = float(value)
+            observed = results["directions"][:len(expected_directions)]
+            protocol.add_check(
+                evidence, "the planned reverse/re-edit source times were streamed",
+                observed == expected_directions,
+                json.dumps({"planned": planned, "expected": expected_directions,
+                            "observed": results["directions"]}))
     finally:
         if driver is not None:
             driver.close()
@@ -655,23 +675,31 @@ def _run_pair(args, evidence, manifest, pair, fps):
 
 
 def ready_frames(driver, args, records, start_time):
-    """Stream ``--frames`` frames and honour ``--remove-at``/``--drop-after``."""
-    results = {"frames": 0, "removed": None, "dropped": None}
+    """Stream the planned frames and honour ``--remove-at``/``--drop-after``.
+
+    ``--times`` lists one Maya source frame per step, so a reverse scrub or a
+    re-edit of an already sent frame can be exercised; without it the times run
+    forward from ``start_time`` by ``--step``.
+    """
+    results = {"frames": 0, "removed": None, "dropped": None, "directions": []}
+    planned = _probe_times(args.times) if args.times else []
     time_value = float(start_time)
     for index in range(int(args.frames)):
         if args.drop_after is not None and results["frames"] >= int(args.drop_after):
             driver.drop()
             results["dropped"] = results["frames"]
             return results
-        driver.step(time_value)
+        step_time = float(planned[index]) if index < len(planned) else time_value
+        frame = driver.step(step_time)
         results["frames"] += 1
+        results["directions"].append(frame["time_direction"])
         if args.remove_at is not None \
                 and results["frames"] == int(args.remove_at) \
                 and results["removed"] is None:
             target = args.remove_id or records[1]["id"]
             driver.remove(target)
             results["removed"] = target
-        time_value += float(args.step)
+        time_value = step_time + float(args.step)
     if args.drop_after is not None and results["frames"] >= int(args.drop_after):
         driver.drop()
         results["dropped"] = results["frames"]
@@ -742,6 +770,10 @@ def main(argv=None):
     parser.add_argument("--fps", type=float, default=None,
                         help="must match the fixture/scene frame rate; defaults to it")
     parser.add_argument("--start-frame", type=float, default=None)
+    parser.add_argument("--times", default=None,
+                        help="comma-separated Maya source frames, one per step; "
+                             "a repeated or decreasing value exercises a re-edit "
+                             "or a reverse scrub")
     parser.add_argument("--step", type=float, default=1.0)
     parser.add_argument("--remove-at", type=int, default=None,
                         help="after this 1-based frame, disable the second subject")

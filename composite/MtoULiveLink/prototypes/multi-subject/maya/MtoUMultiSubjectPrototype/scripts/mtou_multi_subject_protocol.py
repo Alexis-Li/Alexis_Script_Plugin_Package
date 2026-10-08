@@ -14,14 +14,16 @@ Contract summary (version 1):
 * exactly two subjects, distinct named ids from ``ROLE_IDS``;
 * within a subject, bone names and Morph curve names are unique; bone parents
   index earlier bones only (topological order);
-* one Maya evaluated time and one strictly increasing serial per atomic pair,
-  starting at 1 (the receiver refuses serial 0);
+* one Maya evaluated time per atomic pair, plus a strictly increasing serial per
+  session that identifies the evaluation; the source time may move backwards or
+  repeat when the same frame is edited again;
 * transforms and bind rows are UE-space 10-number local poses in centimetres
   (``[tx, ty, tz, qx, qy, qz, qw, sx, sy, sz]``), the root row being the
   inclusive world pose of the Maya root joint;
-* the receiver answers ``ready`` with a positive session id, then one
-  ``applied`` echo per frame; ``remove`` answers one ``applied`` event that
-  disables exactly the removed subject.
+* the receiver answers ``ready`` with a positive session id; every ``frame``
+  and ``remove`` repeats that session, and one ``applied`` echo answers each of
+  them; ``remove`` answers one ``applied`` event that disables exactly the
+  removed subject.
 """
 
 import json
@@ -92,7 +94,6 @@ CODE_CURVE_VALUE_INVALID = "CURVE_VALUE_INVALID"
 CODE_SERIAL_INVALID = "SERIAL_INVALID"
 CODE_SERIAL_NOT_INCREASING = "SERIAL_NOT_INCREASING"
 CODE_TIME_INVALID = "TIME_INVALID"
-CODE_TIME_NOT_INCREASING = "TIME_NOT_INCREASING"
 CODE_SESSION_INVALID = "SESSION_INVALID"
 CODE_SESSION_MISMATCH = "SESSION_MISMATCH"
 CODE_SERIAL_MISMATCH = "SERIAL_MISMATCH"
@@ -279,10 +280,18 @@ def make_init(subjects, fps, version=PROTOCOL_VERSION):
     return message
 
 
-def make_frame(serial, time, subjects):
-    """Build and validate one ``frame`` message for the atomic subject pair."""
+def make_frame(session, serial, time, subjects):
+    """Build and validate one ``frame`` message for the atomic subject pair.
+
+    ``session`` is the id the receiver handed out in ``ready``. Every frame of
+    one negotiation carries it, so a frame that was sampled for an older
+    negotiation cannot be applied to a newer one. ``serial`` is the evaluation
+    identity and increases strictly inside a session; ``time`` is the Maya
+    source frame time and may move backwards or repeat on a re-edit.
+    """
     message = {
         "type": FRAME,
+        "session": _positive_int(session, CODE_SESSION_INVALID, "session"),
         "serial": serial,
         "time": time,
         "subjects": [
@@ -303,11 +312,23 @@ def make_frame(serial, time, subjects):
     return message
 
 
-def make_remove(subject_id):
+def make_remove(session, subject_id):
+    """Build one ``remove`` bound to the session it belongs to."""
     if not valid_subject_id(subject_id):
         raise ProtocolError(CODE_REMOVE_ID_INVALID, "remove id is not a subject id",
                             "id is {0!r}".format(subject_id))
-    return {"type": REMOVE, "id": subject_id}
+    return {"type": REMOVE,
+            "session": _positive_int(session, CODE_SESSION_INVALID, "session"),
+            "id": subject_id}
+
+
+def time_direction(previous, time):
+    """``forward``/``backward``/``hold``/``first`` for one source time."""
+    if previous is None:
+        return "first"
+    if time > previous + TIME_TOLERANCE:
+        return "forward"
+    return "backward" if time < previous - TIME_TOLERANCE else "hold"
 
 
 # ------------------------------------------------------------------ validation
@@ -469,12 +490,23 @@ def disable_subject(summary, subject_id):
     return list(summary["active"])
 
 
-def validate_frame(message, summary, previous_serial=None, previous_time=None):
-    """Validate one ``frame`` against the negotiated init summary."""
+def validate_frame(message, summary, session=None, previous_serial=None):
+    """Validate one ``frame`` against the negotiated init summary.
+
+    The session must be the one this connection negotiated, and the serial must
+    increase inside it. The source time is deliberately unconstrained: a reverse
+    scrub and a re-edit of an already sent frame are both legal, and
+    ``time_direction`` reports which one happened.
+    """
     if not isinstance(message, dict) or message.get("type") != FRAME:
         raise ProtocolError(CODE_UNKNOWN_TYPE, "message is not a frame",
                             "type is {0!r}".format(
                                 message.get("type") if isinstance(message, dict) else message))
+    if session is not None:
+        if _positive_int(message.get("session"), CODE_SESSION_INVALID, "session") != int(session):
+            raise ProtocolError(
+                CODE_SESSION_MISMATCH, "frame session is not the negotiated session",
+                "negotiated {0}, frame {1!r}".format(session, message.get("session")))
     serial = message.get("serial")
     if isinstance(serial, bool) or not isinstance(serial, int) or serial < 1:
         raise ProtocolError(CODE_SERIAL_INVALID, "serial must be a positive integer",
@@ -484,10 +516,6 @@ def validate_frame(message, summary, previous_serial=None, previous_time=None):
             CODE_SERIAL_NOT_INCREASING, "serial must increase per connection",
             "{0} after {1}".format(serial, previous_serial))
     time = _number(message.get("time"), CODE_TIME_INVALID, "time")
-    if previous_time is not None and time <= float(previous_time):
-        raise ProtocolError(
-            CODE_TIME_NOT_INCREASING, "evaluated time must increase per connection",
-            "{0} after {1}".format(time, previous_time))
     subjects = message.get("subjects")
     if not isinstance(subjects, list):
         raise ProtocolError(CODE_SUBJECT_MISMATCH, "subjects must be a list",
@@ -598,8 +626,9 @@ def validate_remove_reply(reply, session, removed_id, remaining_ids, last_serial
     The event reports the whole subject set of the connection: the removed
     subject as ``disabled`` and every remaining subject as ``applied`` (order is
     free, the set is not). Optional ``serial``/``time`` echo the last applied
-    frame (``0``/``0.0`` when none was applied) and must not rewind the
-    connection; they are a state echo, not a frame acknowledgement.
+    frame (``0``/``0.0`` when none was applied); the serial must not rewind and
+    the time must repeat it exactly, because they are a state echo rather than a
+    frame acknowledgement.
     """
     validate_reply_type(reply, APPLIED)
     if reply.get("serial") is not None:
@@ -613,9 +642,9 @@ def validate_remove_reply(reply, session, removed_id, remaining_ids, last_serial
                 "{0} after {1}".format(serial, last_serial))
     if reply.get("time") is not None:
         time = _number(reply.get("time"), CODE_TIME_INVALID, "time")
-        if last_time is not None and time < float(last_time) - TIME_TOLERANCE:
+        if last_time is not None and abs(time - float(last_time)) > TIME_TOLERANCE:
             raise ProtocolError(
-                CODE_TIME_NOT_INCREASING, "remove echo time went backwards",
+                CODE_TIME_MISMATCH, "remove echo does not repeat the last applied time",
                 "{0} after {1}".format(time, last_time))
     if reply.get("session") != session:
         raise ProtocolError(

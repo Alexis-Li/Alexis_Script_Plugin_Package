@@ -533,6 +533,76 @@ def main(argv=None):
             "latency_ms": [frame["latency_ms"] for frame in applied],
             "checks": evidence["checks"]})
 
+        # A reverse scrub and a re-edit of an already sent frame are legal: the
+        # serial identifies the evaluation, not the source time.
+        code, evidence, receiver = drive(("character", "prop"), 4,
+                                         arguments=["--times", "1,3,2,2"])
+        frames = (evidence.get("sessions") or [{}])[0].get("frames") or []
+        checks.check("a reverse scrub and a same-frame re-edit are accepted",
+                     code == 0
+                     and [frame["time"] for frame in frames] == [1.0, 3.0, 2.0, 2.0]
+                     and [frame["time_direction"] for frame in frames]
+                     == ["first", "forward", "backward", "hold"]
+                     and [frame["serial"] for frame in frames] == [1, 2, 3, 4],
+                     [(frame["serial"], frame["time"], frame["time_direction"])
+                      for frame in frames])
+
+        # Every frame is bound to the session it was sampled for, so a frame
+        # left over from an earlier negotiation cannot be applied later.
+        checks.check("every frame and remove names its negotiated session",
+                     receiver.sessions == 1
+                     and all(message.get("session") == 1
+                             for message in receiver.received_messages()
+                             if message["type"] in ("frame", "remove")),
+                     [message.get("session")
+                      for message in receiver.received_messages()])
+
+        def stale_frame_probe():
+            receiver = mock_module.MockReceiver(manifest["fingerprints"], {}).start()
+            try:
+                session = scene.SessionScene(manifest, rigs=("character", "prop")).open()
+                try:
+                    records = [
+                        scene.capture_subject(rig_id, session.root_for(rig_id),
+                                              expectations=manifest["fingerprints"][rig_id])
+                        for rig_id in ("character", "prop")]
+                    driver = entry.MultiSubjectSession(
+                        records, receiver.host, receiver.port, 30.0,
+                        timeout=args.timeout).connect()
+                    try:
+                        driver.negotiate(note="first negotiation")
+                        driver.step(1.0)
+                        driver.step(2.0)
+                        stale_session = driver.session
+                        # Renegotiating hands out a new session, so a pose that was
+                        # sampled for the previous one must no longer apply.
+                        driver.negotiate(note="second negotiation")
+                        driver.step(3.0)
+                        frames = []
+                        for record in driver.active_records():
+                            transforms, curves = scene.sample_subject(record)
+                            frames.append({"id": record["id"], "transforms": transforms,
+                                           "curves": curves})
+                        driver.connection.send(protocol.make_frame(
+                            stale_session, driver.serial + 1, 2.0, frames))
+                        try:
+                            driver.connection.receive(
+                                protocol.APPLIED, time.monotonic() + args.timeout)
+                        except protocol.RemoteError as error:
+                            if error.code == "session_mismatch":
+                                return
+                            raise
+                        raise AssertionError("a stale-session frame was applied")
+                    finally:
+                        driver.close()
+                finally:
+                    scene.cmds().file(new=True, force=True)
+            finally:
+                receiver.stop()
+
+        checks.check("a frame from a previous session is refused",
+                     stale_frame_probe() is None, "stale frame refused")
+
         # steeped time: fractional samples must reach the wire unchanged
         code, evidence, receiver = drive(("character", "prop"), 3,
                                          arguments=["--start-frame", "1.5",

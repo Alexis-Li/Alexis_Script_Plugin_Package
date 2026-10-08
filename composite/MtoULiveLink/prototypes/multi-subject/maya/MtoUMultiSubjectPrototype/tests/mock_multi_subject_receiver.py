@@ -36,6 +36,7 @@ CODE_BONE_PARENT_MISMATCH = "bone_parent_mismatch"
 CODE_CURVE_NOT_IN_TARGET = "curve_not_in_target"
 CODE_NO_SESSION = "no_session"
 CODE_SHARED_TARGET = "shared_target"
+CODE_SESSION_MISMATCH = "session_mismatch"
 CODE_SUBJECT_MISSING = "subject_missing"
 CODE_MALFORMED_JSON = "malformed_json"
 CODE_TOO_LARGE = "too_large"
@@ -324,10 +325,15 @@ class MockReceiver(object):
             self._reply(connection, {"type": "error", "code": CODE_SUBJECT_MISSING,
                                      "details": "missing subject {0}".format(missing)})
             return True
+        if message.get("session") != state["session"]:
+            self._reply(connection, {"type": "error", "code": CODE_SESSION_MISMATCH,
+                                     "details": "frame session {0!r} is not the negotiated "
+                                                "session {1!r}".format(
+                                                message.get("session"), state["session"])})
+            return True
         try:
-            protocol.validate_frame(message, summary,
-                                    previous_serial=state["last_serial"],
-                                    previous_time=state["last_time"])
+            protocol.validate_frame(message, summary, session=state["session"],
+                                    previous_serial=state["last_serial"])
         except protocol.ProtocolError as error:
             self._reply(connection, {"type": "error", "code": receiver_code(error.code),
                                      "details": error.details})
@@ -361,6 +367,12 @@ class MockReceiver(object):
         if summary is None:
             self._reply(connection, {"type": "error", "code": CODE_NO_SESSION,
                                      "details": "init before remove"})
+            return
+        if message.get("session") != state["session"]:
+            self._reply(connection, {"type": "error", "code": CODE_SESSION_MISMATCH,
+                                     "details": "remove session {0!r} is not the negotiated "
+                                                "session {1!r}".format(
+                                                message.get("session"), state["session"])})
             return
         subject_id = message.get("id")
         if subject_id not in summary["ids"] or subject_id not in summary["active"]:

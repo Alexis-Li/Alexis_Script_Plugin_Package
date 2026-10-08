@@ -32,16 +32,21 @@ animation import/export, or package this prototype as a production plugin.
    an existing skeletal animation track, checks exclusive control, and exits
    to the previous animation state.
 3. Inspect the peer and receiver JSON reports in the evidence directory:
-   subject IDs, source times and serials, bone and Morph values, measured pose
-   and anchored-root disagreement, error codes, target and writer state after
-   removal, socket disconnect and world teardown. The user-supplied `.ma` and
-   Backups `.uproject` are **read-only** optional inspection resources; they
-   are not part of the generated miniature test scene.
+   subject IDs, negotiated session, source times with the direction each one
+   moved in, serials, bone and Morph values, undriven target bones, measured
+   pose and anchored-root disagreement, error codes, drive ownership and target
+   and writer state after removal, socket disconnect and world teardown. The
+   user-supplied `.ma` and Backups `.uproject` are **read-only** optional
+   inspection resources; they are not part of the generated miniature test
+   scene.
 
 To run the receiver from ToolsLab's editor console, use
 `MtoUMultiSubject.Listen scenario=character-prop out=<scratch directory>`, run
 the Maya peer with the printed loopback port, inspect the per-target evidence,
-and finish with `MtoUMultiSubject.Stop`. The fixture lives in a separate
+and finish with `MtoUMultiSubject.Stop`. `MtoUMultiSubject.Ownership` prints,
+per target, the driver it had before the preview, the writers that were muted
+and how the target left; that report, not the editor-local mute, is how an
+operator knows who writes a pose right now. The fixture lives in a separate
 transient editor world and is not opened in the current viewport; the evidence
 is a pose/state check, not a screenshot. The exact peer invocation and inputs
 are in the Maya and Unreal READMEs. Relaunch the listener with

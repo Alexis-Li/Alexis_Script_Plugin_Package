@@ -29,6 +29,10 @@ struct FMtoUTargetAnimationSnapshot
 	EVisibilityBasedAnimTickOption VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::OnlyTickPoseWhenRendered;
 	/** Every Morph Target weight of the mesh at takeover time. */
 	TMap<FName, float> MorphWeights;
+	/** The component carried its own animation driver at takeover time. */
+	bool bHadAnimationDriver = false;
+	/** Stable name of that driver for the ownership report. */
+	FString PriorDriver;
 
 	/** One line for the evidence file. */
 	FString Describe() const;
@@ -68,6 +72,11 @@ public:
 	/** Installs the prototype pose instance, remembering the state it replaces. */
 	bool TakeOver(FString& OutError);
 
+	/** Target bones this declaration does not drive; they keep their reference pose. */
+	void CollectUndrivenBones(
+		const FMtoUSubjectDeclaration& Declaration,
+		TArray<FName>& OutBones) const;
+
 	/** Restores animation state, morph weights and editor tick settings. */
 	bool Restore(FString& OutError);
 
@@ -85,6 +94,13 @@ public:
 	/** True while a pose of this session has been published at least once. */
 	bool HasPose() const { return bHasPose; }
 
+	/**
+	 * True when the last restore had to put the component back into its
+	 * reference pose because nothing else was driving it. Without that step a
+	 * target with no animation driver would keep the preview's last pose.
+	 */
+	bool DidRestoreToReferencePose() const { return bRestoredToReferencePose; }
+
 private:
 	FMtoUTargetRegistration Registration;
 	FString Id;
@@ -96,6 +112,7 @@ private:
 	TWeakObjectPtr<UMtoUMultiSubjectPoseInstance> PoseInstance;
 	bool bDriving = false;
 	bool bHasPose = false;
+	bool bRestoredToReferencePose = false;
 };
 
 /** Largest observed difference of two component-space transforms. */

@@ -17,11 +17,11 @@ was modified by this prototype.
 | --- | --- |
 | Explicit pairing and strict skeletons | Each `init` maps a full Maya reference-root DAG path and subject ID to one chosen Unreal actor/Skeletal Mesh component. Bone names, parent indices, bind-local poses and Morph names must match that target. The character and independent prop use distinct targets even though both have a bone `Root` and Morph `Shared`. Different-skeleton arms are another target, not Additional Parts or a retarget. |
 | Evaluated references and one time | Maya opens two actual `.ma` references, evaluates joints and BlendShape weights at one source-frame time and sends both in one serial/frame. The receiver validates the entire enabled pair before applying it and echoes `session`, `serial`, `time` and per-subject status. `character+prop` and `character+arms` each applied frames 1–4; the two targets held different values for the same Morph name. Removing prop after frame 2 left character streaming; transport disconnect, malformed JSON and editor-world cleanup release session/preview ownership. The Maya session creates no animation curves or expressions and closes its scene without saving either reference. |
-| Root motion and placement | The Maya root is an evaluated **world** pose (includes reference ancestors); non-root joints remain parent-relative. Maya measured an animated session parent on a referenced prop at source frames 1 and 3 and verified one parent application against the DAG world matrix. Unreal applied each root under a distinct rotated, off-origin actor anchor once and measured component-space and world-root residuals. Attaching that already-world-rooted target to a moving UE socket is explicitly refused; a later socket design would need to subtract the shared parent instead of applying it twice. |
-| Full body versus arms | A full-body description under the arms ID/root is refused with `skeleton_mismatch`, without applying a pose. A fresh `init` for the distinct seven-bone arms skeleton is accepted and four frames apply at the character's source times; there is no implicit hot swap. The receiver retains the deliberate refusal in `errors[]` even after the successful negotiation. |
-| Exclusive Sequencer preview and exit | The synthetic Level Sequence contains a **bound** skeletal animation track and is opened in the editor Sequencer. The track moves the character before takeover; its non-serialized local evaluation flag stops it from writing the same component while MtoU drives the pose. Removing the character restores only its track while prop remains live. On exit the earlier pose, animation mode, prop single-node asset/Morph, track flag, sequence sections and package dirty state match their pre-preview state. The fixture uses transient assets; no saved production sequence was altered. |
+| Necessary-bone identity | The 2026-10-08 round replaced the whole-table bone-count rule with #55's shape: every declared bone must exist in the target, carry the declared parent and have only declared bones above it, so no driven bone hangs under an undriven one. Target bones the declaration does not drive keep their reference pose and are reported per subject as `undriven_bones`, so a target with legitimate extra branches (the real C01 case) can pair while the evidence never implies a whole-skeleton match. Declaring a bone the target lacks, or dropping a bone a declared child needs, is still `skeleton_mismatch`. |
+| Session identity | Every `frame` and `remove` carries the session it was negotiated under. After a renegotiation the receiver refuses the previous session's frames and removes with `session_mismatch`, applies nothing and leaves the serial untouched; the receiver's own evidence attributes each applied frame to its session. |
+| Evaluated time | The serial is the evaluation identity and increases strictly inside a session; the Maya source time may move backwards or repeat. `time_direction` (`first`/`forward`/`backward`/`hold`) is recorded per applied frame on both hosts, so a reverse scrub and a re-edit are visible instead of looking like forward playback. |
+| Drive ownership and exit | Each target's prior driver, the writers the preview muted (with whether each belongs to a saved asset) and how it left are reported by `MtoUMultiSubject.Ownership` and in `drive_ownership[]`. A target that had no animation driver is put back into its reference pose on exit and on per-subject removal (`restored_to_reference_pose`), so it no longer keeps the preview's last pose. |
 | Cache | No multi-object cache was built. The protocol note specifies one source-time lattice, shared inclusive range/fps, atomic readiness, per-subject failure invalidating the set, and ownership/seek/loop isolation for a later **versioned** product contract. |
-
 ## Checks and evidence
 
 | Host/check | Exercised result |
@@ -55,23 +55,41 @@ asset attachments or a saved sequence in the Backups project match the
 transient Unreal fixtures. Production asset selection needs an explicit pair
 negotiation and visual check before any integration.
 
+
+## 2026-10-08 round: identity, time, ownership and exit
+
+The 2026-09-29 review's gaps that were *fixable in the prototype* are closed here;
+the real-asset pairing of #54's first gap is not, and stays open. The prototype
+still does not touch MtoULiveLink v9, the single-Subject product, the cache or the
+animation delivery flow.
+
+| Gap from the review | What changed | Where it is exercised |
+| --- | --- | --- |
+| Inbound frames carried no session, so old frames after a renegotiation were not isolated | `frame` and `remove` repeat the negotiated session; a mismatch is `session_mismatch`, applies nothing, and does not advance the serial | `MtoUMultiSubjectPrototype.SessionAndTimeIdentity`, Maya host check "a frame from a previous session is refused", both hosts' `session` fields in the evidence |
+| "Maya requires increasing source time, UE only checks serial" — reverse scrub, same-frame re-edit and looping had no defined semantics | The serial is the evaluation identity and increases strictly inside a session; the source time is unconstrained and each applied frame records `first`/`forward`/`backward`/`hold` | `SessionAndTimeIdentity` streams times 1 → 3 → 2 → 2; Maya `--times 1,3,2,2` run against the stand-in and the real receiver |
+| `SetLocalEvalDisabled` is invisible in the Sequencer UI | Drive ownership is reported per target (prior driver, muted writers with `saved_asset`, exit state) through `MtoUMultiSubject.Ownership` and `drive_ownership[]`. This is a report, not a Sequencer UI affordance; the product still needs one | `DriverExitOwnership`, `drive_ownership[]` in the evidence |
+| A component with no previous driver kept the preview's last pose after exit | Such a target is restored to its reference pose, recorded as `restored_to_reference_pose` | `DriverExitOwnership` (arms target: streamed pose, then reference pose after `Stop`) |
+| Whole-table bone equality would re-reject real C01's extra branches | Necessary-bone negotiation with reported undriven bones (see the acceptance table) | `FixtureAndAnchorRules`: a declaration that drops the `Hand_L` leaf is accepted with one undriven bone; dropping `Forearm_L` is refused |
+
+Open from the same review, unchanged: a real paired-asset closed loop in a
+disposable scene of the Backups project with per-object error and viewport
+evidence, and a product-level Sequencer ownership affordance.
+
 ## Product boundary
 
 The 2026-09-29 review of `5b825055316ede3cf22efc12e5c7f183db4ce02b`,
 preserved as comment `5883765955` in [the source archive](issue-54-comment-archive.json),
-accepts the bounded fixture evidence and reran 21 pure protocol tests; host and
-build results were inspected from existing reports. The current issue remains
-open for real paired assets and identity/time/exit evidence. Inbound old-frame
-isolation after renegotiation, same-frame edits, reverse seeks/loops, and exit
-with no previous animation driver are not established by the four-frame
-fixtures. An undriven component may retain its last preview pose after exit.
-These gaps must remain distinct from the deferred product implementation. The
-record reconciliation on 2026-09-30 did not rerun host checks.
+accepted the bounded fixture evidence and reran the pure protocol tests. Its
+prototype-fixable gaps — inbound old-frame isolation after renegotiation,
+same-frame edits, reverse seeks, and exit with no previous animation driver — are
+closed by the 2026-10-08 round above; that review's conclusion is superseded for
+those points only. The issue stays open for real paired assets.
 
 #47 owns a combined integration decision after #52–54 have the agreed runnable
-prototype evidence, support limits and outstanding-work descriptions. Product
-reuse of #55's necessary-bone mapping is a candidate migration contract; the
-prototype's exact whole-skeleton comparison does not yet establish it.
+prototype evidence, support limits and outstanding-work descriptions. The
+necessary-bone mapping this prototype now exercises is the candidate migration
+contract for #55's accepted shape; adopting it in the product is still #47's and
+#55's decision, not this prototype's.
 
 The product still has one Maya `_CharacterScene`/`_StreamingSession` root and
 snapshot, one UE Binding Actor/`MtoU_Character` SubjectKey, one pending frame,

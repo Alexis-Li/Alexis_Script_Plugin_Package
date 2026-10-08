@@ -9,26 +9,43 @@ Skeletal Mesh/target Actor; no heuristic target lookup or skeleton retargeting.
 
 ## Identity and evaluated time
 
-The loopback TCP prototype uses newline-delimited UTF-8 JSON, version 1, with
-a 1 MiB maximum line length. One `init` declares an fps and exactly two
-subjects; each includes an `id`, `root`, parent-first `bones` with normalized
-name and parent index, `curves` (Morph names), and `bind` local transforms.
-The receiver accepts neither missing nor extra target IDs, duplicate IDs,
-shared targets, ambiguous bone/curve names within one subject, nor a bone
-whose parent/name does not match the explicitly selected target skeleton.
-Identical names *across* subjects are valid and must remain isolated by ID.
+Contract summary (version 1):
 
-Only after both targets accept `init` does the receiver return `ready` with a
-session identity. Maya evaluates its referenced rigs at one scene time and
-sends one `frame` containing a serial, source frame time, and complete poses
-and curves for both IDs. The receiver admits a frame only for its current
-session and complete current target set; the `applied` outcome echoes the
-serial, source time and each subject's result. A late/partial/invalid frame
-must not display a mixture of two source times. A `remove` for one ID removes
-only that preview; closing the socket, switching the target skeleton, changing
-the source scene, or ending the editor world terminates the old session. A
-subsequent full-body/arms selection needs a new `init`, not a hot swap of an
-old skeleton description. These are prototype messages, not v9 additions.
+* exactly two subjects, each with an explicit `id`, Maya `root` path, parent-first
+  `bones`, `curves` (Morph names) and one `bind` row per bone;
+* the receiver accepts neither missing nor extra target IDs, duplicate IDs,
+  shared targets, ambiguous bone/curve names within one subject, nor a declared
+  bone the selected target does not have. Identical names *across* subjects are
+  valid and stay isolated by ID;
+* `ready` returns a positive session id. Every later `frame` and `remove`
+  repeats that session; a message naming another session is refused with
+  `session_mismatch` and changes nothing;
+* one `frame` carries a strictly increasing `serial` (the evaluation identity)
+  and one Maya source `time`. The serial must increase inside the session; the
+  time may move backwards (reverse scrub) or repeat (a re-edit of an already
+  sent frame), and each applied frame records `first`/`forward`/`backward`/`hold`
+  so the direction stays visible;
+* the receiver admits a frame only for its current session and complete current
+  target set; the `applied` outcome echoes the session, serial, source time and
+  each subject's result. A late/partial/invalid frame must not display a mixture
+  of two source times;
+* `remove` for one ID removes only that preview; closing the socket, switching
+  the target skeleton, changing the source scene, or ending the editor world
+  terminates the old session. A subsequent full-body/arms selection needs a new
+  `init`, not a hot swap of an old skeleton description. These are prototype
+  messages, not v9 additions.
+
+## Necessary bones, not whole-table equality
+
+A declaration must name every bone it needs and nothing it cannot drive: each
+declared bone has to exist in the target, carry the declared parent, and have
+only declared bones above it, so no driven bone ever hangs under a bone nobody
+drives. Bones the target owns but the declaration does not name stay at their
+reference pose and are reported per subject as `undriven_bones`, so the evidence
+never implies that the whole target skeleton was matched. This is the negotiation
+shape #55 accepted for a real rig: a production C01 skeleton legitimately has
+branches a simplified preview target does not drive. Declaring a bone the target
+lacks, or dropping a bone a declared child needs, is still `skeleton_mismatch`.
 
 Maya captures the *evaluated* DAG joint matrices and BlendShape values, not
 controller or constraint wiring; its saved reference assets remain untouched.
@@ -59,6 +76,18 @@ and component state, and restoring them on exit and error. Sequencer can
 continue driving unrelated tracks and its own time; the prototype never edits
 an existing sequence or imported skeletal/animation asset. This is *not* a
 claim that the existing product can share one target with Sequencer.
+
+Drive ownership is reported, not inferred: each target names the driver it had
+before the takeover (animation blueprint, single-node asset, or "none"), the
+writers the preview muted with whether each belongs to a saved asset, and how
+the target left (`own_driver_restored`, `reference_pose` or `preview_active`).
+`MtoUMultiSubject.Ownership` prints it and the evidence file records it, because
+`SetLocalEvalDisabled` is an editor-local mute that no Sequencer UI shows.
+
+Restoring a component's previous animation state is not enough when it had no
+driver: nothing would write the pose back, so the component would keep the
+preview's last pose. On exit such a target is put back into its reference pose
+explicitly, and the evidence records `restored_to_reference_pose`.
 
 ## Cache-only design; no cache implementation
 

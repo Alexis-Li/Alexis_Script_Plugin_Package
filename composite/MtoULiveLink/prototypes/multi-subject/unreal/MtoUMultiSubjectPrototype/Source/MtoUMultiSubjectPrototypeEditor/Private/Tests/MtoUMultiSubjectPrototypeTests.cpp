@@ -127,7 +127,8 @@ namespace
 			Init.Version, Init.Fps, *FString::Join(SubjectLines, TEXT(",")));
 	}
 
-	FString EncodeFrame(const FMtoUFrameMessage& Frame)
+	/** One frame line. The session is explicit: it is the negotiation identity. */
+	FString EncodeFrame(const FMtoUFrameMessage& Frame, int64 Session)
 	{
 		TArray<FString> SubjectLines;
 		for (const FMtoUFrameSubject& Subject : Frame.Subjects)
@@ -149,13 +150,14 @@ namespace
 				*FString::Join(CurveLines, TEXT(","))));
 		}
 		return FString::Printf(
-			TEXT("{\"type\":\"frame\",\"serial\":%lld,\"time\":%.17g,\"subjects\":[%s]}\n"),
-			Frame.Serial, Frame.Time, *FString::Join(SubjectLines, TEXT(",")));
+			TEXT("{\"type\":\"frame\",\"session\":%lld,\"serial\":%lld,\"time\":%.17g,\"subjects\":[%s]}\n"),
+			Session, Frame.Serial, Frame.Time, *FString::Join(SubjectLines, TEXT(",")));
 	}
 
-	FString EncodeRemove(const FString& Id)
+	FString EncodeRemove(const FString& Id, int64 Session)
 	{
-		return FString::Printf(TEXT("{\"type\":\"remove\",\"id\":\"%s\"}\n"), *Id);
+		return FString::Printf(TEXT("{\"type\":\"remove\",\"session\":%lld,\"id\":\"%s\"}\n"),
+			Session, *Id);
 	}
 
 	bool ParseJsonLine(const FString& Line, TSharedPtr<FJsonObject>& OutObject)
@@ -332,6 +334,66 @@ namespace
 		return ComponentSpace.IsValidIndex(BoneIndex)
 			? ComponentSpace[BoneIndex].GetTranslation()
 			: FVector::ZeroVector;
+	}
+
+	/**
+	 * Largest difference between the component's current component-space pose and
+	 * the mesh's reference pose. It answers "is this component back at rest?",
+	 * which is what a target without any other driver must be after the exit.
+	 */
+	double MaxDeltaToReferencePose(const USkeletalMeshComponent& Component)
+	{
+		const FReferenceSkeleton& Skeleton = Component.GetSkeletalMeshAsset()->GetRefSkeleton();
+		const TArray<FTransform>& RefPose = Skeleton.GetRefBonePose();
+		TArray<FTransform> Expected;
+		Expected.SetNum(RefPose.Num());
+		for (int32 BoneIndex = 0; BoneIndex < RefPose.Num(); ++BoneIndex)
+		{
+			const int32 ParentIndex = Skeleton.GetParentIndex(BoneIndex);
+			Expected[BoneIndex] = ParentIndex == INDEX_NONE
+				? RefPose[BoneIndex]
+				: RefPose[BoneIndex] * Expected[ParentIndex];
+		}
+		const TArray<FTransform>& ComponentSpace = Component.GetComponentSpaceTransforms();
+		double MaxDelta = 0.0;
+		for (int32 BoneIndex = 0; BoneIndex < Expected.Num(); ++BoneIndex)
+		{
+			if (ComponentSpace.IsValidIndex(BoneIndex))
+			{
+				MaxDelta = FMath::Max(MaxDelta, MtoUSubjectTransformDelta(
+					Expected[BoneIndex], ComponentSpace[BoneIndex]));
+			}
+		}
+		return MaxDelta;
+	}
+
+	/**
+	 * One `-name=value` argument, read verbatim up to the next space. FParse's
+	 * string overload stops at the first comma, which would truncate a list like
+	 * `-MtoUMultiSubjectTimes=1,3,2,2`.
+	 */
+	FString CommandLineArgumentValue(const TCHAR* Name)
+	{
+		const int32 NameLength = FCString::Strlen(Name);
+		for (const TCHAR* Cursor = FCommandLine::Get(); *Cursor != TEXT('\0'); )
+		{
+			if (FString(Cursor).Left(NameLength).Equals(Name, ESearchCase::IgnoreCase))
+			{
+				FString Value = Cursor + NameLength;
+				Value.TrimStartAndEndInline();
+				Value.TrimQuotesInline();
+				return Value;
+			}
+			while (*Cursor != TEXT('\0') && *Cursor != TEXT(' '))
+			{
+				++Cursor;
+			}
+			while (*Cursor == TEXT(' '))
+			{
+				++Cursor;
+			}
+		}
+		return FString();
 	}
 
 	/** Asserts one `applied` reply and returns it. */
@@ -553,11 +615,39 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 			{
 				const FString Mismatch =
 					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.CharacterDeclaration);
-				TestFalse(TEXT("the full-body declaration does not match the arms target"), Mismatch.IsEmpty());
-				TestTrue(TEXT("the refusal names the bone count"),
-					Mismatch.Contains(TEXT("bone count differs")));
+				TestFalse(TEXT("the full-body declaration does not match the arms target"),
+					Mismatch.IsEmpty());
+				TestTrue(TEXT("the refusal names a bone the arms target does not have"),
+					Mismatch.Contains(TEXT("is not in the Unreal target skeleton")));
 				TestTrue(TEXT("the arms declaration itself matches"),
 					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.ArmsDeclaration).IsEmpty());
+				// Necessary bones, not whole-table equality: a declaration that drops a
+				// leaf the target still owns is accepted, and that target bone stays
+				// at its reference pose instead of being driven from nowhere.
+				FMtoUSubjectDeclaration WithoutLastLeaf = ArmsFixture.ArmsDeclaration;
+				WithoutLastLeaf.Bones.Pop();
+				WithoutLastLeaf.Bind.Pop();
+				TestTrue(TEXT("a declaration of the necessary bones is accepted"),
+					ArmsTarget.DescribeDeclarationMismatch(WithoutLastLeaf).IsEmpty());
+				TArray<FName> Undriven;
+				ArmsTarget.CollectUndrivenBones(WithoutLastLeaf, Undriven);
+				TestEqual(TEXT("the undriven target bone is reported"), Undriven.Num(), 1);
+				TestEqual(TEXT("the undriven bone is the dropped leaf"),
+					Undriven.Num() == 1 ? Undriven[0].ToString() : FString(),
+					FString(TEXT("Hand_R")));
+				// Declaring the hand directly under its upper arm keeps the
+				// declaration well formed, but the target still hangs that hand
+				// under a bone nobody drives, which has to be refused.
+				FMtoUSubjectDeclaration WithoutForearm = ArmsFixture.ArmsDeclaration;
+				WithoutForearm.Bones.RemoveAt(2);
+				WithoutForearm.Bind.RemoveAt(2);
+				WithoutForearm.Bones[2].Parent = 1;
+				const FString AncestorRefusal =
+					ArmsTarget.DescribeDeclarationMismatch(WithoutForearm);
+				TestTrue(TEXT("a declaration that drops a needed parent is refused"),
+					AncestorRefusal.Contains(TEXT("Hand_L"))
+						&& AncestorRefusal.Contains(TEXT("Forearm_L"))
+						&& AncestorRefusal.Contains(TEXT("does not drive")));
 			}
 			else
 			{
@@ -689,7 +779,7 @@ bool FMtoUMultiSubjectCharacterPropTest::RunTest(const FString& Parameters)
 	for (int64 Serial = 1; Serial <= 3; ++Serial)
 	{
 		const FMtoUFrameMessage Frame = Fixture.MakeFrame(SubjectIds, Serial, static_cast<double>(Serial));
-		if (!TestTrue(TEXT("frame is sent"), Peer.Send(EncodeFrame(Frame), Error)))
+		if (!TestTrue(TEXT("frame is sent"), Peer.Send(EncodeFrame(Frame, Session), Error)))
 		{
 			AddError(Error);
 			return false;
@@ -743,7 +833,7 @@ bool FMtoUMultiSubjectCharacterPropTest::RunTest(const FString& Parameters)
 	// Single-subject removal: only the prop stops being driven and goes back to
 	// the animation state it had, while the character keeps streaming.
 	if (!TestTrue(TEXT("remove is sent"),
-			Peer.Send(EncodeRemove(FMtoUMultiSubjectFixtureBuilder::PropId()), Error)))
+			Peer.Send(EncodeRemove(FMtoUMultiSubjectFixtureBuilder::PropId(), Session), Error)))
 	{
 		AddError(Error);
 		return false;
@@ -778,7 +868,7 @@ bool FMtoUMultiSubjectCharacterPropTest::RunTest(const FString& Parameters)
 	const FMtoUFrameMessage CharacterOnly =
 		Fixture.MakeFrame({ FMtoUMultiSubjectFixtureBuilder::CharacterId() }, 4, 4.0);
 	if (!TestTrue(TEXT("the remaining subject's frame is sent"),
-			Peer.Send(EncodeFrame(CharacterOnly), Error)))
+			Peer.Send(EncodeFrame(CharacterOnly, Session), Error)))
 	{
 		AddError(Error);
 		return false;
@@ -800,7 +890,7 @@ bool FMtoUMultiSubjectCharacterPropTest::RunTest(const FString& Parameters)
 	// A frame that still carries the removed subject is refused, and nothing of
 	// it is applied.
 	FMtoUFrameMessage Partial = Fixture.MakeFrame(SubjectIds, 5, 5.0);
-	if (!TestTrue(TEXT("the partial frame is sent"), Peer.Send(EncodeFrame(Partial), Error)))
+	if (!TestTrue(TEXT("the partial frame is sent"), Peer.Send(EncodeFrame(Partial, Session), Error)))
 	{
 		AddError(Error);
 		return false;
@@ -922,7 +1012,7 @@ bool FMtoUMultiSubjectNegotiationTest::RunTest(const FString& Parameters)
 
 	// A frame before any init is refused.
 	if (TestTrue(TEXT("a frame before init is sent"),
-			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0)), Error))
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0), 0), Error))
 		&& TestTrue(TEXT("the pre-session frame is answered"), Peer.ReadLine(Receiver, Line, Error)))
 	{
 		ExpectError(*this, Line, TEXT("frame before init"), MtoUMultiSubjectError::NoSession);
@@ -1045,8 +1135,8 @@ bool FMtoUMultiSubjectNegotiationTest::RunTest(const FString& Parameters)
 				{
 					ExpectError(*this, ArmsLine, TEXT("arms mismatch"),
 						MtoUMultiSubjectError::SkeletonMismatch, &Details);
-					TestTrue(TEXT("the refusal reports the full-body skeleton"),
-						Details.Contains(TEXT("bone count differs")));
+					TestTrue(TEXT("the refusal reports the missing full-body bone"),
+						Details.Contains(TEXT("is not in the Unreal target skeleton")));
 				}
 				// The real Maya sender keeps its own root path while declaring the
 				// full-body input; the explicit-root rule refuses that too, with the
@@ -1087,7 +1177,8 @@ bool FMtoUMultiSubjectNegotiationTest::RunTest(const FString& Parameters)
 					ArmsReceiver.HasSession());
 
 				const FMtoUFrameMessage Frame = ArmsFixture.MakeFrame(ArmsSubjects, 1, 1.0);
-				if (TestTrue(TEXT("an arms frame is sent"), ArmsPeer.Send(EncodeFrame(Frame), Error))
+				if (TestTrue(TEXT("an arms frame is sent"),
+						ArmsPeer.Send(EncodeFrame(Frame, ArmsReceiver.GetSessionId()), Error))
 					&& TestTrue(TEXT("the arms frame is answered"),
 						ArmsPeer.ReadLine(ArmsReceiver, ArmsLine, Error)))
 				{
@@ -1239,7 +1330,7 @@ bool FMtoUMultiSubjectSequencerTakeoverTest::RunTest(const FString& Parameters)
 
 	// A preview frame with values that cannot come from the animation.
 	const FMtoUFrameMessage Frame = Fixture.MakeFrame(SubjectIds, 1, 1.0);
-	if (!TestTrue(TEXT("the preview frame is sent"), Peer.Send(EncodeFrame(Frame), Error))
+	if (!TestTrue(TEXT("the preview frame is sent"), Peer.Send(EncodeFrame(Frame, Session), Error))
 		|| !TestTrue(TEXT("the preview frame is acknowledged"), Peer.ReadLine(Receiver, Line, Error)))
 	{
 		AddError(Error);
@@ -1309,7 +1400,7 @@ bool FMtoUMultiSubjectSequencerTakeoverTest::RunTest(const FString& Parameters)
 	// Removing the subject that owns the Sequencer writer restores that writer
 	// and its target while the other subject keeps previewing.
 	if (!TestTrue(TEXT("the character removal is sent"),
-			Peer.Send(EncodeRemove(FMtoUMultiSubjectFixtureBuilder::CharacterId()), Error))
+			Peer.Send(EncodeRemove(FMtoUMultiSubjectFixtureBuilder::CharacterId(), Session), Error))
 		|| !TestTrue(TEXT("the character removal is acknowledged"),
 			Peer.ReadLine(Receiver, Line, Error)))
 	{
@@ -1343,7 +1434,7 @@ bool FMtoUMultiSubjectSequencerTakeoverTest::RunTest(const FString& Parameters)
 		const FMtoUFrameMessage PropOnly =
 			Fixture.MakeFrame({ FMtoUMultiSubjectFixtureBuilder::PropId() }, 2, 2.0);
 		if (!TestTrue(TEXT("the remaining subject's frame is sent"),
-				Peer.Send(EncodeFrame(PropOnly), Error))
+				Peer.Send(EncodeFrame(PropOnly, Session), Error))
 			|| !TestTrue(TEXT("the remaining frame is acknowledged"),
 				Peer.ReadLine(Receiver, Line, Error)))
 		{
@@ -1441,7 +1532,7 @@ bool FMtoUMultiSubjectWorldCleanupTest::RunTest(const FString& Parameters)
 	if (!TestTrue(TEXT("init is sent"), Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
 		|| !TestTrue(TEXT("ready arrives"), Peer.ReadLine(Receiver, Line, Error))
 		|| !TestTrue(TEXT("a frame is sent"),
-			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0)), Error))
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0), 0), Error))
 		|| !TestTrue(TEXT("the frame is acknowledged"), Peer.ReadLine(Receiver, Line, Error)))
 	{
 		AddError(Error);
@@ -1468,6 +1559,346 @@ bool FMtoUMultiSubjectWorldCleanupTest::RunTest(const FString& Parameters)
 	// The receiver is already stopped: a later Stop is harmless.
 	Receiver.Stop(TEXT("after cleanup"));
 	TestFalse(TEXT("the receiver stays stopped"), Receiver.IsRunning());
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Session identity and evaluated time: a frame carries the negotiation it was
+// sampled for, the serial identifies the evaluation, and the source time may
+// move backwards or repeat when the same frame is edited again.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectSessionIdentityTest,
+	"MtoUMultiSubjectPrototype.SessionAndTimeIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectSessionIdentityTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	FMtoUMultiSubjectReceiver Receiver;
+	FMtoUScriptedPeer Peer;
+	ON_SCOPE_EXIT
+	{
+		Peer.Close();
+		Receiver.Stop(TEXT("test finished"));
+		Fixture.Destroy();
+	};
+
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const TArray<FString> SubjectIds = FMtoUMultiSubjectFixtureBuilder::ScenarioSubjects(TEXT("character-prop"));
+	FMtoUMultiSubjectSessionConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.Scenario = TEXT("character-prop-identity");
+	if (!TestTrue(TEXT("a loopback port was reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the receiver starts"),
+			Receiver.Start(*Fixture.World, Fixture.MakeRegistrations(SubjectIds), Config, Error))
+		|| !TestTrue(TEXT("the scripted peer connects"), Peer.Connect(Config.Port, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	FString Line;
+	if (!TestTrue(TEXT("the first init is sent"),
+			Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
+		|| !TestTrue(TEXT("the first session is ready"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TSharedPtr<FJsonObject> Ready;
+	TestTrue(TEXT("ready is JSON"), ParseJsonLine(Line, Ready));
+	const int64 FirstSession = static_cast<int64>(GetNumber(Ready, TEXT("session")));
+
+	const TArray<TPair<FString, FString>> BothApplied = {
+		{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), TEXT("applied") },
+		{ FMtoUMultiSubjectFixtureBuilder::PropId(), TEXT("applied") } };
+	if (!TestTrue(TEXT("a first-session frame is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0), FirstSession), Error))
+		|| !TestTrue(TEXT("the first frame is acknowledged"),
+			Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	ExpectApplied(*this, Line, TEXT("first session frame"), FirstSession, 1, 1.0, BothApplied);
+
+	// Renegotiating on the same connection replaces the session; the pose that
+	// was sampled for the previous one must no longer apply.
+	if (!TestTrue(TEXT("a second init is sent"),
+			Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
+		|| !TestTrue(TEXT("the second session is ready"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestTrue(TEXT("ready is JSON again"), ParseJsonLine(Line, Ready));
+	const int64 SecondSession = static_cast<int64>(GetNumber(Ready, TEXT("session")));
+	TestTrue(TEXT("the renegotiation handed out a larger session"),
+		SecondSession > FirstSession);
+
+	// A renegotiation restarts the session's own counters, so the invariant is
+	// that a stale message changes none of them.
+	const int32 AppliedBeforeStale = Receiver.GetAppliedFrameCount();
+	const int64 SerialBeforeStale = Receiver.GetLastAppliedSerial();
+	if (TestTrue(TEXT("a stale-session frame is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 2, 2.0), FirstSession), Error))
+		&& TestTrue(TEXT("the stale frame is answered"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		FString Details;
+		ExpectError(*this, Line, TEXT("stale frame"), MtoUMultiSubjectError::SessionMismatch, &Details);
+		TestTrue(TEXT("the refusal names both sessions"),
+			Details.Contains(FString::FromInt(FirstSession))
+				&& Details.Contains(FString::FromInt(SecondSession)));
+	}
+	TestEqual(TEXT("a stale frame applies nothing"),
+		Receiver.GetAppliedFrameCount(), AppliedBeforeStale);
+	TestEqual(TEXT("a stale frame does not advance the serial"),
+		Receiver.GetLastAppliedSerial(), SerialBeforeStale);
+
+	if (TestTrue(TEXT("a stale-session remove is sent"),
+			Peer.Send(EncodeRemove(FMtoUMultiSubjectFixtureBuilder::PropId(), FirstSession), Error))
+		&& TestTrue(TEXT("the stale remove is answered"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		ExpectError(*this, Line, TEXT("stale remove"), MtoUMultiSubjectError::SessionMismatch);
+	}
+	if (TestTrue(TEXT("a current-session frame still carries both subjects"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 2, 2.0), SecondSession), Error))
+		&& TestTrue(TEXT("the current frame is acknowledged"),
+			Peer.ReadLine(Receiver, Line, Error)))
+	{
+		ExpectApplied(*this, Line, TEXT("current session frame"), SecondSession, 2, 2.0, BothApplied);
+	}
+
+	// The serial is the evaluation identity; the source time may go backwards or
+	// repeat when the same frame is edited again.
+	struct FPlannedFrame
+	{
+		int64 Serial;
+		double Time;
+		const TCHAR* Direction;
+	};
+	const FPlannedFrame Planned[] = {
+		{ 3, 4.0, TEXT("forward") },
+		{ 4, 2.0, TEXT("backward") },
+		{ 5, 2.0, TEXT("hold") },
+	};
+	for (const FPlannedFrame& Entry : Planned)
+	{
+		if (!TestTrue(FString::Printf(TEXT("frame serial %lld is sent"), Entry.Serial),
+				Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, Entry.Serial, Entry.Time),
+					SecondSession), Error))
+			|| !TestTrue(FString::Printf(TEXT("frame serial %lld is acknowledged"), Entry.Serial),
+				Peer.ReadLine(Receiver, Line, Error)))
+		{
+			AddError(Error);
+			return false;
+		}
+		ExpectApplied(*this, Line,
+			*FString::Printf(TEXT("serial %lld at time %.1f"), Entry.Serial, Entry.Time),
+			SecondSession, Entry.Serial, Entry.Time, BothApplied);
+		TestEqual(FString::Printf(TEXT("serial %lld is recorded as %s"),
+			Entry.Serial, Entry.Direction),
+			Receiver.GetLastTimeDirection(), FString(Entry.Direction));
+	}
+	// The serial still has to increase inside the session, whatever the time did.
+	const int32 AppliedBeforeRepeat = Receiver.GetAppliedFrameCount();
+	if (TestTrue(TEXT("a repeated serial is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 5, 5.0), SecondSession), Error))
+		&& TestTrue(TEXT("the repeated serial is answered"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		ExpectError(*this, Line, TEXT("repeated serial"), MtoUMultiSubjectError::FrameOrder);
+	}
+	TestEqual(TEXT("a refused serial applies nothing"),
+		Receiver.GetAppliedFrameCount(), AppliedBeforeRepeat);
+
+	// A frame whose session the receiver never handed out is refused as well.
+	if (TestTrue(TEXT("an unknown session is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 6, 3.0), SecondSession + 41), Error))
+		&& TestTrue(TEXT("the unknown session is answered"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		ExpectError(*this, Line, TEXT("unknown session"), MtoUMultiSubjectError::SessionMismatch);
+	}
+
+	// Evidence: every applied frame is attributed to the session it belongs to.
+	{
+		const FString Directory = FPaths::Combine(EvidenceDirectory(), TEXT("session-identity"));
+		FString EvidencePath;
+		if (TestTrue(TEXT("evidence is written"), Receiver.SaveEvidence(Directory, EvidencePath, Error)))
+		{
+			TSharedPtr<FJsonObject> Evidence;
+			FString EvidenceText;
+			if (TestTrue(TEXT("the evidence reads back"),
+					FFileHelper::LoadFileToString(EvidenceText, *EvidencePath)
+						&& ParseJsonLine(EvidenceText, Evidence)))
+			{
+				const int32 AppliedThisSession = Receiver.GetAppliedFrameCount();
+				TestEqual(TEXT("the evidence counts the applied frames"),
+					GetNumber(Evidence, TEXT("applied_frames")),
+					static_cast<double>(AppliedThisSession));
+				TestEqual(TEXT("the evidence reports the last direction"),
+					GetString(Evidence, TEXT("last_time_direction")), FString(TEXT("hold")));
+				const TArray<TSharedPtr<FJsonValue>>* Frames = nullptr;
+				if (TestTrue(TEXT("the evidence carries the frames"),
+						Evidence->TryGetArrayField(TEXT("frames"), Frames) && Frames != nullptr))
+				{
+					bool bAllCurrent = Frames->Num() == AppliedThisSession;
+					for (const TSharedPtr<FJsonValue>& Value : *Frames)
+					{
+						bAllCurrent &= static_cast<int64>(GetNumber(Value->AsObject(), TEXT("session")))
+							== SecondSession;
+					}
+					TestTrue(TEXT("every applied frame names the current session"), bAllCurrent);
+				}
+			}
+		}
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Drive ownership: what drove a target before, what the preview muted, and the
+// pose a target is left with when nothing else ever drove it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectDriverExitTest,
+	"MtoUMultiSubjectPrototype.DriverExitOwnership",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectDriverExitTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	FMtoUMultiSubjectReceiver Receiver;
+	FMtoUScriptedPeer Peer;
+	ON_SCOPE_EXIT
+	{
+		Peer.Close();
+		Receiver.Stop(TEXT("test finished"));
+		Fixture.Destroy();
+	};
+
+	FString Error;
+	// The arms component carries no animation driver at all: it is the case the
+	// exit has to handle, because nothing will write the pose back for it.
+	if (!TestTrue(TEXT("the character-arms fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-arms"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TestNull(TEXT("the arms component starts without an animation driver"),
+		Fixture.ArmsComponent->AnimClass.Get());
+
+	const TArray<FString> SubjectIds = FMtoUMultiSubjectFixtureBuilder::ScenarioSubjects(TEXT("character-arms"));
+	FMtoUMultiSubjectSessionConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.Scenario = TEXT("character-arms-exit");
+	if (!TestTrue(TEXT("the receiver starts"),
+			Receiver.Start(*Fixture.World, Fixture.MakeRegistrations(SubjectIds), Config, Error))
+		|| !TestTrue(TEXT("the scripted peer connects"), Peer.Connect(Config.Port, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	FString Line;
+	if (!TestTrue(TEXT("init is sent"), Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
+		|| !TestTrue(TEXT("ready arrives"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const int64 Session = Receiver.GetSessionId();
+	if (!TestTrue(TEXT("a preview frame is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0), Session), Error))
+		|| !TestTrue(TEXT("the preview frame is acknowledged"),
+			Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	TickComponent(*Fixture.ArmsComponent);
+	TestTrue(TEXT("the streamed pose is on the arms target"),
+		MaxDeltaToReferencePose(*Fixture.ArmsComponent) > 1.0);
+	const TArray<FString> WhileDriving = Receiver.DescribeDriveOwnership();
+	TestEqual(TEXT("ownership reports every registered target"),
+		WhileDriving.Num(), SubjectIds.Num());
+	TestTrue(TEXT("ownership names the undriven target's missing driver"),
+		[&WhileDriving]()
+		{
+			for (const FString& Entry : WhileDriving)
+			{
+				if (Entry.StartsWith(FMtoUMultiSubjectFixtureBuilder::ArmsId()))
+				{
+					return Entry.Contains(TEXT("none"))
+						&& Entry.Contains(TEXT("preview_active"));
+				}
+			}
+			return false;
+		}());
+
+	// Exit: the undriven target must not keep the preview's last pose.
+	Receiver.Stop(TEXT("preview exit"));
+	TickComponent(*Fixture.ArmsComponent);
+	TestNull(TEXT("the prototype pose instance is gone"),
+		Fixture.ArmsComponent->GetAnimInstance());
+	TestTrue(TEXT("the undriven target is back at its reference pose"),
+		MaxDeltaToReferencePose(*Fixture.ArmsComponent) < 1e-3);
+	TestTrue(TEXT("the ownership report says the target left at rest"),
+		[&Receiver]()
+		{
+			for (const FString& Entry : Receiver.DescribeDriveOwnership())
+			{
+				if (Entry.StartsWith(FMtoUMultiSubjectFixtureBuilder::ArmsId()))
+				{
+					return Entry.Contains(TEXT("reference_pose"));
+				}
+			}
+			return false;
+		}());
+
+	{
+		const FString Directory = FPaths::Combine(EvidenceDirectory(), TEXT("driver-exit"));
+		FString EvidencePath;
+		if (TestTrue(TEXT("evidence is written"), Receiver.SaveEvidence(Directory, EvidencePath, Error)))
+		{
+			TSharedPtr<FJsonObject> Evidence;
+			FString EvidenceText;
+			if (TestTrue(TEXT("the evidence reads back"),
+					FFileHelper::LoadFileToString(EvidenceText, *EvidencePath)
+						&& ParseJsonLine(EvidenceText, Evidence)))
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Targets = nullptr;
+				if (TestTrue(TEXT("the evidence lists the targets"),
+						Evidence->TryGetArrayField(TEXT("targets"), Targets) && Targets != nullptr))
+				{
+					bool bFoundUndriven = false;
+					for (const TSharedPtr<FJsonValue>& Value : *Targets)
+					{
+						const TSharedPtr<FJsonObject> Target = Value->AsObject();
+						if (Target.IsValid()
+							&& GetString(Target, TEXT("id")) == FMtoUMultiSubjectFixtureBuilder::ArmsId())
+						{
+							bFoundUndriven = !GetBool(Target, TEXT("had_animation_driver"))
+								&& GetBool(Target, TEXT("restored_to_reference_pose"));
+						}
+					}
+					TestTrue(TEXT("the evidence records the undriven target's exit"), bFoundUndriven);
+				}
+				TestTrue(TEXT("the evidence carries the ownership report"),
+					Evidence->HasTypedField<EJson::Array>(TEXT("drive_ownership")));
+			}
+		}
+	}
 	return true;
 }
 
@@ -1542,6 +1973,9 @@ bool FMtoUMultiSubjectMayaPeerTest::RunTest(const FString& Parameters)
 	Request.LogPath = FPaths::Combine(Directory, TEXT("mtou-multi-subject-maya.log"));
 	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectRemove="), Request.RemoveAtFrame);
 	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectDrop="), Request.DropAfterFrames);
+	// An explicit time list is how a reverse scrub or a same-frame re-edit is
+	// exercised end to end; FParse's string overload stops at the first comma.
+	Request.Times = CommandLineArgumentValue(TEXT("-MtoUMultiSubjectTimes="));
 
 	FMtoUMultiSubjectPeerResult Result;
 	const bool bRan = RunMayaMultiSubjectPeer(Request, Receiver, Result, Error);

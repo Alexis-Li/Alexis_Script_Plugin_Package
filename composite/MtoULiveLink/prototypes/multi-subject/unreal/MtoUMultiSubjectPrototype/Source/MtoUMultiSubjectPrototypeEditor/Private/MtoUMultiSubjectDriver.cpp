@@ -179,6 +179,20 @@ bool FMtoUMultiSubjectTarget::FindMissingCurve(
 	return FMtoUMultiSubjectProtocol::FindMissingCurve(Declaration, *ResolvedComponent, OutMissing);
 }
 
+void FMtoUMultiSubjectTarget::CollectUndrivenBones(
+	const FMtoUSubjectDeclaration& Declaration,
+	TArray<FName>& OutBones) const
+{
+	OutBones.Reset();
+	const USkeletalMeshComponent* ResolvedComponent = Component.Get();
+	if (ResolvedComponent == nullptr || ResolvedComponent->GetSkeletalMeshAsset() == nullptr)
+	{
+		return;
+	}
+	FMtoUMultiSubjectProtocol::CollectUndrivenBones(
+		Declaration, ResolvedComponent->GetSkeletalMeshAsset()->GetRefSkeleton(), OutBones);
+}
+
 bool FMtoUMultiSubjectTarget::TakeOver(FString& OutError)
 {
 	USkeletalMeshComponent* ResolvedComponent = Component.Get();
@@ -187,6 +201,7 @@ bool FMtoUMultiSubjectTarget::TakeOver(FString& OutError)
 		OutError = FString::Printf(TEXT("target '%s' disappeared before the preview could take it over"), *Id);
 		return false;
 	}
+
 	if (bDriving)
 	{
 		return true;
@@ -207,6 +222,15 @@ bool FMtoUMultiSubjectTarget::TakeOver(FString& OutError)
 	Snapshot.bPauseAnims = ResolvedComponent->bPauseAnims != 0;
 	Snapshot.bUpdateAnimationInEditor = ResolvedComponent->GetUpdateAnimationInEditor();
 	Snapshot.bDisablePostProcessBlueprint = ResolvedComponent->GetDisablePostProcessBlueprint();
+	// Drive ownership is part of the contract: a component that was driven by
+	// something else must go back to that driver, and a component nothing drove
+	// has no driver to go back to, so its exit pose has to be the reference pose.
+	Snapshot.bHadAnimationDriver =
+		(Snapshot.AnimationMode == EAnimationMode::AnimationSingleNode && Snapshot.AnimToPlay != nullptr)
+		|| (Snapshot.AnimationMode == EAnimationMode::AnimationBlueprint && Snapshot.AnimClass != nullptr);
+	Snapshot.PriorDriver = Snapshot.bHadAnimationDriver
+		? Snapshot.Describe()
+		: FString(TEXT("none (reference pose, no animation driver)"));
 	Snapshot.VisibilityBasedAnimTickOption = ResolvedComponent->VisibilityBasedAnimTickOption;
 	if (const USkeletalMesh* Mesh = ResolvedComponent->GetSkeletalMeshAsset())
 	{
@@ -293,6 +317,21 @@ bool FMtoUMultiSubjectTarget::Restore(FString& OutError)
 		ResolvedComponent->SetDisablePostProcessBlueprint(Snapshot.bDisablePostProcessBlueprint);
 		ResolvedComponent->VisibilityBasedAnimTickOption = Snapshot.VisibilityBasedAnimTickOption;
 		ResolvedComponent->bPauseAnims = Snapshot.bPauseAnims;
+
+		// Nothing else was driving this component, so leaving the preview's last
+		// pose on it would look like a stuck preview after the exit.
+		bRestoredToReferencePose = !Snapshot.bHadAnimationDriver && bHasPose;
+		if (bRestoredToReferencePose)
+		{
+			// With no animation driver left, re-initialising the component is what
+			// puts its bones back on the reference pose.
+			ResolvedComponent->InitAnim(true);
+			ResolvedComponent->RefreshBoneTransforms();
+		}
+	}
+	else
+	{
+		bRestoredToReferencePose = false;
 	}
 
 	PoseInstance = nullptr;

@@ -512,12 +512,20 @@ bool FMtoUMultiSubjectReceiver::BeginSession(const FMtoUInitMessage& Init, FStri
 		Subject.Declaration = Declaration;
 		Subject.Target = FindTarget(Declaration.Id);
 		Subject.bEnabled = true;
+		if (Subject.Target != nullptr)
+		{
+			// What the target owns but this subject does not drive stays at its
+			// reference pose; the evidence has to say so instead of implying the
+			// whole target skeleton was matched.
+			Subject.Target->CollectUndrivenBones(Declaration, Subject.UndrivenBones);
+		}
 		Subjects.Add(MoveTemp(Subject));
 	}
 
 	++SessionId;
 	LastAppliedSerial = 0;
 	LastAppliedTime = 0.0;
+	LastTimeDirection = TEXT("none");
 	AppliedFrames = 0;
 	FrameRecords.Reset();
 
@@ -539,6 +547,20 @@ bool FMtoUMultiSubjectReceiver::BeginSession(const FMtoUInitMessage& Init, FStri
 	return true;
 }
 
+bool FMtoUMultiSubjectReceiver::RefuseStaleSession(int64 MessageSession, const TCHAR* What)
+{
+	if (MessageSession == SessionId)
+	{
+		return false;
+	}
+	const FString Details = FString::Printf(
+		TEXT("%s belongs to session %lld; the current session is %lld"),
+		What, MessageSession, SessionId);
+	NoteError(MtoUMultiSubjectError::SessionMismatch, Details, LastAppliedSerial);
+	SendError(MtoUMultiSubjectError::SessionMismatch, Details);
+	return true;
+}
+
 void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Object)
 {
 	if (!bReady)
@@ -557,6 +579,13 @@ void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Objec
 		SendError(ProtocolError.Code, ProtocolError.Details);
 		return;
 	}
+	// A frame that still carries the session of a previous negotiation is
+	// refused before anything else, so a renegotiated pair can never be driven
+	// by a pose that was sampled for the old one.
+	if (RefuseStaleSession(Frame.Session, TEXT("frame")))
+	{
+		return;
+	}
 	if (Frame.Serial <= LastAppliedSerial)
 	{
 		const FString Details = FString::Printf(
@@ -566,7 +595,6 @@ void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Objec
 		SendError(MtoUMultiSubjectError::FrameOrder, Details);
 		return;
 	}
-
 	// A frame must carry exactly the enabled subjects; a partial frame would
 	// let two objects drift apart in time, which the profile forbids.
 	TArray<FMtoUSessionSubject*> Enabled = EnabledSubjects();
@@ -623,10 +651,16 @@ void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Objec
 		Plan.Add({ *Found, &FrameSubject });
 	}
 
-	// Every subject validated: apply the whole frame, or none of it.
+	// Every subject validated: apply the whole frame, or none of it. The record
+	// keeps the direction the source time moved, so a reverse scrub or a
+	// same-frame re-edit is visible in the evidence instead of looking like
+	// ordinary forward playback.
 	FMtoUFrameRecord Record;
+	Record.Session = Frame.Session;
 	Record.Serial = Frame.Serial;
 	Record.Time = Frame.Time;
+	Record.TimeDirection = FMtoUMultiSubjectProtocol::DescribeTimeDirection(
+		LastAppliedTime, AppliedFrames > 0, Frame.Time);
 	Record.bPreviewActive = Preview.IsActive();
 	const double ApplyStart = FPlatformTime::Seconds();
 	for (const FFrameSubjectPlan& Entry : Plan)
@@ -655,6 +689,7 @@ void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Objec
 
 	LastAppliedSerial = Frame.Serial;
 	LastAppliedTime = Frame.Time;
+	LastTimeDirection = Record.TimeDirection;
 	++AppliedFrames;
 	++ReceivedFrames;
 	if (FrameRecords.Num() < Config.MaxRecordedFrames)
@@ -687,6 +722,12 @@ void FMtoUMultiSubjectReceiver::HandleRemove(const TSharedPtr<FJsonObject>& Obje
 		SendError(ProtocolError.Code, ProtocolError.Details);
 		return;
 	}
+	// Removing a subject of a previous negotiation must not end this pair.
+	if (RefuseStaleSession(Remove.Session, TEXT("remove")))
+	{
+		return;
+	}
+
 
 	FMtoUSessionSubject* Found = nullptr;
 	for (FMtoUSessionSubject& Subject : Subjects)
@@ -880,6 +921,43 @@ FMtoUMultiSubjectTarget* FMtoUMultiSubjectReceiver::FindTarget(const FString& Id
 	return nullptr;
 }
 
+TArray<FString> FMtoUMultiSubjectReceiver::DescribeDriveOwnership() const
+{
+	// Drive ownership is a question an operator has to be able to answer ("who
+	// writes this pose now?"), so it is reported explicitly instead of being
+	// left implicit in a hidden local mute.
+	TArray<FString> Lines;
+	const TArray<FMtoUSuppressedWriter>& Writers = Preview.GetSuppressedWriters();
+	for (const TUniquePtr<FMtoUMultiSubjectTarget>& Target : Targets)
+	{
+		if (!Target.IsValid())
+		{
+			continue;
+		}
+		TArray<FString> WriterNames;
+		for (const FMtoUSuppressedWriter& Writer : Writers)
+		{
+			if (Writer.TargetId == Target->GetId() || Writer.TargetId.IsEmpty())
+			{
+				WriterNames.Add(FString::Printf(TEXT("%s (saved_asset=%s)"),
+					Writer.Track.IsValid() ? *Writer.Track->GetName() : TEXT("<no track>"),
+					Writer.bRepresentsSavedAsset ? TEXT("true") : TEXT("false")));
+			}
+		}
+		Lines.Add(FString::Printf(
+			TEXT("%s: component_driver=%s, suppressed_writers=[%s], exit=%s"),
+			*Target->GetId(),
+			Target->GetSnapshot().PriorDriver.IsEmpty()
+				? TEXT("not_taken_over")
+				: *Target->GetSnapshot().PriorDriver,
+			*FString::Join(WriterNames, TEXT("; ")),
+			Target->DidRestoreToReferencePose()
+				? TEXT("reference_pose")
+				: (Target->IsDriving() ? TEXT("preview_active") : TEXT("own_driver_restored"))));
+	}
+	return Lines;
+}
+
 bool FMtoUMultiSubjectReceiver::IsListening() const
 {
 	return ListenSocket != nullptr;
@@ -910,6 +988,7 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 	Root->SetNumberField(TEXT("applied_frames"), static_cast<double>(AppliedFrames));
 	Root->SetNumberField(TEXT("last_applied_serial"), static_cast<double>(LastAppliedSerial));
 	Root->SetNumberField(TEXT("last_applied_time"), LastAppliedTime);
+	Root->SetStringField(TEXT("last_time_direction"), LastTimeDirection);
 	Root->SetStringField(TEXT("last_error_code"), LastErrorCode);
 	Root->SetStringField(TEXT("last_error_details"), LastErrorDetails);
 	Root->SetStringField(TEXT("session_end_reason"), LastSessionEndReason);
@@ -941,6 +1020,14 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 		TargetObject->SetStringField(TEXT("socket"), Anchor.SocketName.ToString());
 		TargetObject->SetObjectField(TEXT("anchor_transform"), MakeTransformObject(Anchor.AnchorTransform));
 		TargetObject->SetStringField(TEXT("saved_animation_state"), Target->GetSnapshot().Describe());
+		TargetObject->SetBoolField(TEXT("had_animation_driver"),
+			Target->GetSnapshot().bHadAnimationDriver);
+		TargetObject->SetStringField(TEXT("prior_driver"),
+			Target->GetSnapshot().PriorDriver.IsEmpty()
+				? TEXT("not_taken_over")
+				: Target->GetSnapshot().PriorDriver);
+		TargetObject->SetBoolField(TEXT("restored_to_reference_pose"),
+			Target->DidRestoreToReferencePose());
 		TargetValues.Add(MakeShared<FJsonValueObject>(TargetObject));
 	}
 	Root->SetArrayField(TEXT("targets"), TargetValues);
@@ -955,6 +1042,16 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 		SubjectObject->SetNumberField(TEXT("applied_frames"), static_cast<double>(Subject.AppliedFrames));
 		SubjectObject->SetNumberField(TEXT("max_bone_delta"), Subject.MaxBoneDelta);
 		SubjectObject->SetNumberField(TEXT("max_root_world_delta"), Subject.MaxRootWorldDelta);
+		SubjectObject->SetNumberField(TEXT("declared_bones"),
+			static_cast<double>(Subject.Declaration.Bones.Num()));
+		SubjectObject->SetNumberField(TEXT("undriven_bones"),
+			static_cast<double>(Subject.UndrivenBones.Num()));
+		TArray<TSharedPtr<FJsonValue>> UndrivenValues;
+		for (const FName& Bone : Subject.UndrivenBones)
+		{
+			UndrivenValues.Add(MakeShared<FJsonValueString>(Bone.ToString()));
+		}
+		SubjectObject->SetArrayField(TEXT("undriven_bone_names"), UndrivenValues);
 		TArray<TSharedPtr<FJsonValue>> CurveValues;
 		for (const FName& Curve : Subject.Declaration.Curves)
 		{
@@ -964,6 +1061,13 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 		SubjectValues.Add(MakeShared<FJsonValueObject>(SubjectObject));
 	}
 	Root->SetArrayField(TEXT("subjects"), SubjectValues);
+
+	TArray<TSharedPtr<FJsonValue>> OwnershipValues;
+	for (const FString& Line : DescribeDriveOwnership())
+	{
+		OwnershipValues.Add(MakeShared<FJsonValueString>(Line));
+	}
+	Root->SetArrayField(TEXT("drive_ownership"), OwnershipValues);
 
 	TArray<TSharedPtr<FJsonValue>> WriterValues;
 	for (const FMtoUSuppressedWriter& Writer : Preview.GetSuppressedWriters())
@@ -983,8 +1087,10 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 	for (const FMtoUFrameRecord& Record : FrameRecords)
 	{
 		const TSharedRef<FJsonObject> FrameObject = MakeShared<FJsonObject>();
+		FrameObject->SetNumberField(TEXT("session"), static_cast<double>(Record.Session));
 		FrameObject->SetNumberField(TEXT("serial"), static_cast<double>(Record.Serial));
 		FrameObject->SetNumberField(TEXT("time"), Record.Time);
+		FrameObject->SetStringField(TEXT("time_direction"), Record.TimeDirection);
 		FrameObject->SetNumberField(TEXT("apply_ms"), Record.ApplySeconds * 1000.0);
 		FrameObject->SetBoolField(TEXT("preview_active"), Record.bPreviewActive);
 		TArray<TSharedPtr<FJsonValue>> FrameSubjectValues;

@@ -16,6 +16,10 @@ FString FMtoUMultiSubjectPeerRequest::BuildCommandLine() const
 	FString CommandLine = FString::Printf(
 		TEXT("\"%s\" --host %s --port %d --scenario %s --frames %d --fps %.6f --start-frame %d --evidence \"%s\""),
 		*PeerScriptPath, *Host, Port, *Scenario, Frames, Fps, StartFrame, *EvidencePath);
+	if (!Times.IsEmpty())
+	{
+		CommandLine += FString::Printf(TEXT(" --times %s"), *Times);
+	}
 	if (RemoveAtFrame > 0)
 	{
 		CommandLine += FString::Printf(TEXT(" --remove-at %d"), RemoveAtFrame);

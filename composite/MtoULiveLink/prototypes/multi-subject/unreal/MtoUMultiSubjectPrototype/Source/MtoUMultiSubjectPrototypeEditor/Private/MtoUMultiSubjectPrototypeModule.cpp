@@ -286,10 +286,30 @@ void FMtoUMultiSubjectPrototypeModule::RegisterCommands()
 		})));
 
 	Commands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("MtoUMultiSubject.Ownership"),
+		TEXT("Reports who writes each target now: the driver the preview replaced, "
+			"the writers it muted, and how each target exited."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			if (!GRun.IsValid() || !GRun->Receiver.IsValid())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("%s: no run is active"), LogCategory);
+				return;
+			}
+			UE_LOG(LogTemp, Display, TEXT("%s: session %lld, last time direction %s"),
+				LogCategory, GRun->Receiver->GetSessionId(),
+				*GRun->Receiver->GetLastTimeDirection());
+			for (const FString& Line : GRun->Receiver->DescribeDriveOwnership())
+			{
+				UE_LOG(LogTemp, Display, TEXT("%s: %s"), LogCategory, *Line);
+			}
+		})));
+
+	Commands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("MtoUMultiSubject.Peer"),
 		TEXT("Runs the Maya peer against a real receiver and reports both evidence files. "
 			"Args: <mayapy> <peer script> [scenario=] [port=] [frames=] [start-frame=] "
-			"[remove-at=] [drop-after=] [out=]."),
+			"[times=1,3,2,2] [remove-at=] [drop-after=] [out=]."),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
 			if (Args.Num() < 2)
@@ -324,8 +344,8 @@ void FMtoUMultiSubjectPrototypeModule::RegisterCommands()
 			Request.Port = Run.Receiver->GetBoundPort();
 			Request.Frames = ParseIntArgument(Args, TEXT("frames"), 24);
 			Request.StartFrame = ParseIntArgument(Args, TEXT("start-frame"), 1);
-			Request.RemoveAtFrame = ParseIntArgument(Args, TEXT("remove-at"), 0);
 			Request.DropAfterFrames = ParseIntArgument(Args, TEXT("drop-after"), 0);
+			Request.Times = ParseStringArgument(Args, TEXT("times"));
 			Request.EvidencePath = FPaths::Combine(OutDirectory, TEXT("mtou-multi-subject-maya.json"));
 			Request.LogPath = FPaths::Combine(OutDirectory, TEXT("mtou-multi-subject-maya.log"));
 

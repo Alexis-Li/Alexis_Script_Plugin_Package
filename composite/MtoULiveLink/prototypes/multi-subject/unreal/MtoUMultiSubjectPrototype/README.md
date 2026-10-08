@@ -15,12 +15,15 @@ retargeting, no Additional Parts, and no cache.
 | Requirement | How this prototype covers it |
 | --- | --- |
 | One explicit root per object, one Unreal target per root | `FMtoUTargetRegistration` pairs an actor anchor with one `USkeletalMeshComponent`; the wire `init` names each subject's `root` and the receiver refuses a declaration whose root is not the first, parentless bone |
-| Strict skeleton identity | Bone names, parent names and bone count must match the target skeleton exactly, and every advertised `bind` row must match the target's reference pose within the prototype tolerance (0.25 cm translation, 0.5 deg rotation, 0.005 scale), so a differently resting rig cannot deform on the same skeleton; both are `skeleton_mismatch`. Declared curves must be Morph Targets of the target mesh (`curve_not_in_target`) |
-| Two objects on one shared time | One `frame` message carries `serial` + `time` and every enabled subject; the receiver applies a frame only after every subject validated, then answers one `applied` |
+| Strict skeleton identity, necessary bones only | Every declared bone must exist in the target, carry the declared parent and have only declared bones above it; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`, so a target with legitimate extra branches can still pair. A declared bone the target lacks, or a dropped bone a declared child needs, is `skeleton_mismatch`. Every advertised `bind` row must match the target's reference pose within the prototype tolerance (0.25 cm translation, 0.5 deg rotation, 0.005 scale). Declared curves must be Morph Targets of the target mesh (`curve_not_in_target`) |
+| Two objects on one shared time | One `frame` message carries the negotiated `session`, a strictly increasing `serial` (the evaluation identity), a Maya source `time` and every enabled subject; the receiver applies a frame only after every subject validated, then answers one `applied`. The source time may reverse or repeat on a re-edit, and each applied frame records `first`/`forward`/`backward`/`hold` |
+| Frames belong to their negotiation | Every `frame` and `remove` repeats the `session` it was negotiated under; a message naming another session is `session_mismatch`, applies nothing and leaves the serial untouched, so a pose sampled for a previous pair can never drive a renegotiated one |
 | Same-named bones and Morphs stay apart | Each subject owns one target and one pose instance; the character and prop both have a bone named `Root` and a Morph named `Shared`, and the tests assert each target holds only its own values |
 | Single-subject removal, disconnect, world close | `remove` disables one subject, restores its prior animation state and re-enables only the writers that belong to that subject, so the other subject keeps streaming; a TCP disconnect and a world cleanup restore both and leave no session |
 | Anchor applied exactly once | The Maya root pose is a world pose; the target's placement is the actor anchor only. The tests assert Unreal's `RootWorld == receivedRoot * AnchorTransform` and the preflight refuses any socket or parent motion that would apply the parent twice |
 | Existing animation / Sequencer takeover | `SetLocalEvalDisabled` (a flag that is *not* serialized with the Level Sequence) plus a real Sequencer evaluation releases a skeletal animation track; exiting restores the track and the component's animation state, and the tests compare the evaluated pose before, during and after |
+| Drive ownership is reported | Each target's prior driver, the writers the preview muted (with whether each is a saved asset) and how the target exited are reported by `MtoUMultiSubject.Ownership` and in `drive_ownership[]`, because the local mute is invisible in the Sequencer UI |
+| Exit leaves nothing driven-but-frozen | A target that had no animation driver before the preview is put back into its reference pose on exit and removal (`restored_to_reference_pose`), instead of keeping the preview's last pose |
 | No permanent asset edits | Every fixture asset, actor and Level Sequence is transient; the evidence records that the sequence graph is unchanged and its package is not dirty |
 | Machine-readable evidence | `FMtoUMultiSubjectReceiver::SaveEvidence` writes one JSON file per run (schema `mtou-multi-subject-evidence/1`) |
 
@@ -96,20 +99,23 @@ receiver stores them unchanged.
 * `{"type":"init","version":1,"fps":30.0,"subjects":[{"id","root","bones":[{"name","parent"}],"curves":[...],"bind":[[10 numbers],...]}, ...]}`
 * `-> {"type":"ready","session":<id>}` after the receiver verified both targets,
   or `{"type":"error","code","details"}`.
-* `{"type":"frame","serial":<int>,"time":<sourceFrame>,"subjects":[{"id","transforms":[[10 numbers],...],"curves":[...]}]}`
+* `{"type":"frame","session":<id>,"serial":<int>,"time":<sourceFrame>,"subjects":[{"id","transforms":[[10 numbers],...],"curves":[...]}]}`
   carries every enabled subject; `transforms` is one ten-number row per declared
-  bone (the same shape as `bind`), `serial` starts at 1 and is strictly
-  increasing per connection, and `time` is the one Maya evaluated time of the
-  pair.
+  bone (the same shape as `bind`), `session` is the id from `ready`, `serial`
+  starts at 1 and is strictly increasing inside that session, and `time` is the
+  Maya source frame of the pair. The time may move backwards (reverse scrub) or
+  repeat (a re-edit of an already sent frame); the serial, not the time, is the
+  evaluation identity, and each applied frame records which it was.
 * `-> {"type":"applied","session","serial","time","subjects":[{"id","status":"applied"|"disabled"}]}`
   after the whole frame was applied (a frame reply lists exactly the subjects
   that frame carried, in negotiated order), or `{"type":"error","code","details"}`.
-* `{"type":"remove","id":...}` stops driving exactly that subject, restores its
-  prior animation state, and re-enables only the writers that belong to it (a
-  session-wide writer stays suppressed until the session ends); the acknowledgement is an `applied` state event
-  that echoes the last applied serial/time (0/0.0 when none) and lists every
-  configured subject with its current status. Removing the last subject ends the
-  session.
+* `{"type":"remove","session":<id>,"id":...}` stops driving exactly that subject,
+  restores its prior animation state (or its reference pose when it had no
+  driver at all), and re-enables only the writers that belong to it (a
+  session-wide writer stays suppressed until the session ends); the
+  acknowledgement is an `applied` state event that echoes the last applied
+  serial/time (0/0.0 when none) and lists every configured subject with its
+  current status. Removing the last subject ends the session.
 * A new `init` is a new negotiation: it is validated first (a refused init
   changes nothing), and a successful one ends the previous session, restores
   it, and starts a new session id. A different target mapping therefore requires
@@ -121,8 +127,8 @@ receiver stores them unchanged.
 Stable error codes: `version_unsupported`, `subjects_shape`, `message_shape`,
 `unknown_subject_id`, `target_reused`, `skeleton_mismatch`,
 `curve_not_in_target`, `anchor_conflict`, `target_detached`, `no_session`,
-`frame_order`, `frame_subjects`, `frame_shape`, `subject_not_enabled`,
-`malformed_json`, `too_large`, `preview_conflict`.
+`session_mismatch`, `frame_order`, `frame_subjects`, `frame_shape`,
+`subject_not_enabled`, `malformed_json`, `too_large`, `preview_conflict`.
 
 ## Running it
 
@@ -132,8 +138,8 @@ Editor console commands (module `MtoUMultiSubjectPrototypeEditor`, plugin
 ```
 MtoUMultiSubject.Listen [scenario=character-prop|character-arms] [port=54340] [out=<dir>]
 MtoUMultiSubject.Stop
-MtoUMultiSubject.Evidence [out=<dir>]
-MtoUMultiSubject.Peer <mayapy> <peer script> [scenario=] [port=] [frames=] [start-frame=] [remove-at=] [drop-after=] [out=]
+MtoUMultiSubject.Ownership
+MtoUMultiSubject.Peer <mayapy> <peer script> [scenario=] [port=] [frames=] [start-frame=] [times=1,3,2,2] [remove-at=] [drop-after=] [out=]
 ```
 
 `Listen` logs `MtoUMultiSubject: listening 127.0.0.1:<port> scenario=<name>
@@ -160,26 +166,31 @@ schema `mtou-multi-subject-evidence/1`:
   `skeleton_mismatch`, even when the fresh negotiation and all live frames pass.
   Check `session_end_reason`, `last_error_code` and `errors[]` together.
 * `targets[]` — id, anchor actor, component, skeleton signature (names and
-  parents), anchor validation result, resolved anchor transform, and the
-  animation state the takeover saved.
-* `subjects[]` — active negotiated declarations, frame counts and maximum
-  measured bone/root-world deltas; this array is empty once the session ends.
-  The retained `frames[]` still contain the per-object measurements.
-* `frames[]` — per frame: serial, time, `apply_ms`, whether the preview was
-  active, and per subject every bone's received local pose, component-space
-  pose and delta, the root world position, and the Morph values the component
-  holds. The record is bounded (`MaxRecordedFrames`, default 240).
+  parents), anchor validation result, resolved anchor transform, the animation
+  state the takeover saved, whether that component had an animation driver at
+  all, and whether the last exit had to put it back into its reference pose.
+* `subjects[]` — active negotiated declarations, frame counts, maximum measured
+  bone/root-world deltas, and the target bones this subject does not drive
+  (`undriven_bones`); this array is empty once the session ends. The retained
+  `frames[]` still contain the per-object measurements.
+* `frames[]` — per frame: session, serial, time, `time_direction`, `apply_ms`,
+  whether the preview was active, and per subject every bone's received local
+  pose, component-space pose and delta, the root world position, and the Morph
+  values the component holds. The record is bounded (`MaxRecordedFrames`, default 240).
 * `preview_writers[]` — writer state, including restored local-mute flags after
   exit. `preview_writers_suppressed` is false once preview has ended.
+* `drive_ownership[]` — one line per target naming the driver it had, the writers
+  that were muted (with `saved_asset`), and how the target left.
 * `errors[]` — every rejection with its stable code, details and serial.
 
 ## Automation tests
 
 `MtoUMultiSubjectPrototype.*` (`EditorContext | EngineFilter`):
 
-* `FixtureAndAnchorRules` — sample skeletons, strict identity (including the
-  bind comparison, and its refusal for a wrongly resting rig), anchor-once, and
-  the refusal of a socket-attached target.
+* `FixtureAndAnchorRules` — sample skeletons, necessary-bone identity (including
+  the bind comparison, its refusal for a wrongly resting rig, an accepted
+  declaration that leaves a leaf undriven and a refusal for a dropped parent),
+  anchor-once, and the refusal of a socket-attached target.
 * `CharacterPropStream` — real socket session: `init`/`ready`, three frames
   applied, anchor-once and pose measurements, same-named bone and Morph
   isolation, single-subject removal with restore, a refused partial frame,
@@ -188,6 +199,14 @@ schema `mtou-multi-subject-evidence/1`:
   wrong version, three subjects, unknown id, unknown curve, parent mismatch,
   same names/parents with a wrong advertised bind, the `character-arms`
   mismatch-then-renegotiate path, and framing close semantics.
+* `SessionAndTimeIdentity` — a renegotiation hands out a new session, and frames
+  and removes that still name the previous one are refused without applying
+  anything; within a session the serial must increase while the source time may
+  go forward, backward (reverse scrub) or stay put (a re-edit), each direction
+  being recorded per frame.
+* `DriverExitOwnership` — the ownership report names each target's prior driver
+  while it streams, and a target that nothing else drove is back at its reference
+  pose after the exit instead of keeping the preview's last pose.
 * `SequencerTakeover` — a real Level Sequence opened in the editor Sequencer:
   the track drives the character before the preview, stops writing while the
   preview is active, the removal of the character restores only its own writer

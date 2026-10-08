@@ -27,15 +27,24 @@ public:
 		FMtoUInitMessage& OutMessage,
 		FMtoUProtocolError& OutError);
 
+	/**
+	 * Reads one `frame`, including the `session` it claims to belong to. A
+	 * message without a positive integer session is a shape error; whether that
+	 * session is the receiver's current one is the receiver's decision.
+	 */
 	static bool ParseFrame(
 		const TSharedPtr<FJsonObject>& Object,
 		FMtoUFrameMessage& OutMessage,
 		FMtoUProtocolError& OutError);
 
+	/** Reads one `remove`, including the `session` it claims to belong to. */
 	static bool ParseRemove(
 		const TSharedPtr<FJsonObject>& Object,
 		FMtoURemoveMessage& OutMessage,
 		FMtoUProtocolError& OutError);
+
+	/** "forward", "backward", "hold" or "first" for one applied source time. */
+	static FString DescribeTimeDirection(double PreviousTime, bool bHasPrevious, double Time);
 
 	static TSharedRef<FJsonObject> MakeReady(int64 Session);
 	static TSharedRef<FJsonObject> MakeApplied(
@@ -56,14 +65,23 @@ public:
 	static bool ReadPoseTuple(const TArray<TSharedPtr<FJsonValue>>& Values, FTransform& OutTransform);
 
 	/**
-	 * Strict identity of one Maya declaration against a Unreal target skeleton:
-	 * equal bone count, equal name set, and every declared bone's parent name
-	 * equal to the target's parent name. Returns an empty string when the
-	 * declaration matches; otherwise the first offending bone in one sentence.
+	 * Necessary-bone identity of one Maya declaration against an Unreal target
+	 * skeleton: every declared bone must exist in the target, carry the declared
+	 * parent, and have only declared bones above it, so no driven bone ever
+	 * hangs under a bone the sender does not drive. Target bones the declaration
+	 * does not name keep their reference pose and are listed by
+	 * `CollectUndrivenBones`. Returns an empty string when the declaration is
+	 * accepted; otherwise the first offending bone in one sentence.
 	 */
 	static FString DescribeSkeletonMismatch(
 		const FMtoUSubjectDeclaration& Declaration,
 		const FReferenceSkeleton& Skeleton);
+
+	/** Target bones the declaration does not drive; they hold their reference pose. */
+	static void CollectUndrivenBones(
+		const FMtoUSubjectDeclaration& Declaration,
+		const FReferenceSkeleton& Skeleton,
+		TArray<FName>& OutBones);
 
 	/**
 	 * First advertised bind row that differs from the target's reference pose

@@ -2,9 +2,11 @@
 
 Maya half of the bounded two-subject realtime prototype for Issue #54. It
 drives **two independently referenced bound skeletons** against one Unreal
-receiver: one Maya evaluated time and one strictly increasing serial (starting
-at 1, as the receiver requires) per atomic subject pair, with the Unreal
-`applied` echo recorded before the next frame.
+receiver: every frame carries the negotiated session, one strictly increasing
+serial (starting at 1, as the receiver requires) and one Maya source time per
+atomic subject pair, with the Unreal `applied` echo recorded before the next
+frame. The serial identifies the evaluation, so the source time may move
+backwards (reverse scrub) or repeat (a re-edit of an already sent frame).
 
 This prototype's contract is version 1: newline-delimited compact JSON over
 TCP, 1 MiB per line, at most two subjects with ids from
@@ -25,6 +27,9 @@ entry point and cached playback are untouched by this prototype.
   missing/ambiguous/non-joint roots, refused role swap, wrong bones, wrong
   curves and animated ancestors (the socket case), duplicate roots, stale
   session/serial/time echoes and silent receivers;
+* a reverse scrub and a same-frame re-edit are streamed as planned
+  (`--times 1,3,2,2`) and accepted, and a frame that still names a previous
+  negotiation's session is refused;
 * a referenced prop root re-parented under an animated session transform still
   samples a **world** pose that includes that parent's motion exactly once
   (checked against the DAG matrix and against the parent-composed local pose),
@@ -127,7 +132,7 @@ conversation:
 "$MAYAPY" composite/MtoULiveLink/prototypes/multi-subject/maya/MtoUMultiSubjectPrototype/tests/maya_peer.py \
   --host 127.0.0.1 --port 54340 \
   --scenario character-prop --frames <N> --fps 30 --start-frame 1 \
-  --evidence peer_evidence.json [--remove-at <frame>] [--drop-after <frames>]
+  --evidence peer_evidence.json [--times 1,3,2,2] [--remove-at <frame>] [--drop-after <frames>]
 ```
 
 * `--scenario character-prop` — the mandatory pair: init, `ready`, one
@@ -146,6 +151,9 @@ conversation:
   listener for the second pair instead of remapping targets in place.
 * `--drop-after N` closes the socket abruptly after `N` frames to prove the
   receiver clears its state on disconnect.
+* `--times 1,3,2,2` sends an explicit Maya source frame per step instead of
+  stepping forward, which is how a reverse scrub and a re-edit of an already
+  sent frame are exercised; each frame records the direction it moved in.
 
 Exit code 0 means the scenario's expected outcome happened; the evidence JSON is
 written either way.
@@ -174,7 +182,8 @@ written either way.
     "subjects": [{"id": "character", "root": "|character:Group|character:Root",
                   "namespace": "character", "bones": [], "parents": [],
                   "curves": ["Shared"], "curve_plugs": [["character:..."]]}],
-    "frames": [{"serial": 1, "time": 1.0, "latency_ms": 0.31,
+    "frames": [{"session": 1, "serial": 1, "time": 1.0, "time_direction": "first",
+                "latency_ms": 0.31,
                 "statuses": {"character": "applied", "prop": "applied"},
                 "subjects": [{"id": "character", "root": [10 numbers],
                               "curves": [0.5], "transforms": 4,
@@ -189,9 +198,10 @@ written either way.
 }
 ```
 
-`frames[]` records exactly what Maya sent (root world pose, Morph values and a
-digest of every transform row) plus the round-trip latency, so an Unreal-side
-record of received/applied values can be cross-read against it.
+`frames[]` records exactly what Maya sent (session, serial, source time, the
+direction that time moved in, root world pose, Morph values and a digest of every
+transform row) plus the round-trip latency, so an Unreal-side record of
+received/applied values can be cross-read against it.
 
 ## Compatibility
 

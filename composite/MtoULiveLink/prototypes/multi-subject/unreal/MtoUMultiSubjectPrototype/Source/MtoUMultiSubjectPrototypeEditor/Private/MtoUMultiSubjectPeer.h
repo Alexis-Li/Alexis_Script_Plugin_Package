@@ -26,6 +26,12 @@ struct FMtoUMultiSubjectPeerRequest
 	int32 RemoveAtFrame = 0;
 	/** Close the socket abruptly after this many frames; 0 disables it. */
 	int32 DropAfterFrames = 0;
+	/**
+	 * Comma-separated Maya source times, one per frame. Empty derives them from
+	 * `StartFrame`/`Frames`; an explicit list is how a reverse scrub or a
+	 * same-frame re-edit is exercised end to end.
+	 */
+	FString Times;
 	FString EvidencePath;
 	FString LogPath;
 	double TimeoutSeconds = 120.0;

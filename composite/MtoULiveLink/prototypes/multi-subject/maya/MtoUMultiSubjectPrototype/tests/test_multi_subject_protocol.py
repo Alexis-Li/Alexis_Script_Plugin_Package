@@ -62,18 +62,18 @@ class MessageBuildingTests(unittest.TestCase):
     def test_frame_round_trip_and_echo_validation(self):
         init = protocol.make_init(pair(), 30.0)
         summary = protocol.validate_init(init)
-        frame = protocol.make_frame(1, 2.5, [
+        frame = protocol.make_frame(7, 1, 2.5, [
             {"id": "character", "transforms": [list(ROW), list(ROW)], "curves": [0.5]},
             {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [1.0]},
         ])
-        validated = protocol.validate_frame(frame, summary)
+        validated = protocol.validate_frame(frame, summary, session=7)
         self.assertEqual(validated, {"serial": 1, "time": 2.5,
                                      "ids": ["character", "prop"]})
         echo = {"type": "applied", "session": 7, "serial": 1, "time": 2.5,
                 "subjects": [{"id": "character", "status": "applied"},
                              {"id": "prop", "status": "applied"}]}
         statuses = protocol.validate_applied(echo, 7, 1, 2.5,
-                                             protocol.active_subject_ids(summary))
+                                            protocol.active_subject_ids(summary))
         self.assertEqual(statuses, {"character": "applied", "prop": "applied"})
 
     def test_line_framing_is_bounded_and_line_oriented(self):
@@ -164,51 +164,72 @@ class FrameValidationTests(unittest.TestCase):
 
     def test_serial_starts_at_one(self):
         with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.make_frame(0, 1.0, [
+            protocol.make_frame(7, 0, 1.0, [
                 {"id": "character", "transforms": [list(ROW)] * 2, "curves": [0.0]},
                 {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
             ])
         self.assertEqual(caught.exception.code, protocol.CODE_SERIAL_INVALID)
         with self.assertRaises(protocol.ProtocolError) as caught:
             protocol.validate_frame(
-                {"type": "frame", "serial": 0, "time": 1.0, "subjects": []},
-                self.summary)
+                {"type": "frame", "session": 7, "serial": 0, "time": 1.0,
+                 "subjects": []},
+                self.summary, session=7)
         self.assertEqual(caught.exception.code, protocol.CODE_SERIAL_INVALID)
 
-    def test_serial_and_time_must_increase(self):
-        frame = protocol.make_frame(3, 1.0, [
+    def test_session_must_be_the_negotiated_one(self):
+        stale = protocol.make_frame(7, 1, 1.0, [
             {"id": "character", "transforms": [list(ROW)] * 2, "curves": [0.0]},
             {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
         ])
-        protocol.validate_frame(frame, self.summary, previous_serial=2, previous_time=0.5)
         with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.validate_frame(frame, self.summary, previous_serial=3)
+            protocol.validate_frame(stale, self.summary, session=8)
+        self.assertEqual(caught.exception.code, protocol.CODE_SESSION_MISMATCH)
+        missing = dict(stale)
+        missing.pop("session")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.validate_frame(missing, self.summary, session=7)
+        self.assertEqual(caught.exception.code, protocol.CODE_SESSION_INVALID)
+
+    def test_source_time_may_reverse_or_repeat_but_serial_must_increase(self):
+        subjects = [
+            {"id": "character", "transforms": [list(ROW)] * 2, "curves": [0.0]},
+            {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
+        ]
+        backward = protocol.make_frame(7, 2, 0.5, subjects)
+        protocol.validate_frame(backward, self.summary, session=7, previous_serial=1)
+        repeat = protocol.make_frame(7, 3, 0.5, subjects)
+        protocol.validate_frame(repeat, self.summary, session=7, previous_serial=2)
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.validate_frame(repeat, self.summary, session=7, previous_serial=3)
         self.assertEqual(caught.exception.code, protocol.CODE_SERIAL_NOT_INCREASING)
-        with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.validate_frame(frame, self.summary, previous_time=1.0)
-        self.assertEqual(caught.exception.code, protocol.CODE_TIME_NOT_INCREASING)
+
+    def test_time_direction_names_the_scrub(self):
+        self.assertEqual(protocol.time_direction(None, 2.0), "first")
+        self.assertEqual(protocol.time_direction(1.0, 2.0), "forward")
+        self.assertEqual(protocol.time_direction(2.0, 1.0), "backward")
+        self.assertEqual(protocol.time_direction(1.0, 1.0), "hold")
 
     def test_ids_order_and_counts(self):
-        frame = protocol.make_frame(1, 1.0, [
+        frame = protocol.make_frame(7, 1, 1.0, [
             {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
             {"id": "character", "transforms": [list(ROW)] * 2, "curves": [0.0]},
         ])
         with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.validate_frame(frame, self.summary)
+            protocol.validate_frame(frame, self.summary, session=7)
         self.assertEqual(caught.exception.code, protocol.CODE_SUBJECT_MISMATCH)
-        frame = protocol.make_frame(1, 1.0, [
+        frame = protocol.make_frame(7, 1, 1.0, [
             {"id": "character", "transforms": [list(ROW)], "curves": [0.0]},
             {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
         ])
         with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.validate_frame(frame, self.summary)
+            protocol.validate_frame(frame, self.summary, session=7)
         self.assertEqual(caught.exception.code, protocol.CODE_TRANSFORM_COUNT)
-        frame = protocol.make_frame(1, 1.0, [
+        frame = protocol.make_frame(7, 1, 1.0, [
             {"id": "character", "transforms": [list(ROW)] * 2, "curves": []},
             {"id": "prop", "transforms": [list(ROW)] * 3, "curves": [0.0]},
         ])
         with self.assertRaises(protocol.ProtocolError) as caught:
-            protocol.validate_frame(frame, self.summary)
+            protocol.validate_frame(frame, self.summary, session=7)
         self.assertEqual(caught.exception.code, protocol.CODE_CURVE_COUNT)
 
     def test_after_remove_only_the_remaining_subject_is_expected(self):
@@ -216,10 +237,10 @@ class FrameValidationTests(unittest.TestCase):
         summary["active"] = list(self.summary["active"])
         remaining = protocol.disable_subject(summary, "prop")
         self.assertEqual(remaining, ["character"])
-        frame = protocol.make_frame(2, 2.0, [
+        frame = protocol.make_frame(7, 2, 2.0, [
             {"id": "character", "transforms": [list(ROW)] * 2, "curves": [0.25]},
         ])
-        protocol.validate_frame(frame, summary, previous_serial=1, previous_time=1.0)
+        protocol.validate_frame(frame, summary, session=7, previous_serial=1)
         with self.assertRaises(protocol.ProtocolError) as caught:
             protocol.disable_subject(summary, "character")
         self.assertEqual(caught.exception.code, protocol.CODE_REMOVE_ID_INACTIVE)

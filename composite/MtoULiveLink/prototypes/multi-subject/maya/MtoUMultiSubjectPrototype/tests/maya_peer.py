@@ -6,7 +6,10 @@ implementation. Flags follow the Unreal adapter's documented names:
 
     mayapy maya_peer.py --host 127.0.0.1 --port 54340 \
         --scenario character-prop --frames 4 --fps 30 --start-frame 1 \
-        --evidence peer_evidence.json
+        --evidence peer_evidence.json [--times 1,3,2,2]
+
+``--times`` sends an explicit Maya source frame per step, which is how a reverse
+scrub and a re-edit of an already sent frame are exercised end to end.
 
 Scenarios:
 
@@ -61,6 +64,10 @@ def main(argv=None):
     parser.add_argument("--remove-id", default=None)
     parser.add_argument("--drop-after", type=int, default=None)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--times", default=None,
+                        help="comma-separated Maya source frames, one per step; "
+                             "a repeated or decreasing value exercises a re-edit "
+                             "or a reverse scrub")
     parser.add_argument("--strict-ancestors", action="store_true")
     parser.add_argument("--rig-dir", default=None)
     parser.add_argument("--regenerate-fixtures", action="store_true")
@@ -99,6 +106,8 @@ def main(argv=None):
         forwarded += ["--fps", repr(args.fps)]
     if args.start_frame is not None:
         forwarded += ["--start-frame", repr(args.start_frame)]
+    if args.times:
+        forwarded += ["--times", args.times]
     if args.remove_at is not None:
         forwarded += ["--remove-at", str(args.remove_at)]
     if args.remove_id:

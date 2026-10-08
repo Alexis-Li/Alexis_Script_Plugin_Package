@@ -300,6 +300,15 @@ bool FMtoUMultiSubjectProtocol::ParseFrame(
 		return false;
 	}
 
+	double Session = 0.0;
+	if (!ReadRequiredNumber(Object, TEXT("session"), Session, OutError)
+		|| FMath::FloorToDouble(Session) != Session || Session < 1.0)
+	{
+		SetShapeError(OutError, TEXT("frame session must be the positive integer from ready"));
+		return false;
+	}
+	OutMessage.Session = static_cast<int64>(Session);
+
 	const TArray<TSharedPtr<FJsonValue>>* SubjectValues = nullptr;
 	if (!ReadSubjectArray(Object, SubjectValues, OutError))
 	{
@@ -390,7 +399,32 @@ bool FMtoUMultiSubjectProtocol::ParseRemove(
 		SetShapeError(OutError, TEXT("remove is not a JSON object"));
 		return false;
 	}
+
+	double Session = 0.0;
+	if (!ReadRequiredNumber(Object, TEXT("session"), Session, OutError)
+		|| FMath::FloorToDouble(Session) != Session || Session < 1.0)
+	{
+		SetShapeError(OutError, TEXT("remove session must be the positive integer from ready"));
+		return false;
+	}
+	OutMessage.Session = static_cast<int64>(Session);
 	return ReadRequiredString(Object, TEXT("id"), OutMessage.Id, OutError);
+}
+
+FString FMtoUMultiSubjectProtocol::DescribeTimeDirection(
+	double PreviousTime,
+	bool bHasPrevious,
+	double Time)
+{
+	if (!bHasPrevious)
+	{
+		return TEXT("first");
+	}
+	if (Time > PreviousTime)
+	{
+		return TEXT("forward");
+	}
+	return Time < PreviousTime ? TEXT("backward") : TEXT("hold");
 }
 
 TSharedRef<FJsonObject> FMtoUMultiSubjectProtocol::MakeReady(int64 Session)
@@ -479,11 +513,36 @@ FString FMtoUMultiSubjectProtocol::DescribeSkeletonMismatch(
 	const FMtoUSubjectDeclaration& Declaration,
 	const FReferenceSkeleton& Skeleton)
 {
-	if (Declaration.Bones.Num() != Skeleton.GetNum())
+	TSet<FName> Declared;
+	Declared.Reserve(Declaration.Bones.Num());
+	for (const FMtoUBoneDeclaration& Bone : Declaration.Bones)
 	{
-		return FString::Printf(
-			TEXT("bone count differs: Maya declares %d bones, the Unreal target has %d (%s)"),
-			Declaration.Bones.Num(), Skeleton.GetNum(), *DescribeSkeletonSignature(Skeleton));
+		Declared.Add(Bone.Name);
+	}
+	// The target may legitimately own more bones than the sender drives (a
+	// simplified preview, a facial rig, a production branch the input does not
+	// move), so only the declared bones are compared; what matters is that the
+	// sender never leaves one of its bones under a bone it does not drive.
+	for (const FMtoUBoneDeclaration& Bone : Declaration.Bones)
+	{
+		// A bone the target does not have is reported by the identity loop below;
+		// walking its ancestors here would index the skeleton with -1.
+		const int32 TargetBone = Skeleton.FindBoneIndex(Bone.Name);
+		int32 TargetAncestor = TargetBone == INDEX_NONE
+			? INDEX_NONE
+			: Skeleton.GetParentIndex(TargetBone);
+		while (TargetAncestor != INDEX_NONE)
+		{
+			const FName AncestorName = Skeleton.GetBoneName(TargetAncestor);
+			if (!Declared.Contains(AncestorName))
+			{
+				return FString::Printf(
+					TEXT("Maya bone '%s' needs '%s', which this declaration does not drive, "
+						 "so its local pose would hang under an undriven bone"),
+					*Bone.Name.ToString(), *AncestorName.ToString());
+			}
+			TargetAncestor = Skeleton.GetParentIndex(TargetAncestor);
+		}
 	}
 	for (int32 BoneIndex = 0; BoneIndex < Declaration.Bones.Num(); ++BoneIndex)
 	{
@@ -514,6 +573,27 @@ FString FMtoUMultiSubjectProtocol::DescribeSkeletonMismatch(
 		}
 	}
 	return FString();
+}
+
+void FMtoUMultiSubjectProtocol::CollectUndrivenBones(
+	const FMtoUSubjectDeclaration& Declaration,
+	const FReferenceSkeleton& Skeleton,
+	TArray<FName>& OutBones)
+{
+	OutBones.Reset();
+	TSet<FName> Declared;
+	for (const FMtoUBoneDeclaration& Bone : Declaration.Bones)
+	{
+		Declared.Add(Bone.Name);
+	}
+	for (int32 BoneIndex = 0; BoneIndex < Skeleton.GetNum(); ++BoneIndex)
+	{
+		const FName BoneName = Skeleton.GetBoneName(BoneIndex);
+		if (!Declared.Contains(BoneName))
+		{
+			OutBones.Add(BoneName);
+		}
+	}
 }
 
 /** Prototype tolerances for the bind comparison: float and axis-conversion noise, not deformation budget. */

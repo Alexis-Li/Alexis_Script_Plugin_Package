@@ -47,7 +47,9 @@ namespace MtoUMultiSubjectError
 	const TCHAR* const TargetDetached = TEXT("target_detached");
 	/** A frame or remove arrived before a successful negotiation. */
 	const TCHAR* const NoSession = TEXT("no_session");
-	/** Frame serial is not strictly increasing, or the time is not finite. */
+	/** The message names a session that is not the receiver's current one. */
+	const TCHAR* const SessionMismatch = TEXT("session_mismatch");
+	/** A frame's serial is not strictly increasing inside its session. */
 	const TCHAR* const FrameOrder = TEXT("frame_order");
 	/** A frame does not carry exactly the enabled subjects, or an unknown one. */
 	const TCHAR* const FrameSubjects = TEXT("frame_subjects");
@@ -99,7 +101,11 @@ struct FMtoUFrameSubject
 /** One atomic pair of subjects sampled at one Maya source time. */
 struct FMtoUFrameMessage
 {
+	/** The `ready` session this frame belongs to; a stale session is refused. */
+	int64 Session = 0;
+	/** Evaluation identity: strictly increasing inside one session. */
 	int64 Serial = 0;
+	/** Maya source time; it may move backwards or repeat on a re-edit. */
 	double Time = 0.0;
 	TArray<FMtoUFrameSubject> Subjects;
 };
@@ -107,6 +113,7 @@ struct FMtoUFrameMessage
 /** Stop driving exactly one subject of the live session. */
 struct FMtoURemoveMessage
 {
+	int64 Session = 0;
 	FString Id;
 };
 
@@ -190,11 +197,18 @@ struct FMtoUSubjectMeasurement
 	TArray<TPair<FName, float>> Curves;
 };
 
-/** What one applied frame produced, kept for the machine-readable evidence. */
+/**
+ * What one applied frame produced, kept for the machine-readable evidence.
+ * `TimeDirection` records how the source time moved against the previous
+ * applied frame, so a reverse scrub and a same-frame re-edit stay visible
+ * instead of looking like ordinary forward playback.
+ */
 struct FMtoUFrameRecord
 {
+	int64 Session = 0;
 	int64 Serial = 0;
 	double Time = 0.0;
+	FString TimeDirection;
 	double ApplySeconds = 0.0;
 	bool bPreviewActive = false;
 	TArray<FMtoUSubjectMeasurement> Subjects;
