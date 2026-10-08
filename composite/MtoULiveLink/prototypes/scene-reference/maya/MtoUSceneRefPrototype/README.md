@@ -89,11 +89,13 @@ report to stdout; without it the run prints a short summary.
    problem, and never before the new one is in place: the previous, owned
    container is renamed aside into a free `<container>_Retiring` name, the
    staging namespace takes the container's name, every recorded path is
-   re-resolved inside it, and only then is the retired reference deleted. A
-   failure anywhere on that path rolls the takeover back — the container this run
-   created is deleted and the retired reference is renamed back. On any earlier
-   problem the staging namespace is deleted again and the previous reference
-   stays exactly as it was.
+   re-resolved inside it, and only then is the retired reference deleted — the
+   group is marked for the container's own name last, so an interruption is still
+   recognisable as an unverified takeover. A failure anywhere on that path,
+   including an exception the host raises while the paths are read back, rolls the
+   takeover back: the container this run created is deleted and the retired
+   reference is renamed back. On any earlier problem the staging namespace is
+   deleted again and the previous reference stays exactly as it was.
 
 ## Container naming, and the one host limit
 
@@ -131,11 +133,22 @@ never lost, and `update.rolled_back` with `update.rollback` says what happened.
 
 A run that fails earlier, or `--dry-run`, deletes the staging namespace again; a
 staging namespace or a retiring namespace an interrupted run left behind is
-recovered before the next run proceeds (deleted, or renamed back to the
-container's name) and reported in `update.recovery`. `container.kept_existing`
-and `container.after_run` are read from the scene at the end of the run — the
-previous reference is looked up by UUID — so the report states what the scene
-holds rather than what the run intended.
+recovered before the next run proceeds and reported in `update.recovery`.
+`container.kept_existing` and `container.after_run` are read from the scene at the
+end of the run — the previous reference is looked up by UUID — so the report
+states what the scene holds rather than what the run intended.
+
+Recovery touches only what the tool can prove is its own, the same rule the
+container is held to: the marked group of a leftover staging namespace is deleted
+while unmarked top-level nodes are left exactly as they are and reported
+(`update.recovery.partial_cleanups`, with the nodes removed and the nodes kept),
+and a *retiring* namespace that holds unmarked nodes next to the previous
+reference is refused with `CONTAINER_NOT_OWNED`, because a previous reference is
+restored or deleted whole and never in parts. A cleanup the host refuses is
+reported, never raised: `update.discard_attempted`, `update.discard_errors` and
+`update.residual` name what could not be deleted and what is still there, a
+refused cleanup adds a `STAGING_CLEANUP_FAILED` problem so the run never looks
+successful, and the next run's recovery sweeps it.
 
 What this host's `fbxmaya` plugin actually accepts is recorded in the report:
 
@@ -331,9 +344,13 @@ handoff is ASCII.
   reference is only replaced after the comparison passed and the new container
   resolved every recorded path. A failed or `--dry-run` run deletes the staging
   namespace again and leaves the previous reference exactly as it was; a takeover
-  that fails after the rename is rolled back and the retired reference is put
-  back. The report says which of those happened in `update` and names the state
-  the scene is in, by UUID, in `container`.
+  that fails after the rename — or raises — is rolled back and the retired
+  reference is put back. The report says which of those happened in `update` and
+  names the state the scene is in, by UUID, in `container`.
+* `run()` returns its `(report, exit_code)` even when the host refuses a cleanup:
+  the report carries the original failure, the cleanup error, the nodes that are
+  still there and a `STAGING_CLEANUP_FAILED` problem; nothing raises out of the
+  public API.
 * Only nodes carrying this tool's ownership mark, and the staging and retiring
   namespaces this tool created, are created, replaced or deleted. Nothing else is
   renamed, reparented, reassigned or deleted: a same-named namespace this tool
@@ -419,7 +436,9 @@ fit block inside `transform_check`, the per record `texture_scan` detail,
 `offset_error_cm` with its expected and measured vectors, `centroid_error_cm`
 with its expected and measured points, `centroid_checked`, `centroid_faces_used`,
 `centroid_triangles_used`, `centroid_sampled`, `update.discarded_nodes` and
-`update.post_swap_paths_missing`, `container.group_path`, `scene` (the session
+`update.post_swap_paths_missing`, `update.discard_attempted`, `discard_errors`,
+`residual`, `cleanup_errors`, `rollback_error`, the `update.recovery` detail
+(`partial_cleanups`, `skipped_namespaces`, its events), `container.group_path`, `scene` (the session
 state the run captured and restored, including `import_side_effects`), `fbx` (the
 flags and mechanism actually used) and `manifest` (the scope, conventions, filter,
 scale and output summary read before importing). Inside `transform_check` the
@@ -429,7 +448,7 @@ additions are `decided_by`, `winner`, `camera_contract`, `node_frame_factor`,
 
 ## Evidence
 
-`tests/maya_host_scene_ref_tests.py` (274 checks) authors its own reference
+`tests/maya_host_scene_ref_tests.py` (291 checks) authors its own reference
 geometry and handoffs, synthesizes the manifest from the measured scene values
 through the documented axis map, and asserts on a disposable scene: the clean
 handoff imports with every object matched by name and every error inside
@@ -448,9 +467,15 @@ injected failures, where a namespace rename, a group rename and a final path rea
 back that does not resolve are all rolled back with the previous reference
 intact, a partial import cleans up its own staging namespace, a namespace of the
 container's or the staging name this tool does not own is refused or avoided, and
-a namespace an interrupted run left behind is recovered; the contract's report
-shape; and the command line entry point in its own process, which writes its own
-report and exits 0.
+a namespace an interrupted run left behind is recovered; a final path read back
+that raises rolls back instead of leaving a half-committed container, and the
+retry after it keeps the previous reference; a stale staging namespace that also
+holds an unmarked object keeps that object while only the marked group is deleted
+and reported, and a retiring namespace in that state is refused rather than
+emptied; a cleanup the host refuses returns a report instead of raising, with the
+residual resources and a `STAGING_CLEANUP_FAILED` problem, and the next run sweeps
+what it can prove is its own; the contract's report shape; and the command line
+entry point in its own process, which writes its own report and exits 0.
 
 The self authored fixtures also pin the round trip: with four reference objects
 placed off the origin and three of them rotated, the imported Maya world

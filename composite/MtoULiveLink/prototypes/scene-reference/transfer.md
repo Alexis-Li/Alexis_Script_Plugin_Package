@@ -252,7 +252,13 @@ the previous reference before the new one has taken its place:
 5. A failure in step 3 or a missing path in step 4 **rolls the takeover back**:
    the container this run created is deleted, the retired reference is renamed
    back under the container's name, and the report says so
-   (`update.rolled_back`, `update.rollback`, `update.rollback_reason`).
+   (`update.rolled_back`, `update.rollback`, `update.rollback_reason`). Steps 2
+   to 4 sit inside one rollback boundary, so an exception the host raises anywhere
+   inside them -- including one thrown while the recorded paths are read back --
+   takes the same path: the run reports the rollback (`update.rolled_back`,
+   `update.rollback`), the step it had reached inside `update.rollback_reason`,
+   and the traceback in `update.rollback_error`, and never leaves a container
+   that took the name without proving itself.
 6. `--dry-run` stages and verifies without swapping anything.
 7. `container.kept_existing` and `container.previous_reference_present_after_run`
    are read from the scene at the end of the run — the previous reference is
@@ -260,13 +266,31 @@ the previous reference before the new one has taken its place:
    than what the run intended. `container.after_run` names the group path the
    container has now, any unmarked group or foreign node found under that name,
    and whether a staging namespace is still there.
-8. An interrupted run is recovered before the next one proceeds: a marked
-   staging namespace is deleted, a reference left in a retiring name is renamed
-   back to the container's name (or finished into one when no retired copy is
-   waiting), and both are reported in `update.recovery`.
+8. An interrupted run is recovered before the next one proceeds, and only
+   resources this tool can prove are its own are touched: a staging namespace of
+   its family is emptied node by node (the marked group is deleted; unmarked
+   top-level nodes are never deleted, because the tool cannot tell a leftover of
+   its own interrupted import from an object the scene put there), and a reference
+   left in a retiring name is renamed back to the container's name -- or finished
+   into one when no retired copy is waiting. A staging namespace that still holds
+   unmarked nodes afterwards is left in place and reported
+   (`update.recovery.partial_cleanups`, with the nodes removed and the nodes left),
+   and a *retiring* namespace that holds unmarked nodes next to the previous
+   reference is refused with `CONTAINER_NOT_OWNED`: a previous reference is
+   restored or deleted whole, never in parts. Everything the recovery did, skipped
+   or could not do is reported in `update.recovery` (`stale_staging_namespaces`,
+   `restored_previous_reference`, `retired_leftovers_removed`,
+   `interrupted_container_removed`, `finished_interrupted_container`,
+   `partial_cleanups`, `skipped_namespaces`, `events`).
 9. Only nodes carrying this tool's ownership mark, and the staging and retiring
    namespaces this tool created, are ever deleted. Nothing else in the scene is
    renamed, reparented, reassigned or deleted.
+10. A cleanup the host refuses is reported, never raised: `run()` always returns
+   its `(report, exit_code)`, `update.discard_attempted`, `update.discard_errors`
+   and `update.residual` say what the run could not delete and what is still
+   there, a refused cleanup adds a `STAGING_CLEANUP_FAILED` problem instead of
+   letting the run look successful, and the next run's recovery sweeps whatever
+   of it the tool can prove is its own.
 
 ## Manifest schema
 
@@ -405,7 +429,7 @@ back.
   "scene": {"linear_unit": "cm", "up_axis": "y", "time_unit": "film", "playback_range": {}, "current_time": 1.0, "namespaces": [], "import_side_effects": {}, "playback_range_unchanged": true, "current_time_unchanged": true},
   "fbx": {"file": "...", "bytes": 0, "format": "ascii", "plugin": "fbxmaya", "import_options": "v=0;", "namespace_flag": "MtoU_UE_SceneRef_Incoming", "root_nodes_parented": []},
   "container": {"namespace": "MtoU_UE_SceneRef", "group": "MtoU_UE_SceneRef", "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "staging_namespace": "MtoU_UE_SceneRef_Incoming", "staging_group_path": "...", "staging_group_uuid": "...", "previous_existed": false, "previous_container_group": null, "previous_reference_uuid": null, "ownership_attribute": "mtouSceneRefContainer", "ownership_token": "mtou-scene-ref-container/1", "swapped": true, "kept_existing": false, "namespace_created": true, "after_run": {"namespace": true, "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef", "incomplete_groups": [], "foreign_nodes": [], "staging_namespace_present": false}, "previous_reference_present_after_run": null, "previous_reference_path_after_run": null},
-  "update": {"mode": "staged_swap", "staging_namespace": "...", "existing_container": false, "swapped": true, "discarded": false, "stale_staging_removed": false, "stale_staging_namespaces": [], "discarded_nodes": [], "swap_seconds": 0.1, "post_swap_paths_checked": true, "post_swap_paths_missing": [], "retired": null, "retired_removal": null, "rolled_back": false, "rollback_reason": null, "recovery": {"stale_staging_namespaces": [], "restored_previous_reference": null, "retired_leftovers_removed": [], "interrupted_container_removed": false, "finished_interrupted_container": null, "events": []}},
+  "update": {"mode": "staged_swap", "staging_namespace": "...", "existing_container": false, "swapped": true, "discarded": false, "stale_staging_removed": false, "stale_staging_namespaces": [], "discarded_nodes": [], "swap_seconds": 0.1, "post_swap_paths_checked": true, "post_swap_paths_missing": [], "retired": null, "retired_removal": null, "rolled_back": false, "rollback_reason": null, "rollback_error": null, "discard_attempted": false, "discard_errors": [], "residual": null, "cleanup_errors": [], "recovery": {"stale_staging_namespaces": [], "restored_previous_reference": null, "retired_leftovers_removed": [], "interrupted_container_removed": false, "finished_interrupted_container": null, "partial_cleanups": [], "skipped_namespaces": [], "events": []}},
   "counts": {"manifest_objects": 10, "manifest_objects_total": 10, "container_nodes": 30, "file_texture_nodes": 0, "image_nodes_loaded": 0, "meshes_assigned": 8, "matched_objects": 10, "matched_by_name": 7, "matched_by_transform_count": 3},
   "media": {"handoff_directory": "...", "image_files_in_handoff_directory": [], "embedded_media_records": 0, "embedded_media": [], "content_records": 0, "texture_records": 0, "texture_references": 0, "camera_records": 0, "light_records": 0, "media_heuristic": false, "file_nodes_created": 0, "image_nodes_loaded": 0, "image_paths_present": [], "allowed": false},
   "texture_scan": {"source": "<file>", "format": "ascii", "texture_records": 0, "texture_references": 0, "video_references": 0, "content_records": 0, "embedded_media_records": 0, "embedded_media": [], "camera_records": 0, "light_records": 0, "files": [], "allowed": false},

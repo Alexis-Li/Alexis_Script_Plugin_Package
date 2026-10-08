@@ -123,7 +123,8 @@ CONTRACT_UPDATE_KEYS = {"mode", "staging_namespace", "existing_container", "swap
                         "post_swap_paths_checked", "post_swap_paths_missing",
                         "retired", "retired_removal", "rolled_back",
                         "rollback_reason", "recovery", "previous_container_group",
-                        "previous_state"}
+                        "previous_state", "discard_attempted", "discard_errors",
+                        "residual", "cleanup_errors", "rollback_error"}
 CONTRACT_MEDIA_KEYS = {"handoff_directory", "image_files_in_handoff_directory",
                        "embedded_media_records", "embedded_media", "content_records",
                        "texture_records", "texture_references", "camera_records",
@@ -2900,6 +2901,261 @@ def main(argv=None):
               recovery_report["container"]["kept_existing"] is True and
               recovery_report["container"]["previous_reference_present_after_run"] is True,
               json.dumps(recovery_report["container"]))
+
+        # --------------------------- recovery and cleanup edge conditions
+        make_production_scene(cmds)
+        edge_report, edge_code = proto.run(str(clean_fbx), str(manifest_path))
+        edge_group = cmds.ls(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER,
+                             long=True)[0]
+        edge_uuid = cmds.ls(edge_group, uuid=True)[0]
+        edge_nodes = container_nodes(cmds, proto.DEFAULT_CONTAINER)
+        check("the edge probes start from one good reference",
+              edge_code == 0 and edge_report["ok"] is True and node_alive(cmds, edge_uuid),
+              json.dumps({"exit": edge_code, "problems": edge_report["problems"]}))
+
+        def raising_rehome(importer_self):
+            raise RuntimeError("injected final read back failure")
+
+        readback_report, readback_code = injected_run(proto.SceneRefImporter,
+                                                      "_rehome_paths", raising_rehome)
+        readback_update = readback_report["update"]
+        checks.record("readback_exception", {
+            "exit": readback_code, "phase": readback_report["phase"],
+            "problems": readback_report["problems"],
+            "update": {key: readback_update.get(key) for key in
+                       ("mode", "swapped", "rolled_back", "rollback_reason",
+                        "rollback_error", "rollback")},
+            "container": readback_report["container"],
+            "reference_alive": node_alive(cmds, edge_uuid),
+            "retiring": family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                          proto.RETIRING_SUFFIX)})
+        check("an exception during the final read back never escapes the importer",
+              readback_code is not None and readback_report["phase"] == "refused",
+              json.dumps({"exit": readback_code, "phase": readback_report["phase"]}))
+        check("an exception during the final read back rolls the takeover back",
+              readback_update["rolled_back"] is True and
+              readback_update["swapped"] is False and
+              readback_update["rollback"]["previous_reference_restored"] is True and
+              readback_update["rollback_error"] is not None and
+              "read back failure" in str(readback_update["rollback_reason"]) and
+              not cmds.namespace(exists=staging) and
+              not family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                    proto.RETIRING_SUFFIX) and
+              cmds.objExists(proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER),
+              json.dumps(checks.evidence["readback_exception"]["update"]))
+        check("the previous reference is back under the container's name, not retired",
+              node_alive(cmds, edge_uuid) and
+              readback_report["container"]["kept_existing"] is True and
+              readback_report["container"]["previous_reference_present_after_run"] is True and
+              readback_report["container"]["after_run"]["group_path"] == edge_group and
+              container_nodes(cmds, proto.DEFAULT_CONTAINER) == edge_nodes and
+              not family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                    proto.RETIRING_SUFFIX) and
+              not cmds.namespace(exists=staging),
+              json.dumps({"container": readback_report["container"],
+                          "retiring": family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                                        proto.RETIRING_SUFFIX)}))
+        retry_report, retry_code = proto.run(str(clean_fbx), str(manifest_path),
+                                            dry_run=True)
+        checks.record("readback_exception_retry", {
+            "exit": retry_code, "ok": retry_report["ok"],
+            "update": {key: retry_report["update"].get(key) for key in
+                       ("mode", "swapped", "discarded", "recovery")},
+            "reference_alive": node_alive(cmds, edge_uuid),
+            "recovery_events": retry_report["update"]["recovery"]["events"]})
+        check("a retry after that failure keeps the previous reference",
+              retry_code == 0 and retry_report["ok"] is True and
+              node_alive(cmds, edge_uuid) and
+              retry_report["container"]["kept_existing"] is True,
+              json.dumps(checks.evidence["readback_exception_retry"]))
+        check("the retry does not delete the reference of an unverified takeover",
+              retry_report["update"]["recovery"]["retired_leftovers_removed"] == [] and
+              not family_namespaces(cmds, proto.DEFAULT_CONTAINER,
+                                    proto.RETIRING_SUFFIX),
+              json.dumps(checks.evidence["readback_exception_retry"]["recovery_events"]))
+
+        mixed_name = staging_name
+        cmds.namespace(add=mixed_name)
+        mixed_group = cmds.createNode("transform", name=mixed_name + ":" + mixed_name)
+        cmds.addAttr(mixed_group, longName=proto.OWNERSHIP_ATTRIBUTE, dataType="string")
+        cmds.setAttr(mixed_group + "." + proto.OWNERSHIP_ATTRIBUTE,
+                     "{0} {1}".format(proto.OWNERSHIP_TOKEN, mixed_name), type="string")
+        mixed_foreign = cmds.createNode("transform",
+                                        name=mixed_name + ":ProductionObject")
+        mixed_foreign_uuid = cmds.ls(mixed_foreign, uuid=True)[0]
+        mixed_report, mixed_code = proto.run(str(clean_fbx), str(manifest_path),
+                                             dry_run=True)
+        mixed_update = mixed_report["update"]
+        checks.record("mixed_stale_staging", {
+            "exit": mixed_code, "ok": mixed_report["ok"],
+            "update": {key: mixed_update.get(key) for key in
+                       ("staging_namespace", "stale_staging_removed",
+                        "stale_staging_namespaces", "recovery")},
+            "warnings": mixed_report["warnings"],
+            "namespace_nodes": container_nodes(cmds, mixed_name),
+            "foreign_alive": node_alive(cmds, mixed_foreign_uuid)})
+        mixed_partial = [entry for entry in mixed_update["recovery"]["partial_cleanups"]
+                         if entry["namespace"] == mixed_name]
+        check("a stale staging namespace with a foreign object keeps that object",
+              mixed_code == 0 and mixed_report["ok"] is True and
+              mixed_update["stale_staging_removed"] is False and
+              mixed_update["stale_staging_namespaces"] == [] and
+              node_alive(cmds, mixed_foreign_uuid) and
+              cmds.namespace(exists=mixed_name) and
+              container_nodes(cmds, mixed_name) ==
+              [mixed_name + ":ProductionObject"],
+              json.dumps(checks.evidence["mixed_stale_staging"]))
+        check("only the marked group of that namespace is deleted, and it is reported",
+              len(mixed_partial) == 1 and
+              mixed_partial[0]["removed"] ==
+              ["|" + mixed_name + ":" + mixed_name] and
+              mixed_partial[0]["left"] ==
+              ["|" + mixed_name + ":ProductionObject"] and
+              not cmds.objExists(mixed_group) and
+              any("STALE_STAGING_PARTIAL" in warning
+                  for warning in mixed_report["warnings"]),
+              json.dumps({"partial": mixed_partial,
+                          "warnings": mixed_report["warnings"]}))
+        check("the mixed namespace is reported and avoided, not reused",
+              mixed_report["update"]["staging_namespace"] != mixed_name and
+              not cmds.namespace(exists=mixed_report["update"]["staging_namespace"]),
+              json.dumps({"warnings": mixed_report["warnings"],
+                          "staging": mixed_update["staging_namespace"]}))
+
+        mixed_retiring = proto.DEFAULT_CONTAINER + proto.RETIRING_SUFFIX
+        before_retiring_uuid = cmds.ls(cmds.ls(
+            proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER, long=True)[0],
+            uuid=True)[0]
+        cmds.namespace(add=mixed_retiring)
+        retiring_group = cmds.createNode("transform",
+                                        name=mixed_retiring + ":" + proto.DEFAULT_CONTAINER)
+        cmds.addAttr(retiring_group, longName=proto.OWNERSHIP_ATTRIBUTE,
+                     dataType="string")
+        cmds.setAttr(retiring_group + "." + proto.OWNERSHIP_ATTRIBUTE,
+                     "{0} {1}".format(proto.OWNERSHIP_TOKEN, proto.DEFAULT_CONTAINER),
+                     type="string")
+        retiring_foreign = cmds.createNode("transform",
+                                           name=mixed_retiring + ":ProductionObject")
+        retiring_foreign_uuid = cmds.ls(retiring_foreign, uuid=True)[0]
+        mixed_retiring_report, mixed_retiring_code = proto.run(
+            str(clean_fbx), str(manifest_path), dry_run=True)
+        checks.record("mixed_retiring_namespace", {
+            "exit": mixed_retiring_code, "phase": mixed_retiring_report["phase"],
+            "problems": mixed_retiring_report["problems"],
+            "namespace_nodes": container_nodes(cmds, mixed_retiring),
+            "foreign_alive": node_alive(cmds, retiring_foreign_uuid),
+            "group_alive": cmds.objExists(retiring_group),
+            "staging_namespace": mixed_retiring_report["update"]["staging_namespace"],
+            "before_reference_alive": node_alive(cmds, before_retiring_uuid)})
+        check("a retiring namespace with a foreign object is refused, not deleted",
+              mixed_retiring_code == 1 and
+              mixed_retiring_report["phase"] == "refused" and
+              any("CONTAINER_NOT_OWNED" in problem
+                  for problem in mixed_retiring_report["problems"]),
+              json.dumps(checks.evidence["mixed_retiring_namespace"]))
+        check("the refusal left the previous reference and the foreign object in place",
+              node_alive(cmds, retiring_foreign_uuid) and
+              cmds.objExists(retiring_group) and
+              container_nodes(cmds, mixed_retiring) ==
+              sorted([mixed_retiring + ":" + proto.DEFAULT_CONTAINER,
+                      mixed_retiring + ":ProductionObject"]) and
+              node_alive(cmds, before_retiring_uuid) and
+              mixed_retiring_report["update"]["staging_namespace"] is None and
+              mixed_retiring_report["update"]["discarded"] is False,
+              json.dumps(checks.evidence["mixed_retiring_namespace"]))
+        cmds.namespace(removeNamespace=mixed_retiring, deleteNamespaceContent=True)
+
+        original_cleanup_namespace = cmds.namespace
+
+        def refuse_namespace_removal(*args, **kwargs):
+            if kwargs.get("removeNamespace"):
+                raise RuntimeError("injected namespace removal failure")
+            return original_cleanup_namespace(*args, **kwargs)
+
+        original_cleanup_file = cmds.file
+
+        def refuse_import_with_partial(*args, **kwargs):
+            if kwargs.get("i"):
+                cmds.createNode("transform", name="PartialFbxImport")
+                raise RuntimeError("injected partial FBX import failure")
+            return original_cleanup_file(*args, **kwargs)
+
+        cmds.namespace = refuse_namespace_removal
+        cmds.file = refuse_import_with_partial
+        try:
+            importer = proto.SceneRefImporter(str(clean_fbx), str(manifest_path))
+            try:
+                cleanup_report, cleanup_code = importer.run()
+                escaped = None
+            except Exception:  # noqa: BLE001 - the probe records an escape
+                cleanup_report, cleanup_code = importer.report, None
+                escaped = traceback.format_exc()
+        finally:
+            cmds.namespace = original_cleanup_namespace
+            cmds.file = original_cleanup_file
+        cleanup_update = cleanup_report["update"]
+        checks.record("cleanup_failure", {
+            "escaped": escaped is not None, "exit": cleanup_code,
+            "phase": cleanup_report["phase"], "problems": cleanup_report["problems"],
+            "update": {key: cleanup_update.get(key) for key in
+                       ("mode", "discarded", "discard_attempted", "discard_errors",
+                        "residual", "cleanup_errors", "staging_namespace_removed")},
+            "reference_alive": node_alive(cmds, edge_uuid),
+            "partial_alive": cmds.objExists("PartialFbxImport"),
+            "production": production_state(cmds)["roots"]})
+        check("a cleanup the host refuses does not escape the importer",
+              escaped is None and cleanup_code == 1 and
+              cleanup_report["phase"] == "refused",
+              json.dumps({"escaped": escaped is not None, "exit": cleanup_code,
+                          "phase": cleanup_report["phase"]}))
+        check("the original import failure is kept",
+              any("FBX_IMPORT_FAILED" in problem for problem in cleanup_report["problems"]),
+              json.dumps(cleanup_report["problems"]))
+        check("the cleanup failure and what it left behind are recorded",
+              cleanup_update["discarded"] is False and
+              cleanup_update["discard_attempted"] is True and
+              cleanup_update["discard_errors"] and
+              cleanup_update["staging_namespace_removed"] is False and
+              cleanup_update["residual"]["namespace_present"] is True and
+              cleanup_update["residual"]["nodes"] and
+              any("STAGING_CLEANUP_FAILED" in problem
+                  for problem in cleanup_report["problems"]),
+              json.dumps(checks.evidence["cleanup_failure"]["update"]))
+        check("the refused cleanup left the previous reference alone",
+              node_alive(cmds, edge_uuid) and
+              cleanup_report["container"]["kept_existing"] is True and
+              cleanup_report["container"]["previous_reference_present_after_run"] is True and
+              production_state(cmds)["shading_group"] == ["ProdShaderSG"],
+              json.dumps({"container": cleanup_report["container"],
+                          "production": production_state(cmds)["roots"]}))
+
+        leaked_name = cleanup_update["residual"]["namespace"]
+        recovery_report, recovery_code = proto.run(str(clean_fbx), str(manifest_path))
+        recovery_update = recovery_report["update"]
+        checks.record("cleanup_failure_recovery", {
+            "exit": recovery_code, "ok": recovery_report["ok"],
+            "update": {key: recovery_update.get(key) for key in
+                       ("stale_staging_removed", "stale_staging_namespaces",
+                        "mode", "swapped")},
+            "recovery": recovery_update["recovery"],
+            "warnings": recovery_report["warnings"],
+            "leaked_namespace": leaked_name})
+        check("the next run sweeps the marked resources the refused cleanup left",
+              recovery_code == 0 and recovery_report["ok"] is True and
+              not cmds.objExists(leaked_name + ":" + leaked_name) and
+              [entry["namespace"]
+               for entry in recovery_update["recovery"]["partial_cleanups"]]
+              .count(leaked_name) == 1 and
+              any("STALE_STAGING_PARTIAL" in warning
+                  for warning in recovery_report["warnings"]),
+              json.dumps(checks.evidence["cleanup_failure_recovery"]))
+        check("the unmarked leftover of the failed import is reported, not deleted",
+              cmds.objExists("|" + leaked_name + ":PartialFbxImport") and
+              cmds.namespace(exists=leaked_name) and
+              [entry for entry in recovery_update["recovery"]["partial_cleanups"]
+               if entry["namespace"] == leaked_name][0]["left"] ==
+              ["|" + leaked_name + ":PartialFbxImport"],
+              json.dumps(checks.evidence["cleanup_failure_recovery"]))
 
         # ---------------------------------------------------- command line
         report["phase"] = "commandline"
