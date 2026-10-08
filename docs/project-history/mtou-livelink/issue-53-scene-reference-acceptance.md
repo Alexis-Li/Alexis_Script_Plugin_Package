@@ -1,58 +1,52 @@
 # Issue #53: selected-level reference geometry in Maya
 
-Date: 2026-09-28, extended 2026-09-29 and 2026-10-08. A bounded two-host
-prototype was built and measured on Unreal 5.7.4 and Maya 2024. Unreal resolves an
-explicit level scope, exports it with the engine's own FBX level exporter,
-suppresses the components that are not static reference geometry, and writes a
-manifest of the world data it evaluated; Maya stages the file in its own
-namespace, keeps the material assignment it carries, shows the geometry in one
-uniform gray, places it in the handoff's world or in the camera route's world by
-one explicit conversion, compares what it holds against that manifest, and only
-then replaces the previous reference — after the new container resolved every
-recorded path, with the previous one renamed aside rather than deleted. Issue #53
-remains open: the fixed findings still need independent re-verification, and the
-support boundaries below (one fixture landscape, descriptor-level World Partition
-coverage, injected rather than real process failures) are unproven outside their
-tested conditions. Product decisions are separate work owned by #47; no product
-code, protocol, or package changed.
+Date: 2026-10-08. Current review result: **changes required** on local implementation
+`29a1bb5cd515df1cbca6a60e7352ccbc9facd707` (fix
+`489b1c57bdd1f6814c020639c6927efea6394444`, followed by dead-member removal
+`0b304aaa834c0f9550f93f403eacbd4adfdb9e66` and a documentation correction).
+The implementation remains local; this review did not push it or integrate the
+prototype into MtoU. The [current issue handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53#issuecomment-5888512464)
+owns the next action. Its superseded body and the development delivery are preserved
+verbatim in [the 2026-10-08 source archive](issue-53-comment-archive-20261008.json);
+earlier revisions remain in [the original archive](issue-53-comment-archive.json).
 
-Current assessment: the four engineering findings of the 2026-09-29 review of
-`0f1367ebceb4d57bb0deb02dfbea0fb6527b9998` (preserved as comment `5888512464` in
-[the source archive](issue-53-comment-archive.json)) were fixed in
-`489b1c5`; the landscape acceptance gap was closed for the fixture
-by measuring the source the engine's landscape branch writes, and the World
-Partition gap by stating the scope's completeness from a read-only descriptor
-inventory. The fixes are senior-authored development results: they are reported as
-"fixed, awaiting re-verification", not as accepted, and no review has yet
-reproduced the fault injections against this baseline. The FBX route, media
-policy, two explicit worlds and mixed-Blueprint filtering keep their earlier
-evidence.
+Independent re-verification ran the Maya 2024 pure suite (110 passing tests), host
+suite (274 checks, zero failures), three imports of the development run's UE 5.7.4
+handoffs, and additional in-process fault/ownership probes. It did not rebuild or
+rerun UE, re-export the production level, or open the C01 production rig. UE source
+is unchanged between the fix and reviewed commits. The development report's UE
+10/10 result remains development evidence, not an independently repeated UE run.
 
-This record was reconciled on 2026-10-08 against a fresh pair of runs: the Unreal
-automation suite (10/10, including the real Maya peer) and the Maya pure (110) and
-host (274, zero failures) checks, all on this machine, plus one hand-run
-cross-host import of the landscape handoff and one of each partitioned handoff.
+The official FBX route, explicit loaded-level scope, media policy and isolated
+prototype remain viable. R-003, R-004 and R-005 are closed within the conditions
+below. R-001 and R-002 remain unresolved; R-006 is a new cleanup-error defect.
+Issue #53 cannot receive whole-issue acceptance while those blockers remain.
+Large production terrains, complex Nanite assets, process crashes and production
+scale are unverified extensions, not silently added prototype acceptance gates.
+All three prototypes (#52/#53/#54) must first have runnable evidence and explicit
+boundaries; #47 then owns one combined MtoU integration decision.
 
 ## Outstanding acceptance
 
-These IDs are local references for the reviewed findings, not claims that the
-historical comments already used them.
+IDs retain the findings first assigned in this record. The current independent
+review closes only the stated scope, not every failure mode in the same subsystem.
 
-| ID / type | Evidence and remaining work | Completion criterion / owner |
+| ID / type / status | Current evidence | Completion criterion / owner |
 | --- | --- | --- |
-| R-001 / confirmed defect | During namespace rename failure the previous reference was deleted, both namespaces were absent, yet `container.kept_existing` was true. | Fixed in `489b1c5`, awaiting re-verification. A takeover now renames the previous container into a free `<container>_Retiring` name, renames the staged namespace into the container's name, resolves every recorded path, and deletes the retired reference only when none is missing; a failure in any of those steps deletes the container this run created and renames the retired reference back. `container.kept_existing` and `container.previous_reference_present_after_run` are read back from the scene by UUID at the end of the run. Host checks inject a namespace rename failure, a group rename failure and a final path read back that does not resolve: all three keep the previous group's UUID alive, report `update.rolled_back` with `update.rollback.previous_reference_restored`, and leave no staging or retiring namespace. |
-| R-002 / confirmed defect | Both staging and final-container cleanup deleted simulated production objects in a colliding namespace without verifying ownership. | Fixed in `489b1c5`, awaiting re-verification. The container group carries the ownership mark `mtouSceneRefContainer` (`mtou-scene-ref-container/1 <namespace>`); a namespace, group or root-level node of the container's name without it — or a foreign top-level transform inside an owned namespace — is refused with `CONTAINER_NOT_OWNED` and exit 1, and nothing is deleted. Staging names come from the free `<container>_Incoming[_N]` family, so a namespace of that name that belongs to the scene is neither reused nor emptied; a marked namespace of that family left behind by an interrupted run is swept and reported. Host checks cover the unowned container collision (production node alive, namespace untouched) and the unowned staging-name collision (the run uses `..._Incoming_1`, the foreign node stays). |
-| R-003 / confirmed defect | A partially completed FBX import raised before `self.staged` was set, leaving staging nodes behind (`discarded: false`). | Fixed in `489b1c5`, awaiting re-verification. The run takes ownership of the staging namespace before it creates it, so the partial import now reports `update.discarded: true` with `discarded_nodes` naming the partial nodes, `staging_namespace_removed: true`, and the previous reference intact. Host checks inject the partial import by creating a node and raising inside `cmds.file`. The container identity (previous group, previous UUID) is recorded before the import, so a failure during the import still reports what the scene held. |
-| R-004 / acceptance gap | Landscape dry-run failed with size error 512 cm and centroid error 5702.1091 cm over 7938 triangles. The manifest and exported geometry use inconsistent measurement bases; this does not establish deformation. | Fixed for the fixture in `489b1c5`, awaiting re-verification. The resolver now measures a landscape from the source the engine's landscape branch writes (`FLandscapeComponentDataInterface` vertices at `ALandscapeProxy::ExportLOD`, two triangles per quad, the component's relative location and the actor transform applied) instead of the actor's collision/editor bounds; the Automation test checks the counts and shape against the actor's own numbers and the manifest, and the Maya peer run of 2026-10-08 reported size error `0.0 cm`, surface-centroid error `6.4e-13 cm` over `7938` triangles, position `0.0 cm` and offset `0.0 cm`. Boundary: one flat, single-component fixture landscape at export LOD 0, no visibility layer; a production terrain is unproven. Product inclusion remains a #47 decision. |
-| R-005 / acceptance gap | Loaded-only traversal does not enumerate unloaded World Partition actors/cells; `unloaded_sublevels: []` does not prove complete coverage. | Fixed in `489b1c5`, awaiting re-verification. The resolver walks the World Partition's actor descriptor containers read only (no content is loaded), counts descriptors the loaded world has spawned, names the unspawned authored actors (capped at 200 paths) and counts generated HLOD proxies apart, and the manifest carries `scope.coverage`, `scope.completeness`, `scope.coverage_note` and `scope.world_partition`. The Maya side reports a manifest whose completeness is not confirmed as a `SCOPE_LOADED_ONLY` warning. Measured on the fixture: `76` descriptors, `9` spawned and `3` authored actors absent with streaming on (`not_confirmed`, warning), `12` spawned and `0` authored absent with streaming off (`confirmed`, no warning), `64` generated HLOD proxies in both states; both partitioned handoffs were imported in Maya with every object matched. Boundary: descriptor counts, not cell geometry; a `confirmed` scope describes the descriptors, not a running game's streaming. |
+| R-001 / confirmed defect / unresolved, P1 | Maintained tests now pass namespace/group rename failures and a returned missing-path result. An exception thrown from `_rehome_paths()` instead returns failure with `swapped: true`, `rolled_back: false`; the old UUID remains only in `_Retiring`. A subsequent `--dry-run` deletes that UUID as a retired leftover despite the previous final check never completing. | #53 implementation: protect the complete takeover/final-check sequence with rollback, distinguish a committed container from one merely renamed/marked, and preserve the old UUID through final-check exceptions and the next retry/dry-run. |
+| R-002 / confirmed defect / unresolved, P1 | Unowned final/staging-name collision tests pass. Recovery still deletes an entire stale `_Incoming` namespace when any top-level group has the expected mark. A second, unmarked top-level production transform in that namespace is deleted too; the new dry-run returns success. | #53 implementation: apply ownership/conflict checks before recovery deletion as well as normal replacement. A mixed namespace must preserve the foreign UUID and refuse or report selective cleanup; one marked group must not authorize deleting the namespace's other content. |
+| R-003 / confirmed defect / reverified closed | The maintained partial-import probe now takes cleanup responsibility before import: exit 1, discarded partial nodes, no staging namespace, old UUID preserved. Independent host suite passed. | Closed for partial-import failure when cleanup succeeds; cleanup failure is separately tracked as R-006. |
+| R-004 / acceptance gap / reverified closed, fixture only | Independent Maya dry-run of the new Landscape FBX/manifest passes: 7938 triangles, position/size/offset errors 0 cm, surface-centroid error 6.4311e-13 cm, no problems/warnings. | Closed for one flat, single-component, LOD0 terrain without visibility holes. Multiple components, other LODs and visibility layers remain outside this evidence. |
+| R-005 / acceptance gap / reverified closed, descriptor scope | Independent imports both pass. Streaming-on manifest reports 76 descriptors, 9 spawned, 3 unspawned authored actors and 64 unspawned HLOD proxies; Maya emits `SCOPE_LOADED_ONLY`. Streaming-off handoff reports confirmed descriptor coverage, 4 matched objects, no coverage warning. | Closed for the fixture's descriptor-level loaded-content statement, not general runtime cell streaming or arbitrary nested partition layouts. No automatic loading was added. |
+| R-006 / confirmed defect / unresolved, P2 | After a simulated partial FBX import, a simulated `namespace(removeNamespace=..., deleteNamespaceContent=True)` refusal escapes `SceneRefImporter.run()` from `_discard_staging()`. The old UUID survives, but staging nodes remain and the API returns neither its normal report nor exit code. | #53 implementation: contain and report cleanup exceptions, retain the original failure, identify residual owned resources and a retry path; repeated cleanup must preserve production and old-reference UUIDs. |
 
-Successful fixture checks remain valid within their tested conditions and do
-not close these findings. Representative dense/complex scenes and repeat-update
-evidence are still needed; the real-level sample contains only three reference
-objects. Raw review probes were stored in repository-adjacent
-`.tmp/issue53-review-20260929-183244/`; that scratch location is not a durable
-artifact. The archive preserves the observed results and command shapes; the
-fault-injection probes still need promotion into maintained regression tests.
+Probe entry: repository-adjacent `.tmp/issue53-reacceptance-20261008/reverify.py`
+with the repository root as its sole argument. `reverify.json` and `reverify.log`
+hold raw results; `host.json`, `host.log` and `pure.log` hold reruns. These scratch
+files are supplemental local evidence, not a published archive. The table above,
+the review comment and the source archive preserve the observed outcomes and
+reproduction conditions. Maintained checks live in
+`prototypes/scene-reference/maya/MtoUSceneRefPrototype/tests/maya_host_scene_ref_tests.py`.
 
 ## What was delivered
 
@@ -71,14 +65,14 @@ fault-injection probes still need promotion into maintained regression tests.
 | Check the official level-export capability and deliver a minimal UE → file → Maya sample; do not build a general mesh serializer | Done. The geometry comes from `ULevelExporterFBX` through `UAssetExportTask`; the prototype only resolves the scope, filters the components, drives the editor selection the exporter reads, inspects what it wrote, and serializes a manifest of transforms. The OBJ level exporter was measured as the alternative and rejected (below). |
 | Cover plain static meshes and repeated instances, including off-origin, rotated and non-uniformly scaled samples; compare Maya world position, orientation and size against Unreal, and verify axes and units | Done for all four sample kinds. Twelve objects across the persistent level, its sublevel and the mixed Blueprint arrive in the container, all twelve matched (nine by node name, three instanced children by world position). Position error `0.0 cm`, bounding-box size error `4.5e-13 cm`, pivot-offset error `1.1e-13 cm`, surface centroid error `9.3e-13 cm`, and the worst node axis angle `1.2e-6` degrees over the two objects whose identification size pins their axes. The centroid is the mirror check; the orientation check compares each node matrix against `frame . L_ue . map`, the relation the file really uses (below). |
 | Do not generate, copy, package or embed image files/data; permit material assignments and external texture paths, and provide gray display | Verified by output inspection. Image files in the handoff directory and embedded FBX media refuse normal import (`IMAGE_DATA_PRESENT`); `--allow-image-data` is a diagnostic bypass. Material/texture records are allowed, path resolution is reported separately, and gray viewport display preserves material assignments by default. This does not promise that Maya will never resolve an existing external image path. |
-| State the level/sublevel selection semantics and report support/omissions for each object type | Partially accepted, re-measured 2026-10-08. Explicit loaded-level scope, mixed-Blueprint filtering and Level Instance refusal keep their evidence. Nanite still has only a flagged cube sample. Landscape now passes Maya verification for the fixture (R-004); a partitioned scope states its own completeness from a read-only descriptor inventory and the Maya side warns when it is not confirmed (R-005). Both remain fixture-level results awaiting independent re-verification. |
-| Reference geometry enters an identifiable container; repeated runs do not overwrite or mix with production objects; large inputs report scale/time/memory without a performance promise | Fixed for the tested paths on 2026-10-08, awaiting re-verification: the container group carries an ownership mark, a same-named namespace this tool does not own is refused, the staging name is a free name of its family, the previous reference survives every injected swap failure by UUID, and a partial import cleans up its own staging namespace (R-001–003). Boundaries: the faults were injected in-process rather than by killing the host, the ownership check covers the container's own name and the top-level transforms inside it, and scale/timing numbers still carry no performance promise. Representative large-input evidence (dense instances, complex Nanite, a production landscape) remains pending. |
+| State the level/sublevel selection semantics and report support/omissions for each object type | Partially accepted, re-measured 2026-10-08. Explicit loaded-level scope, mixed-Blueprint filtering and Level Instance refusal keep their evidence. Nanite still has only a flagged cube sample. Landscape now passes Maya verification for the fixture (R-004); a partitioned scope states its own completeness from a read-only descriptor inventory and the Maya side warns when it is not confirmed (R-005). R-004 and R-005 independently pass within these fixture-level conditions; see the current review table. |
+| Reference geometry enters an identifiable container; repeated runs do not overwrite or mix with production objects; large inputs report scale/time/memory without a performance promise | Not accepted as a whole: normal replacement, the maintained swap-failure cases and partial-import cleanup pass, but R-001/R-002/R-006 remain confirmed blockers. Geometry/time/memory reporting exists; no production-scale performance claim is made. |
 | Preserve world space; if a reference origin offset is proposed, give one shared conversion contract for camera, character and props; do not depend on the camera prototype to verify the geometry | Done, with the checked contract: the engine handoff's point map is `ue (x, y, z) -> maya (x, z, y)`, and the product's own animation route sends Maya coordinates to Unreal with the same `(x, z, y)` map (`MtoULiveLink.py`'s `convert_transform`, self-inverse), so the reference imported in the handoff's own world already agrees with the character and props the artist animates. The camera route's `(y, z, -x)` is the divergent map, and the reference import now delivers that world explicitly (`--target-world camera`, one conversion `camera_map . engine_map^-1`, determinant `+1`, 90 degrees about the up axis, applied to every root, reported with its matrix, angle and root count). Both worlds were verified on the same non-origin sample and on the real level. No origin offset is proposed. |
-| Deliver the sample, measurements, support list, reusable API and a minimal product proposal | Runnable prototype and measured samples exist; support and failure-recovery acceptance remain bounded by R-001–005. Product candidates below belong to #47. |
+| Deliver the sample, measurements, support list, reusable API and a minimal product proposal | Runnable prototype and measured samples exist; failure-recovery acceptance remains blocked by R-001, R-002 and R-006. Product candidates below belong to #47. |
 
 ## Evidence
 
-The table below preserves development-run observations. The final 2026-09-29
+The table below preserves development-run observations; the independent 2026-10-08 results and provenance are recorded above. The final 2026-09-29
 review reran Maya pure tests (103/103) and host checks (251, zero failures), then
 ran the failure probes and Landscape dry-run described above. It inspected the
 existing UE reports but did not rebuild UE, rerun UE Automation or re-export the
@@ -137,9 +131,9 @@ when the manifest declares an export option whose factor was measured.
 | Requested level the world does not hold | Reported, contributes nothing (measured) |
 | Unrequested sublevel | Reported as excluded, contributes nothing (measured) |
 | Level instance | Refused by the engine with its own message, reported as unsupported, no node (measured) |
-| Landscape | Geometry is written, and the record now measures the source that branch writes, so Maya verification passes for the fixture (2026-10-08: size error `0.0 cm`, centroid error `6.4e-13 cm`, `7938` triangles). Not verified beyond one flat, single-component terrain at export LOD 0 with no visibility layer; R-004 awaits re-verification. |
+| Landscape | Geometry is written, and the record now measures the source that branch writes, so Maya verification passes for the fixture (2026-10-08: size error `0.0 cm`, centroid error `6.4e-13 cm`, `7938` triangles). Not verified beyond one flat, single-component terrain at export LOD 0 with no visibility layer; R-004 independently passed for this fixture. |
 | Nanite mesh | LOD 0 render data exported; the Nanite source mesh is not (`bExportSourceMesh` off), and the node matches in Maya (measured) |
-| World Partition | Only loaded content is traversed, and the scope now says so: a read-only descriptor inventory reports how many descriptors have spawned, names the unspawned authored actors and counts generated HLOD proxies apart; `scope.completeness` is `confirmed` only when every authored descriptor is spawned, and Maya warns with `SCOPE_LOADED_ONLY` otherwise (2026-10-08, R-005 awaits re-verification). The inventory counts descriptors, not streamed cell geometry, and records at most 200 paths. Disabling streaming remains a comparison experiment, not a recommended product operation. |
+| World Partition | Only loaded content is traversed, and the scope now says so: a read-only descriptor inventory reports how many descriptors have spawned, names the unspawned authored actors and counts generated HLOD proxies apart; `scope.completeness` is `confirmed` only when every authored descriptor is spawned, and Maya warns with `SCOPE_LOADED_ONLY` otherwise (2026-10-08, independently reverified for this fixture). The inventory counts descriptors, not streamed cell geometry, and records at most 200 paths. Disabling streaming remains a comparison experiment, not a recommended product operation. |
 | Lights, cameras, emitters, brushes, volumes, world settings | Reported as skipped non-geometry; a selected actor's non-mesh components are suppressed (measured) |
 | Materials, textures as data | Material assignment and recorded texture paths are kept and reported; no image data is delivered (measured) |
 
@@ -200,7 +194,7 @@ when the manifest declares an export option whose factor was measured.
 three have runnable prototypes, reproducible evidence, support boundaries and
 remaining issues, #47 owns a combined integration plan. The options below do
 not supersede this issue's current explicit-level scope or image-data policy,
-and do not block fixing R-001–005.
+and do not replace or block the current R-001/R-002/R-006 fixes.
 
 1. Which world the product standardises on: the handoff and animation route's
    `(x, z, y)` (the current default, consistent with the character and props), or
