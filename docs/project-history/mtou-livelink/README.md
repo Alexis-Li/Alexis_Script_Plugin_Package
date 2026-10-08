@@ -327,7 +327,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   protocol design are deferred to a unified decision under Issue #47, after the
   #52/#53/#54 prototypes have landed.
 
-- **2026-09-30:** Closed the two items the Issue #52 review left open. The
+- **2026-09-30:** Delivered the two follow-ups from the Issue #52 review. The
   listener thread is now stopped and joined before the last accepted sockets are
   closed; a session ends its client deliberately (send `end`, shut the write
   side down, read what the client already sent) and drops a client that stalls a
@@ -339,8 +339,8 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   120 mm at the parked frame, a closed and reopened sequence, a client-initiated
   drop and immediate rejoin, and three start/stop cycles — every step ended with
   the target that was current answered (worst marker delta 7.505e-07 NDC). Six
-  connection lifetimes each released Maya completely; 96 connections over six
-  shutdown-window cycles were all closed, with stops measured at 0.004–0.026 s.
+  connection lifetimes each restored the tested Maya fixture state; 96 connections
+  over six shutdown-window cycles were all closed, with stops at 0.004–0.026 s.
   The round found and fixed four transport defects the driven tests had not
   reached. Unreal 11/11 prototype Automation checks, a real editor/Maya session
   (marker delta ≤ 1.0887e-07 NDC, converged, 0 anomalies), Maya 63/63 pure tests
@@ -349,6 +349,19 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   evidence. The interactive-Maya idle-pump callback and continuous-playback
   measurements remain unverified, and product integration still belongs to
   Issue #47 after the #52/#53/#54 samples.
+
+- **2026-10-08:** Independently reviewed Issue #52 at `9141394`: UE build and
+  all 11 prototype Automation checks passed, as did Maya mapping and 95
+  host/render checks. Whole-issue acceptance requires changes: the public Maya
+  entry point leaves scene state/resources after transport failure (R-007), an
+  animated borrowed camera reports success despite incorrect evaluated values
+  and framing (R-008), and camera/resolution attribute locks are not restored
+  (R-009). The [acceptance record](issue-52-camera-sync-acceptance.md) preserves
+  normal-fixture results and these reproduced blockers. Original comments are
+  archived verbatim in the independent review comment indexed by that record;
+  their machine-specific paths are not added to controlled repository files.
+  Documentation updates are local; issue comments carry the current remotely
+  accessible conclusion until remote file synchronization is authorized.
 
 ## Stable Records
 

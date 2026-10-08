@@ -1,6 +1,20 @@
 # Issue #52: Unreal to Maya camera and Sequencer verification
 
-Date: 2026-09-28–2026-09-30. The bounded camera prototype was verified on stock
+Latest independent review: 2026-10-08. **Whole-issue acceptance requires
+changes; Issue #52 remains open.** Implementation and review baseline:
+`91413946466d8f0337104f4bf087b7a4962d3428` (remote-accessible). The checkout
+started at `76a2f00c39fc9a4e82869c42e84e6511b5b25174`, whose prototype code is
+identical and whose only addition is the earlier comment archive. No
+implementation changes were made during this review.
+
+The [current issue handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
+indexes the independent review and its complete reproduction script. This
+record is a local, unpushed update; the issue comments carry the remotely
+accessible current conclusion. Remote file
+synchronization remains pending.
+
+Development evidence below dates from 2026-09-28–2026-09-30. The bounded camera
+prototype was verified on stock
 Unreal 5.7.4 and Maya 2024. The follow-up uses the **open Level Sequence
 editor** for its time and evaluated camera rather than a second player. Two
 review rounds then tightened the prototype: the **evaluation identity** is
@@ -15,9 +29,9 @@ convergence condition. It does not establish production MtoULiveLink pose
 streaming, full-character same-frame application, or continuous-playback
 performance. No product v9 code or package was changed.
 
-A third round closed the two items the review left open: the **natural editor
-loop** is now a host check in its own right, and **exit and full recovery** are
-covered on both sides. The session stops and joins its listener thread before it
+A third round implemented the two follow-ups from the review: the **natural
+editor loop** is a host check in its own right, and **exit and normal fixture
+recovery** are covered on both sides. The session stops and joins its listener thread before it
 closes the sockets that thread accepted; a session now sends `end`, shuts its
 write side down and reads what the client already sent, so the client can tell a
 deliberate end from a lost connection; and a client that stops accepting a line
@@ -30,7 +44,58 @@ ended a session was reported as a lost connection, and a reset during a
 handshake or a hello send could raise through the Maya client instead of being
 reported as a transport failure.
 
-## Current conclusion
+## Current blockers and independent review
+
+All three findings were reproduced in Maya 2024, not inferred only from source.
+Line references are in the Maya component's `scripts/MtoUCameraSyncPrototype.py`
+at the reviewed baseline. Passing normal fixtures do not establish complete
+recovery or correctness for a driven borrowed camera.
+
+| ID | Category / severity | Trigger and observed behavior | Completion condition |
+| --- | --- | --- | --- |
+| R-007 | Spec / P2; blocks closure | Close a local TCP publisher without `end` after the public `run()` applies a frame. It returns `failed` with time 1000 instead of original 17, resolution 1920x1080 instead of 800x600, its camera still present and its socket still owned. Explicit `stop()` afterwards restores the scene. A refused connection also leaves undo enabled when initially disabled. `connect()` is outside the run-loop try and finally only cleans FOLLOWING (936-957); connection refusal does not restore earlier undo changes (242-258). | Exception-safe ownership covering connect, callback attachment and following; cleanup on every exit while retaining the failure reason. Verify the public entry point, failed handshakes, restored state and idempotent stop. |
+| R-008 | Spec / P1; blocks closure | Borrow a camera with translateX keys 10/90 and focalLength keys 28/70 at frames 1/30. Start at 17 and apply the bundled first fixture (Maya 1000, 35 mm, world X=300 cm). Animation evaluation after the writes restores 70 mm and X=90 cm, but the report says applied and gives 1.11e-16 NDC marker error. Projection from actual read-back state differs by 0.933237 NDC. Keys were unchanged. Adoption has no driven-input guard (563-583), time changes after writes (735-743), and marker reporting uses requested values (759-781). | Refuse driven borrowed cameras before mutation, use an isolated camera, or prove correct supported borrowing. Validate actual host state/projection and preserve existing keys/connections. Supporting animated borrowing is not required; safe explicit refusal is sufficient. |
+| R-009 | Standards / P2; blocks full recovery | Lock a borrowed camera's focalLength and defaultResolution.width, apply a valid frame and stop. Both locks become False although values restore and stop reports success. Capture saves values only and restore unlocks again (593-641). | Restore affected plug lock states after success, failure and stop, or refuse unsupported locked input before any mutation; compare locks as well as values. |
+
+R-003 (pending independent review) is complete; the concrete failures are now
+tracked as R-007–R-009. R-001 (interactive Maya idle callbacks) and R-002
+(continuous-playback measurements) retain their agreed non-blocking prototype
+status. R-004–R-006 remain product decisions under #47.
+
+| This review's executed check | Result and evidence boundary |
+| --- | --- |
+| UE 5.7.4 build | Succeeded; affected module recompiled. |
+| Automation with real mayapy/peer/evidence arguments | 11 succeeded, 0 failed, 0 skipped, 0 warnings; exit 0, both opt-in host checks executed. |
+| EditorLoopFollow | 13 steps succeeded, 6 connection lifetimes; first lifetime has 23 application replies, 10 fractional times, focals 50/85/120. Maximum reported marker delta 7.5052e-07 NDC. The module ticker advances the session; the test does not call Pump or ForceEvaluate. Normal fixture cleanup does not cover the public failure path. |
+| RealMayaPeer | Converged at generation 2, witness 9; 7 publications, 6 replies, 5 paired witnesses. Three expected refused replies: one superseded cut reply and two synthetic replays. Maximum reported marker delta 1.08873e-07 NDC; no anomalous lines, trailing bytes or failed sends. |
+| ShutdownWindow | 6 cycles, 97 connections closed, ports released; stops 0.008–0.011 s. Concurrent connection counts can vary from the earlier run's 96. |
+| Pure mapping tests | System Python and mayapy each 63/63 passed. |
+| Maya host with Arnold rendering enabled | 95 checks, 0 failures (90 existing host checks plus enabled render checks); four film-fit configurations. Compared visible markers have maximum component error 0.196001 px against 2 px tolerance. Out-of-frame markers are not counted as visible-pixel evidence. |
+| Supplementary host reproduction | Two independent mayapy processes reproduced R-007/R-008/R-009; the second adds the read-back projection measurement. The 0.933237 NDC figure is calculated from actual read-back values, not a rendered measurement of the failing case. |
+| Official capability source review | Rechecked Autodesk camera subject, time-sync feedback guards, MIT license and releases linked in official-capabilities.md; the latest listed release remains 2.6.0 / UE 5.5. No official plugin installed or compiled for UE 5.7. Existing Epic-specific and per-parameter records were inspected. |
+
+Raw evidence is local beside the repository in `.tmp/issue52-review-20261008/`:
+`ue-build.log`, `ue-suite.log`, `ue-automation/index.json`, `ue-evidence/`,
+`maya-host.json`, `render/`, `review_repro.py` and `review-repro.json`. It is not
+uploaded. The issue review embeds a portable full reproduction script and key
+observations. Runs used isolated Maya preferences and disposable host scenes;
+the supplied C01/Backups assets were not opened or modified. Pre-existing
+Unreal configuration changes were unchanged before and after the host checks.
+
+Original September 30 source reports are preserved as a complete
+`github-issue-comment-archive/1` JSON attachment inside the independent review
+comment indexed by the current handoff, with exact IDs, timestamps, authors and
+bodies. The source contains machine-specific paths, which repository validation
+forbids in controlled files, so the archive is published in the issue comment
+and this history record keeps its index. The earlier
+[comment archive](issue-52-comment-archive.json) remains unchanged. This review
+does not create a branch, PR, remote push or product package.
+
+## Established prototype behavior and development evidence
+
+The following development results remain useful within their fixture scope.
+The independent review above supplies the current acceptance decision and
+qualifies the broader restoration claims.
 
 | Area | Verified result |
 | --- | --- |
@@ -48,9 +113,9 @@ reported as a transport failure.
 | Shutdown ordering (new) | `FTcpListener::Stop()` only clears its running flag; the join happens when the listener is destroyed. The session used to drain the accepted-socket queue first, so a connection accepted in that window stayed open. It now stops and joins the listener before the last drain, and closes what the listener queued: 6 start/stop cycles with 96 connections, every one closed and the port free, 90 of them closed by that final drain. Stopping follow measured `end` ≤ 0.006 s, listener join ≤ 0.021 s and 0.004–0.026 s in total. |
 | Client end and stalled sends (new) | Ending a session now sends `end` on a half-closed stream and reads what the client already sent, so a deliberate end is distinguishable from a loss: the live Maya peer recorded `publisher_end` for every publisher-initiated stop in the natural loop. A connection that cannot take a line in 250 ms is dropped instead of consuming a send deadline; before this, a client that aborted its socket made one editor tick per publish take ~2 s. |
 | Natural editor loop (new) | The module's own ticker advances the session while a real mayapy peer follows: a 20-step playhead drag (published 1002 → 1030.5, 21 frames, focals 50 → 85 across the cut), a parked position on the second cut, a camera edited to 120 mm at that same time, a closed and reopened sequence, a client-initiated drop and rejoin, and three start/stop cycles. Every step ended with the target that is current answered; 10 of the 23 drag frames were fractional and Maya evaluated them exactly; worst marker disagreement 7.505e-07 NDC. |
-| Maya release (new) | On stop Maya restores its own current frame, the scene resolution gate the frames overwrote, the camera (deleting one it created, writing back the attributes and placement of a borrowed one) and its socket, and reports each of those. A three-cycle host check and six natural-loop connection lifetimes released the scene completely every time, with no keys, playback range or callback changes. |
+| Maya release | Explicit stop restores normal fixture time, resolution values, created-camera ownership or static borrowed-camera values, and the socket. The three-cycle host check and six natural-loop connection lifetimes cover these cases. They do not cover the public failure exit (R-007), animation-driven borrowing (R-008) or attribute locks (R-009); batch callback behavior also remains unverified. |
 
-## Scope and evidence
+## Scope and September 30 development evidence
 
 The prototype stays separate from MtoULiveLink: independent TCP port 54330,
 editor-only Unreal plugin, no new external dependency, no change to product
@@ -109,7 +174,9 @@ client already sent, drops a client that stalls a send, and the new
 `ShutdownWindow` check connects during the stop to prove that nothing survives
 it. The same round added the natural editor-loop check and the Maya release
 work, which found and fixed three more transport defects (see the conclusion
-table). Every number in this record now comes from this round's own host runs.
+table). Numbers in the development tables above are the September 30 results;
+the October 8 independent results and their limits are separately identified
+in the current-review section.
 
 The smallest plausible product would keep UE as camera and time authority,
 Maya as pose authority, one active perspective camera, an explicit time origin,
@@ -150,7 +217,8 @@ must be revised before it can share Sequencer time. No production time-authority
 choice, persistent Maya-camera policy, MRQ output-resolution authority or
 exit-frame policy was made here.
 
-The original official-capability, camera-parameter and projection acceptance
-remains valid within this bounded scope. The real-editor, evaluation-identity
-and convergence work strengthens it, but it does not turn #52 into a complete
-camera or animation product.
+The official-capability, normal fixture camera-parameter and projection results
+remain useful within their stated limits. Fix and independently re-verify
+R-007–R-009 before closing #52. Natural-loop success and protocol convergence
+do not establish correctness of an animated borrowed camera or every recovery
+exit. Product integration remains deferred to #47.
