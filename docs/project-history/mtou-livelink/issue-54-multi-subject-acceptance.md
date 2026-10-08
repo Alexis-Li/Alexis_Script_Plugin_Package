@@ -91,15 +91,15 @@ necessary-bone mapping this prototype now exercises is the candidate migration
 contract for #55's accepted shape; adopting it in the product is still #47's and
 #55's decision, not this prototype's.
 
-Reports: [开发交付 dev-01](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6053453464)
-and [当前结论 current](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6053454524);
-both are archived with their earlier sources in
-[the source archive](issue-54-comment-archive.json). Implementation commit:
-`84f034ff0c57c7801db03b985eb5a1e0e79746de` (local, not pushed at the time of
-reporting). This round's evidence lives outside the checkout in
+Reports: [开发交付 dev-01](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6053453464),
+archived with its earlier sources in [the source archive](issue-54-comment-archive.json).
+Implementation commit: `84f034ff0c57c7801db03b985eb5a1e0e79746de` (local, not pushed
+at the time of reporting). This round's evidence lives outside the checkout in
 `../.tmp/mtou-issue54/fix-20261008/`: `host-post.json`, `accept-c01.json`,
 `ue-prop/` (full suite plus `report/index.json`), `ue-arms/`, `ue-times/` and the
-disposable `backups-copy/` shell around the real Backups content.
+disposable `backups-copy/` shell around the real Backups content. The current
+handoff is still comment `5883765955`; it is refreshed at the next
+consolidation, as with the 2026-10-08 rounds on #52 and #53.
 
 The product still has one Maya `_CharacterScene`/`_StreamingSession` root and
 snapshot, one UE Binding Actor/`MtoU_Character` SubjectKey, one pending frame,
