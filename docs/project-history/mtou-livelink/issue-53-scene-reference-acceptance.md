@@ -4,7 +4,7 @@ Date: 2026-10-08. The independent review of local implementation
 `29a1bb5cd515df1cbca6a60e7352ccbc9facd707` (fix
 `489b1c57bdd1f6814c020639c6927efea6394444`, dead-member removal
 `0b304aaa834c0f9550f93f403eacbd4adfdb9e66`) required changes for R-001, R-002 and
-R-006. Those three are fixed in `%%FIX_COMMIT%%`, which is **not yet independently
+R-006. Those three are fixed in `1a3cede`, which is **not yet independently
 re-verified**; R-003, R-004 and R-005 keep the closed status the review gave them
 within their stated scope. The implementation remains local; neither the review
 nor this fix pushed it, and the prototype is not integrated into MtoU. The
