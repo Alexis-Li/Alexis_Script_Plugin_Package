@@ -375,6 +375,18 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   unpushed; current issue comments identify the delivery commit. Product
   integration remains with #47 after the agreed #52–#54 prototype milestones.
 
+- **2026-10-08:** Independently re-verified Issue #52 at `25336fa` in
+  review-02. R-007–R-009 are verified closed and the bounded prototype passes
+  whole-issue acceptance: 145 Maya/Arnold checks, 63 mapping tests per
+  interpreter, 11 real-peer UE Automation tests and the prior independent
+  failure inputs pass. Driven/protected cameras are safely refused, failed
+  public sessions restore state, and projection evidence uses host read-back.
+  The [acceptance record](issue-52-camera-sync-acceptance.md) preserves the
+  remaining non-blocking boundaries; product integration stays under #47.
+  The [pre-review handoff archive](issue-52-review-02-comment-archive.json) is
+  also embedded in review-02 for remote access. Code and record commits remain
+  local and unpushed.
+
 ## Stable Records
 
 - [Architecture](architecture.md)
