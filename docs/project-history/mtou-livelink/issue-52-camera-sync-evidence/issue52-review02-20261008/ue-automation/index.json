@@ -1,0 +1,352 @@
+{
+  "devices": [
+    {
+      "deviceName": "<host>",
+      "instance": "B7CA9912453097219A4DD986AA5FB635",
+      "instanceName": "<host>-31832",
+      "platform": "WindowsEditor",
+      "oSVersion": "Windows 11 (25H2) [10.0.26200.9457] ",
+      "model": "Default",
+      "gPU": "NVIDIA GeForce RTX 4060",
+      "cPUModel": "12th Gen Intel(R) Core(TM) i7-12700KF",
+      "rAMInGB": 32,
+      "renderMode": "SM6",
+      "rHI": "",
+      "appInstanceLog": ""
+    }
+  ],
+  "reportCreatedOn": "2026.10.08-07.32.51",
+  "succeeded": 11,
+  "succeededWithWarnings": 0,
+  "failed": 0,
+  "notRun": 0,
+  "inProcess": 0,
+  "totalDuration": 29.83123779296875,
+  "comparisonExported": false,
+  "comparisonExportDirectory": "",
+  "tests": [
+    {
+      "testDisplayName": "CameraContentIdentity",
+      "fullTestPath": "MtoUCameraSyncPrototype.CameraContentIdentity",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.052184801548719406,
+      "dateTime": "2026.10.08-07.32.21",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "CameraCutsAndTime",
+      "fullTestPath": "MtoUCameraSyncPrototype.CameraCutsAndTime",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.027766000479459763,
+      "dateTime": "2026.10.08-07.32.21",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "CameraPayload",
+      "fullTestPath": "MtoUCameraSyncPrototype.CameraPayload",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.008560702204704285,
+      "dateTime": "2026.10.08-07.32.21",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_center world=(1000, 0, 100) cm ndc=(-0.2778, 0.2500) clip_w=1000.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.21"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_left world=(1000, -200, 220) cm ndc=(-0.6667, 0.6000) clip_w=1000.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.21"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_right world=(1200, 400, -60) cm ndc=(0.3704, -0.1389) clip_w=1200.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.21"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "ClientBufferBounds",
+      "fullTestPath": "MtoUCameraSyncPrototype.ClientBufferBounds",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.05637440085411072,
+      "dateTime": "2026.10.08-07.32.21",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "EditorLoopFollow",
+      "fullTestPath": "MtoUCameraSyncPrototype.EditorLoopFollow",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 12.555285453796387,
+      "dateTime": "2026.10.08-07.32.21",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "editor loop check on port 55395; the module ticker owns the session and nothing in this test pumps it",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.22"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "editor loop: 13 steps, 6 peer cycles, 6 with a full Maya restore, worst marker delta 0.000000751",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.34"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "EditorSequencer",
+      "fullTestPath": "MtoUCameraSyncPrototype.EditorSequencer",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.4381619095802307,
+      "dateTime": "2026.10.08-07.32.34",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "EvalIdentityConvergence",
+      "fullTestPath": "MtoUCameraSyncPrototype.EvalIdentityConvergence",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.05054279789328575,
+      "dateTime": "2026.10.08-07.32.34",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "RealMayaPeer",
+      "fullTestPath": "MtoUCameraSyncPrototype.RealMayaPeer",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 4.245357513427734,
+      "dateTime": "2026.10.08-07.32.34",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "largest Maya-versus-Unreal marker NDC delta: 0.000000109",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.38"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "client lines with trailing bytes: 0 (0 bytes discarded)",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.38"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "ShutdownWindow",
+      "fullTestPath": "MtoUCameraSyncPrototype.ShutdownWindow",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 12.359442710876465,
+      "dateTime": "2026.10.08-07.32.39",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 0: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.39"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 1: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.41"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 2: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.43"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 3: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.45"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 4: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.47"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "cycle 5: 16 clients, 3 of them connected during the stop",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.49"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "96 connections over 6 start/stop cycles; queued sockets closed by Stop(): 90",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.10.08-07.32.51"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "SubsequenceTime",
+      "fullTestPath": "MtoUCameraSyncPrototype.SubsequenceTime",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.029961097985506058,
+      "dateTime": "2026.10.08-07.32.51",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "TrailingByteCount",
+      "fullTestPath": "MtoUCameraSyncPrototype.TrailingByteCount",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "B7CA9912453097219A4DD986AA5FB635"
+      ],
+      "duration": 0.007599499076604843,
+      "dateTime": "2026.10.08-07.32.51",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "maya_version": "2024",
+  "cases": {
+    "public_run_disconnect": {
+      "before": {
+        "time": 17.0,
+        "resolution": {
+          "width": 800,
+          "height": 600,
+          "pixelAspect": 1.0,
+          "deviceAspectRatio": 1.3333333730697632
+        },
+        "cameras": [
+          "frontShape",
+          "perspShape",
+          "sideShape",
+          "topShape"
+        ]
+      },
+      "after_return": {
+        "time": 17.0,
+        "resolution": {
+          "width": 800,
+          "height": 600,
+          "pixelAspect": 1.0,
+          "deviceAspectRatio": 1.3333333730697632
+        },
+        "cameras": [
+          "frontShape",
+          "perspShape",
+          "sideShape",
+          "topShape"
+        ]
+      },
+      "state": "failed",
+      "socket_still_owned": false,
+      "server_saw_applied": "applied",
+      "cleanup_after_observation": {
+        "reason": "client stopped"
+      }
+    },
+    "borrowed_locks": {
+      "status": "rejected",
+      "before": {
+        "ReviewBorrowedShape1.focalLength": true,
+        "defaultResolution.width": true
+      },
+      "after": {
+        "ReviewBorrowedShape1.focalLength": true,
+        "defaultResolution.width": true
+      },
+      "restored_focal": 29.0,
+      "stop": {
+        "reason": "client stopped",
+        "restored_time": 17.0
+      }
+    },
+    "borrowed_animation": {
+      "status": "rejected",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "rejected: SyncRefused: CAMERA_INPUT_DRIVEN: ReviewAnimatedShape1.focalLength has an input driver; choose another camera name to create a disposable camera"
+      ],
+      "reported_camera": {},
+      "before_keys": {
+        "ReviewAnimated1.translateX": [
+          10.0,
+          90.0
+        ],
+        "ReviewAnimatedShape1.focalLength": [
+          28.0,
+          70.0
+        ]
+      },
+      "after_keys": {
+        "ReviewAnimated1.translateX": [
+          10.0,
+          90.0
+        ],
+        "ReviewAnimatedShape1.focalLength": [
+          28.0,
+          70.0
+        ]
+      },
+      "stop": {
+        "reason": "client stopped",
+        "restored_time": 17.0
+      },
+      "expected_focal": 35.0,
+      "expected_translate_x": 300.0,
+      "markers": []
+    },
+    "connection_refused_undo": {
+      "before_undo": false,
+      "after_undo": false,
+      "error": "TRANSPORT_ERROR: cannot connect to 127.0.0.1:61248: [WinError 10061] 無法連線，因為目標電腦拒絕連線。"
+    }
+  },
+  "ok": true
+}

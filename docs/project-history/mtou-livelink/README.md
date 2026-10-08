@@ -259,19 +259,6 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   The [acceptance record](issue-50-interactive-playback-acceptance.md) holds
   the deterministic and real-peer evidence.
 
-- **2026-09-28:** Verified Issue #52 with a bounded Unreal 5.7.4 to Maya 2024
-  camera prototype. Unreal evaluates the camera through its own level sequence
-  player and publishes it with the sequence time; Maya applies one disposable
-  camera, its resolution gate, and the followed frame, and restores its own time
-  on exit. Six frames across two camera cuts applied with zero rejections and
-  marker agreement within `1.09e-07` NDC; the Maya Arnold render check places
-  markers within `0.25 px` of the projection both hosts predict. The
-  [acceptance record](issue-52-camera-sync-acceptance.md) owns the measured
-  differences, the official-capability review, the supported and unsupported
-  lists, and the pending product decisions. No product code, protocol, or
-  package changed. Issue #52 remains open for natural editor-loop and
-  full recovery acceptance; product decisions are deferred separately.
-
 - **2026-09-29:** Extended the Issue #53 FBX prototype with the image-data
   policy, explicit world conversion, mixed-Blueprint filtering, staged updates
   and real-level checks. The final review accepts useful bounded evidence but
@@ -303,89 +290,17 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   owns the evidence, the support list and the pending decisions. No product
   code, protocol, or package changed, and Issue #53 remains open.
 
-- **2026-09-29:** Closed the timing, convergence, content and transport gaps the
-  Issue #52 reviews found. The prototype protocol is v2: frames carry an
-  evaluation identity (`eval_serial`, `eval_identity`) separate from the
-  transport serial. The identity names the sequence time at milli-tick
-  precision plus the published camera content, Unreal samples the target before
-  it reads client reports, and a report is judged against the current target
-  instead of the publication it answered: a paused target's heartbeats no
-  longer supersede work in flight, editing the evaluated camera at the same
-  time supersedes it, a replayed publication never pairs twice, and a pose
-  edited at the parked frame still reaches Unreal. The receive path drains
-  buffered lines before every read, bounds a message and one pump in bytes, and
-  fails closed on an oversize message; acceptance requires the stopped timeline
-  to converge within a bounded wait. Unreal's nine prototype tests, Maya 63/63
-  pure tests in both interpreters and 60/60 host checks, and a real editor/Maya
-  session (6 applied frames, 5 pose reports paired, 1 superseded in flight,
-  converged, 0 anomalous lines, marker delta ≤ 1.0887e-07 NDC) pass on stock
-  UE 5.7.4 and Maya 2024. The [acceptance
-  record](issue-52-camera-sync-acceptance.md) owns the evidence. The natural
-  editor-loop check, full recovery acceptance and an unverified listener
-  shutdown ordering risk remain; the real C01
-  paused-positioning integration through the product pose path and the product
-  protocol design are deferred to a unified decision under Issue #47, after the
-  #52/#53/#54 prototypes have landed.
-
-- **2026-09-30:** Delivered the two follow-ups from the Issue #52 review. The
-  listener thread is now stopped and joined before the last accepted sockets are
-  closed; a session ends its client deliberately (send `end`, shut the write
-  side down, read what the client already sent) and drops a client that stalls a
-  send; and Maya now restores its own current frame, the scene resolution gate
-  and a borrowed camera's attributes and placement on stop. The natural editor
-  loop became a check of its own: the module's editor ticker drives the session
-  while a real mayapy peer follows a 20-step playhead drag (focals 50 → 85
-  across the cut, 10 fractional times evaluated exactly), a camera edited to
-  120 mm at the parked frame, a closed and reopened sequence, a client-initiated
-  drop and immediate rejoin, and three start/stop cycles — every step ended with
-  the target that was current answered (worst marker delta 7.505e-07 NDC). Six
-  connection lifetimes each restored the tested Maya fixture state; 96 connections
-  over six shutdown-window cycles were all closed, with stops at 0.004–0.026 s.
-  The round found and fixed four transport defects the driven tests had not
-  reached. Unreal 11/11 prototype Automation checks, a real editor/Maya session
-  (marker delta ≤ 1.0887e-07 NDC, converged, 0 anomalies), Maya 63/63 pure tests
-  in both interpreters and 90/90 host checks pass on stock UE 5.7.4 and Maya
-  2024. The [acceptance record](issue-52-camera-sync-acceptance.md) owns the
-  evidence. The interactive-Maya idle-pump callback and continuous-playback
-  measurements remain unverified, and product integration still belongs to
-  Issue #47 after the #52/#53/#54 samples.
-
-- **2026-10-08:** Independently reviewed Issue #52 at `9141394`: UE build and
-  all 11 prototype Automation checks passed, as did Maya mapping and 95
-  host/render checks. Whole-issue acceptance requires changes: the public Maya
-  entry point leaves scene state/resources after transport failure (R-007), an
-  animated borrowed camera reports success despite incorrect evaluated values
-  and framing (R-008), and camera/resolution attribute locks are not restored
-  (R-009). The [acceptance record](issue-52-camera-sync-acceptance.md) preserves
-  normal-fixture results and these reproduced blockers. Original comments are
-  archived verbatim in the independent review comment indexed by that record;
-  their machine-specific paths are not added to controlled repository files.
-  Documentation updates are local; issue comments carry the current remotely
-  accessible conclusion until remote file synchronization is authorized.
-
-- **2026-10-08:** Delivered local fixes for Issue #52 R-007–R-009: public
-  setup/run and idle-handler failures release the session; driven or protected
-  borrowed cameras/gates are refused before frame writes; projection and
-  application status use actual host read-back values with mismatch rollback.
-  Maya 2024 host/Arnold checks pass 145/145, focused safety checks 50/50,
-  mapping checks 63/63 in both interpreters, and stock UE 5.7.4 Automation
-  11/11 with real peers. The [acceptance record](issue-52-camera-sync-acceptance.md)
-  keeps reproduction/evidence boundaries. These are development self-tests;
-  independent re-verification remains required. The fix and records are local,
-  unpushed; current issue comments identify the delivery commit. Product
-  integration remains with #47 after the agreed #52–#54 prototype milestones.
-
-- **2026-10-08:** Independently re-verified Issue #52 at `25336fa` in
-  review-02. R-007–R-009 are verified closed and the bounded prototype passes
-  whole-issue acceptance: 145 Maya/Arnold checks, 63 mapping tests per
-  interpreter, 11 real-peer UE Automation tests and the prior independent
-  failure inputs pass. Driven/protected cameras are safely refused, failed
-  public sessions restore state, and projection evidence uses host read-back.
-  The [acceptance record](issue-52-camera-sync-acceptance.md) preserves the
-  remaining non-blocking boundaries; product integration stays under #47.
-  The [pre-review handoff archive](issue-52-review-02-comment-archive.json) is
-  also embedded in review-02 for remote access. Code and record commits remain
-  local and unpushed.
+- **2026-10-08:** Accepted and closed Issue #52 after independent review-02
+  at `25336fa`: R-007–R-009 are verified closed; 145 Maya/Arnold checks, 63
+  mapping tests per interpreter and 11 real-peer UE Automation checks pass.
+  The bounded UE-authoritative camera/Sequencer prototype covers projection,
+  cuts, subframes, content identity, natural editor following and failure recovery.
+  The [acceptance record](issue-52-camera-sync-acceptance.md) owns the effective
+  scope/limits; the [unified comment archive](issue-52-comment-archive.json)
+  preserves earlier reports, and the [evidence archive](issue-52-camera-sync-evidence/README.md)
+  preserves meaningful results and reproductions before scratch cleanup.
+  Interactive callbacks and sustained playback remain non-blocking follow-ups;
+  product integration stays unified under #47.
 
 ## Stable Records
 
@@ -412,7 +327,8 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 - [Issue #54 two-subject verification](issue-54-multi-subject-acceptance.md)
 - [Issue #53 original comment archive](issue-53-comment-archive.json)
 - [Issue #54 original comment archive](issue-54-comment-archive.json)
-- [Issue #52 original comment archive](issue-52-comment-archive.json)
+- [Issue #52 unified comment archive](issue-52-comment-archive.json)
+- [Issue #52 evidence archive](issue-52-camera-sync-evidence/README.md)
 - [Issue #55 real C01 acceptance](issue-55-real-c01-acceptance.md)
 
 ## Current Project

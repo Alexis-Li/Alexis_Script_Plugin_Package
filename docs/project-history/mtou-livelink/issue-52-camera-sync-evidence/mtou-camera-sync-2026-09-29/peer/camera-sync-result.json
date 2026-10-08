@@ -1,0 +1,770 @@
+{
+  "ok": true,
+  "phase": "done",
+  "error": null,
+  "protocol": {
+    "name": "MtoUCameraSync",
+    "version": 2
+  },
+  "session": {
+    "protocol": "MtoUCameraSync",
+    "version": 2,
+    "time_authority": "unreal",
+    "sequence": "LevelSequence_0",
+    "sequence_path": "/Engine/Transient.LevelSequence_0",
+    "display_rate": {
+      "numerator": 24,
+      "denominator": 1
+    },
+    "tick_resolution": {
+      "numerator": 24000,
+      "denominator": 1
+    },
+    "playback_range": {
+      "start": 1001,
+      "end": 1051
+    },
+    "output_resolution": {
+      "x": 1920,
+      "y": 1080
+    },
+    "aperture_resolution": {
+      "x": 1440,
+      "y": 1080
+    },
+    "resolution_source": "prototype",
+    "far_clip_fallback_cm": 100000,
+    "camera_cut": {
+      "has_track": true,
+      "section_count": 2,
+      "active": true,
+      "active_index": 0,
+      "stage": "root"
+    },
+    "marker_names": [
+      "m_center",
+      "m_lower_right",
+      "m_upper_left"
+    ],
+    "port": 58018,
+    "session": 1
+  },
+  "scene_fps": 24.0,
+  "applied": [
+    {
+      "frame_serial": 1,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_0@1001000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_0.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "maya_frame": 1001.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 50.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 2.0,
+        "focus_distance_cm": 400.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1001.0,
+        "subframe": false,
+        "world_matrix": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          100.0,
+          0.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0.0,
+            0.0
+          ],
+          "maya_ndc": [
+            0.0,
+            0.0
+          ],
+          "delta": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085739501608
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            3.670051595960899e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631257911170503
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -3.813040627687059e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001.0,
+        "translate_x": 5.000000000000101
+      }
+    },
+    {
+      "frame_serial": 2,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_0@1001000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_0.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "maya_frame": 1001.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 50.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 2.0,
+        "focus_distance_cm": 400.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1001.0,
+        "subframe": false,
+        "world_matrix": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          100.0,
+          0.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0.0,
+            0.0
+          ],
+          "maya_ndc": [
+            0.0,
+            0.0
+          ],
+          "delta": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085739501608
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            3.670051595960899e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631257911170503
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -3.813040627687059e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001.0,
+        "translate_x": 5.000000000000101
+      }
+    },
+    {
+      "frame_serial": 3,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_0@1030000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_1.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "maya_frame": 1030.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 85.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 4.0,
+        "focus_distance_cm": 800.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1030.0,
+        "subframe": false,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0.0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0.0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0.0,
+          200.0,
+          150.0,
+          -300.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031059,
+            -1.142595535585145
+          ],
+          "delta": [
+            -6.654078366086225e-08,
+            3.1931879362900872e-09
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.786031952989123,
+            -0.7487473780897335
+          ],
+          "delta": [
+            3.5849843094126754e-09,
+            -5.66147474456713e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229366469557899
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            3.0897050723455166e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030.0,
+        "translate_x": 9.0
+      }
+    },
+    {
+      "frame_serial": 4,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_0@1030000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_1.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "maya_frame": 1030.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 85.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 4.0,
+        "focus_distance_cm": 800.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1030.0,
+        "subframe": false,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0.0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0.0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0.0,
+          200.0,
+          150.0,
+          -300.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031059,
+            -1.142595535585145
+          ],
+          "delta": [
+            -6.654078366086225e-08,
+            3.1931879362900872e-09
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.786031952989123,
+            -0.7487473780897335
+          ],
+          "delta": [
+            3.5849843094126754e-09,
+            -5.66147474456713e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229366469557899
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            3.0897050723455166e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030.0,
+        "translate_x": 9.0
+      }
+    },
+    {
+      "frame_serial": 5,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_0@1030000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_1.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "maya_frame": 1030.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 85.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 4.0,
+        "focus_distance_cm": 800.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1030.0,
+        "subframe": false,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0.0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0.0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0.0,
+          200.0,
+          150.0,
+          -300.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031059,
+            -1.142595535585145
+          ],
+          "delta": [
+            -6.654078366086225e-08,
+            3.1931879362900872e-09
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.786031952989123,
+            -0.7487473780897335
+          ],
+          "delta": [
+            3.5849843094126754e-09,
+            -5.66147474456713e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229366469557899
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            3.0897050723455166e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030.0,
+        "translate_x": 9.0
+      }
+    },
+    {
+      "frame_serial": 6,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_0@1030000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_1.CameraComponent",
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "maya_frame": 1030.0,
+      "unreal_display_frame": null,
+      "expected": null,
+      "camera": {
+        "focal_length_mm": 85.0,
+        "horizontal_film_aperture_in": 0.9826771293099471,
+        "vertical_film_aperture_in": 0.7370078469824604,
+        "horizontal_film_offset_in": 0.0,
+        "vertical_film_offset_in": 0.0,
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1.0,
+        "f_stop": 4.0,
+        "focus_distance_cm": 800.0,
+        "depth_of_field": true,
+        "near_clip_cm": 10.0,
+        "far_clip_used_cm": 100000.0,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "maya_time": 1030.0,
+        "subframe": false,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0.0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0.0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0.0,
+          200.0,
+          150.0,
+          -300.0,
+          1.0
+        ],
+        "default_resolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixel_aspect": 1.0
+        }
+      },
+      "gate": {
+        "width": 1440,
+        "height": 1080,
+        "display_resolution": true,
+        "display_gate_mask": true
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031059,
+            -1.142595535585145
+          ],
+          "delta": [
+            -6.654078366086225e-08,
+            3.1931879362900872e-09
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.786031952989123,
+            -0.7487473780897335
+          ],
+          "delta": [
+            3.5849843094126754e-09,
+            -5.66147474456713e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229366469557899
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            3.0897050723455166e-08
+          ]
+        }
+      ],
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030.0,
+        "translate_x": 9.0
+      }
+    }
+  ],
+  "restore": {
+    "idle_pump": "this Maya session returned no scriptJob for idleEvent; the idle pump is unavailable, call pump() instead",
+    "idle_job": null,
+    "idle_tick_ok": true,
+    "maya_frame_during": 1030.0,
+    "time_moved": true,
+    "camera_keys": 0,
+    "maya_frame_before": 1001.0,
+    "maya_frame_after": 1001.0,
+    "restored_time": 1001.0,
+    "camera_removed": true,
+    "removed": "MtoU_UE_Camera",
+    "playback_range_before": [
+      1.0,
+      120.0
+    ],
+    "playback_range_after": [
+      1.0,
+      120.0
+    ],
+    "witness_keys_before": 2,
+    "witness_keys_after": 2,
+    "witness_value_before": 5.000000000000101,
+    "witness_value_after": 5.000000000000101,
+    "frames_applied": 2,
+    "frames_unchanged": 4,
+    "frames_rejected": 0,
+    "frames_subframe": 0,
+    "far_clip_substitutions": 2,
+    "max_marker_delta": 1.088725793962908e-07,
+    "state": "stopped",
+    "detail": "client stopped",
+    "error": null
+  },
+  "render": {
+    "available": false,
+    "reason": "not requested"
+  },
+  "problems": []
+}

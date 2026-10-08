@@ -1,0 +1,3231 @@
+{
+  "published_frames": 7,
+  "applied_reports": 6,
+  "synthetic_stale_replays": 2,
+  "max_marker_ndc_delta": 1.088725793962908e-07,
+  "peer_exit_code": 0,
+  "session_last_error": "",
+  "client_line_anomalies": 0,
+  "client_trailing_bytes": 0,
+  "last_client_line_anomaly": "",
+  "peer_output_tail": "",
+  "failed_sends": 0,
+  "paired_poses": 5,
+  "rejected_poses": 3,
+  "eval_serial": 2,
+  "last_paired_eval_serial": 0,
+  "converged": true,
+  "converged_eval_serial": 2,
+  "converged_paired_eval_serial": 2,
+  "applied_reports_dropped": 0,
+  "pose_witness_ue_y": 9,
+  "converged_pose": 9,
+  "applied_reports_raw": [
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 1,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1001,
+      "camera": {
+        "focalLength": 50,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 2,
+        "focusDistance": 400,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1001,
+        "applied_time": 1001,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          100,
+          0,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0,
+            0
+          ],
+          "maya_ndc": [
+            0,
+            0
+          ],
+          "delta": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085958402222
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            1.4810454529445849e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631258138599712
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -1.5387485285955904e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1001,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001,
+        "translate_x": 5.000000000000101
+      },
+      "ue_pose_paired": true,
+      "ue_pairing_error": ""
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 2,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1001,
+      "camera": {
+        "focalLength": 50,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 2,
+        "focusDistance": 400,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1001,
+        "applied_time": 1001,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          100,
+          0,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0,
+            0
+          ],
+          "maya_ndc": [
+            0,
+            0
+          ],
+          "delta": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085958402222
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            1.4810454529445849e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631258138599712
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -1.5387485285955904e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1001,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001,
+        "translate_x": 5.000000000000101
+      },
+      "ue_pose_paired": false,
+      "ue_pairing_error": "superseded, replayed, or mismatched pose report"
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 3,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1030,
+      "camera": {
+        "focalLength": 85,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 4,
+        "focusDistance": 800,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1030,
+        "applied_time": 1030,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0,
+          200,
+          150,
+          -300,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031052,
+            -1.1425955696371455
+          ],
+          "delta": [
+            -6.654078299472843e-08,
+            -3.0858812616330056e-08
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.7860319529891244,
+            -0.7487474004041436
+          ],
+          "delta": [
+            3.584985641680305e-09,
+            -7.892915754315055e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229367132044603
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            2.427218367961892e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1030,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030,
+        "translate_x": 9
+      },
+      "ue_pose_paired": true,
+      "ue_pairing_error": ""
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 4,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1030,
+      "camera": {
+        "focalLength": 85,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 4,
+        "focusDistance": 800,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1030,
+        "applied_time": 1030,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0,
+          200,
+          150,
+          -300,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031052,
+            -1.1425955696371455
+          ],
+          "delta": [
+            -6.654078299472843e-08,
+            -3.0858812616330056e-08
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.7860319529891244,
+            -0.7487474004041436
+          ],
+          "delta": [
+            3.584985641680305e-09,
+            -7.892915754315055e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229367132044603
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            2.427218367961892e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1030,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030,
+        "translate_x": 9
+      },
+      "ue_pose_paired": true,
+      "ue_pairing_error": ""
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 5,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1030,
+      "camera": {
+        "focalLength": 85,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 4,
+        "focusDistance": 800,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1030,
+        "applied_time": 1030,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0,
+          200,
+          150,
+          -300,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031052,
+            -1.1425955696371455
+          ],
+          "delta": [
+            -6.654078299472843e-08,
+            -3.0858812616330056e-08
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.7860319529891244,
+            -0.7487474004041436
+          ],
+          "delta": [
+            3.584985641680305e-09,
+            -7.892915754315055e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229367132044603
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            2.427218367961892e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1030,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030,
+        "translate_x": 9
+      },
+      "ue_pose_paired": true,
+      "ue_pairing_error": ""
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 6,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1030,
+      "camera": {
+        "focalLength": 85,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 4,
+        "focusDistance": 800,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1030,
+        "applied_time": 1030,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          0.9254165795297062,
+          -0.3420201407847474,
+          -0.16317591007596863,
+          0,
+          0.33682408641144274,
+          0.939692621710728,
+          -0.05939117371727355,
+          0,
+          0.17364817633547425,
+          2.775557561562892e-17,
+          0.9848077532469794,
+          0,
+          200,
+          150,
+          -300,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+        "heartbeat: identical state, Maya untouched"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            -0.7629071615623222,
+            -1.1425955387783329
+          ],
+          "maya_ndc": [
+            -0.7629072281031052,
+            -1.1425955696371455
+          ],
+          "delta": [
+            -6.654078299472843e-08,
+            -3.0858812616330056e-08
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            2.786031949404139,
+            -0.748747321474986
+          ],
+          "maya_ndc": [
+            2.7860319529891244,
+            -0.7487474004041436
+          ],
+          "delta": [
+            3.584985641680305e-09,
+            -7.892915754315055e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -2.937272466576577,
+            -0.2222936955926297
+          ],
+          "maya_ndc": [
+            -2.9372725754491564,
+            -0.22229367132044603
+          ],
+          "delta": [
+            -1.088725793962908e-07,
+            2.427218367961892e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1030,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1030,
+        "translate_x": 9
+      },
+      "ue_pose_paired": true,
+      "ue_pairing_error": ""
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 1,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1001,
+      "camera": {
+        "focalLength": 50,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 2,
+        "focusDistance": 400,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1001,
+        "applied_time": 1001,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          100,
+          0,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0,
+            0
+          ],
+          "maya_ndc": [
+            0,
+            0
+          ],
+          "delta": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085958402222
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            1.4810454529445849e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631258138599712
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -1.5387485285955904e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1001,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001,
+        "translate_x": 5.000000000000101
+      },
+      "ue_pose_paired": false,
+      "ue_pairing_error": "superseded, replayed, or mismatched pose report"
+    },
+    {
+      "type": "applied",
+      "session": 1,
+      "sequence": "LevelSequence_7",
+      "frame_serial": 1,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "maya_frame": 1001,
+      "camera": {
+        "focalLength": 50,
+        "horizontalFilmAperture": 0.9826771293099471,
+        "verticalFilmAperture": 0.7370078469824604,
+        "horizontalFilmOffset": 0,
+        "verticalFilmOffset": 0,
+        "filmFit": 1,
+        "lensSqueezeRatio": 1,
+        "fStop": 2,
+        "focusDistance": 400,
+        "depthOfField": true,
+        "nearClipPlane": 10,
+        "farClipPlane": 100000,
+        "displayResolution": true,
+        "displayGateMask": true,
+        "maya_time": 1001,
+        "applied_time": 1001,
+        "subframe": false,
+        "far_clip_substituted": true,
+        "far_clip_source": "session_fallback",
+        "film_fit": 1,
+        "lens_squeeze_ratio": 1,
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          100,
+          0,
+          1
+        ],
+        "transform": "MtoU_UE_Camera",
+        "shape": "MtoU_UE_CameraShape",
+        "defaultResolution": {
+          "width": 1440,
+          "height": 1080,
+          "pixelAspect": 1,
+          "deviceAspectRatio": 1.3333333730697632
+        }
+      },
+      "status": "applied",
+      "detail": [
+        "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+        "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+      ],
+      "markers": [
+        {
+          "name": "m_center",
+          "unreal_ndc": [
+            0,
+            0
+          ],
+          "maya_ndc": [
+            0,
+            0
+          ],
+          "delta": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "m_lower_right",
+          "unreal_ndc": [
+            1.0516827520890624,
+            -0.7345086106506767
+          ],
+          "maya_ndc": [
+            1.051682730883185,
+            -0.7345085958402222
+          ],
+          "delta": [
+            -2.1205877276386786e-08,
+            1.4810454529445849e-08
+          ]
+        },
+        {
+          "name": "m_upper_left",
+          "unreal_ndc": [
+            -1.4308608871960031,
+            0.7631258292474565
+          ],
+          "maya_ndc": [
+            -1.4308608583444693,
+            0.7631258138599712
+          ],
+          "delta": [
+            2.885153382869987e-08,
+            -1.5387485285955904e-08
+          ]
+        }
+      ],
+      "unreal_display_frame": 1001,
+      "unreal_camera_path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+      "maya_origin_frame": 1001,
+      "pose": {
+        "node": "MtoUCameraSyncWitness",
+        "sampled_maya_frame": 1001,
+        "translate_x": 5.000000000000101
+      },
+      "ue_pose_paired": false,
+      "ue_pairing_error": "superseded, replayed, or mismatched pose report"
+    }
+  ],
+  "published_frame_payloads": [
+    {
+      "type": "frame",
+      "frame_serial": 1,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1001,
+        "source_frame": 1001,
+        "seconds": 0,
+        "tick": 1001000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 0,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor4",
+        "actor": "CineCameraActor4",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "rotation": {
+          "roll": 0,
+          "pitch": 0,
+          "yaw": 0
+        },
+        "right": {
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "up": {
+          "x": 0,
+          "y": 0,
+          "z": 1
+        },
+        "forward": {
+          "x": 1,
+          "y": 0,
+          "z": 0
+        },
+        "component_location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 50,
+        "horizontal_fov_deg": 28.029338836669922,
+        "vertical_fov_deg": 21.206096649169922,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 2,
+        "focus_method": "Manual",
+        "focus_distance_cm": 400,
+        "manual_focus_distance_cm": 400,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 400,
+          "b_override_fstop": true,
+          "fstop": 2,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "rotation": {
+          "roll": 0,
+          "pitch": 0,
+          "yaw": 0
+        },
+        "fov_deg": 28.029338836669922,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          0,
+          0,
+          0,
+          1,
+          4.006410484148809,
+          0,
+          0,
+          0,
+          0,
+          5.341880804732194,
+          0,
+          0,
+          0,
+          -534.1880804732194,
+          10,
+          0
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": 0,
+            "y": 0
+          },
+          "pixel": {
+            "x": 960,
+            "y": 540
+          },
+          "inside": true
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 1.0516827520890624,
+            "y": -0.7345086106506767
+          },
+          "pixel": {
+            "x": 1717.211581504125,
+            "y": 936.6346497513654
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -1.4308608871960031,
+            "y": 0.7631258292474565
+          },
+          "pixel": {
+            "x": -70.21983878112223,
+            "y": 127.91205220637347
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    },
+    {
+      "type": "frame",
+      "frame_serial": 2,
+      "eval_serial": 1,
+      "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1001,
+        "source_frame": 1001,
+        "seconds": 0,
+        "tick": 1001000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 0,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor4",
+        "actor": "CineCameraActor4",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "rotation": {
+          "roll": 0,
+          "pitch": 0,
+          "yaw": 0
+        },
+        "right": {
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "up": {
+          "x": 0,
+          "y": 0,
+          "z": 1
+        },
+        "forward": {
+          "x": 1,
+          "y": 0,
+          "z": 0
+        },
+        "component_location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 50,
+        "horizontal_fov_deg": 28.029338836669922,
+        "vertical_fov_deg": 21.206096649169922,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 2,
+        "focus_method": "Manual",
+        "focus_distance_cm": 400,
+        "manual_focus_distance_cm": 400,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 400,
+          "b_override_fstop": true,
+          "fstop": 2,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 0,
+          "y": 0,
+          "z": 100
+        },
+        "rotation": {
+          "roll": 0,
+          "pitch": 0,
+          "yaw": 0
+        },
+        "fov_deg": 28.029338836669922,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          0,
+          0,
+          0,
+          1,
+          4.006410484148809,
+          0,
+          0,
+          0,
+          0,
+          5.341880804732194,
+          0,
+          0,
+          0,
+          -534.1880804732194,
+          10,
+          0
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": 0,
+            "y": 0
+          },
+          "pixel": {
+            "x": 960,
+            "y": 540
+          },
+          "inside": true
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 1.0516827520890624,
+            "y": -0.7345086106506767
+          },
+          "pixel": {
+            "x": 1717.211581504125,
+            "y": 936.6346497513654
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -1.4308608871960031,
+            "y": 0.7631258292474565
+          },
+          "pixel": {
+            "x": -70.21983878112223,
+            "y": 127.91205220637347
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    },
+    {
+      "type": "frame",
+      "frame_serial": 3,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1030,
+        "source_frame": 1030,
+        "seconds": 1.2083333333333333,
+        "tick": 1030000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 1,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor5",
+        "actor": "CineCameraActor5",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "right": {
+          "x": 0.16317591007596852,
+          "y": 0.9254165795297062,
+          "z": -0.3420201407847473
+        },
+        "up": {
+          "x": 0.059391173717273496,
+          "y": 0.33682408641144274,
+          "z": 0.9396926217107281
+        },
+        "forward": {
+          "x": 0.9848077532469796,
+          "y": -0.1736481763354741,
+          "z": 3.4694469250780056e-18
+        },
+        "component_location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 85,
+        "horizontal_fov_deg": 16.70537757873535,
+        "vertical_fov_deg": 12.567915916442871,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 4,
+        "focus_method": "Manual",
+        "focus_distance_cm": 800,
+        "manual_focus_distance_cm": 800,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 800,
+          "b_override_fstop": true,
+          "fstop": 4,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "fov_deg": 16.70537757873535,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          1.1113744398910668,
+          0.5393429860339939,
+          0,
+          0.9848077521688299,
+          6.302917476734186,
+          3.058765984361547,
+          0,
+          -0.17364818244996544,
+          -2.329464217610192,
+          8.533533779487996,
+          0,
+          3.469447048499771e-18,
+          -1244.5761946726284,
+          -2053.586159605707,
+          10,
+          -260.7126891606559
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": -0.7629071615623222,
+            "y": -1.1425955387783329
+          },
+          "pixel": {
+            "x": 410.706843675128,
+            "y": 1157.0015909402998
+          },
+          "inside": false
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 2.786031949404139,
+            "y": -0.748747321474986
+          },
+          "pixel": {
+            "x": 2965.9430035709797,
+            "y": 944.3235535964925
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -2.937272466576577,
+            "y": -0.2222936955926297
+          },
+          "pixel": {
+            "x": -1154.8361759351355,
+            "y": 660.03859562002
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    },
+    {
+      "type": "frame",
+      "frame_serial": 4,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1030,
+        "source_frame": 1030,
+        "seconds": 1.2083333333333333,
+        "tick": 1030000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 1,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor5",
+        "actor": "CineCameraActor5",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "right": {
+          "x": 0.16317591007596852,
+          "y": 0.9254165795297062,
+          "z": -0.3420201407847473
+        },
+        "up": {
+          "x": 0.059391173717273496,
+          "y": 0.33682408641144274,
+          "z": 0.9396926217107281
+        },
+        "forward": {
+          "x": 0.9848077532469796,
+          "y": -0.1736481763354741,
+          "z": 3.4694469250780056e-18
+        },
+        "component_location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 85,
+        "horizontal_fov_deg": 16.70537757873535,
+        "vertical_fov_deg": 12.567915916442871,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 4,
+        "focus_method": "Manual",
+        "focus_distance_cm": 800,
+        "manual_focus_distance_cm": 800,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 800,
+          "b_override_fstop": true,
+          "fstop": 4,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "fov_deg": 16.70537757873535,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          1.1113744398910668,
+          0.5393429860339939,
+          0,
+          0.9848077521688299,
+          6.302917476734186,
+          3.058765984361547,
+          0,
+          -0.17364818244996544,
+          -2.329464217610192,
+          8.533533779487996,
+          0,
+          3.469447048499771e-18,
+          -1244.5761946726284,
+          -2053.586159605707,
+          10,
+          -260.7126891606559
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": -0.7629071615623222,
+            "y": -1.1425955387783329
+          },
+          "pixel": {
+            "x": 410.706843675128,
+            "y": 1157.0015909402998
+          },
+          "inside": false
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 2.786031949404139,
+            "y": -0.748747321474986
+          },
+          "pixel": {
+            "x": 2965.9430035709797,
+            "y": 944.3235535964925
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -2.937272466576577,
+            "y": -0.2222936955926297
+          },
+          "pixel": {
+            "x": -1154.8361759351355,
+            "y": 660.03859562002
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    },
+    {
+      "type": "frame",
+      "frame_serial": 5,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1030,
+        "source_frame": 1030,
+        "seconds": 1.2083333333333333,
+        "tick": 1030000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 1,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor5",
+        "actor": "CineCameraActor5",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "right": {
+          "x": 0.16317591007596852,
+          "y": 0.9254165795297062,
+          "z": -0.3420201407847473
+        },
+        "up": {
+          "x": 0.059391173717273496,
+          "y": 0.33682408641144274,
+          "z": 0.9396926217107281
+        },
+        "forward": {
+          "x": 0.9848077532469796,
+          "y": -0.1736481763354741,
+          "z": 3.4694469250780056e-18
+        },
+        "component_location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 85,
+        "horizontal_fov_deg": 16.70537757873535,
+        "vertical_fov_deg": 12.567915916442871,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 4,
+        "focus_method": "Manual",
+        "focus_distance_cm": 800,
+        "manual_focus_distance_cm": 800,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 800,
+          "b_override_fstop": true,
+          "fstop": 4,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "fov_deg": 16.70537757873535,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          1.1113744398910668,
+          0.5393429860339939,
+          0,
+          0.9848077521688299,
+          6.302917476734186,
+          3.058765984361547,
+          0,
+          -0.17364818244996544,
+          -2.329464217610192,
+          8.533533779487996,
+          0,
+          3.469447048499771e-18,
+          -1244.5761946726284,
+          -2053.586159605707,
+          10,
+          -260.7126891606559
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": -0.7629071615623222,
+            "y": -1.1425955387783329
+          },
+          "pixel": {
+            "x": 410.706843675128,
+            "y": 1157.0015909402998
+          },
+          "inside": false
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 2.786031949404139,
+            "y": -0.748747321474986
+          },
+          "pixel": {
+            "x": 2965.9430035709797,
+            "y": 944.3235535964925
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -2.937272466576577,
+            "y": -0.2222936955926297
+          },
+          "pixel": {
+            "x": -1154.8361759351355,
+            "y": 660.03859562002
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    },
+    {
+      "type": "frame",
+      "frame_serial": 6,
+      "eval_serial": 2,
+      "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "time": {
+        "display_frame": 1030,
+        "source_frame": 1030,
+        "seconds": 1.2083333333333333,
+        "tick": 1030000,
+        "display_rate": {
+          "numerator": 24,
+          "denominator": 1
+        },
+        "tick_resolution": {
+          "numerator": 24000,
+          "denominator": 1
+        },
+        "playback_start": 1001,
+        "playback_end": 1051
+      },
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 1,
+        "stage": "root"
+      },
+      "camera": {
+        "name": "CineCameraActor5",
+        "actor": "CineCameraActor5",
+        "component": "CameraComponent",
+        "path": "/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent",
+        "cine_camera": true,
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "right": {
+          "x": 0.16317591007596852,
+          "y": 0.9254165795297062,
+          "z": -0.3420201407847473
+        },
+        "up": {
+          "x": 0.059391173717273496,
+          "y": 0.33682408641144274,
+          "z": 0.9396926217107281
+        },
+        "forward": {
+          "x": 0.9848077532469796,
+          "y": -0.1736481763354741,
+          "z": 3.4694469250780056e-18
+        },
+        "component_location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "view_transform_differs": false,
+        "focal_length_mm": 85,
+        "horizontal_fov_deg": 16.70537757873535,
+        "vertical_fov_deg": 12.567915916442871,
+        "sensor_width_mm": 24.959999084472656,
+        "sensor_height_mm": 18.719999313354492,
+        "sensor_aspect_ratio": 1.3333333730697632,
+        "sensor_horizontal_offset_mm": 0,
+        "sensor_vertical_offset_mm": 0,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "rendered_aspect_ratio": 1.3333333730697632,
+        "f_stop": 4,
+        "focus_method": "Manual",
+        "focus_distance_cm": 800,
+        "manual_focus_distance_cm": 800,
+        "depth_of_field": true,
+        "squeeze_factor": 1,
+        "lens": {
+          "min_focal_mm": 4,
+          "max_focal_mm": 1000,
+          "min_fstop": 1.2000000476837158,
+          "max_fstop": 22,
+          "minimum_focus_distance_cm": 15
+        },
+        "crop": {
+          "enabled": false,
+          "aspect_ratio": 0
+        },
+        "near_clip_cm": 10,
+        "near_clip_source": "engine_default",
+        "custom_near_clip_cm": 10,
+        "b_override_custom_near_clip": false,
+        "far_clip_cm": null,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "post_process_blend_weight": 1,
+        "dof": {
+          "b_override_focal_distance": true,
+          "focal_distance_cm": 800,
+          "b_override_fstop": true,
+          "fstop": 4,
+          "b_override_sensor_width": true,
+          "sensor_width_mm": 24.959999084472656,
+          "b_override_squeeze_factor": true,
+          "squeeze_factor": 1,
+          "b_override_min_fstop": true,
+          "min_fstop": 1.2000000476837158,
+          "b_override_blade_count": true,
+          "blade_count": 7,
+          "b_override_depth_blur_radius": false,
+          "depth_blur_radius": 0,
+          "b_override_depth_blur_amount": false,
+          "depth_blur_amount": 1
+        }
+      },
+      "view": {
+        "location": {
+          "x": 300,
+          "y": 200,
+          "z": 150
+        },
+        "rotation": {
+          "roll": 20,
+          "pitch": 1.987846675914698e-16,
+          "yaw": -9.999999999999998
+        },
+        "fov_deg": 16.70537757873535,
+        "aspect_ratio": 1.3333333730697632,
+        "aspect_axis_constraint": "MaintainXFOV",
+        "constrain_aspect_ratio": true,
+        "off_center_projection_offset": {
+          "x": 0,
+          "y": 0
+        },
+        "overscan": 0,
+        "overscan_resolution_fraction": 1,
+        "perspective_near_clip_cm": 10,
+        "perspective_far_clip_cm": null
+      },
+      "projection": {
+        "view_proj": [
+          1.1113744398910668,
+          0.5393429860339939,
+          0,
+          0.9848077521688299,
+          6.302917476734186,
+          3.058765984361547,
+          0,
+          -0.17364818244996544,
+          -2.329464217610192,
+          8.533533779487996,
+          0,
+          3.469447048499771e-18,
+          -1244.5761946726284,
+          -2053.586159605707,
+          10,
+          -260.7126891606559
+        ],
+        "view_rect": {
+          "min_x": 240,
+          "min_y": 0,
+          "max_x": 1680,
+          "max_y": 1080
+        }
+      },
+      "markers": [
+        {
+          "name": "m_center",
+          "location": {
+            "x": 900,
+            "y": 0,
+            "z": 100
+          },
+          "projected": true,
+          "ndc": {
+            "x": -0.7629071615623222,
+            "y": -1.1425955387783329
+          },
+          "pixel": {
+            "x": 410.706843675128,
+            "y": 1157.0015909402998
+          },
+          "inside": false
+        },
+        {
+          "name": "m_lower_right",
+          "location": {
+            "x": 1600,
+            "y": 420,
+            "z": -120
+          },
+          "projected": true,
+          "ndc": {
+            "x": 2.786031949404139,
+            "y": -0.748747321474986
+          },
+          "pixel": {
+            "x": 2965.9430035709797,
+            "y": 944.3235535964925
+          },
+          "inside": false
+        },
+        {
+          "name": "m_upper_left",
+          "location": {
+            "x": 1400,
+            "y": -500,
+            "z": 300
+          },
+          "projected": true,
+          "ndc": {
+            "x": -2.937272466576577,
+            "y": -0.2222936955926297
+          },
+          "pixel": {
+            "x": -1154.8361759351355,
+            "y": 660.03859562002
+          },
+          "inside": false
+        }
+      ],
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "session": 1
+    }
+  ],
+  "peer_result": {
+    "ok": true,
+    "phase": "done",
+    "error": null,
+    "protocol": {
+      "name": "MtoUCameraSync",
+      "version": 2
+    },
+    "session": {
+      "protocol": "MtoUCameraSync",
+      "version": 2,
+      "time_authority": "unreal",
+      "sequence": "LevelSequence_7",
+      "sequence_path": "/Engine/Transient.LevelSequence_7",
+      "display_rate": {
+        "numerator": 24,
+        "denominator": 1
+      },
+      "tick_resolution": {
+        "numerator": 24000,
+        "denominator": 1
+      },
+      "playback_range": {
+        "start": 1001,
+        "end": 1051
+      },
+      "output_resolution": {
+        "x": 1920,
+        "y": 1080
+      },
+      "aperture_resolution": {
+        "x": 1440,
+        "y": 1080
+      },
+      "resolution_source": "prototype",
+      "far_clip_fallback_cm": 100000,
+      "camera_cut": {
+        "has_track": true,
+        "section_count": 2,
+        "active": true,
+        "active_index": 0,
+        "stage": "root"
+      },
+      "marker_names": [
+        "m_center",
+        "m_lower_right",
+        "m_upper_left"
+      ],
+      "port": 59910,
+      "session": 1
+    },
+    "scene_fps": 24,
+    "applied": [
+      {
+        "frame_serial": 1,
+        "eval_serial": 1,
+        "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+        ],
+        "maya_frame": 1001,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 50,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 2,
+          "focus_distance_cm": 400,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1001,
+          "subframe": false,
+          "world_matrix": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            100,
+            0,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              0,
+              0
+            ],
+            "maya_ndc": [
+              0,
+              0
+            ],
+            "delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              1.0516827520890624,
+              -0.7345086106506767
+            ],
+            "maya_ndc": [
+              1.051682730883185,
+              -0.7345085958402222
+            ],
+            "delta": [
+              -2.1205877276386786e-08,
+              1.4810454529445849e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -1.4308608871960031,
+              0.7631258292474565
+            ],
+            "maya_ndc": [
+              -1.4308608583444693,
+              0.7631258138599712
+            ],
+            "delta": [
+              2.885153382869987e-08,
+              -1.5387485285955904e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1001,
+          "translate_x": 5.000000000000101
+        }
+      },
+      {
+        "frame_serial": 2,
+        "eval_serial": 1,
+        "eval_identity": "LevelSequence_7@1001000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent#name=CineCameraActor4;actor=CineCameraActor4;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_4.CameraComponent;cine_camera=1;location=0.000000,0.000000,100.000000;rotation=0.000000,0.000000,0.000000;right=0.000000,1.000000,0.000000;up=0.000000,0.000000,1.000000;forward=1.000000,0.000000,0.000000;component_location=0.000000,0.000000,100.000000;view_transform_differs=0;focal_length_mm=50.000000;horizontal_fov_deg=28.029339;vertical_fov_deg=21.206097;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=2.000000;focus_method=Manual;focus_distance_cm=400.000000;manual_focus_distance_cm=400.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=400.000000;dof_override_fstop=1;dof_fstop=2.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ],
+        "maya_frame": 1001,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 50,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 2,
+          "focus_distance_cm": 400,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1001,
+          "subframe": false,
+          "world_matrix": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            100,
+            0,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              0,
+              0
+            ],
+            "maya_ndc": [
+              0,
+              0
+            ],
+            "delta": [
+              0,
+              0
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              1.0516827520890624,
+              -0.7345086106506767
+            ],
+            "maya_ndc": [
+              1.051682730883185,
+              -0.7345085958402222
+            ],
+            "delta": [
+              -2.1205877276386786e-08,
+              1.4810454529445849e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -1.4308608871960031,
+              0.7631258292474565
+            ],
+            "maya_ndc": [
+              -1.4308608583444693,
+              0.7631258138599712
+            ],
+            "delta": [
+              2.885153382869987e-08,
+              -1.5387485285955904e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1001,
+          "translate_x": 5.000000000000101
+        }
+      },
+      {
+        "frame_serial": 3,
+        "eval_serial": 2,
+        "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback"
+        ],
+        "maya_frame": 1030,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 85,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 4,
+          "focus_distance_cm": 800,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1030,
+          "subframe": false,
+          "world_matrix": [
+            0.9254165795297062,
+            -0.3420201407847474,
+            -0.16317591007596863,
+            0,
+            0.33682408641144274,
+            0.939692621710728,
+            -0.05939117371727355,
+            0,
+            0.17364817633547425,
+            2.775557561562892e-17,
+            0.9848077532469794,
+            0,
+            200,
+            150,
+            -300,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              -0.7629071615623222,
+              -1.1425955387783329
+            ],
+            "maya_ndc": [
+              -0.7629072281031052,
+              -1.1425955696371455
+            ],
+            "delta": [
+              -6.654078299472843e-08,
+              -3.0858812616330056e-08
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              2.786031949404139,
+              -0.748747321474986
+            ],
+            "maya_ndc": [
+              2.7860319529891244,
+              -0.7487474004041436
+            ],
+            "delta": [
+              3.584985641680305e-09,
+              -7.892915754315055e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -2.937272466576577,
+              -0.2222936955926297
+            ],
+            "maya_ndc": [
+              -2.9372725754491564,
+              -0.22229367132044603
+            ],
+            "delta": [
+              -1.088725793962908e-07,
+              2.427218367961892e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1030,
+          "translate_x": 9
+        }
+      },
+      {
+        "frame_serial": 4,
+        "eval_serial": 2,
+        "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ],
+        "maya_frame": 1030,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 85,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 4,
+          "focus_distance_cm": 800,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1030,
+          "subframe": false,
+          "world_matrix": [
+            0.9254165795297062,
+            -0.3420201407847474,
+            -0.16317591007596863,
+            0,
+            0.33682408641144274,
+            0.939692621710728,
+            -0.05939117371727355,
+            0,
+            0.17364817633547425,
+            2.775557561562892e-17,
+            0.9848077532469794,
+            0,
+            200,
+            150,
+            -300,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              -0.7629071615623222,
+              -1.1425955387783329
+            ],
+            "maya_ndc": [
+              -0.7629072281031052,
+              -1.1425955696371455
+            ],
+            "delta": [
+              -6.654078299472843e-08,
+              -3.0858812616330056e-08
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              2.786031949404139,
+              -0.748747321474986
+            ],
+            "maya_ndc": [
+              2.7860319529891244,
+              -0.7487474004041436
+            ],
+            "delta": [
+              3.584985641680305e-09,
+              -7.892915754315055e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -2.937272466576577,
+              -0.2222936955926297
+            ],
+            "maya_ndc": [
+              -2.9372725754491564,
+              -0.22229367132044603
+            ],
+            "delta": [
+              -1.088725793962908e-07,
+              2.427218367961892e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1030,
+          "translate_x": 9
+        }
+      },
+      {
+        "frame_serial": 5,
+        "eval_serial": 2,
+        "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ],
+        "maya_frame": 1030,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 85,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 4,
+          "focus_distance_cm": 800,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1030,
+          "subframe": false,
+          "world_matrix": [
+            0.9254165795297062,
+            -0.3420201407847474,
+            -0.16317591007596863,
+            0,
+            0.33682408641144274,
+            0.939692621710728,
+            -0.05939117371727355,
+            0,
+            0.17364817633547425,
+            2.775557561562892e-17,
+            0.9848077532469794,
+            0,
+            200,
+            150,
+            -300,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              -0.7629071615623222,
+              -1.1425955387783329
+            ],
+            "maya_ndc": [
+              -0.7629072281031052,
+              -1.1425955696371455
+            ],
+            "delta": [
+              -6.654078299472843e-08,
+              -3.0858812616330056e-08
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              2.786031949404139,
+              -0.748747321474986
+            ],
+            "maya_ndc": [
+              2.7860319529891244,
+              -0.7487474004041436
+            ],
+            "delta": [
+              3.584985641680305e-09,
+              -7.892915754315055e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -2.937272466576577,
+              -0.2222936955926297
+            ],
+            "maya_ndc": [
+              -2.9372725754491564,
+              -0.22229367132044603
+            ],
+            "delta": [
+              -1.088725793962908e-07,
+              2.427218367961892e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1030,
+          "translate_x": 9
+        }
+      },
+      {
+        "frame_serial": 6,
+        "eval_serial": 2,
+        "eval_identity": "LevelSequence_7@1030000+000//Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent#name=CineCameraActor5;actor=CineCameraActor5;component=CameraComponent;path=/Temp/Untitled_1.Untitled_1:PersistentLevel.CineCameraActor_5.CameraComponent;cine_camera=1;location=300.000000,200.000000,150.000000;rotation=0.000000,-10.000000,20.000000;right=0.163176,0.925417,-0.342020;up=0.059391,0.336824,0.939693;forward=0.984808,-0.173648,0.000000;component_location=300.000000,200.000000,150.000000;view_transform_differs=0;focal_length_mm=85.000000;horizontal_fov_deg=16.705378;vertical_fov_deg=12.567916;sensor_width_mm=24.959999;sensor_height_mm=18.719999;sensor_aspect_ratio=1.333333;sensor_horizontal_offset_mm=0.000000;sensor_vertical_offset_mm=0.000000;aspect_axis_constraint=MaintainXFOV;constrain_aspect_ratio=1;rendered_aspect_ratio=1.333333;f_stop=4.000000;focus_method=Manual;focus_distance_cm=800.000000;manual_focus_distance_cm=800.000000;depth_of_field=1;squeeze_factor=1.000000;min_focal_mm=4.000000;max_focal_mm=1000.000000;min_fstop=1.200000;max_fstop=22.000000;minimum_focus_distance_cm=15.000000;crop_enabled=0;crop_aspect_ratio=0.000000;near_clip_cm=10.000000;near_clip_source=engine_default;custom_near_clip_cm=10.000000;override_custom_near_clip=0;has_far_clip=0;far_clip_cm=0.000000;off_center_projection_offset=0.000000,0.000000;overscan=0.000000;overscan_resolution_fraction=1.000000;post_process_blend_weight=1.000000;dof_override_focal_distance=1;dof_focal_distance_cm=800.000000;dof_override_fstop=1;dof_fstop=4.000000;dof_override_sensor_width=1;dof_sensor_width_mm=24.959999;dof_override_squeeze_factor=1;dof_squeeze_factor=1.000000;dof_override_min_fstop=1;dof_min_fstop=1.200000;dof_override_blade_count=1;dof_blade_count=7;dof_override_depth_blur_radius=0;dof_depth_blur_radius=0.000000;dof_override_depth_blur_amount=0;dof_depth_blur_amount=1.000000;",
+        "status": "applied",
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ],
+        "maya_frame": 1030,
+        "unreal_display_frame": null,
+        "expected": null,
+        "camera": {
+          "focal_length_mm": 85,
+          "horizontal_film_aperture_in": 0.9826771293099471,
+          "vertical_film_aperture_in": 0.7370078469824604,
+          "horizontal_film_offset_in": 0,
+          "vertical_film_offset_in": 0,
+          "film_fit": 1,
+          "lens_squeeze_ratio": 1,
+          "f_stop": 4,
+          "focus_distance_cm": 800,
+          "depth_of_field": true,
+          "near_clip_cm": 10,
+          "far_clip_used_cm": 100000,
+          "far_clip_substituted": true,
+          "far_clip_source": "session_fallback",
+          "maya_time": 1030,
+          "subframe": false,
+          "world_matrix": [
+            0.9254165795297062,
+            -0.3420201407847474,
+            -0.16317591007596863,
+            0,
+            0.33682408641144274,
+            0.939692621710728,
+            -0.05939117371727355,
+            0,
+            0.17364817633547425,
+            2.775557561562892e-17,
+            0.9848077532469794,
+            0,
+            200,
+            150,
+            -300,
+            1
+          ],
+          "default_resolution": {
+            "width": 1440,
+            "height": 1080,
+            "pixel_aspect": 1
+          }
+        },
+        "gate": {
+          "width": 1440,
+          "height": 1080,
+          "display_resolution": true,
+          "display_gate_mask": true
+        },
+        "markers": [
+          {
+            "name": "m_center",
+            "unreal_ndc": [
+              -0.7629071615623222,
+              -1.1425955387783329
+            ],
+            "maya_ndc": [
+              -0.7629072281031052,
+              -1.1425955696371455
+            ],
+            "delta": [
+              -6.654078299472843e-08,
+              -3.0858812616330056e-08
+            ]
+          },
+          {
+            "name": "m_lower_right",
+            "unreal_ndc": [
+              2.786031949404139,
+              -0.748747321474986
+            ],
+            "maya_ndc": [
+              2.7860319529891244,
+              -0.7487474004041436
+            ],
+            "delta": [
+              3.584985641680305e-09,
+              -7.892915754315055e-08
+            ]
+          },
+          {
+            "name": "m_upper_left",
+            "unreal_ndc": [
+              -2.937272466576577,
+              -0.2222936955926297
+            ],
+            "maya_ndc": [
+              -2.9372725754491564,
+              -0.22229367132044603
+            ],
+            "delta": [
+              -1.088725793962908e-07,
+              2.427218367961892e-08
+            ]
+          }
+        ],
+        "pose": {
+          "node": "MtoUCameraSyncWitness",
+          "sampled_maya_frame": 1030,
+          "translate_x": 9
+        }
+      }
+    ],
+    "restore": {
+      "idle_pump": "this Maya session returned no scriptJob for idleEvent; the idle pump is unavailable, call pump() instead",
+      "idle_job": null,
+      "idle_tick_ok": true,
+      "maya_frame_during": 1030,
+      "time_moved": true,
+      "camera_keys": 0,
+      "maya_frame_before": 1001,
+      "maya_frame_after": 1001,
+      "restored_time": 1001,
+      "camera_removed": true,
+      "removed": "MtoU_UE_Camera",
+      "playback_range_before": [
+        1,
+        120
+      ],
+      "playback_range_after": [
+        1,
+        120
+      ],
+      "witness_keys_before": 2,
+      "witness_keys_after": 2,
+      "witness_value_before": 5.000000000000101,
+      "witness_value_after": 5.000000000000101,
+      "frames_applied": 2,
+      "frames_unchanged": 4,
+      "frames_rejected": 0,
+      "frames_subframe": 0,
+      "far_clip_substitutions": 2,
+      "max_marker_delta": 1.088725793962908e-07,
+      "state": "stopped",
+      "detail": "client stopped",
+      "error": null
+    },
+    "render": {
+      "available": false,
+      "reason": "not requested"
+    },
+    "problems": []
+  }
+}

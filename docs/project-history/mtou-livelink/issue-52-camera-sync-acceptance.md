@@ -1,279 +1,101 @@
-# Issue #52: Unreal to Maya camera and Sequencer verification
+# Issue #52: Unreal to Maya camera and Sequencer acceptance
 
-Independent re-verification: 2026-10-08, implementation and review baseline
-`25336faee2e03076e7e22e829a9793509b1cfbca` (local, unpushed). **R-007–R-009
-are independently verified closed; the bounded Issue #52 prototype passes
-whole-issue acceptance.** Review-02 supports closure under the user's existing
-authorization. Runtime tests used checkout
-`d4b8d3155d6f54d17c598b1f1db4cb710f4d3cc0`, whose camera prototype code is
-identical to the delivery baseline. Product integration, interactive Maya
-scriptJob lifecycle and continuous-playback measurements remain outside this
-acceptance, under the previously agreed boundaries.
+**Accepted and closed on 2026-10-08.** Independent review-02 accepted the bounded
+prototype at `25336faee2e03076e7e22e829a9793509b1cfbca`; R-007–R-009 are verified
+closed. Tests ran from `d4b8d3155d6f54d17c598b1f1db4cb710f4d3cc0`, whose camera
+prototype code is identical. UE C++ is unchanged from the review-01 build at
+`91413946466d8f0337104f4bf087b7a4962d3428`; review-02 reused its compiled modules
+and does not claim a new build.
 
-The [current issue handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
-indexes the independent review and its complete reproduction script. This
-record and implementation are local, unpushed updates; the issue comments carry the remotely
-accessible current conclusion. Remote file
-synchronization remains pending.
+The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
+owns issue status; [review-02](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-6055097768)
+owns independent acceptance. The archival closeout inspected existing evidence
+and verified preservation; it did not rerun host acceptance or change scope.
 
-Development evidence below dates from 2026-09-28–2026-09-30. The bounded camera
-prototype was verified on stock
-Unreal 5.7.4 and Maya 2024. The follow-up uses the **open Level Sequence
-editor** for its time and evaluated camera rather than a second player. Two
-review rounds then tightened the prototype: the **evaluation identity** is
-separated from the transport serial so a paused target is not invalidated by its
-own heartbeats, and it now covers the **published camera content** as well, so
-editing the camera that is already selected at the sequence time that is already
-sampled starts a new target. A keyed Maya joint pose witness returns on the
-prototype channel and is applied to a disposable Unreal actor only when its
-session, generation, camera and evaluation time match the target that is current
-when the report is read. This establishes a small paused-frame loop with a
-convergence condition. It does not establish production MtoULiveLink pose
-streaming, full-character same-frame application, or continuous-playback
-performance. No product v9 code or package was changed.
+## Accepted scope
 
-A third round implemented the two follow-ups from the review: the **natural
-editor loop** is a host check in its own right, and **exit and normal fixture
-recovery** are covered on both sides. The session stops and joins its listener thread before it
-closes the sockets that thread accepted; a session now sends `end`, shuts its
-write side down and reads what the client already sent, so the client can tell a
-deliberate end from a lost connection; and a client that stops accepting a line
-is dropped instead of holding an editor tick. Maya now releases the scene
-resolution gate and a borrowed camera's own state on stop, not only the time and
-its created camera. The natural loop found and fixed four defects that driven
-tests had not reached: accepted sockets could outlive a stop, a client that
-aborted the transport made every later send eat its deadline, a publisher that
-ended a session was reported as a lost connection, and a reset during a
-handshake or a hello send could raise through the Maya client instead of being
-reported as a transport failure.
+| Issue requirement | Effective conclusion and boundary |
+| --- | --- |
+| Official reuse, adaptation, missing capabilities, license/version | The [official capability record](../../../composite/MtoULiveLink/prototypes/camera-sync/official-capabilities.md) distinguishes Autodesk's Maya→UE camera route from reverse synchronization. Review-01 inspected source, MIT license and listed releases; review-02 reused the unchanged record. No official plugin was installed or certified for UE 5.7. |
+| Evaluated camera and parameter mapping | One active perspective Cine Camera provides world transform, focal length, horizontal/vertical FOV, filmback, fit/offset, crop, aperture, focus/DOF, near clip and output/aperture resolution. Maya's gate uses aperture pixel extent. The [mapping record](../../../composite/MtoULiveLink/prototypes/camera-sync/mapping.md) owns conversions and representational differences. |
+| Known-marker composition and DOF differences | Actual Maya read-back projection and four Arnold film-fit configurations pass. DOF parameter agreement does not establish cross-renderer image equality. Out-of-frame markers are excluded from visible-pixel evidence. Far clip, overscan and extra bokeh shaping remain explicitly limited. |
+| Single time authority, cuts, subframes and restoration | The open Level Sequence editor supplies time/camera. Explicit origins, different rates, non-zero starts, fractional frames, two Camera Cuts and one subsequence are covered. Identity contains time and camera content; stale/duplicate/old-session reports are refused. Stop and failure restore supported camera state, gate, time and undo enablement. |
+| Real-time/cache relationship | UE owns camera/time; Maya owns the witness pose. The prototype uses a separate TCP channel and protocol v2. Product v9, packages and production pose transport are unchanged. Cached Playback stays off; shared-clock integration belongs to #47. |
+| Reproducible prototype and support boundaries | The [prototype README](../../../composite/MtoULiveLink/prototypes/camera-sync/README.md), fixtures and maintained host tests supply run entry points. Result reports and independent reproductions are retained in the [evidence archive](issue-52-camera-sync-evidence/README.md). |
+| Minimal product boundary and decisions | One active perspective camera, explicit origin, subframe evaluation and identity-checked replies are the bounded direction. Shared coordinates/origin, authority switching, pairing, ownership, protocol negotiation and UI remain a unified #47 decision after #52–#54's agreed prototype progress. |
 
-## Current accepted fixes and evidence
+Static, undriven, writable cameras may be borrowed. Animation, constraints,
+driven ancestors and protected write attributes are refused before mutation;
+use another camera name for a disposable camera and a writable resolution gate.
+Orthographic/simultaneous cameras, deeper nested cuts, PIE/packaged execution,
+Movie Render Queue resolution discovery and full-character/Morph product
+transport are outside acceptance.
 
-| Finding | Implemented behavior | Current status |
+## Independent verification
+
+Review-02 executed these checks on Windows, Maya 2024 and stock UE 5.7.4,
+with disposable scenes and isolated preferences. C01/Backups production assets
+were not opened or modified. Official-source conclusions are historical review.
+
+| Check | Result | Durable evidence |
 | --- | --- | --- |
-| R-007 | Public `run()` owns setup, callback attachment and following in one unconditional cleanup scope. Direct `connect()` rolls back on setup/handshake exceptions. Failed exits retain their original exception or transport reason. An idle-handler exception fails and releases the session. Undo enablement is restored without flushing unrelated undo history. | Independently verified closed in review-02 |
-| R-008 | Cameras with non-message inputs on their shape, transform or ancestors are refused before adoption/writes with `CAMERA_INPUT_DRIVEN`. Time evaluates before camera writes; reported projection uses the actual host matrix, lens, film parameters and device aspect. Camera/gate/time read-back mismatches are rejected with `HOST_STATE_MISMATCH`, with transaction/time rollback after attempted writes. A stale heartbeat is rejected and the following frame can repair it. | Independently verified closed in review-02 |
-| R-009 | Protected camera, transform compound and resolution write plugs are refused before frame writes with `LOCKED_SYNC_ATTRIBUTE`; the prototype never unlocks plugs. Static unlocked borrowing and normal recovery remain supported. | Independently verified closed in review-02 |
+| Mapping under system Python and mayapy | Each interpreter passed 63/63. | Original review-02 in the [comment archive](issue-52-comment-archive.json), maintained tests. |
+| Maya host/Arnold | 145 checks, zero failures, including 50 safety checks; four film-fit configurations. Largest compared visible-marker component error 0.196001 px, tolerance 2 px. | [Host result](issue-52-camera-sync-evidence/issue52-review02-20261008/maya-host.json). |
+| Independent review-01 failure inputs | Public disconnect restores time 17, 800×600 gate, camera/socket ownership and original failure reason. Connection refusal preserves disabled undo. Animated borrowing is rejected without key changes or fabricated success; locked borrowing preserves locks/values. | [Result](issue-52-camera-sync-evidence/issue52-review02-20261008/review-repro.json), [portable reproduction](issue-52-camera-sync-evidence/review-02-reproduction.py). |
+| UE Automation with both opt-in real peers | 11 succeeded, zero failed/skipped/warned; exit 0. | [Automation report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-automation/index.json). |
+| RealMayaPeer | Generation 2 converged; maximum actual read-back marker difference 1.08873e-07 NDC. No anomalous lines, trailing bytes or failed sends. Superseded/synthetic replay refusals are expected negative cases. | [UE peer report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-evidence/camera-sync-ue-report.json). |
+| EditorLoopFollow | All 13 steps pass; six connection lifetimes restore; ten fractional-time applications. Maximum read-back difference 7.5052e-07 NDC, peer exit 0. | [Editor-loop report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-evidence/editor-loop/editor-loop-report.json). |
+| Official capabilities and product boundary | Review-01's source/license/version inspection remains applicable to unchanged records. No new official-plugin build or installation claimed. | Archived review-01 and official capability/mapping records. |
 
-These are the bounded refusal options allowed by review-01, not a new requirement
-to support animated/protected-camera borrowing. Choose a different camera name
-for a disposable camera, and use a disposable scene with a writable resolution
-gate. Prototype protocol v2 and product protocol v9 are unchanged.
+The module ticker drives the natural loop: drag, cut, parked-camera editing,
+sequence close/reopen, client loss/rejoin and repeated stop/start. Its seconds-long
+fixture does not establish sustained playback performance. Real local TCP injects
+the supplementary disconnect; callback/hello fault checks also use mocks.
+Batch mayapy cannot establish an interactive scriptJob lifecycle or a UE crash
+test. The single-joint witness validates the identity join and paused-frame loop,
+not full-character same-frame production streaming.
 
-Review-02 independently reran the full Maya host/Arnold suite: 145 checks,
-zero failures, including the 50 safety checks. System Python and mayapy mapping
-tests each pass 63/63. The original review-01 failure scenarios were also rerun
-outside the new safety suite: public disconnect restores time 17, the 800x600
-gate, camera ownership and socket; connection refusal preserves disabled undo;
-animated borrowing is rejected without changing keys or fabricating marker
-success; locked borrowing is rejected with locks and values unchanged.
+## Findings and remaining ownership
 
-Stock UE 5.7.4 Automation independently passes 11/11, with zero failures,
-skips or warnings and both real mayapy peers enabled. No C++ changed since the
-review-01 build, so no new engine/module build is claimed. RealMayaPeer
-converges at generation 2 with maximum read-back marker difference
-1.08873e-07 NDC. EditorLoopFollow passes all 13 steps and restores all six
-connection lifetimes, with ten fractional times and maximum difference
-7.5052e-07 NDC. Four Arnold film-fit configurations pass; the largest compared
-visible-marker component error is 0.196001 px against a 2 px tolerance.
-Out-of-frame markers do not count as visible-pixel evidence.
+| ID | Category / severity | Current conclusion or completion condition |
+| --- | --- | --- |
+| R-003 | Independent review action | Complete: review-01 identified concrete failures; review-02 independently verified their fixes. |
+| R-007 | Spec / P2 | Verified closed. Run/connect/callback failures clean up unconditionally, preserve the failure reason and restore undo without flushing unrelated history. The old baseline leaked scene/socket state after transport loss. |
+| R-008 | Spec / P1 | Verified closed. Driven inputs are refused with `CAMERA_INPUT_DRIVEN`; actual read-back supplies projection/status. `HOST_STATE_MISMATCH` rejects mismatches with rollback. The old baseline reported success after animation overwrote the requested camera. |
+| R-009 | Standards / P2 | Verified closed. Protected leaf/compound/transform/gate inputs are refused with `LOCKED_SYNC_ATTRIBUTE`; plugs are never unlocked. The old baseline lost focal and resolution locks. |
+| R-001 | Non-blocking acceptance gap | #47 host follow-up: verify interactive idle-pump attachment/removal and repeated lifetime without duplicate scriptJobs. |
+| R-002 | Non-blocking acceptance gap | #47 performance follow-up: measure sustained playback latency percentiles and define drop/hold behavior. |
+| R-004 | Future candidate | #47 decides common space/origin, authority switching, session/evaluation identity, pairing, ownership, protocol negotiation and UI after #52–#54's agreed progress. |
+| R-005 | Future candidate | #47 evaluates ADR 0013's monotonic cache clock before sharing Sequencer time. Cache remains off. |
+| R-006 | Future candidate | #47 decides MRQ resolution authority, Maya camera persistence and exit-frame policy. |
 
-The review-02 raw evidence remains local beside the repository at
-`.tmp/issue52-review02-20261008/`: `maya-host.json`, `independent_repro.py`,
-`review-repro.json`, `ue-suite.log`, `ue-automation/index.json` and
-`ue-evidence/`. Real local TCP peers inject disconnect/handshake faults;
-callback/hello fault injection also uses mocks. These checks are not a real
-interactive scriptJob lifecycle or a UE crash test. C01/Backups production
-assets were not opened or modified. Generated UE configuration changes were
-removed, restoring the initially clean checkout outside the review records.
+Historical R-008 measured a 0.933237 NDC difference from actual read-back while
+the requested-value report claimed approximately zero. This is a historical
+numerical reproduction, not a rendered error or a current defect. Original
+triggers/code references/interim conclusions remain in the comment archive.
 
-Review-02 maps every issue acceptance requirement to this run or still-valid
-review-01 evidence. Official capabilities and product-boundary records are
-unchanged; their previous source review remains applicable. R-001/R-002 retain
-their non-blocking prototype status, and R-004–R-006 remain under #47.
-The pre-review current handoff is preserved verbatim in
-[the review-02 archive](issue-52-review-02-comment-archive.json) and in the
-remote review-02 comment. The local implementation, record and archive remain
-unpushed; current issue comments are remotely accessible.
+## Archive and reproduction
 
-## Historical findings at the review-01 baseline
+- [Unified comment archive](issue-52-comment-archive.json): five live reports
+  before consolidation and thirteen earlier snapshots, including previously
+  removed reports. IDs/authors/timestamps are preserved. Affected bodies mark
+  machine-path normalization and retain original SHA-256. Nested historical
+  archives use `github-issue-comment-archive/1`; the former separate review-02
+  handoff archive is incorporated here.
+- [Evidence archive](issue-52-camera-sync-evidence/README.md): meaningful JSON
+  results from development/review, including unsuccessful intermediate runs,
+  and two independent reproductions. The [manifest](issue-52-camera-sync-evidence/manifest.json)
+  maps source paths/hashes to retained files or disposal reasons.
+- Use the maintained prototype commands for host/Arnold and UE acceptance;
+  both real peer arguments must be enabled. A run skipping them is insufficient.
+- Supplementary current reproduction:
+  `mayapy <repo>/docs/project-history/mtou-livelink/issue-52-camera-sync-evidence/review-02-reproduction.py <scratch>/review-repro.json`.
+  Repository/output lookup is portable; assertions are unchanged. Review-01's
+  script is historical and deliberately reproduces its old failing baseline.
 
-The following findings describe the older `9141394` baseline. They are retained
-as reproduction context; R-007–R-009 are all closed at `25336fa` by review-02.
-
-All three findings were reproduced in Maya 2024 at the reviewed baseline, not
-inferred only from source.
-Line references are in the Maya component's `scripts/MtoUCameraSyncPrototype.py`
-at the reviewed baseline. Passing normal fixtures do not establish complete
-recovery or correctness for a driven borrowed camera.
-
-| ID | Category / severity | Trigger and observed behavior | Completion condition |
-| --- | --- | --- | --- |
-| R-007 | Spec / P2; blocks closure | Close a local TCP publisher without `end` after the public `run()` applies a frame. It returns `failed` with time 1000 instead of original 17, resolution 1920x1080 instead of 800x600, its camera still present and its socket still owned. Explicit `stop()` afterwards restores the scene. A refused connection also leaves undo enabled when initially disabled. `connect()` is outside the run-loop try and finally only cleans FOLLOWING (936-957); connection refusal does not restore earlier undo changes (242-258). | Exception-safe ownership covering connect, callback attachment and following; cleanup on every exit while retaining the failure reason. Verify the public entry point, failed handshakes, restored state and idempotent stop. |
-| R-008 | Spec / P1; blocks closure | Borrow a camera with translateX keys 10/90 and focalLength keys 28/70 at frames 1/30. Start at 17 and apply the bundled first fixture (Maya 1000, 35 mm, world X=300 cm). Animation evaluation after the writes restores 70 mm and X=90 cm, but the report says applied and gives 1.11e-16 NDC marker error. Projection from actual read-back state differs by 0.933237 NDC. Keys were unchanged. Adoption has no driven-input guard (563-583), time changes after writes (735-743), and marker reporting uses requested values (759-781). | Refuse driven borrowed cameras before mutation, use an isolated camera, or prove correct supported borrowing. Validate actual host state/projection and preserve existing keys/connections. Supporting animated borrowing is not required; safe explicit refusal is sufficient. |
-| R-009 | Standards / P2; blocks full recovery | Lock a borrowed camera's focalLength and defaultResolution.width, apply a valid frame and stop. Both locks become False although values restore and stop reports success. Capture saves values only and restore unlocks again (593-641). | Restore affected plug lock states after success, failure and stop, or refuse unsupported locked input before any mutation; compare locks as well as values. |
-
-R-003 (pending independent review) is complete; the concrete failures are now
-tracked as R-007–R-009. R-001 (interactive Maya idle callbacks) and R-002
-(continuous-playback measurements) retain their agreed non-blocking prototype
-status. R-004–R-006 remain product decisions under #47.
-
-| Review-01 executed check | Result and evidence boundary at the old baseline |
-| --- | --- |
-| UE 5.7.4 build | Succeeded; affected module recompiled. |
-| Automation with real mayapy/peer/evidence arguments | 11 succeeded, 0 failed, 0 skipped, 0 warnings; exit 0, both opt-in host checks executed. |
-| EditorLoopFollow | 13 steps succeeded, 6 connection lifetimes; first lifetime has 23 application replies, 10 fractional times, focals 50/85/120. Maximum reported marker delta 7.5052e-07 NDC. The module ticker advances the session; the test does not call Pump or ForceEvaluate. Normal fixture cleanup does not cover the public failure path. |
-| RealMayaPeer | Converged at generation 2, witness 9; 7 publications, 6 replies, 5 paired witnesses. Three expected refused replies: one superseded cut reply and two synthetic replays. Maximum reported marker delta 1.08873e-07 NDC; no anomalous lines, trailing bytes or failed sends. |
-| ShutdownWindow | 6 cycles, 97 connections closed, ports released; stops 0.008–0.011 s. Concurrent connection counts can vary from the earlier run's 96. |
-| Pure mapping tests | System Python and mayapy each 63/63 passed. |
-| Maya host with Arnold rendering enabled | 95 checks, 0 failures (90 existing host checks plus enabled render checks); four film-fit configurations. Compared visible markers have maximum component error 0.196001 px against 2 px tolerance. Out-of-frame markers are not counted as visible-pixel evidence. |
-| Supplementary host reproduction | Two independent mayapy processes reproduced R-007/R-008/R-009; the second adds the read-back projection measurement. The 0.933237 NDC figure is calculated from actual read-back values, not a rendered measurement of the failing case. |
-| Official capability source review | Rechecked Autodesk camera subject, time-sync feedback guards, MIT license and releases linked in official-capabilities.md; the latest listed release remains 2.6.0 / UE 5.5. No official plugin installed or compiled for UE 5.7. Existing Epic-specific and per-parameter records were inspected. |
-
-Raw evidence is local beside the repository in `.tmp/issue52-review-20261008/`:
-`ue-build.log`, `ue-suite.log`, `ue-automation/index.json`, `ue-evidence/`,
-`maya-host.json`, `render/`, `review_repro.py` and `review-repro.json`. It is not
-uploaded. The issue review embeds a portable full reproduction script and key
-observations. Runs used isolated Maya preferences and disposable host scenes;
-the supplied C01/Backups assets were not opened or modified. Pre-existing
-Unreal configuration changes were unchanged before and after the host checks.
-
-Original September 30 source reports are preserved as a complete
-`github-issue-comment-archive/1` JSON attachment inside the independent review
-comment indexed by the current handoff, with exact IDs, timestamps, authors and
-bodies. The source contains machine-specific paths, which repository validation
-forbids in controlled files, so the archive is published in the issue comment
-and this history record keeps its index. The earlier
-[comment archive](issue-52-comment-archive.json) remains unchanged. This review
-does not create a branch, PR, remote push or product package.
-
-## Established prototype behavior and development evidence
-
-The following development results remain useful within their fixture scope.
-The independent review above supplies the current acceptance decision and
-qualifies the broader restoration claims.
-
-| Area | Verified result |
-| --- | --- |
-| Official capability | Autodesk Unreal Live Link for Maya publishes Maya → Unreal camera data under MIT and its latest available integration targets UE 5.5. Epic's Camera Sync also moves the Maya viewport camera into Unreal. Neither supplies a complete Unreal → Maya camera path. Sources and the reuse/adapt/missing split remain in the prototype's `official-capabilities.md`. |
-| Camera and framing | The engine's evaluated perspective Cine Camera, cut selection, film parameters and aperture extent reach one Maya camera. Known-marker disagreement is at most **1.09e-07 NDC**. The earlier Arnold check placed compared markers within **0.25 px** of prediction against a 2 px tolerance; that render was not repeated in this round. |
-| Real editor time | The open editor's global/root time and `ISequencer::GetLastEvaluatedCameraCut()` drive publication, and one forced evaluation keeps the resolved camera in step with a moved playhead before a report is judged. Paused seeks 1001 → 1030 change the camera 50 → 85 mm. Focusing a subsequence retains root time 1030 and the evaluated camera. Stopping follow does not move the editor playhead. |
-| Maya time | A chosen Maya origin maps to the Unreal playback start. By default both origins are the Unreal start, independent of Maya's connection frame. Maya 2024 evaluates fractional time directly: the host check reaches 1002.5 and a keyed joint between 1002 and 1003 reads 5.0. On stop, Maya restores its original connection frame, camera cleanup, playback range and existing keys. |
-| Evaluation identity | Prototype protocol v2 publishes `eval_serial` and `eval_identity` beside the transport `frame_serial`. The identity is `<sequence>@<tick>+<milli-tick>/<camera path>#<camera content>`: the sequence time at **1/1000 tick** precision plus a canonical text of every camera value the `frame` message publishes, so the identity distinguishes times inside one tick and treats a same-time edit of the evaluated camera (transform, focal length, filmback, offsets, depth of field) as a new target. Heartbeats repeat the current generation. |
-| Paused pose witness | Unreal samples the target (time **and** camera content), then reads client reports, then publishes, so a report is judged against the target that is current *now* rather than against the publication it answered. `EvalIdentityConvergence` proves: a slow report for the still-current target pairs after a heartbeat superseded its publication; a fresh, unpaired report that arrives in the same tick that left the target is refused before the new frame is published; replaying a publication never pairs twice; and a former connection's report is refused although every other identity field is current. `CameraContentIdentity` adds: an unchanged camera rebuilds the same identity; editing the evaluated camera's focal length and transform at the same tick starts a new generation and refuses an in-flight report that answered the previous content; the report for the changed content is applied; a sub-tick move inside one tick is a new target with the same content digest; and a pose edited at the parked frame is applied on the next heartbeat of the unchanged target. |
-| Convergence | Acceptance is no longer "paired at least once": after the timeline stops, the target that is current must be answered within a bounded wait. The real session converged (`eval_serial == converged_paired_eval_serial == 2`), and the real `RealMayaPeer` test asserts the same condition. |
-| Transport correction | The former apparent “Maya trailing bytes” were produced by the Unreal receiver treating a length-delimited UTF-8 conversion as a zero-terminated C string. Explicit-length construction removed the symptom; this round again recorded **0 anomalous lines, 0 discarded bytes, 0 failed sends**, and a deliberately malformed non-ASCII suffix verifies byte accounting (one character, two UTF-8 bytes). |
-| Transport bounds | Per pump the session drains the complete lines it has already buffered **before** reading the socket, receives at most 256 KiB and buffers at most one message plus one 4 KiB read, so a burst larger than the 64-line budget keeps draining after the sender goes silent. A message that exceeds 64 KiB without a complete line fails the session closed with `CLIENT_MESSAGE_TOO_LARGE` instead of growing the buffer, a dropped connection discards its partial line, and the report evidence queue is capped at 512 entries with counted evictions. `ClientBufferBounds` covers a 65-line silent burst, a line split across two sends, the oversize refusal and a clean reconnect. |
-| Connection ownership | The TCP listener runs on its own thread, and the prototype used to accept a connection and reset the input buffer from that thread while the editor thread was parsing, which a burst followed by a reconnect turned into a real out-of-range read during this round's check. The listener thread now only queues accepted sockets; the editor thread adopts them (new session identity, empty buffer) or refuses them with `SESSION_BUSY`, so no session state is shared across threads. |
-| Close detection (new) | The engine reports a cleanly closed socket as connected while there are no pending bytes, so an idle client that left stayed registered. The session now probes readability with nothing to read — the stream end-of-file — before concluding the client is still there; the reconnect tests depend on this. |
-| Shutdown ordering (new) | `FTcpListener::Stop()` only clears its running flag; the join happens when the listener is destroyed. The session used to drain the accepted-socket queue first, so a connection accepted in that window stayed open. It now stops and joins the listener before the last drain, and closes what the listener queued: 6 start/stop cycles with 96 connections, every one closed and the port free, 90 of them closed by that final drain. Stopping follow measured `end` ≤ 0.006 s, listener join ≤ 0.021 s and 0.004–0.026 s in total. |
-| Client end and stalled sends (new) | Ending a session now sends `end` on a half-closed stream and reads what the client already sent, so a deliberate end is distinguishable from a loss: the live Maya peer recorded `publisher_end` for every publisher-initiated stop in the natural loop. A connection that cannot take a line in 250 ms is dropped instead of consuming a send deadline; before this, a client that aborted its socket made one editor tick per publish take ~2 s. |
-| Natural editor loop (new) | The module's own ticker advances the session while a real mayapy peer follows: a 20-step playhead drag (published 1002 → 1030.5, 21 frames, focals 50 → 85 across the cut), a parked position on the second cut, a camera edited to 120 mm at that same time, a closed and reopened sequence, a client-initiated drop and rejoin, and three start/stop cycles. Every step ended with the target that is current answered; 10 of the 23 drag frames were fractional and Maya evaluated them exactly; worst marker disagreement 7.505e-07 NDC. |
-| Maya release | Explicit stop restores normal fixture time, resolution values, created-camera ownership or static borrowed-camera values, and the socket. The three-cycle host check and six natural-loop connection lifetimes cover these cases. They do not cover the public failure exit (R-007), animation-driven borrowing (R-008) or attribute locks (R-009); batch callback behavior also remains unverified. |
-
-## Scope and September 30 development evidence
-
-The prototype stays separate from MtoULiveLink: independent TCP port 54330,
-editor-only Unreal plugin, no new external dependency, no change to product
-protocol v9, no product packaging. The opt-in pose witness is one keyed Maya
-joint's `translateX`, carried in the camera prototype's `applied` report and
-mapped to a disposable Unreal actor's Y position. It validates the identity join
-and time evaluation, not the product's full character-pose transport.
-
-| Check | Result |
-| --- | --- |
-| Unreal build: `Build.bat UnrealEditor Win64 Development <repo>/unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE` | Passed on UE 5.7.4. The target also needed a unity-build fix in the sibling multi-subject prototype, where two translation units declared the same anonymous-namespace log constant. |
-| Unreal Automation: `Automation RunTests MtoUCameraSyncPrototype` (with `-MtoUCameraSyncMayapy=`, `-MtoUCameraSyncPeer=`, `-MtoUEvidence=`) | 11/11 passed: `CameraPayload`, `CameraCutsAndTime`, `SubsequenceTime`, `EditorSequencer`, `EvalIdentityConvergence`, `CameraContentIdentity`, `ClientBufferBounds`, `ShutdownWindow`, `TrailingByteCount`, `RealMayaPeer`, `EditorLoopFollow`. |
-| Shutdown window check: `MtoUCameraSyncPrototype.ShutdownWindow` | 6 start/stop cycles. Each cycle adopts one client, then connects a further 12 (plus a hammer thread that keeps connecting while `Stop()` runs), stops the session and requires every one of the 96 connections to be closed, the port to be free, and the adopted client to receive the `end` line. 90 were closed by the final drain; stopping follow measured 0.004–0.026 s in the suite run. |
-| Natural editor loop: `MtoUCameraSyncPrototype.EditorLoopFollow` | Real mayapy peer, 13 steps, all converged: drag → cut → parked camera edit → sequence close → reopen → client drop and rejoin → three start/stop cycles → final stop. 6 connection lifetimes, each releasing Maya completely (time, resolution gate, camera, socket, callbacks); 23 frames in the first lifetime with focals 50/85/120 and 10 fractional times; 0 rejected frames; worst marker delta 7.505e-07 NDC; peer exit code 0, `ok: true`, no problems; 0 anomalous client lines, 0 failed sends, no rejected client command. |
-| Real peer session: `-MtoUCameraSyncMayapy=`, `-MtoUCameraSyncPeer=`, `-MtoUEvidence=` | `RealMayaPeer` passed with the mayapy peer: peer exit code 0, `ok: true`, `phase: done`, no problems; 7 published frames, 6 applied (2 applied, 4 heartbeats), 5 pose reports paired, 1 superseded in-flight report refused at the cut, 2 synthetic replays refused (duplicate publication, former connection); converged (`eval_serial == converged_paired_eval_serial == 2`); witness value 9; marker delta ≤ 1.0887e-07 NDC; 0 anomalous lines, 0 discarded bytes, 0 failed sends. |
-| Maya mapping: `python -m unittest discover -s <prototype Maya tests> -t <prototype Maya root>` (and the same under mayapy) | 63/63 passed in both interpreters. |
-| Maya host: `mayapy maya_host_camera_tests.py --result <scratch JSON>` | 90/90 passed, including the echo of `eval_serial`/`eval_identity` in direct and socket reports, a pose keyed at the parked frame being reported by the next heartbeat, fractional keyed-joint evaluation, rejected payload rollback, no animation key or range changes, restoration of the time, the scene resolution gate and the camera on stop, a borrowed camera being reused and written back, and three socket sessions in a row that each released time, gate, camera, socket and callback state and reported their frames. |
-| Repository gates: `python tools/validate_repository.py`; `python -m unittest discover -s tests` | Validation passed without warnings; 37/37 repository tool tests passed (1 skipped). |
-
-The Unreal tests use the actual Level Sequence editor API, including a real
-asset-editor toolkit in the test host. `RealMayaPeer`'s six-frame session is a
-pair of paused positions with heartbeats and a camera cut; the refused in-flight
-report is the expected outcome of the timeline leaving its target, and the
-witness actor keeps the value of the converged generation.
-`CameraContentIdentity` covers the same case for a camera edited at the sequence
-time that is already sampled, and `ClientBufferBounds` covers the transport
-bounds in isolation. `ShutdownWindow` covers the socket lifetime around a stop,
-and `EditorLoopFollow` is the only check whose session is advanced by the
-module's editor ticker instead of the test, with a real Maya process on the other
-end. The Maya host check reports script-job support as unavailable in batch
-mayapy, so the idle-pump callback lifecycle is not host-verified; no
-continuous-playback latency percentile or drop budget has been measured.
-
-## Mapping and representational limits
-
-The detailed [mapping record](../../../composite/MtoULiveLink/prototypes/camera-sync/mapping.md)
-classifies world transform, focal length, filmback, offsets, film fit, crop,
-aperture, focus, depth of field, clip planes, output/aperture resolution and
-known-marker projection. The Maya resolution gate must use Unreal's **aperture
-pixel extent**, not the full output gate; otherwise a 4:3 aperture inside a
-16:9 output differs by 0.25–0.38 NDC in the measured setup. Far clip,
-overscan, extra bokeh shaping and Maya-side camera-cut concepts cannot be
-expressed equivalently. Depth-of-field parameters were compared, not
-cross-renderer image equality. Movie Render Pipeline resolution discovery,
-orthographic and simultaneous multi-camera sessions remain outside scope.
-
-## Product boundary and remaining acceptance
-
-The [2026-09-29 review, now consolidated on the issue](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
-identified an unverified shutdown risk at the `ad3a85e` implementation:
-`Stop()` drained `PendingClients` before stopping and joining the listener, so a
-socket accepted in between could be enqueued after the drain. The 2026-09-30
-round fixed the ordering (stop and join first, drain last) and went further:
-stopping follow now also ends the client stream deliberately and reads what the
-client already sent, drops a client that stalls a send, and the new
-`ShutdownWindow` check connects during the stop to prove that nothing survives
-it. The same round added the natural editor-loop check and the Maya release
-work, which found and fixed three more transport defects (see the conclusion
-table). Numbers in the development tables above are the September 30 results;
-the October 8 independent results and their limits are separately identified
-in the current-review section.
-
-The smallest plausible product would keep UE as camera and time authority,
-Maya as pose authority, one active perspective camera, an explicit time origin,
-exact subframe evaluation, and an identity-checked reply. Each data kind has one
-writer; the overall system can carry data in both directions. The prototype's
-second port does not establish integration with MtoULiveLink's existing
-Maya → UE pose channel, and the single-joint witness on the prototype channel
-does **not** substitute for it.
-
-The next stage is the common real-sample work of #52/#53/#54 and then the
-unified integration decision under #47: the shared coordinate and reference
-origin, the time-authority switch, evaluation and session identity, object
-pairing, temporary-node ownership, protocol version or capability negotiation,
-and the UI. It also carries the follow-ups this round did not close: the idle
-pump callback lifecycle is only exercised in code, because batch mayapy creates
-no scriptJobs and the interactive Maya follower was not launched here; the
-natural loop was observed for seconds at a time, not for a continuous playback
-sustained over minutes, so latency percentiles and a drop/hold policy are still
-unmeasured.
-
-Product integration stays deferred and unified: after Issue #52's prototype
-checks and the #53/#54 prototypes have produced reproducible real samples, the
-decision on the shared coordinate and reference origin, the time-authority
-switch, evaluation and session identity, object pairing, temporary-node
-ownership, protocol version or capability negotiation, and the UI belongs to
-Issue #47. The real C01 paused-positioning integration on an isolated copy of
-the supplied `Backups.uproject` — confirming skeleton pairing and scene
-dependencies, then applying the full skeleton and Morphs through the **product**
-pose path — needs that design first, because product v9 carries no evaluation
-identity. Until it exists, no claim of "same frame at any moment" or product
-readiness is made, and continuous playback (latency percentiles, drop/hold
-policy) stays out of scope. The prototype now carries the bounded-transport
-bounds, the content-covered identity and the exit behaviour that such an
-integration would have to reproduce; the natural loop exercised a real client
-rejoining after a dropped connection and across five session restarts.
-Cached Playback remains off: ADR 0013 uses its own monotonic replay clock and
-must be revised before it can share Sequencer time. No production time-authority
-choice, persistent Maya-camera policy, MRQ output-resolution authority or
-exit-frame policy was made here.
-
-The bounded prototype passes review-02 with R-007–R-009 closed. Driven and
-protected borrowed inputs are explicitly refused; acceptance does not claim
-support for them. Product integration and the retained non-blocking evidence
-gaps remain deferred to #47; closing this prototype is not product acceptance.
+Raw logs, preferences, generated fixtures/render files and publication drafts
+are disposable after archiving numeric observations, source reports and
+reproduction inputs. Render images themselves are omitted; measured coordinates
+and errors remain in host JSON, and maintained tests regenerate them. Archive
+adaptations were syntax-checked, not executed as a new runtime review.
+Closing this prototype does not grant product acceptance or implement #47.

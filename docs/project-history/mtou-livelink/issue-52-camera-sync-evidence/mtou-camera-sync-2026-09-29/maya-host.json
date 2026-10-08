@@ -1,0 +1,584 @@
+{
+  "ok": true,
+  "phase": "done",
+  "render": {
+    "available": false,
+    "reason": "not requested"
+  },
+  "maya_version": "2024",
+  "maya_api": 20240200,
+  "checks": [
+    {
+      "check": "scene linear unit is centimetres",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "scene time unit is a frame rate",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "unsupported time units are refused",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "frame was applied",
+      "ok": true,
+      "detail": "applied [\"Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)\", 'far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback', 'display frame 1001.5 maps to Maya subframe 1002.5']"
+    },
+    {
+      "check": "report echoes the evaluation identity",
+      "ok": true,
+      "detail": "3 / 'MtoU_CameraSync@24036/CineCameraActor'"
+    },
+    {
+      "check": "subframe was applied without quantization",
+      "ok": true,
+      "detail": "display frame 1001.5"
+    },
+    {
+      "check": "focalLength",
+      "ok": true,
+      "detail": "45.0 vs 45.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "horizontalFilmAperture",
+      "ok": true,
+      "detail": "0.9799212598425198 vs 0.9799212598425198 (tolerance 1e-09)"
+    },
+    {
+      "check": "verticalFilmAperture",
+      "ok": true,
+      "detail": "0.4098425196850394 vs 0.4098425196850394 (tolerance 1e-09)"
+    },
+    {
+      "check": "horizontalFilmOffset",
+      "ok": true,
+      "detail": "0.01968503937007874 vs 0.01968503937007874 (tolerance 1e-09)"
+    },
+    {
+      "check": "verticalFilmOffset",
+      "ok": true,
+      "detail": "-0.00984251968503937 vs -0.00984251968503937 (tolerance 1e-09)"
+    },
+    {
+      "check": "filmFit is Horizontal for MaintainXFOV",
+      "ok": true,
+      "detail": "filmFit=1"
+    },
+    {
+      "check": "lensSqueezeRatio",
+      "ok": true,
+      "detail": "1.0 vs 1.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "fStop",
+      "ok": true,
+      "detail": "2.8 vs 2.8 (tolerance 1e-09)"
+    },
+    {
+      "check": "focusDistance",
+      "ok": true,
+      "detail": "850.0 vs 850.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "depthOfField is on",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "nearClipPlane",
+      "ok": true,
+      "detail": "5.0 vs 5.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "farClipPlane uses the declared fallback",
+      "ok": true,
+      "detail": "100000.0 vs 100000.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "far clip substitution is reported",
+      "ok": true,
+      "detail": "100000.0 from session_fallback"
+    },
+    {
+      "check": "world matrix matches the mapped Unreal transform",
+      "ok": true,
+      "detail": "max delta 1.1102230246251565e-16"
+    },
+    {
+      "check": "report world matrix matches the node",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "resolution gate is the payload resolution",
+      "ok": true,
+      "detail": "{'width': 1920, 'height': 1080, 'pixelAspect': 1.0, 'deviceAspectRatio': 1.7777777910232544}"
+    },
+    {
+      "check": "resolution gate and gate mask are displayed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "applied time",
+      "ok": true,
+      "detail": "1002.5 vs 1002.5 (tolerance 1e-09)"
+    },
+    {
+      "check": "Maya joint evaluates the exact subframe",
+      "ok": true,
+      "detail": "5.000000000000853 vs 5.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "applied time follows the contract",
+      "ok": true,
+      "detail": "1002.5 vs 1002.5 (tolerance 1e-09)"
+    },
+    {
+      "check": "the applied frame retains the contract subframe",
+      "ok": true,
+      "detail": "1002.5 vs 1002.5 (tolerance 1e-09)"
+    },
+    {
+      "check": "the raw contract time is sub-frame",
+      "ok": true,
+      "detail": "maya_time 1002.5"
+    },
+    {
+      "check": "every marker was projected",
+      "ok": true,
+      "detail": "[None, None, None]"
+    },
+    {
+      "check": "marker NDC matches the Unreal NDC",
+      "ok": true,
+      "detail": "max delta 1.1102230246251565e-16"
+    },
+    {
+      "check": "playback range is untouched",
+      "ok": true,
+      "detail": "(1000.0, 1100.0) vs (1000.0, 1100.0)"
+    },
+    {
+      "check": "no keys on the synced camera",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "witness keys are untouched",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "a frame missing a field is rejected",
+      "ok": true,
+      "detail": "[\"rejected: MISSING_FIELD: camera is missing field 'focal_length_mm'\"]"
+    },
+    {
+      "check": "a rejected frame does not touch the camera",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "a rejected frame reaches the report queue",
+      "ok": true,
+      "detail": "['applied', 'rejected']"
+    },
+    {
+      "check": "stop restored the captured time",
+      "ok": true,
+      "detail": "1001.0"
+    },
+    {
+      "check": "stop removed the camera it created",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "stop left no scriptJob",
+      "ok": true,
+      "detail": "None"
+    },
+    {
+      "check": "handshake returned the session",
+      "ok": true,
+      "detail": "MtoUCameraSync"
+    },
+    {
+      "check": "hello declared the Maya scene rate",
+      "ok": true,
+      "detail": "{'type': 'hello', 'protocol': 'MtoUCameraSync', 'version': 2, 'host': '127.0.0.1', 'scene_fps': 24.0, 'time_unit': 'film', 'maya_origin_frame': 1001.0}"
+    },
+    {
+      "check": "a second connection is refused",
+      "ok": true,
+      "detail": "{'type': 'error', 'category': 'CLIENT_ALREADY_CONNECTED', 'detail': 'one client at a time'}"
+    },
+    {
+      "check": "Maya cannot control Unreal time",
+      "ok": true,
+      "detail": "{'category': 'CLIENT_MAY_NOT_CONTROL_TIME', 'detail': \"message type 'time' is client-controlled nowhere in this protocol\"}"
+    },
+    {
+      "check": "a refused client message leaves the session following",
+      "ok": true,
+      "detail": "following"
+    },
+    {
+      "check": "the session applied every frame",
+      "ok": true,
+      "detail": "applied 3 of 3"
+    },
+    {
+      "check": "the session ordered the frames",
+      "ok": true,
+      "detail": "[1, 2, 3]"
+    },
+    {
+      "check": "the applied times follow the payload",
+      "ok": true,
+      "detail": "{1: 1001.0, 2: 1002.0, 3: 1002.5}"
+    },
+    {
+      "check": "the wire reports carry the applied values",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "the wire reports echo the evaluation identity",
+      "ok": true,
+      "detail": "{1: 'MtoU_CameraSync@24000/CineCameraActor', 2: 'MtoU_CameraSync@24024/CineCameraActor', 3: 'MtoU_CameraSync@24036/CineCameraActor'}"
+    },
+    {
+      "check": "socket marker deltas stay inside tolerance",
+      "ok": true,
+      "detail": "1.1102230246251565e-16"
+    },
+    {
+      "check": "session restores its unrelated connection frame",
+      "ok": true,
+      "detail": "990.0 vs 990.0 (tolerance 1e-09)"
+    },
+    {
+      "check": "socket session removed its camera",
+      "ok": true,
+      "detail": "{'reason': 'client stopped', 'restored_time': 990.0, 'camera_removed': 'MtoU_UE_Camera'}"
+    },
+    {
+      "check": "the publisher received one applied report per frame sent",
+      "ok": true,
+      "detail": "6 reports for 3 frames"
+    },
+    {
+      "check": "the transport case applied its frame",
+      "ok": true,
+      "detail": "1"
+    },
+    {
+      "check": "a lost connection is reported",
+      "ok": true,
+      "detail": "failed: TRANSPORT_ERROR: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+    },
+    {
+      "check": "Maya stays usable after a lost connection",
+      "ok": true,
+      "detail": "{'reason': 'client stopped', 'restored_time': 1001.0, 'camera_removed': 'MtoU_UE_Camera'}"
+    }
+  ],
+  "failures": [],
+  "evidence": {
+    "read_back": {
+      "focalLength": 45.0,
+      "horizontalFilmAperture": 0.9799212598425198,
+      "verticalFilmAperture": 0.4098425196850394,
+      "horizontalFilmOffset": 0.01968503937007874,
+      "verticalFilmOffset": -0.00984251968503937,
+      "filmFit": 1,
+      "lensSqueezeRatio": 1.0,
+      "fStop": 2.8,
+      "focusDistance": 850.0,
+      "depthOfField": true,
+      "nearClipPlane": 5.0,
+      "farClipPlane": 100000.0,
+      "displayResolution": true,
+      "displayGateMask": true,
+      "maya_time": 1002.5,
+      "applied_time": 1002.5,
+      "subframe": true,
+      "far_clip_substituted": true,
+      "far_clip_source": "session_fallback",
+      "film_fit": 1,
+      "lens_squeeze_ratio": 1.0,
+      "transform": "MtoU_UE_Camera",
+      "shape": "MtoU_UE_CameraShape"
+    },
+    "world_matrix_live": [
+      0.8480480961564261,
+      0.0,
+      0.5299192642332049,
+      0.0,
+      0.05539164634622251,
+      0.9945218953682732,
+      -0.08864516426829046,
+      0.0,
+      -0.5270163110573677,
+      0.1045284632676535,
+      0.8434023999529444,
+      0.0,
+      300.0,
+      420.0,
+      -1200.0,
+      1.0
+    ],
+    "world_matrix_expected": [
+      0.848048096156426,
+      -0.0,
+      0.5299192642332049,
+      0.0,
+      0.05539164634622251,
+      0.9945218953682733,
+      -0.08864516426829043,
+      0.0,
+      -0.5270163110573678,
+      0.10452846326765347,
+      0.8434023999529444,
+      0.0,
+      300.0,
+      420.0,
+      -1200.0,
+      1.0
+    ],
+    "markers": [
+      {
+        "name": "Marker_Centre",
+        "unreal_ndc": [
+          -0.040176777822418096,
+          0.03571269139770533
+        ],
+        "maya_ndc": [
+          -0.040176777822418096,
+          0.03571269139770534
+        ],
+        "delta": [
+          0.0,
+          6.938893903907228e-18
+        ]
+      },
+      {
+        "name": "Marker_Right",
+        "unreal_ndc": [
+          0.7131378063479309,
+          0.78567921074952
+        ],
+        "maya_ndc": [
+          0.7131378063479309,
+          0.7856792107495201
+        ],
+        "delta": [
+          0.0,
+          1.1102230246251565e-16
+        ]
+      },
+      {
+        "name": "Marker_Left_Low",
+        "unreal_ndc": [
+          -0.8638007231820007,
+          -0.7321101736529622
+        ],
+        "maya_ndc": [
+          -0.8638007231820009,
+          -0.732110173652962
+        ],
+        "delta": [
+          -1.1102230246251565e-16,
+          1.1102230246251565e-16
+        ]
+      }
+    ],
+    "max_marker_ndc_delta": 1.1102230246251565e-16,
+    "stop": {
+      "reason": "client stopped",
+      "restored_time": 1001.0,
+      "camera_removed": "MtoU_UE_Camera"
+    },
+    "socket_reports": {
+      "1": {
+        "status": "applied",
+        "maya_frame": 1001.0,
+        "markers": [
+          {
+            "name": "Marker_Centre",
+            "unreal_ndc": [
+              -0.040176777822418214,
+              0.03571269139770536
+            ],
+            "maya_ndc": [
+              -0.040176777822418214,
+              0.03571269139770536
+            ],
+            "delta": [
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "name": "Marker_Right",
+            "unreal_ndc": [
+              0.5457345654211866,
+              0.6190199842268944
+            ],
+            "maya_ndc": [
+              0.5457345654211865,
+              0.6190199842268945
+            ],
+            "delta": [
+              -1.1102230246251565e-16,
+              1.1102230246251565e-16
+            ]
+          },
+          {
+            "name": "Marker_Left_Low",
+            "unreal_ndc": [
+              -0.6807731797687603,
+              -0.5614828703083692
+            ],
+            "maya_ndc": [
+              -0.6807731797687604,
+              -0.5614828703083693
+            ],
+            "delta": [
+              -1.1102230246251565e-16,
+              -1.1102230246251565e-16
+            ]
+          }
+        ],
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ]
+      },
+      "2": {
+        "status": "applied",
+        "maya_frame": 1002.0,
+        "markers": [
+          {
+            "name": "Marker_Centre",
+            "unreal_ndc": [
+              -0.04017677782241816,
+              0.03571269139770535
+            ],
+            "maya_ndc": [
+              -0.04017677782241815,
+              0.035712691397705346
+            ],
+            "delta": [
+              6.938893903907228e-18,
+              -6.938893903907228e-18
+            ]
+          },
+          {
+            "name": "Marker_Right",
+            "unreal_ndc": [
+              0.6294361858845587,
+              0.7023495974882072
+            ],
+            "maya_ndc": [
+              0.6294361858845586,
+              0.7023495974882072
+            ],
+            "delta": [
+              -1.1102230246251565e-16,
+              0.0
+            ]
+          },
+          {
+            "name": "Marker_Left_Low",
+            "unreal_ndc": [
+              -0.7722869514753805,
+              -0.6467965219806656
+            ],
+            "maya_ndc": [
+              -0.7722869514753805,
+              -0.6467965219806656
+            ],
+            "delta": [
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "heartbeat: identical state, Maya untouched"
+        ]
+      },
+      "3": {
+        "status": "applied",
+        "maya_frame": 1002.5,
+        "markers": [
+          {
+            "name": "Marker_Centre",
+            "unreal_ndc": [
+              -0.040176777822418096,
+              0.03571269139770533
+            ],
+            "maya_ndc": [
+              -0.040176777822418096,
+              0.03571269139770534
+            ],
+            "delta": [
+              0.0,
+              6.938893903907228e-18
+            ]
+          },
+          {
+            "name": "Marker_Right",
+            "unreal_ndc": [
+              0.7131378063479309,
+              0.78567921074952
+            ],
+            "maya_ndc": [
+              0.7131378063479309,
+              0.7856792107495201
+            ],
+            "delta": [
+              0.0,
+              1.1102230246251565e-16
+            ]
+          },
+          {
+            "name": "Marker_Left_Low",
+            "unreal_ndc": [
+              -0.8638007231820007,
+              -0.7321101736529622
+            ],
+            "maya_ndc": [
+              -0.8638007231820009,
+              -0.732110173652962
+            ],
+            "delta": [
+              -1.1102230246251565e-16,
+              1.1102230246251565e-16
+            ]
+          }
+        ],
+        "detail": [
+          "Horizontal (MaintainXFOV keeps the horizontal aperture's field of view)",
+          "far clip plane is not representable in Unreal: Maya far clip set to 100000.000 cm from the session_fallback fallback",
+          "display frame 1001.5 maps to Maya subframe 1002.5",
+          "heartbeat: identical state, Maya untouched"
+        ]
+      }
+    },
+    "socket_max_marker_ndc_delta": 1.1102230246251565e-16,
+    "publisher_applied_messages": 6,
+    "transport_error": "TRANSPORT_ERROR: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+  },
+  "seconds": 3.5
+}

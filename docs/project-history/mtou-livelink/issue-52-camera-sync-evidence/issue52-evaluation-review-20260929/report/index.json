@@ -1,0 +1,191 @@
+{
+  "devices": [
+    {
+      "deviceName": "<host>",
+      "instance": "1D583F9A440B4D10C88E618F6A711176",
+      "instanceName": "<host>-75932",
+      "platform": "WindowsEditor",
+      "oSVersion": "Windows 11 (25H2) [10.0.26200.9457] ",
+      "model": "Default",
+      "gPU": "NVIDIA GeForce RTX 4060",
+      "cPUModel": "12th Gen Intel(R) Core(TM) i7-12700KF",
+      "rAMInGB": 32,
+      "renderMode": "SM6",
+      "rHI": "",
+      "appInstanceLog": ""
+    }
+  ],
+  "reportCreatedOn": "2026.09.29-06.10.47",
+  "succeeded": 7,
+  "succeededWithWarnings": 0,
+  "failed": 0,
+  "notRun": 0,
+  "inProcess": 0,
+  "totalDuration": 11.87328052520752,
+  "comparisonExported": false,
+  "comparisonExportDirectory": "",
+  "tests": [
+    {
+      "testDisplayName": "CameraCutsAndTime",
+      "fullTestPath": "MtoUCameraSyncPrototype.CameraCutsAndTime",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 1.0134166479110718,
+      "dateTime": "2026.09.29-06.10.35",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "CameraPayload",
+      "fullTestPath": "MtoUCameraSyncPrototype.CameraPayload",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 0.008983299136161804,
+      "dateTime": "2026.09.29-06.10.36",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_center world=(1000, 0, 100) cm ndc=(-0.2778, 0.2500) clip_w=1000.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.09.29-06.10.36"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_left world=(1000, -200, 220) cm ndc=(-0.6667, 0.6000) clip_w=1000.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.09.29-06.10.36"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "marker m_right world=(1200, 400, -60) cm ndc=(0.3704, -0.1389) clip_w=1200.0 aperture=[150,0,1770,1080]",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.09.29-06.10.36"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "EditorSequencer",
+      "fullTestPath": "MtoUCameraSyncPrototype.EditorSequencer",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 1.5422313213348389,
+      "dateTime": "2026.09.29-06.10.36",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "EvalIdentityConvergence",
+      "fullTestPath": "MtoUCameraSyncPrototype.EvalIdentityConvergence",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 3.0389902591705322,
+      "dateTime": "2026.09.29-06.10.38",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "RealMayaPeer",
+      "fullTestPath": "MtoUCameraSyncPrototype.RealMayaPeer",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 5.190657138824463,
+      "dateTime": "2026.09.29-06.10.41",
+      "entries": [
+        {
+          "event": {
+            "type": "Info",
+            "message": "largest Maya-versus-Unreal marker NDC delta: 0.000000109",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.09.29-06.10.46"
+        },
+        {
+          "event": {
+            "type": "Info",
+            "message": "client lines with trailing bytes: 0 (0 bytes discarded)",
+            "context": "",
+            "artifact": "00000000000000000000000000000000"
+          },
+          "filename": "",
+          "lineNumber": -1,
+          "timestamp": "2026.09.29-06.10.46"
+        }
+      ],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "SubsequenceTime",
+      "fullTestPath": "MtoUCameraSyncPrototype.SubsequenceTime",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 1.0713598728179932,
+      "dateTime": "2026.09.29-06.10.46",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    },
+    {
+      "testDisplayName": "TrailingByteCount",
+      "fullTestPath": "MtoUCameraSyncPrototype.TrailingByteCount",
+      "tags": [],
+      "state": "Success",
+      "deviceInstance": [
+        "1D583F9A440B4D10C88E618F6A711176"
+      ],
+      "duration": 0.007641799747943878,
+      "dateTime": "2026.09.29-06.10.47",
+      "entries": [],
+      "warnings": 0,
+      "errors": 0,
+      "artifacts": []
+    }
+  ]
+}
