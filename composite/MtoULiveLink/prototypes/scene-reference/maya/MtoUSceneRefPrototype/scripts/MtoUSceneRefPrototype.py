@@ -255,7 +255,6 @@ class SceneRefImporter(object):
         self.staging = None
         self.active_namespace = None
         self.staged = False
-        self.swap_partial = False
         self.retired = None
         self.previous_state = None
         self.world_conversion = None
@@ -1004,7 +1003,6 @@ class SceneRefImporter(object):
             failure = ("the staging namespace {0} could not be renamed to {1}: "
                        "{2}".format(self.staging, self.container, error))
         if failure is None:
-            self.swap_partial = True
             try:
                 maya_cmds.rename(self.container + ":" + self.staging,
                                  self.container + ":" + self.container)
@@ -1013,7 +1011,6 @@ class SceneRefImporter(object):
                            "{4}".format(self.container, self.staging, self.container,
                                         self.container, error))
         if failure is None:
-            self.swap_partial = False
             self.active_namespace = self.container
             self.staged = False
             # The mark is rewritten for the container's own name: the group was staged
@@ -1618,7 +1615,6 @@ class SceneRefImporter(object):
         rollback["container_namespace_removed"] = removal["namespace_removed"]
         rollback["container_nodes_removed"] = removal["nodes_removed"]
         rollback["container_skip_reason"] = removal["skipped_reason"]
-        self.swap_partial = False
         self.staged = False
         self.active_namespace = None
         restore = self._restore_retired()
@@ -1667,14 +1663,6 @@ class SceneRefImporter(object):
             return False
         maya_cmds.namespace(removeNamespace=namespace, deleteNamespaceContent=True)
         return True
-
-    def _container_group_names(self, namespace):
-        """Existing container transforms: a stale root one, and the namespaced one."""
-        maya_cmds = commands()
-        names = list(_root_nodes(namespace))
-        names.extend(maya_cmds.ls(namespace + ":" + namespace,
-                                  type="transform", long=True) or [])
-        return names
 
     def _scene_state(self):
         """The session state the importer promises not to keep."""
