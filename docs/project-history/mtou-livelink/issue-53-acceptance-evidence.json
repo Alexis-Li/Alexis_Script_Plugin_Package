@@ -1,0 +1,549 @@
+{
+  "schema": "issue-53-final-acceptance/1",
+  "date": "2026-10-09",
+  "implementation": "e2462d92e63f25f13212f4e2aa9d4e55c17f032b",
+  "checkout": "ddd8bb9e274261000875bbd3cc935b0354b83aa8",
+  "environment": "Maya 2024 standalone, isolated MAYA_APP_DIR, disposable scenes",
+  "pure_tests": 110,
+  "host_checks": 299,
+  "host_failures": [],
+  "purpose": "Independent final verification of R-001/R-002, plus refused restore/removal paths. Broader UE and support results are historical and bounded in the acceptance record.",
+  "reviewer_probe": {
+    "mixed_destination": {
+      "exit": 1,
+      "ok": false,
+      "problems": [
+        "REFUSED CONTAINER_NOT_OWNED: the namespace 'MtoU_UE_SceneRef' was left half swapped by an interrupted run next to nodes this tool does not own (|MtoU_UE_SceneRef:ProductionObject), so the previous reference 'MtoU_UE_SceneRef_Retiring' is neither restored nor deleted; rename or remove the foreign nodes and run again"
+      ],
+      "warnings": [],
+      "old_paths": [
+        "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+      ],
+      "foreign_paths": [
+        "|MtoU_UE_SceneRef:ProductionObject"
+      ],
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": null,
+        "retired_removal": null
+      }
+    },
+    "R-002_reproduced": false,
+    "failed_takeover": {
+      "exit": 1,
+      "ok": false,
+      "problems": [
+        "REFUSED STAGED_SWAP_FAILED: the takeover of MtoU_UE_SceneRef failed after namespace_renamed, group_renamed: review injected final-path query exception"
+      ],
+      "warnings": [
+        "TRANSFORM_MATCH: 3 object(s) were matched by world position rather than by name: ['0', '1', '2']"
+      ],
+      "old_paths": [
+        "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+      ],
+      "foreign_paths": null,
+      "update": {
+        "swapped": false,
+        "rolled_back": true,
+        "recovery": {
+          "stale_staging_namespaces": [],
+          "restored_previous_reference": null,
+          "retired_leftovers_removed": [],
+          "interrupted_container_removed": false,
+          "finished_interrupted_container": null,
+          "skipped_namespaces": [],
+          "partial_cleanups": [],
+          "events": []
+        },
+        "rollback": {
+          "container_namespace_removed": false,
+          "container_nodes_removed": [
+            "MtoU_UE_SceneRef:BP_SceneRefMixed",
+            "MtoU_UE_SceneRef:BP_SceneRefMulti",
+            "MtoU_UE_SceneRef:BasicShapeMaterial",
+            "MtoU_UE_SceneRef:FBXASC048",
+            "MtoU_UE_SceneRef:FBXASC048Shape",
+            "MtoU_UE_SceneRef:FBXASC049",
+            "MtoU_UE_SceneRef:FBXASC050",
+            "MtoU_UE_SceneRef:ISM_Cluster",
+            "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+            "MtoU_UE_SceneRef:SM_Cone_Asymmetric",
+            "MtoU_UE_SceneRef:SM_Cone_AsymmetricShape",
+            "MtoU_UE_SceneRef:SM_NaniteCube",
+            "MtoU_UE_SceneRef:SM_NaniteCubeShape",
+            "MtoU_UE_SceneRef:SM_Pillar_Offset",
+            "MtoU_UE_SceneRef:SM_Pillar_OffsetSG",
+            "MtoU_UE_SceneRef:SM_Pillar_OffsetShape",
+            "MtoU_UE_SceneRef:SM_Plate_NonUniform",
+            "MtoU_UE_SceneRef:SM_SublevelCube",
+            "MtoU_UE_SceneRef:SM_SublevelCylinder",
+            "MtoU_UE_SceneRef:StaticMesh",
+            "MtoU_UE_SceneRef:StaticMesh1",
+            "MtoU_UE_SceneRef:StaticMesh1Shape",
+            "MtoU_UE_SceneRef:groupId1",
+            "MtoU_UE_SceneRef:groupId2",
+            "MtoU_UE_SceneRef:groupId3",
+            "MtoU_UE_SceneRef:groupId4",
+            "MtoU_UE_SceneRef:groupId5",
+            "MtoU_UE_SceneRef:groupId6",
+            "MtoU_UE_SceneRef:groupId7",
+            "MtoU_UE_SceneRef:groupId8",
+            "MtoU_UE_SceneRef:groupId9",
+            "MtoU_UE_SceneRef:groupId10",
+            "MtoU_UE_SceneRef:groupId11",
+            "MtoU_UE_SceneRef:groupId12",
+            "MtoU_UE_SceneRef:materialInfo1"
+          ],
+          "staging_namespace_removed": false,
+          "container_skip_reason": "the namespace 'MtoU_UE_SceneRef' could not be deleted: review injected destination cleanup refusal",
+          "errors": [
+            "the namespace 'MtoU_UE_SceneRef' could not be deleted: review injected destination cleanup refusal",
+            "the container name 'MtoU_UE_SceneRef' is still taken, so the retired namespace 'MtoU_UE_SceneRef_Retiring' was left in place"
+          ],
+          "previous_reference_restored": false,
+          "restore": {
+            "restored": false,
+            "namespace": false,
+            "root_group": false,
+            "note": "the previous reference stays in its retiring name and is recoverable by the next run",
+            "errors": [
+              "the container name 'MtoU_UE_SceneRef' is still taken, so the retired namespace 'MtoU_UE_SceneRef_Retiring' was left in place"
+            ]
+          },
+          "residual": {
+            "namespace": "MtoU_UE_SceneRef",
+            "namespace_present": true,
+            "nodes": [
+              "MtoU_UE_SceneRef:BP_SceneRefMixed",
+              "MtoU_UE_SceneRef:BP_SceneRefMulti",
+              "MtoU_UE_SceneRef:BasicShapeMaterial",
+              "MtoU_UE_SceneRef:FBXASC048",
+              "MtoU_UE_SceneRef:FBXASC048Shape",
+              "MtoU_UE_SceneRef:FBXASC049",
+              "MtoU_UE_SceneRef:FBXASC050",
+              "MtoU_UE_SceneRef:ISM_Cluster",
+              "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+              "MtoU_UE_SceneRef:SM_Cone_Asymmetric",
+              "MtoU_UE_SceneRef:SM_Cone_AsymmetricShape",
+              "MtoU_UE_SceneRef:SM_NaniteCube",
+              "MtoU_UE_SceneRef:SM_NaniteCubeShape",
+              "MtoU_UE_SceneRef:SM_Pillar_Offset",
+              "MtoU_UE_SceneRef:SM_Pillar_OffsetSG",
+              "MtoU_UE_SceneRef:SM_Pillar_OffsetShape",
+              "MtoU_UE_SceneRef:SM_Plate_NonUniform",
+              "MtoU_UE_SceneRef:SM_SublevelCube",
+              "MtoU_UE_SceneRef:SM_SublevelCylinder",
+              "MtoU_UE_SceneRef:StaticMesh",
+              "MtoU_UE_SceneRef:StaticMesh1",
+              "MtoU_UE_SceneRef:StaticMesh1Shape",
+              "MtoU_UE_SceneRef:groupId1",
+              "MtoU_UE_SceneRef:groupId2",
+              "MtoU_UE_SceneRef:groupId3",
+              "MtoU_UE_SceneRef:groupId4",
+              "MtoU_UE_SceneRef:groupId5",
+              "MtoU_UE_SceneRef:groupId6",
+              "MtoU_UE_SceneRef:groupId7",
+              "MtoU_UE_SceneRef:groupId8",
+              "MtoU_UE_SceneRef:groupId9",
+              "MtoU_UE_SceneRef:groupId10",
+              "MtoU_UE_SceneRef:groupId11",
+              "MtoU_UE_SceneRef:groupId12",
+              "MtoU_UE_SceneRef:materialInfo1"
+            ]
+          }
+        },
+        "retired_removal": null
+      }
+    },
+    "retry_delete_refused": {
+      "exit": 1,
+      "ok": false,
+      "problems": [
+        "REFUSED RECOVERY_REFUSED: the half swapped namespace 'MtoU_UE_SceneRef' could not be deleted (the namespace 'MtoU_UE_SceneRef' could not be deleted: review injected destination cleanup refusal), so the previous reference 'MtoU_UE_SceneRef_Retiring' stays in its retiring name and the run is refused instead of completing a takeover that was never verified; run again once the name can be removed"
+      ],
+      "warnings": [],
+      "old_paths": [
+        "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+      ],
+      "foreign_paths": null,
+      "container_token": "mtou-scene-ref-container/1 MtoU_UE_SceneRef_Incoming",
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": null,
+        "retired_removal": null
+      }
+    },
+    "retry_delete_allowed": {
+      "exit": 0,
+      "ok": true,
+      "problems": [],
+      "warnings": [
+        "INTERRUPTED_CONTAINER_REMOVED: the half swapped namespace MtoU_UE_SceneRef was left by an interrupted run and has been deleted",
+        "RESTORED_PREVIOUS_REFERENCE: the previous reference MtoU_UE_SceneRef_Retiring was put back under the container's name MtoU_UE_SceneRef after an interrupted run",
+        "TRANSFORM_MATCH: 3 object(s) were matched by world position rather than by name: ['0', '1', '2']"
+      ],
+      "old_paths": [
+        "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+      ],
+      "foreign_paths": null,
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": {
+          "stale_staging_namespaces": [],
+          "restored_previous_reference": "MtoU_UE_SceneRef_Retiring",
+          "retired_leftovers_removed": [],
+          "interrupted_container_removed": true,
+          "finished_interrupted_container": null,
+          "skipped_namespaces": [],
+          "partial_cleanups": [],
+          "events": [
+            "INTERRUPTED_CONTAINER_REMOVED: the half swapped namespace MtoU_UE_SceneRef was left by an interrupted run and has been deleted",
+            "RESTORED_PREVIOUS_REFERENCE: the previous reference MtoU_UE_SceneRef_Retiring was put back under the container's name MtoU_UE_SceneRef after an interrupted run"
+          ]
+        },
+        "retired_removal": null
+      }
+    },
+    "R-001_reproduced": false
+  },
+  "adjacent_checks": {
+    "restore_refused": {
+      "code": 1,
+      "ok": false,
+      "problems": [
+        "REFUSED RECOVERY_REFUSED: the previous reference 'MtoU_UE_SceneRef_Retiring' could not be put back under the container's name 'MtoU_UE_SceneRef' (review refused restore rename); it stays in its retiring name until a run can restore it"
+      ],
+      "old_paths": [
+        "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+      ],
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": null,
+        "retired_removal": null
+      }
+    },
+    "restore_retry": {
+      "code": 0,
+      "ok": true,
+      "problems": [],
+      "old_paths": [
+        "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+      ],
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": {
+          "stale_staging_namespaces": [],
+          "restored_previous_reference": "MtoU_UE_SceneRef_Retiring",
+          "retired_leftovers_removed": [],
+          "interrupted_container_removed": false,
+          "finished_interrupted_container": null,
+          "skipped_namespaces": [],
+          "partial_cleanups": [],
+          "events": [
+            "RESTORED_PREVIOUS_REFERENCE: the previous reference MtoU_UE_SceneRef_Retiring was put back under the container's name MtoU_UE_SceneRef after an interrupted run"
+          ]
+        },
+        "retired_removal": null
+      }
+    },
+    "retired_removal_refused": {
+      "code": 1,
+      "ok": false,
+      "problems": [
+        "REFUSED RECOVERY_REFUSED: the retired reference 'MtoU_UE_SceneRef_Retiring' of the finished container could not be deleted (the namespace 'MtoU_UE_SceneRef_Retiring' could not be deleted: review refused retired removal), so the run is refused instead of reporting a success with the copy still in the scene; run again once the name can be removed"
+      ],
+      "current_paths": [
+        "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+      ],
+      "retired_paths": [
+        "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+      ],
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": null,
+        "retired_removal": null
+      }
+    },
+    "retired_removal_retry": {
+      "code": 0,
+      "ok": true,
+      "problems": [],
+      "current_paths": [
+        "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+      ],
+      "retired_paths": [],
+      "update": {
+        "swapped": false,
+        "rolled_back": false,
+        "recovery": {
+          "stale_staging_namespaces": [],
+          "restored_previous_reference": null,
+          "retired_leftovers_removed": [
+            "MtoU_UE_SceneRef_Retiring"
+          ],
+          "interrupted_container_removed": false,
+          "finished_interrupted_container": null,
+          "skipped_namespaces": [],
+          "partial_cleanups": [],
+          "events": [
+            "RETIRED_LEFTOVER_REMOVED: the interrupted run's previous reference MtoU_UE_SceneRef_Retiring was a copy of the verified container and has been deleted"
+          ]
+        },
+        "retired_removal": null
+      }
+    }
+  },
+  "maintained_checks": {
+    "continuous_recovery": {
+      "takeover": {
+        "escaped": false,
+        "exit": 1,
+        "phase": "refused",
+        "problems": [
+          "REFUSED STAGED_SWAP_FAILED: the takeover of MtoU_UE_SceneRef failed after namespace_renamed, group_renamed: injected final read back failure"
+        ],
+        "update": {
+          "mode": "staged_swap_rolled_back",
+          "swapped": false,
+          "rolled_back": true,
+          "rollback_reason": "the takeover of MtoU_UE_SceneRef failed after namespace_renamed, group_renamed: injected final read back failure",
+          "rollback": {
+            "container_namespace_removed": false,
+            "container_nodes_removed": [
+              "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+              "MtoU_UE_SceneRef:SM_Beam",
+              "MtoU_UE_SceneRef:SM_BeamSG",
+              "MtoU_UE_SceneRef:SM_BeamShape",
+              "MtoU_UE_SceneRef:SM_Pillar",
+              "MtoU_UE_SceneRef:SM_PillarSG",
+              "MtoU_UE_SceneRef:SM_PillarShape",
+              "MtoU_UE_SceneRef:SM_Rock",
+              "MtoU_UE_SceneRef:SM_RockSG",
+              "MtoU_UE_SceneRef:SM_RockShape",
+              "MtoU_UE_SceneRef:SM_Wall",
+              "MtoU_UE_SceneRef:SM_WallSG",
+              "MtoU_UE_SceneRef:SM_WallShape",
+              "MtoU_UE_SceneRef:materialInfo1",
+              "MtoU_UE_SceneRef:materialInfo2",
+              "MtoU_UE_SceneRef:materialInfo3",
+              "MtoU_UE_SceneRef:materialInfo4",
+              "MtoU_UE_SceneRef:standardSurface1"
+            ],
+            "staging_namespace_removed": false,
+            "container_skip_reason": "the namespace 'MtoU_UE_SceneRef' could not be deleted: injected destination cleanup refusal",
+            "errors": [
+              "the namespace 'MtoU_UE_SceneRef' could not be deleted: injected destination cleanup refusal",
+              "the container name 'MtoU_UE_SceneRef' is still taken, so the retired namespace 'MtoU_UE_SceneRef_Retiring' was left in place"
+            ],
+            "previous_reference_restored": false,
+            "restore": {
+              "restored": false,
+              "namespace": false,
+              "root_group": false,
+              "note": "the previous reference stays in its retiring name and is recoverable by the next run",
+              "errors": [
+                "the container name 'MtoU_UE_SceneRef' is still taken, so the retired namespace 'MtoU_UE_SceneRef_Retiring' was left in place"
+              ]
+            },
+            "residual": {
+              "namespace": "MtoU_UE_SceneRef",
+              "namespace_present": true,
+              "nodes": [
+                "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+                "MtoU_UE_SceneRef:SM_Beam",
+                "MtoU_UE_SceneRef:SM_BeamSG",
+                "MtoU_UE_SceneRef:SM_BeamShape",
+                "MtoU_UE_SceneRef:SM_Pillar",
+                "MtoU_UE_SceneRef:SM_PillarSG",
+                "MtoU_UE_SceneRef:SM_PillarShape",
+                "MtoU_UE_SceneRef:SM_Rock",
+                "MtoU_UE_SceneRef:SM_RockSG",
+                "MtoU_UE_SceneRef:SM_RockShape",
+                "MtoU_UE_SceneRef:SM_Wall",
+                "MtoU_UE_SceneRef:SM_WallSG",
+                "MtoU_UE_SceneRef:SM_WallShape",
+                "MtoU_UE_SceneRef:materialInfo1",
+                "MtoU_UE_SceneRef:materialInfo2",
+                "MtoU_UE_SceneRef:materialInfo3",
+                "MtoU_UE_SceneRef:materialInfo4",
+                "MtoU_UE_SceneRef:standardSurface1"
+              ]
+            }
+          }
+        },
+        "container": {
+          "namespace": "MtoU_UE_SceneRef",
+          "group": "MtoU_UE_SceneRef",
+          "group_path": null,
+          "staging_namespace": "MtoU_UE_SceneRef_Incoming",
+          "staging_group_path": "|MtoU_UE_SceneRef_Incoming:MtoU_UE_SceneRef_Incoming",
+          "previous_existed": true,
+          "previous_container_group": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+          "previous_reference_uuid": "D38FE3B7-4921-CDBE-8FFA-F797140B9B2C",
+          "ownership_attribute": "mtouSceneRefContainer",
+          "ownership_token": "mtou-scene-ref-container/1",
+          "swapped": true,
+          "kept_existing": true,
+          "namespace_created": false,
+          "after_run": {
+            "namespace": true,
+            "group_path": null,
+            "incomplete_groups": [
+              "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+            ],
+            "foreign_nodes": [],
+            "staging_namespace_present": false
+          },
+          "staging_group_uuid": "662B95CA-4563-F457-8EDE-C38211A65704",
+          "previous_reference_present_after_run": true,
+          "previous_reference_path_after_run": "|MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef"
+        }
+      },
+      "retry_refused": {
+        "exit": 1,
+        "phase": "refused",
+        "problems": [
+          "REFUSED RECOVERY_REFUSED: the half swapped namespace 'MtoU_UE_SceneRef' could not be deleted (the namespace 'MtoU_UE_SceneRef' could not be deleted: injected destination cleanup refusal), so the previous reference 'MtoU_UE_SceneRef_Retiring' stays in its retiring name and the run is refused instead of completing a takeover that was never verified; run again once the name can be removed"
+        ],
+        "update": {
+          "staging_namespace": null,
+          "discarded": false,
+          "recovery": null
+        }
+      },
+      "recovered": {
+        "exit": 0,
+        "ok": true,
+        "problems": [],
+        "update": {
+          "staging_namespace": "MtoU_UE_SceneRef_Incoming",
+          "recovery": {
+            "stale_staging_namespaces": [],
+            "restored_previous_reference": "MtoU_UE_SceneRef_Retiring",
+            "retired_leftovers_removed": [],
+            "interrupted_container_removed": true,
+            "finished_interrupted_container": null,
+            "skipped_namespaces": [],
+            "partial_cleanups": [],
+            "events": [
+              "INTERRUPTED_CONTAINER_REMOVED: the half swapped namespace MtoU_UE_SceneRef was left by an interrupted run and has been deleted",
+              "RESTORED_PREVIOUS_REFERENCE: the previous reference MtoU_UE_SceneRef_Retiring was put back under the container's name MtoU_UE_SceneRef after an interrupted run"
+            ]
+          }
+        },
+        "container": {
+          "namespace": "MtoU_UE_SceneRef",
+          "group": "MtoU_UE_SceneRef",
+          "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+          "staging_namespace": "MtoU_UE_SceneRef_Incoming",
+          "staging_group_path": "|MtoU_UE_SceneRef_Incoming:MtoU_UE_SceneRef_Incoming",
+          "previous_existed": true,
+          "previous_container_group": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+          "previous_reference_uuid": "D38FE3B7-4921-CDBE-8FFA-F797140B9B2C",
+          "ownership_attribute": "mtouSceneRefContainer",
+          "ownership_token": "mtou-scene-ref-container/1",
+          "swapped": false,
+          "kept_existing": true,
+          "namespace_created": false,
+          "after_run": {
+            "namespace": true,
+            "group_path": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+            "incomplete_groups": [],
+            "foreign_nodes": [],
+            "staging_namespace_present": false
+          },
+          "staging_group_uuid": "BA13C5E7-43E9-8718-D594-979D48919117",
+          "previous_reference_present_after_run": true,
+          "previous_reference_path_after_run": "|MtoU_UE_SceneRef:MtoU_UE_SceneRef"
+        }
+      },
+      "reference_alive": true,
+      "retiring_after_retry": true,
+      "retired_group_after_retry": true,
+      "half_token_after_retry": "mtou-scene-ref-container/1 MtoU_UE_SceneRef_Incoming",
+      "staging_mark": "mtou-scene-ref-container/1 MtoU_UE_SceneRef_Incoming"
+    },
+    "mixed_half_swapped_destination": {
+      "exit": 1,
+      "phase": "refused",
+      "problems": [
+        "REFUSED CONTAINER_NOT_OWNED: the namespace 'MtoU_UE_SceneRef' was left half swapped by an interrupted run next to nodes this tool does not own (|MtoU_UE_SceneRef:ProductionObject), so the previous reference 'MtoU_UE_SceneRef_Retiring' is neither restored nor deleted; rename or remove the foreign nodes and run again"
+      ],
+      "update": {
+        "staging_namespace": null,
+        "discarded": false,
+        "recovery": null
+      },
+      "namespace_nodes": [
+        "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+        "MtoU_UE_SceneRef:ProductionObject"
+      ],
+      "foreign_alive": true,
+      "group_alive": true,
+      "retired_namespace": "MtoU_UE_SceneRef_Retiring",
+      "retired_nodes": [
+        "MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef",
+        "MtoU_UE_SceneRef_Retiring:SM_Beam",
+        "MtoU_UE_SceneRef_Retiring:SM_BeamSG",
+        "MtoU_UE_SceneRef_Retiring:SM_BeamShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Pillar",
+        "MtoU_UE_SceneRef_Retiring:SM_PillarSG",
+        "MtoU_UE_SceneRef_Retiring:SM_PillarShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Rock",
+        "MtoU_UE_SceneRef_Retiring:SM_RockSG",
+        "MtoU_UE_SceneRef_Retiring:SM_RockShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Wall",
+        "MtoU_UE_SceneRef_Retiring:SM_WallSG",
+        "MtoU_UE_SceneRef_Retiring:SM_WallShape",
+        "MtoU_UE_SceneRef_Retiring:materialInfo1",
+        "MtoU_UE_SceneRef_Retiring:materialInfo2",
+        "MtoU_UE_SceneRef_Retiring:materialInfo3",
+        "MtoU_UE_SceneRef_Retiring:materialInfo4",
+        "MtoU_UE_SceneRef_Retiring:standardSurface1"
+      ],
+      "reference_alive": true
+    },
+    "mixed_half_swapped_destination_swap": {
+      "exit": 1,
+      "phase": "refused",
+      "problems": [
+        "REFUSED CONTAINER_NOT_OWNED: the namespace 'MtoU_UE_SceneRef' was left half swapped by an interrupted run next to nodes this tool does not own (|MtoU_UE_SceneRef:ProductionObject), so the previous reference 'MtoU_UE_SceneRef_Retiring' is neither restored nor deleted; rename or remove the foreign nodes and run again"
+      ],
+      "swapped": false,
+      "namespace_nodes": [
+        "MtoU_UE_SceneRef:MtoU_UE_SceneRef",
+        "MtoU_UE_SceneRef:ProductionObject"
+      ],
+      "foreign_alive": true,
+      "group_alive": true,
+      "retired_nodes": [
+        "MtoU_UE_SceneRef_Retiring:MtoU_UE_SceneRef",
+        "MtoU_UE_SceneRef_Retiring:SM_Beam",
+        "MtoU_UE_SceneRef_Retiring:SM_BeamSG",
+        "MtoU_UE_SceneRef_Retiring:SM_BeamShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Pillar",
+        "MtoU_UE_SceneRef_Retiring:SM_PillarSG",
+        "MtoU_UE_SceneRef_Retiring:SM_PillarShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Rock",
+        "MtoU_UE_SceneRef_Retiring:SM_RockSG",
+        "MtoU_UE_SceneRef_Retiring:SM_RockShape",
+        "MtoU_UE_SceneRef_Retiring:SM_Wall",
+        "MtoU_UE_SceneRef_Retiring:SM_WallSG",
+        "MtoU_UE_SceneRef_Retiring:SM_WallShape",
+        "MtoU_UE_SceneRef_Retiring:materialInfo1",
+        "MtoU_UE_SceneRef_Retiring:materialInfo2",
+        "MtoU_UE_SceneRef_Retiring:materialInfo3",
+        "MtoU_UE_SceneRef_Retiring:materialInfo4",
+        "MtoU_UE_SceneRef_Retiring:standardSurface1"
+      ],
+      "reference_alive": true
+    }
+  },
+  "redaction": "Repository absolute prefixes in traceback paths replaced with <repo>."
+}
