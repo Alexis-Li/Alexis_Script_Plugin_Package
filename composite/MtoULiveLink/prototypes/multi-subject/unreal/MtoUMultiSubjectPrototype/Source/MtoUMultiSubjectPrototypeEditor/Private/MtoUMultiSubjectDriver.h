@@ -59,23 +59,18 @@ public:
 
 	/**
 	 * Strict identity of a Maya declaration against this target: the declared
-	 * root, the skeleton names, and every parent. Empty when the declaration is
-	 * accepted. Curves are checked separately so they get their own code.
+	 * root plus the negotiated source-to-target mapping (necessary bones,
+	 * unambiguous mapping, parent scope and bind pose). Empty when the
+	 * declaration is accepted, in which case `OutMap` carries the assignment.
 	 */
-	FString DescribeDeclarationMismatch(const FMtoUSubjectDeclaration& Declaration) const;
-
-	/** The first declared curve that is not a Morph Target of the target mesh. */
-	bool FindMissingCurve(const FMtoUSubjectDeclaration& Declaration, FName& OutMissing) const;
+	FString DescribeDeclarationMismatch(
+		const FMtoUSubjectDeclaration& Declaration,
+		FMtoUNegotiationMap& OutMap) const;
 
 	bool IsDriving() const { return bDriving; }
 
 	/** Installs the prototype pose instance, remembering the state it replaces. */
 	bool TakeOver(FString& OutError);
-
-	/** Target bones this declaration does not drive; they keep their reference pose. */
-	void CollectUndrivenBones(
-		const FMtoUSubjectDeclaration& Declaration,
-		TArray<FName>& OutBones) const;
 
 	/** Restores animation state, morph weights and editor tick settings. */
 	bool Restore(FString& OutError);
@@ -87,6 +82,7 @@ public:
 	 */
 	bool ApplyPose(
 		const FMtoUSubjectDeclaration& Declaration,
+		const FMtoUNegotiationMap& Map,
 		const FMtoUFrameSubject& Frame,
 		FMtoUSubjectMeasurement& OutMeasurement,
 		FString& OutError);
@@ -95,11 +91,31 @@ public:
 	bool HasPose() const { return bHasPose; }
 
 	/**
-	 * True when the last restore had to put the component back into its
-	 * reference pose because nothing else was driving it. Without that step a
-	 * target with no animation driver would keep the preview's last pose.
+	 * True when the last completed exit had to put the component back into its
+	 * reference pose because nothing else was driving it. It is cleared by the
+	 * next takeover, so it always describes the target's *current* ownership
+	 * state and never an earlier session's exit.
 	 */
-	bool DidRestoreToReferencePose() const { return bRestoredToReferencePose; }
+	bool DidRestoreToReferencePose() const { return !bDriving && bRestoredToReferencePose; }
+
+	/**
+	 * How this target is driven right now: `preview_active` while the preview
+	 * owns it, `reference_pose` / `own_driver_restored` after an exit, and
+	 * `not_taken_over` before the first takeover. The report reads this instead
+	 * of combining a historical flag with the current driving state.
+	 */
+	const TCHAR* DescribeExitState() const
+	{
+		if (bDriving)
+		{
+			return TEXT("preview_active");
+		}
+		if (!bTakenOver)
+		{
+			return TEXT("not_taken_over");
+		}
+		return bRestoredToReferencePose ? TEXT("reference_pose") : TEXT("own_driver_restored");
+	}
 
 private:
 	FMtoUTargetRegistration Registration;
@@ -113,6 +129,8 @@ private:
 	bool bDriving = false;
 	bool bHasPose = false;
 	bool bRestoredToReferencePose = false;
+	/** True once this target has gone through at least one takeover. */
+	bool bTakenOver = false;
 };
 
 /** Largest observed difference of two component-space transforms. */

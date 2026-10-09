@@ -39,8 +39,6 @@ namespace MtoUMultiSubjectError
 	const TCHAR* const TargetReused = TEXT("target_reused");
 	/** Declared bones and/or parent indices differ from the target skeleton. */
 	const TCHAR* const SkeletonMismatch = TEXT("skeleton_mismatch");
-	/** A declared curve is not a Morph Target of the target mesh. */
-	const TCHAR* const CurveNotInTarget = TEXT("curve_not_in_target");
 	/** The target is placed by a socket or parent motion, so anchor-once cannot hold. */
 	const TCHAR* const AnchorConflict = TEXT("anchor_conflict");
 	/** The target is not attached to its own anchor actor. */
@@ -96,6 +94,77 @@ struct FMtoUFrameSubject
 	FString Id;
 	TArray<FTransform> Transforms;
 	TArray<float> Curves;
+};
+
+/**
+ * One declaration mapped onto one target. The target's *required* bones are the
+ * bones that actually deform its mesh - positive skin weight in any LOD - plus
+ * every ancestor of those; each required bone has to be driven by exactly one
+ * declared bone, with the declared hierarchy agreeing with the target's. A
+ * declared bone without a target counterpart is an ignored export branch, and a
+ * target bone outside the required set may stay undriven at its reference pose.
+ * The mapping is by exact name inside the already mapped parent scope, so two
+ * indistinguishable declared bones never silently resolve to one target bone.
+ */
+struct FMtoUNegotiationMap
+{
+	/** One target bone index per declared bone; INDEX_NONE marks an ignored export branch. */
+	TArray<int32> SourceToTarget;
+	/** Target bone indices this declaration drives, in declaration order. */
+	TArray<int32> DrivenTargetBones;
+	/** Target bone indices that carry skin weights or are an ancestor of one. */
+	TArray<int32> RequiredTargetBones;
+	/** Target bones this declaration does not drive; they keep their reference pose. */
+	TArray<FName> UndrivenTargetBones;
+	/** Declared curves the target mesh has no Morph Target for; they are not applied. */
+	TArray<FName> SourceOnlyCurves;
+	/**
+	 * Declared bones mapped through the importer's rename forms (a numeric
+	 * suffix or `_` plus 32 hexadecimal digits), reported as `source -> target`.
+	 * An exact name always wins; a rename is only used for a target bone no
+	 * exact name owns, and two candidates are an ambiguity.
+	 */
+	TArray<FString> ImportRenames;
+
+	/** Declared bones ignored because the target has no matching bone. */
+	int32 SourceOnlyBones = 0;
+	/** True when every required target bone is driven by exactly one declared bone. */
+	bool bCoversRequiredBones = false;
+
+	/**
+	 * Component-space reference pose of each declared bone on the target side,
+	 * indexed like `SourceToTarget`. The frame application projects through
+	 * these: the target keeps its own rest and receives the source's motion,
+	 * exactly like the product's bind/frame projection.
+	 */
+	TArray<FTransform> TargetRefComponentPose;
+	/** Component-space bind pose of each declared bone, indexed like `SourceToTarget`. */
+	TArray<FTransform> SourceBindComponentPose;
+	/**
+	 * Constant component-space transform between the two rest poses, taken from
+	 * the declared root: `SourceBindComponentPose[root] = RootFrame * TargetRefComponentPose[root]`.
+	 * A rig whose root joint carries an import convention (a rotating skeleton
+	 * root) has a non-identity RootFrame and still projects exactly.
+	 */
+	FTransform RootFrame = FTransform::Identity;
+	/** Largest component-space rest deviation after `RootFrame`, in centimetres. */
+	double MaxRestTranslationCm = 0.0;
+	/** Largest component-space rest deviation after `RootFrame`, in degrees. */
+	double MaxRestRotationDegrees = 0.0;
+	/** Largest scale deviation of a mapped bind/ref pose. */
+	double MaxRestScale = 0.0;
+};
+
+/**
+ * One negotiated subject as captured while its session is live: the declaration
+ * the peer sent and the mapping it was accepted with. Durability matters
+ * because a receiver forgets a session when its client disconnects.
+ */
+struct FMtoUNegotiatedSubject
+{
+	FString Id;
+	FMtoUSubjectDeclaration Declaration;
+	FMtoUNegotiationMap Map;
 };
 
 /** One atomic pair of subjects sampled at one Maya source time. */

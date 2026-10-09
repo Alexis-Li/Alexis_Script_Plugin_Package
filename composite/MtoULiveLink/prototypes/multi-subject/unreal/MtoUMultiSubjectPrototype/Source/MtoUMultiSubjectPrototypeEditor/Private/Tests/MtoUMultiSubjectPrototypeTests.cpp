@@ -8,6 +8,7 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
@@ -21,10 +22,14 @@
 #include "ISequencer.h"
 #include "LevelSequence.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
+#include "LevelEditorViewport.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 #include "Misc/ScopeExit.h"
+#include "MovieScene.h"
 #include "MtoUMultiSubjectDriver.h"
 #include "MtoUMultiSubjectFixture.h"
 #include "MtoUMultiSubjectPeer.h"
@@ -32,14 +37,18 @@
 #include "MtoUMultiSubjectProtocol.h"
 #include "MtoUMultiSubjectReceiver.h"
 #include "ReferenceSkeleton.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkinWeightVertexBuffer.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "Serialization/JsonReader.h"
+#include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "UObject/Package.h"
+#include "UnrealClient.h"
 
 namespace
 {
@@ -52,6 +61,30 @@ namespace
 			return Override;
 		}
 		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MtoUMultiSubjectTests"));
+	}
+
+	/**
+	 * Waits, across editor frames, until the requested screenshot has been
+	 * written. The image is produced by the renderer on a later frame, so the
+	 * check cannot happen inside the test body.
+	 */
+	DEFINE_LATENT_AUTOMATION_COMMAND_THREE_PARAMETER(
+		FMtoUWaitForScreenshot,
+		FAutomationTestBase*, Test,
+		FString, ScreenshotPath,
+		double, DeadlineSeconds);
+	bool FMtoUWaitForScreenshot::Update()
+	{
+		const bool bWritten = FPaths::FileExists(ScreenshotPath)
+			&& !FScreenshotRequest::IsScreenshotRequested();
+		if (bWritten || FPlatformTime::Seconds() > DeadlineSeconds)
+		{
+			Test->TestTrue(
+				FString::Printf(TEXT("the BaseColor screenshot was written (%s)"), *ScreenshotPath),
+				bWritten);
+			return true;
+		}
+		return false;
 	}
 
 	uint16 ReserveLoopbackPort()
@@ -368,32 +401,20 @@ namespace
 	}
 
 	/**
-	 * One `-name=value` argument, read verbatim up to the next space. FParse's
-	 * string overload stops at the first comma, which would truncate a list like
-	 * `-MtoUMultiSubjectTimes=1,3,2,2`.
+	 * The `-MtoUMultiSubjectTimes=` value of this run, read with the peer's own
+	 * parser: the value ends at the next command-line token (so a following
+	 * `-abslog=...` cannot leak into it) and it must be a comma-separated list
+	 * of finite numbers. Returns false when the argument is absent.
 	 */
-	FString CommandLineArgumentValue(const TCHAR* Name)
+	bool ReadTimesArgument(TArray<double>& OutTimes)
 	{
-		const int32 NameLength = FCString::Strlen(Name);
-		for (const TCHAR* Cursor = FCommandLine::Get(); *Cursor != TEXT('\0'); )
+		FString Value;
+		if (!FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+				FCommandLine::Get(), TEXT("-MtoUMultiSubjectTimes="), Value))
 		{
-			if (FString(Cursor).Left(NameLength).Equals(Name, ESearchCase::IgnoreCase))
-			{
-				FString Value = Cursor + NameLength;
-				Value.TrimStartAndEndInline();
-				Value.TrimQuotesInline();
-				return Value;
-			}
-			while (*Cursor != TEXT('\0') && *Cursor != TEXT(' '))
-			{
-				++Cursor;
-			}
-			while (*Cursor == TEXT(' '))
-			{
-				++Cursor;
-			}
+			return false;
 		}
-		return FString();
+		return FMtoUMultiSubjectPeerRequest::ParseTimeList(Value, OutTimes);
 	}
 
 	/** Asserts one `applied` reply and returns it. */
@@ -534,15 +555,15 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 		CharacterSkeleton.GetBoneName(CharacterSkeleton.GetParentIndex(
 			CharacterSkeleton.FindBoneIndex(FName(TEXT("Chest"))))).ToString(), FString(TEXT("Spine")));
 	const FReferenceSkeleton& PropSkeleton = Fixture.PropMesh->GetRefSkeleton();
-	TestEqual(TEXT("prop bone count"), PropSkeleton.GetNum(), 3);
+	TestEqual(TEXT("prop bone count"), PropSkeleton.GetNum(), 4);
 	TestEqual(TEXT("the prop shares the Root name"),
 		PropSkeleton.GetBoneName(0).ToString(), FString(TEXT("Root")));
 	TestTrue(TEXT("same-named morphs exist on both meshes"),
 		Fixture.CharacterMesh->FindMorphTarget(FName(TEXT("Shared"))) != nullptr
 			&& Fixture.PropMesh->FindMorphTarget(FName(TEXT("Shared"))) != nullptr);
 
-	// The declarations the fixture sends are the target skeletons themselves, so
-	// they pass the identity check including the bind comparison.
+	// The declarations the fixture sends are the target skeletons plus their
+	// weighted branches, so they map onto the targets.
 	{
 		FMtoUMultiSubjectTarget IdentityTarget;
 		FString IdentityError;
@@ -551,8 +572,67 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 					{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), Fixture.CharacterAnchor, Fixture.CharacterComponent },
 					IdentityError)))
 		{
-			TestTrue(TEXT("the fixture's own character declaration passes skeleton identity"),
-				IdentityTarget.DescribeDeclarationMismatch(Fixture.CharacterDeclaration).IsEmpty());
+			FMtoUNegotiationMap IdentityMap;
+			TestTrue(TEXT("the fixture's own character declaration negotiates"),
+				IdentityTarget.DescribeDeclarationMismatch(Fixture.CharacterDeclaration, IdentityMap).IsEmpty());
+			// The mesh skins two vertices to Head, so the required set is the
+			// whole Root->Spine->Chest->Head chain.
+			TestEqual(TEXT("the required target bones cover the weighted branch"),
+				IdentityMap.RequiredTargetBones.Num(), 4);
+			TestEqual(TEXT("every required bone is driven by the declaration"),
+				IdentityMap.DrivenTargetBones.Num(), 4);
+			TestEqual(TEXT("no target bone of the character stays undriven"),
+				IdentityMap.UndrivenTargetBones.Num(), 0);
+			TestEqual(TEXT("no character source bone is refusable as an export only branch"),
+				IdentityMap.SourceOnlyBones, 0);
+			// A declaration that drops the weighted leaf must be refused: the
+			// remaining declared bones are still an ancestor-closed subset, which
+			// is exactly the case the previous rule accepted.
+			FMtoUSubjectDeclaration WithoutWeightedLeaf = Fixture.CharacterDeclaration;
+			WithoutWeightedLeaf.Bones.Pop();
+			WithoutWeightedLeaf.Bind.Pop();
+			FMtoUNegotiationMap UnusedMap;
+			const FString MissingLeaf = IdentityTarget.DescribeDeclarationMismatch(
+				WithoutWeightedLeaf, UnusedMap);
+			TestTrue(TEXT("dropping a skin-weighted leaf is refused"), !MissingLeaf.IsEmpty());
+			TestTrue(TEXT("the refusal names the weighted bone and its parent"),
+				MissingLeaf.Contains(TEXT("Head")) && MissingLeaf.Contains(TEXT("Chest")));
+			// An export branch the target does not have is ignored, not refused.
+			FMtoUSubjectDeclaration WithExtraBranch = Fixture.CharacterDeclaration;
+			WithExtraBranch.Bones.Add({ FName(TEXT("ExportBranch")), 2 });
+			WithExtraBranch.Bind.Add(FTransform(FVector(0.0, 0.0, 4.0)));
+			WithExtraBranch.Bones.Add({ FName(TEXT("ExportTip")), 4 });
+			WithExtraBranch.Bind.Add(FTransform(FVector(0.0, 0.0, 6.0)));
+			FMtoUNegotiationMap ExtraMap;
+			TestTrue(TEXT("a source-only export branch is accepted"),
+				IdentityTarget.DescribeDeclarationMismatch(WithExtraBranch, ExtraMap).IsEmpty());
+			TestEqual(TEXT("the export branch is reported as source-only"), ExtraMap.SourceOnlyBones, 2);
+			TestEqual(TEXT("the required bones stay covered"), ExtraMap.DrivenTargetBones.Num(), 4);
+			// Two declared bones that resolve to one target bone are ambiguous.
+			FMtoUSubjectDeclaration Ambiguous = Fixture.CharacterDeclaration;
+			Ambiguous.Bones.Add({ FName(TEXT("Spine")), 0 });
+			Ambiguous.Bind.Add(Fixture.CharacterDeclaration.Bind[1]);
+			FMtoUNegotiationMap AmbiguousMap;
+			const FString Ambiguity = IdentityTarget.DescribeDeclarationMismatch(Ambiguous, AmbiguousMap);
+			TestTrue(TEXT("two source bones mapping to one target bone are refused"),
+				!Ambiguity.IsEmpty() && Ambiguity.Contains(TEXT("ambiguous")));
+			// A declaration whose bone sits under another parent cannot drive the
+			// target bone of that name, so the required bone is reported missing.
+			FMtoUSubjectDeclaration Reparented = Fixture.CharacterDeclaration;
+			Reparented.Bones[3].Parent = 0;
+			FMtoUNegotiationMap ReparentedMap;
+			const FString ReparentRefusal = IdentityTarget.DescribeDeclarationMismatch(
+				Reparented, ReparentedMap);
+			TestTrue(TEXT("a required bone under the wrong parent is refused"),
+				ReparentRefusal.Contains(TEXT("Head")) && ReparentRefusal.Contains(TEXT("Chest")));
+			// Same names and parents, different advertised rest pose.
+			FMtoUSubjectDeclaration WrongBind = Fixture.CharacterDeclaration;
+			WrongBind.Bind[1] = FTransform(FVector(0.0, 0.0, 60.0));
+			FMtoUNegotiationMap WrongBindMap;
+			const FString WrongBindDetails = IdentityTarget.DescribeDeclarationMismatch(
+				WrongBind, WrongBindMap);
+			TestTrue(TEXT("a differently resting rig is refused even with matching names"),
+				WrongBindDetails.Contains(TEXT("bind")) && WrongBindDetails.Contains(TEXT("Spine")));
 		}
 		FMtoUMultiSubjectTarget PropTarget;
 		if (TestTrue(TEXT("the prop target passes the anchor preflight for identity"),
@@ -560,15 +640,37 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 					{ FMtoUMultiSubjectFixtureBuilder::PropId(), Fixture.PropAnchor, Fixture.PropComponent },
 					IdentityError)))
 		{
-			TestTrue(TEXT("the fixture's own prop declaration passes skeleton identity"),
-				PropTarget.DescribeDeclarationMismatch(Fixture.PropDeclaration).IsEmpty());
-			// Same skeleton, different rest pose: the character target must
-			// refuse it even though names and parents match.
-			FMtoUSubjectDeclaration WrongBind = Fixture.CharacterDeclaration;
-			WrongBind.Bind[1] = FTransform(FVector(0.0, 0.0, 60.0));
-			const FString WrongBindDetails = IdentityTarget.DescribeDeclarationMismatch(WrongBind);
-			TestTrue(TEXT("a differently resting rig is refused even with matching names"),
-				WrongBindDetails.Contains(TEXT("bind")) && WrongBindDetails.Contains(TEXT("Spine")));
+			FMtoUNegotiationMap PropMap;
+			TestTrue(TEXT("the fixture's own prop declaration negotiates"),
+				PropTarget.DescribeDeclarationMismatch(Fixture.PropDeclaration, PropMap).IsEmpty());
+			// The weighted leaf carries one of the importer's hash suffixes, so a
+			// declaration that names it the way Maya does has to map through the
+			// rename rule instead of leaving a required bone undriven - and its
+			// child, which resolves exactly, only becomes addressable once the
+			// renamed parent scope exists.
+			FMtoUSubjectDeclaration RenamedLeaf = Fixture.PropDeclaration;
+			RenamedLeaf.Bones[2].Name = FName(TEXT("PropTip"));
+			FMtoUNegotiationMap RenameMap;
+			TestTrue(TEXT("a declared name maps onto the target's import rename"),
+				PropTarget.DescribeDeclarationMismatch(RenamedLeaf, RenameMap).IsEmpty());
+			TestEqual(TEXT("the rename is reported"), RenameMap.ImportRenames.Num(), 1);
+			TestTrue(TEXT("the rename names both sides"),
+				RenameMap.ImportRenames.Num() == 1
+					&& RenameMap.ImportRenames[0].Contains(TEXT("PropTip -> PropTip_0123")));
+			TestEqual(TEXT("the renamed branch drives its whole declared chain"),
+				RenameMap.DrivenTargetBones.Num(), 4);
+			TestEqual(TEXT("the renamed branch leaves no target bone undriven"),
+				RenameMap.UndrivenTargetBones.Num(), 0);
+			TestEqual(TEXT("the renamed leaf still covers its required bone"),
+				RenameMap.DrivenTargetBones.Num() >= RenameMap.RequiredTargetBones.Num(), true);
+			FMtoUSubjectDeclaration PropWrongBind = Fixture.PropDeclaration;
+			PropWrongBind.Bind[1] = FTransform(FVector(0.0, 0.0, 60.0));
+			FMtoUNegotiationMap PropWrongBindMap;
+			const FString PropWrongBindDetails = PropTarget.DescribeDeclarationMismatch(
+				PropWrongBind, PropWrongBindMap);
+			TestTrue(TEXT("the prop target refuses a differently resting rig"),
+				PropWrongBindDetails.Contains(TEXT("bind"))
+					&& PropWrongBindDetails.Contains(TEXT("PropBody")));
 		}
 	}
 
@@ -613,41 +715,88 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 						{ FMtoUMultiSubjectFixtureBuilder::ArmsId(), ArmsFixture.ArmsAnchor, ArmsFixture.ArmsComponent },
 						Error)))
 			{
+				FMtoUNegotiationMap ArmsMap;
 				const FString Mismatch =
-					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.CharacterDeclaration);
+					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.CharacterDeclaration, ArmsMap);
 				TestFalse(TEXT("the full-body declaration does not match the arms target"),
 					Mismatch.IsEmpty());
-				TestTrue(TEXT("the refusal names a bone the arms target does not have"),
-					Mismatch.Contains(TEXT("is not in the Unreal target skeleton")));
+				TestTrue(TEXT("the refusal names the required arms bone the declaration misses"),
+					Mismatch.Contains(TEXT("ArmsRoot")));
 				TestTrue(TEXT("the arms declaration itself matches"),
-					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.ArmsDeclaration).IsEmpty());
-				// Necessary bones, not whole-table equality: a declaration that drops a
-				// leaf the target still owns is accepted, and that target bone stays
-				// at its reference pose instead of being driven from nowhere.
+					ArmsTarget.DescribeDeclarationMismatch(ArmsFixture.ArmsDeclaration, ArmsMap).IsEmpty());
+				// Necessary bones, not whole-table equality: the arms mesh skins
+				// only UpperArm_L, so a declaration that drops the unweighted
+				// Hand_R leaf is accepted and that target bone stays at its
+				// reference pose instead of being driven from nowhere.
 				FMtoUSubjectDeclaration WithoutLastLeaf = ArmsFixture.ArmsDeclaration;
 				WithoutLastLeaf.Bones.Pop();
 				WithoutLastLeaf.Bind.Pop();
-				TestTrue(TEXT("a declaration of the necessary bones is accepted"),
-					ArmsTarget.DescribeDeclarationMismatch(WithoutLastLeaf).IsEmpty());
-				TArray<FName> Undriven;
-				ArmsTarget.CollectUndrivenBones(WithoutLastLeaf, Undriven);
-				TestEqual(TEXT("the undriven target bone is reported"), Undriven.Num(), 1);
-				TestEqual(TEXT("the undriven bone is the dropped leaf"),
-					Undriven.Num() == 1 ? Undriven[0].ToString() : FString(),
-					FString(TEXT("Hand_R")));
-				// Declaring the hand directly under its upper arm keeps the
-				// declaration well formed, but the target still hangs that hand
-				// under a bone nobody drives, which has to be refused.
+				FMtoUNegotiationMap WithoutLeafMap;
+				TestTrue(TEXT("a declaration without an unweighted leaf is accepted"),
+					ArmsTarget.DescribeDeclarationMismatch(WithoutLastLeaf, WithoutLeafMap).IsEmpty());
+				TestEqual(TEXT("only the dropped leaf stops being driven"),
+					WithoutLeafMap.UndrivenTargetBones.Num(), 1);
+				TestTrue(TEXT("the dropped leaf is the reported undriven bone"),
+					WithoutLeafMap.UndrivenTargetBones.Contains(FName(TEXT("Hand_R"))));
+				TestFalse(TEXT("the dropped leaf is not a required bone"),
+					WithoutLeafMap.RequiredTargetBones.Contains(
+						ArmsFixture.ArmsMesh->GetRefSkeleton().FindBoneIndex(FName(TEXT("Hand_R")))));
+				// The weighted branch, however, is required: dropping it leaves
+				// the deforming bone without a driver and must be refused, even
+				// though the remaining declaration is still ancestor-closed.
+				FMtoUSubjectDeclaration WithoutWeighted = ArmsFixture.ArmsDeclaration;
+				{
+					const TArray<FMtoUBoneDeclaration> OriginalBones = ArmsFixture.ArmsDeclaration.Bones;
+					const TArray<FTransform> OriginalBind = ArmsFixture.ArmsDeclaration.Bind;
+					WithoutWeighted.Bones.Reset();
+					WithoutWeighted.Bind.Reset();
+					TArray<int32> NewIndex;
+					NewIndex.Init(INDEX_NONE, OriginalBones.Num());
+					for (int32 Index = 0; Index < OriginalBones.Num(); ++Index)
+					{
+						if (OriginalBones[Index].Name == FName(TEXT("UpperArm_L")))
+						{
+							continue;
+						}
+						NewIndex[Index] = WithoutWeighted.Bones.Num();
+						WithoutWeighted.Bones.Add(OriginalBones[Index]);
+						WithoutWeighted.Bind.Add(OriginalBind[Index]);
+					}
+					for (int32 Index = 0; Index < OriginalBones.Num(); ++Index)
+					{
+						const int32 TargetIndex = NewIndex[Index];
+						if (TargetIndex == INDEX_NONE)
+						{
+							continue;
+						}
+						int32 OldParent = OriginalBones[Index].Parent;
+						if (OldParent != INDEX_NONE && NewIndex[OldParent] == INDEX_NONE)
+						{
+							// The dropped bone's children take its place.
+							OldParent = OriginalBones[OldParent].Parent;
+						}
+						WithoutWeighted.Bones[TargetIndex].Parent =
+							OldParent == INDEX_NONE ? INDEX_NONE : NewIndex[OldParent];
+					}
+				}
+				FMtoUNegotiationMap WithoutWeightedMap;
+				const FString WeightedRefusal =
+					ArmsTarget.DescribeDeclarationMismatch(WithoutWeighted, WithoutWeightedMap);
+				TestTrue(TEXT("a declaration that drops a skin-weighted branch is refused"),
+					WeightedRefusal.Contains(TEXT("UpperArm_L")));
+				// Re-parenting an unweighted bone changes which target bone it
+				// addresses, so the target bone of that name becomes undriven and
+				// is reported instead of being driven through the wrong parent.
 				FMtoUSubjectDeclaration WithoutForearm = ArmsFixture.ArmsDeclaration;
 				WithoutForearm.Bones.RemoveAt(2);
 				WithoutForearm.Bind.RemoveAt(2);
 				WithoutForearm.Bones[2].Parent = 1;
-				const FString AncestorRefusal =
-					ArmsTarget.DescribeDeclarationMismatch(WithoutForearm);
-				TestTrue(TEXT("a declaration that drops a needed parent is refused"),
-					AncestorRefusal.Contains(TEXT("Hand_L"))
-						&& AncestorRefusal.Contains(TEXT("Forearm_L"))
-						&& AncestorRefusal.Contains(TEXT("does not drive")));
+				FMtoUNegotiationMap ReparentedMap;
+				TestTrue(TEXT("re-parenting an unweighted branch is accepted"),
+					ArmsTarget.DescribeDeclarationMismatch(WithoutForearm, ReparentedMap).IsEmpty());
+				TestTrue(TEXT("the target bones that lost their driver are reported"),
+					ReparentedMap.UndrivenTargetBones.Contains(FName(TEXT("Forearm_L")))
+						&& ReparentedMap.UndrivenTargetBones.Contains(FName(TEXT("Hand_L"))));
 			}
 			else
 			{
@@ -681,6 +830,343 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 			Error));
 	TestTrue(TEXT("the socket refusal names the socket"),
 		Error.Contains(TEXT("socket")) || Error.Contains(TEXT("attached")));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A required secondary bone is not merely accepted: driving it moves the
+// vertices skinned to it, while a target bone outside the declaration stays at
+// its reference pose instead of being driven from nowhere.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectWeightedBoneTest,
+	"MtoUMultiSubjectPrototype.WeightedBoneMotion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectWeightedBoneTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	ON_SCOPE_EXIT
+	{
+		Fixture.Destroy();
+	};
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	FMtoUMultiSubjectTarget Target;
+	if (!TestTrue(TEXT("the character target initializes"),
+			Target.Initialize(
+				{ FMtoUMultiSubjectFixtureBuilder::CharacterId(),
+					Fixture.CharacterAnchor, Fixture.CharacterComponent },
+				Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUNegotiationMap Map;
+	if (!TestTrue(TEXT("the character declaration negotiates"),
+			Target.DescribeDeclarationMismatch(Fixture.CharacterDeclaration, Map).IsEmpty()))
+	{
+		return false;
+	}
+	USkeletalMesh* Mesh = Fixture.CharacterMesh;
+	const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
+	const int32 HeadIndex = Skeleton.FindBoneIndex(FName(TEXT("Head")));
+	TestTrue(TEXT("the head bone is a real target bone"), HeadIndex != INDEX_NONE);
+	int32 LODIndex = INDEX_NONE;
+	int32 VertexIndex = INDEX_NONE;
+	TestTrue(TEXT("the head bone skins a target vertex"),
+		FMtoUMultiSubjectProtocol::FindWeightedTargetVertex(
+			*Mesh, HeadIndex, LODIndex, VertexIndex, Error));
+
+	// A vertex skinned to Head; its CPU-skinned position is the visible result
+	// of driving that bone.
+	FSkeletalMeshRenderData* RenderData = Mesh->GetResourceForRendering();
+	if (!TestNotNull(TEXT("the fixture mesh has render data"), RenderData)
+		|| !TestTrue(TEXT("the weighted vertex's LOD exists"),
+			RenderData->LODRenderData.IsValidIndex(LODIndex)))
+	{
+		return false;
+	}
+	const FSkeletalMeshLODRenderData& LOD = RenderData->LODRenderData[LODIndex];
+	// GetSkinnedVertexPosition only reads the weights, but takes the buffer by
+	// non-const reference.
+	FSkinWeightVertexBuffer& Weights = const_cast<FSkinWeightVertexBuffer&>(LOD.SkinWeightVertexBuffer);
+
+	// The bind pose is the rest frame; the driven frame rotates Head 30 degrees
+	// about its local X axis and moves only that branch.
+	auto MakeFrame = [&Fixture](bool bRotateHead)
+	{
+		FMtoUFrameSubject Frame;
+		Frame.Id = FMtoUMultiSubjectFixtureBuilder::CharacterId();
+		Frame.Transforms = Fixture.CharacterDeclaration.Bind;
+		Frame.Curves.Add(0.0f);
+		if (bRotateHead)
+		{
+			const int32 Index = Fixture.CharacterDeclaration.Bones.IndexOfByPredicate(
+				[](const FMtoUBoneDeclaration& Bone) { return Bone.Name == FName(TEXT("Head")); });
+			if (Frame.Transforms.IsValidIndex(Index))
+			{
+				Frame.Transforms[Index] = FTransform(
+					FQuat(FRotator(30.0, 0.0, 0.0)), FVector(0.0, 0.0, 15.0));
+			}
+		}
+		return Frame;
+	};
+
+	if (!TestTrue(TEXT("the target is taken over"), Target.TakeOver(Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// Rest frame: the weighted vertex has not moved.
+	FMtoUSubjectMeasurement RestMeasurement;
+	if (!TestTrue(TEXT("the rest frame applies"),
+			Target.ApplyPose(Fixture.CharacterDeclaration, Map, MakeFrame(false),
+				RestMeasurement, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const FVector3f Before = USkinnedMeshComponent::GetSkinnedVertexPosition(
+		Fixture.CharacterComponent, VertexIndex, LOD, Weights);
+
+	// Driven frame: the head bone is driven and its skinned vertex moves.
+	FMtoUSubjectMeasurement DrivenMeasurement;
+	if (!TestTrue(TEXT("the driven frame applies"),
+			Target.ApplyPose(Fixture.CharacterDeclaration, Map, MakeFrame(true),
+				DrivenMeasurement, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const FVector3f After = USkinnedMeshComponent::GetSkinnedVertexPosition(
+		Fixture.CharacterComponent, VertexIndex, LOD, Weights);
+	TestTrue(TEXT("driving the weighted bone moves its skinned vertex"),
+		(After - Before).Size() > 1.0f);
+	double DrivenHeadDelta = 0.0;
+	for (const FMtoUBoneMeasurement& Bone : DrivenMeasurement.Bones)
+	{
+		if (Bone.BoneName == FName(TEXT("Head")))
+		{
+			DrivenHeadDelta = Bone.Delta;
+		}
+	}
+	TestTrue(TEXT("the driven head matches the wire pose"), DrivenHeadDelta < 1e-3);
+	// The same frame without the rotation leaves the vertex where it was: the
+	// movement above came from the driven bone, not from the takeover itself.
+	FMtoUSubjectMeasurement RepeatMeasurement;
+	Target.ApplyPose(Fixture.CharacterDeclaration, Map, MakeFrame(false), RepeatMeasurement, Error);
+	const FVector3f RestAgain = USkinnedMeshComponent::GetSkinnedVertexPosition(
+		Fixture.CharacterComponent, VertexIndex, LOD, Weights);
+	TestTrue(TEXT("the unrotated frame returns the vertex to its rest position"),
+		(RestAgain - Before).Size() < 0.01f);
+
+	// The arms fixture: a declaration that drops the unweighted Hand_R leaf
+	// still drives the weighted branch, and the dropped target bone stays at
+	// its reference pose instead of following the stream.
+	FMtoUMultiSubjectFixture ArmsFixture;
+	ON_SCOPE_EXIT
+	{
+		ArmsFixture.Destroy();
+	};
+	if (!TestTrue(TEXT("the character-arms fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-arms"), ArmsFixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUMultiSubjectTarget ArmsTarget;
+	if (!TestTrue(TEXT("the arms target initializes"),
+			ArmsTarget.Initialize(
+				{ FMtoUMultiSubjectFixtureBuilder::ArmsId(),
+					ArmsFixture.ArmsAnchor, ArmsFixture.ArmsComponent },
+				Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUSubjectDeclaration ArmsDeclaration = ArmsFixture.ArmsDeclaration;
+	ArmsDeclaration.Bones.Pop();
+	ArmsDeclaration.Bind.Pop();
+	FMtoUNegotiationMap ArmsMap;
+	if (!TestTrue(TEXT("the arms declaration without Hand_R negotiates"),
+			ArmsTarget.DescribeDeclarationMismatch(ArmsDeclaration, ArmsMap).IsEmpty()))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("the arms target is taken over"), ArmsTarget.TakeOver(Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUFrameSubject ArmsFrame;
+	ArmsFrame.Id = FMtoUMultiSubjectFixtureBuilder::ArmsId();
+	ArmsFrame.Transforms = ArmsDeclaration.Bind;
+	ArmsFrame.Curves.Add(0.0f);
+	const int32 UpperArmIndex = ArmsDeclaration.Bones.IndexOfByPredicate(
+		[](const FMtoUBoneDeclaration& Bone) { return Bone.Name == FName(TEXT("UpperArm_L")); });
+	TestTrue(TEXT("the arms declaration drives UpperArm_L"), UpperArmIndex != INDEX_NONE);
+	ArmsFrame.Transforms[UpperArmIndex] = FTransform(
+		FQuat(FRotator(0.0, 0.0, 40.0)), FVector(25.0, 0.0, 30.0));
+	FMtoUSubjectMeasurement ArmsMeasurement;
+	if (!TestTrue(TEXT("the arms frame applies"),
+			ArmsTarget.ApplyPose(ArmsDeclaration, ArmsMap, ArmsFrame, ArmsMeasurement, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const FReferenceSkeleton& ArmsSkeleton = ArmsFixture.ArmsMesh->GetRefSkeleton();
+	const int32 HandRIndex = ArmsSkeleton.FindBoneIndex(FName(TEXT("Hand_R")));
+	TestTrue(TEXT("the undriven hand is a real target bone"), HandRIndex != INDEX_NONE);
+	const TArray<FTransform>& ArmsComponentSpace =
+		ArmsFixture.ArmsComponent->GetComponentSpaceTransforms();
+	TArray<FTransform> ArmsReference;
+	const TArray<FTransform>& ArmsReferencePose = ArmsSkeleton.GetRefBonePose();
+	ArmsReference.SetNum(ArmsReferencePose.Num());
+	for (int32 BoneIndex = 0; BoneIndex < ArmsReferencePose.Num(); ++BoneIndex)
+	{
+		const int32 ParentIndex = ArmsSkeleton.GetParentIndex(BoneIndex);
+		ArmsReference[BoneIndex] = ParentIndex == INDEX_NONE
+			? ArmsReferencePose[BoneIndex]
+			: ArmsReferencePose[BoneIndex] * ArmsReference[ParentIndex];
+	}
+	TestTrue(TEXT("the undriven target bone stays at its reference pose"),
+		ArmsComponentSpace.IsValidIndex(HandRIndex)
+			&& MtoUSubjectTransformDelta(ArmsReference[HandRIndex], ArmsComponentSpace[HandRIndex]) < 1e-3);
+	for (const FMtoUBoneMeasurement& Bone : ArmsMeasurement.Bones)
+	{
+		TestFalse(TEXT("an ignored declaration bone is not measured"),
+			Bone.BoneName == FName(TEXT("Hand_R")));
+	}
+	TestTrue(TEXT("only mapped bones are measured"),
+		ArmsMeasurement.Bones.Num() == ArmsMap.DrivenTargetBones.Num());
+	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Bind/frame projection: a rig whose root joint carries an import convention
+// (the whole rest pose rotated by one constant frame) drives the target to the
+// same pose as the convention-free rig instead of tilting it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectBindProjectionTest,
+	"MtoUMultiSubjectPrototype.BindFrameProjection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectBindProjectionTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	ON_SCOPE_EXIT
+	{
+		Fixture.Destroy();
+	};
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// The rotated-root convention: the same rig whose every component pose is
+	// left-multiplied by one constant frame. On the wire that means the root's
+	// local carries the frame and every other local is conjugated by it -
+	// exactly what an import that keeps a rotated skeleton root looks like.
+	const FTransform RootConvention(FQuat(FVector(1.0, 0.0, 0.0), PI / 2.0));
+	auto RotateConvention = [&RootConvention](int32 BoneIndex, const FTransform& Local)
+	{
+		return BoneIndex == 0
+			? RootConvention * Local
+			: RootConvention * Local * RootConvention.Inverse();
+	};
+	FMtoUSubjectDeclaration Rotated = Fixture.CharacterDeclaration;
+	for (int32 BoneIndex = 0; BoneIndex < Rotated.Bind.Num(); ++BoneIndex)
+	{
+		Rotated.Bind[BoneIndex] = RotateConvention(BoneIndex, Rotated.Bind[BoneIndex]);
+	}
+
+	FMtoUMultiSubjectTarget Target;
+	if (!TestTrue(TEXT("the character target initializes"),
+			Target.Initialize(
+				{ FMtoUMultiSubjectFixtureBuilder::CharacterId(),
+					Fixture.CharacterAnchor, Fixture.CharacterComponent },
+				Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUNegotiationMap PlainMap;
+	TestTrue(TEXT("the plain declaration negotiates"),
+		Target.DescribeDeclarationMismatch(Fixture.CharacterDeclaration, PlainMap).IsEmpty());
+	FMtoUNegotiationMap RotatedMap;
+	TestTrue(TEXT("the rotated-root convention negotiates"),
+		Target.DescribeDeclarationMismatch(Rotated, RotatedMap).IsEmpty());
+	TestTrue(TEXT("the rotated convention rests within one root frame"),
+		RotatedMap.MaxRestRotationDegrees < 1e-3 && RotatedMap.MaxRestTranslationCm < 1e-3);
+
+	// One shared sample pose; the rotated declaration carries the same motion in
+	// its own frame.
+	const FMtoUFrameMessage Frame = Fixture.MakeFrame(
+		{ FMtoUMultiSubjectFixtureBuilder::CharacterId() }, 1, 2.0);
+	const FMtoUFrameSubject& FrameSubject = Frame.Subjects[0];
+	FMtoUFrameSubject RotatedFrameSubject;
+	RotatedFrameSubject.Id = FrameSubject.Id;
+	RotatedFrameSubject.Curves = FrameSubject.Curves;
+	for (int32 BoneIndex = 0; BoneIndex < FrameSubject.Transforms.Num(); ++BoneIndex)
+	{
+		RotatedFrameSubject.Transforms.Add(
+			RotateConvention(BoneIndex, FrameSubject.Transforms[BoneIndex]));
+	}
+
+	const FReferenceSkeleton& Skeleton = Fixture.CharacterMesh->GetRefSkeleton();
+	auto CaptureComponentPose = [&Fixture, &Skeleton](TArray<FTransform>& OutPose)
+	{
+		OutPose = Fixture.CharacterComponent->GetComponentSpaceTransforms();
+		OutPose.SetNum(Skeleton.GetNum());
+	};
+
+	FMtoUSubjectMeasurement PlainMeasurement;
+	TestTrue(TEXT("the target is taken over"), Target.TakeOver(Error));
+	TestTrue(TEXT("the plain frame applies"),
+		Target.ApplyPose(Fixture.CharacterDeclaration, PlainMap, FrameSubject,
+			PlainMeasurement, Error));
+	TArray<FTransform> PlainPose;
+	CaptureComponentPose(PlainPose);
+	Target.Restore(Error);
+
+	FMtoUSubjectMeasurement RotatedMeasurement;
+	TestTrue(TEXT("the target is taken over again"), Target.TakeOver(Error));
+	TestTrue(TEXT("the rotated-convention frame applies"),
+		Target.ApplyPose(Rotated, RotatedMap, RotatedFrameSubject, RotatedMeasurement, Error));
+	TArray<FTransform> RotatedPose;
+	CaptureComponentPose(RotatedPose);
+
+	double WorstDelta = 0.0;
+	for (int32 BoneIndex = 0; BoneIndex < PlainPose.Num() && BoneIndex < RotatedPose.Num(); ++BoneIndex)
+	{
+		WorstDelta = FMath::Max(WorstDelta,
+			MtoUSubjectTransformDelta(PlainPose[BoneIndex], RotatedPose[BoneIndex]));
+	}
+	AddInfo(FString::Printf(TEXT("rotated-root projection delta: %.9f"), WorstDelta));
+	TestTrue(TEXT("the rotated-root rig drives the target to the same pose"),
+		WorstDelta < 1e-3);
+	double RotatedBoneDelta = 0.0;
+	for (const FMtoUBoneMeasurement& Bone : RotatedMeasurement.Bones)
+	{
+		RotatedBoneDelta = FMath::Max(RotatedBoneDelta, Bone.Delta);
+	}
+	TestTrue(TEXT("the projected pose matches the wire's motion"), RotatedBoneDelta < 1e-3);
+	TestTrue(TEXT("the rotated root is still anchored exactly once"),
+		RotatedMeasurement.RootWorldDelta < 1e-3);
+	Target.Restore(Error);
 	return true;
 }
 
@@ -1053,17 +1539,27 @@ bool FMtoUMultiSubjectNegotiationTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// A curve that the target mesh does not own is refused with its own code.
+	// A curve the target mesh does not own is an export extra: it is ignored,
+	// reported as source-only and does not block the negotiation.
 	{
 		FMtoUInitMessage Init = Fixture.MakeInit(SubjectIds);
 		Init.Subjects[1].Curves.Add(FName(TEXT("Missing")));
-		if (TestTrue(TEXT("the unknown curve is sent"), Peer.Send(EncodeInit(Init), Error))
-			&& TestTrue(TEXT("the unknown curve is answered"), Peer.ReadLine(Receiver, Line, Error)))
+		if (TestTrue(TEXT("the extra curve is sent"), Peer.Send(EncodeInit(Init), Error))
+			&& TestTrue(TEXT("the extra curve is answered"), Peer.ReadLine(Receiver, Line, Error)))
 		{
-			FString Details;
-			ExpectError(*this, Line, TEXT("unknown curve"),
-				MtoUMultiSubjectError::CurveNotInTarget, &Details);
-			TestTrue(TEXT("the refusal names the curve"), Details.Contains(TEXT("Missing")));
+			TSharedPtr<FJsonObject> Ready;
+			TestTrue(TEXT("the reply is JSON"), ParseJsonLine(Line, Ready));
+			TestEqual(TEXT("a declaration with an extra curve is ready"),
+				GetString(Ready, TEXT("type")), FString(TEXT("ready")));
+			bool bReported = false;
+			for (const FMtoUSessionSubject& Subject : Receiver.GetSubjects())
+			{
+				if (Subject.Id == FMtoUMultiSubjectFixtureBuilder::PropId())
+				{
+					bReported = Subject.Map.SourceOnlyCurves.Contains(FName(TEXT("Missing")));
+				}
+			}
+			TestTrue(TEXT("the ignored curve is reported as source-only"), bReported);
 		}
 	}
 
@@ -1135,8 +1631,8 @@ bool FMtoUMultiSubjectNegotiationTest::RunTest(const FString& Parameters)
 				{
 					ExpectError(*this, ArmsLine, TEXT("arms mismatch"),
 						MtoUMultiSubjectError::SkeletonMismatch, &Details);
-					TestTrue(TEXT("the refusal reports the missing full-body bone"),
-						Details.Contains(TEXT("is not in the Unreal target skeleton")));
+					TestTrue(TEXT("the refusal reports the required arms bone the full-body input misses"),
+						Details.Contains(TEXT("ArmsRoot")));
 				}
 				// The real Maya sender keeps its own root path while declaring the
 				// full-body input; the explicit-root rule refuses that too, with the
@@ -1903,6 +2399,1309 @@ bool FMtoUMultiSubjectDriverExitTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// Ownership across renegotiation: the report describes who drives a target
+// *now*. An exit result from an earlier session must never appear next to an
+// active preview, and a restored writer must not look like a live mute.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectOwnershipRenegotiationTest,
+	"MtoUMultiSubjectPrototype.OwnershipRenegotiation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectOwnershipRenegotiationTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	FMtoUMultiSubjectReceiver Receiver;
+	FMtoUScriptedPeer Peer;
+	ON_SCOPE_EXIT
+	{
+		Peer.Close();
+		Receiver.Stop(TEXT("test finished"));
+		Fixture.Destroy();
+	};
+
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const TArray<FString> SubjectIds =
+		FMtoUMultiSubjectFixtureBuilder::ScenarioSubjects(TEXT("character-prop"));
+	const FString CharacterId = FMtoUMultiSubjectFixtureBuilder::CharacterId();
+	const FString PropId = FMtoUMultiSubjectFixtureBuilder::PropId();
+
+	FMtoUMultiSubjectSessionConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.Scenario = TEXT("character-prop-ownership");
+	FMtoUPreviewWriter Writer;
+	Writer.Track = Fixture.CharacterAnimationTrack;
+	Writer.TargetId = CharacterId;
+	Config.PreviewWriters.Add(Writer);
+	if (!TestTrue(TEXT("a loopback port was reserved"), Config.Port != 0)
+		|| !TestTrue(TEXT("the receiver starts"),
+			Receiver.Start(*Fixture.World, Fixture.MakeRegistrations(SubjectIds), Config, Error))
+		|| !TestTrue(TEXT("the scripted peer connects"), Peer.Connect(Config.Port, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// One helper: the ownership line of one target.
+	auto OwnershipLine = [&Receiver](const FString& Id) -> FString
+	{
+		for (const FString& Entry : Receiver.DescribeDriveOwnership())
+		{
+			if (Entry.StartsWith(Id + TEXT(":")))
+			{
+				return Entry;
+			}
+		}
+		return FString();
+	};
+
+	FString Line;
+	if (!TestTrue(TEXT("the first init is sent"),
+			Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
+		|| !TestTrue(TEXT("the first session is ready"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const int64 FirstSession = Receiver.GetSessionId();
+	if (!TestTrue(TEXT("a frame is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 1.0), FirstSession), Error))
+		|| !TestTrue(TEXT("the frame is acknowledged"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	// While the preview drives both targets, the ownership report says so, and
+	// the character's writer is currently muted by the preview.
+	{
+		const FString CharacterLine = OwnershipLine(CharacterId);
+		const FString PropLine = OwnershipLine(PropId);
+		TestTrue(TEXT("the driving character reports preview_active"),
+			CharacterLine.Contains(TEXT("preview_active")));
+		TestTrue(TEXT("the driving character's writer is listed as currently muted"),
+			!CharacterLine.Contains(TEXT("suppressed_writers=[]"))
+				&& CharacterLine.Contains(TEXT("muted_now=true"))
+				&& CharacterLine.Contains(TEXT("restored_writers=[]")));
+		TestTrue(TEXT("the driving prop reports preview_active"),
+			PropLine.Contains(TEXT("preview_active")));
+	}
+
+	// Remove the prop: only it goes back to its own driver; the character keeps
+	// previewing and its writer stays muted.
+	if (!TestTrue(TEXT("the prop removal is sent"),
+			Peer.Send(EncodeRemove(PropId, FirstSession), Error))
+		|| !TestTrue(TEXT("the removal is acknowledged"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	{
+		const FString CharacterLine = OwnershipLine(CharacterId);
+		const FString PropLine = OwnershipLine(PropId);
+		TestTrue(TEXT("the removed prop reports its own driver restored"),
+			PropLine.Contains(TEXT("own_driver_restored")));
+		TestFalse(TEXT("the removed prop is no longer preview_active"),
+			PropLine.Contains(TEXT("preview_active")));
+		TestTrue(TEXT("the character keeps previewing"),
+			CharacterLine.Contains(TEXT("preview_active")));
+	}
+
+	// Renegotiating on the same connection takes both targets over again: the
+	// report and the evidence must describe the active preview, not the earlier
+	// exit of the prop/character.
+	if (!TestTrue(TEXT("the second init is sent"),
+			Peer.Send(EncodeInit(Fixture.MakeInit(SubjectIds)), Error))
+		|| !TestTrue(TEXT("the second session is ready"), Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const int64 SecondSession = Receiver.GetSessionId();
+	TestTrue(TEXT("the renegotiation handed out a larger session"), SecondSession > FirstSession);
+	if (!TestTrue(TEXT("a frame of the new session is sent"),
+			Peer.Send(EncodeFrame(Fixture.MakeFrame(SubjectIds, 1, 2.0), SecondSession), Error))
+		|| !TestTrue(TEXT("the new session's frame is acknowledged"),
+			Peer.ReadLine(Receiver, Line, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	for (const FString& Id : { CharacterId, PropId })
+	{
+		const FString ReportLine = OwnershipLine(Id);
+		TestTrue(FString::Printf(TEXT("after renegotiation '%s' reports preview_active"), *Id),
+			ReportLine.Contains(TEXT("preview_active")));
+		TestFalse(FString::Printf(TEXT("after renegotiation '%s' does not report an exit state"), *Id),
+			ReportLine.Contains(TEXT("reference_pose")) || ReportLine.Contains(TEXT("own_driver_restored")));
+	}
+
+	// The machine-readable evidence must not carry the historical exit flag of
+	// an actively driven target: this is the exact contradiction of R-003.
+	{
+		const FString Directory = FPaths::Combine(EvidenceDirectory(), TEXT("ownership-renegotiation"));
+		FString EvidencePath;
+		if (TestTrue(TEXT("the evidence is written"), Receiver.SaveEvidence(Directory, EvidencePath, Error)))
+		{
+			TSharedPtr<FJsonObject> Evidence;
+			FString EvidenceText;
+			if (TestTrue(TEXT("the evidence reads back"),
+					FFileHelper::LoadFileToString(EvidenceText, *EvidencePath)
+						&& ParseJsonLine(EvidenceText, Evidence)))
+			{
+				TestTrue(TEXT("the preview is active"), GetBool(Evidence, TEXT("preview_active")));
+				const TArray<TSharedPtr<FJsonValue>>* Targets = nullptr;
+				if (TestTrue(TEXT("the evidence lists the targets"),
+						Evidence->TryGetArrayField(TEXT("targets"), Targets) && Targets != nullptr))
+				{
+					TestEqual(TEXT("both targets are recorded"), Targets->Num(), 2);
+					for (const TSharedPtr<FJsonValue>& Value : *Targets)
+					{
+						const TSharedPtr<FJsonObject> Target = Value->AsObject();
+						if (!Target.IsValid())
+						{
+							continue;
+						}
+						const FString Id = GetString(Target, TEXT("id"));
+						TestTrue(FString::Printf(TEXT("'%s' is driving"), *Id),
+							GetBool(Target, TEXT("driving")));
+						TestEqual(FString::Printf(TEXT("'%s' reports preview_active"), *Id),
+							GetString(Target, TEXT("exit")), FString(TEXT("preview_active")));
+						TestFalse(FString::Printf(TEXT("'%s' does not claim a restored reference pose"), *Id),
+							GetBool(Target, TEXT("restored_to_reference_pose")));
+					}
+				}
+				const TArray<TSharedPtr<FJsonValue>>* Writers = nullptr;
+				if (TestTrue(TEXT("the evidence lists preview writers"),
+						Evidence->TryGetArrayField(TEXT("preview_writers"), Writers)
+							&& Writers != nullptr && Writers->Num() == 1))
+				{
+					const TSharedPtr<FJsonObject> WriterObject = (*Writers)[0]->AsObject();
+					TestTrue(TEXT("the character's writer is currently muted"),
+						WriterObject.IsValid() && GetBool(WriterObject, TEXT("muted_now"))
+							&& !GetBool(WriterObject, TEXT("restored")));
+				}
+			}
+		}
+	}
+
+	// Session exit: the character had no driver of its own, so it goes back to
+	// its reference pose; the prop had one, so it is restored. The report states
+	// each result once, and the two outcomes stay distinguishable.
+	Receiver.Stop(TEXT("ownership test finished"));
+	{
+		const FString CharacterLine = OwnershipLine(CharacterId);
+		const FString PropLine = OwnershipLine(PropId);
+		TestTrue(TEXT("the undriven character reports reference_pose after the exit"),
+			CharacterLine.Contains(TEXT("exit=reference_pose")));
+		TestTrue(TEXT("the driven prop reports own_driver_restored after the exit"),
+			PropLine.Contains(TEXT("exit=own_driver_restored")));
+		TestTrue(TEXT("the character's writer is reported as restored, not muted"),
+			CharacterLine.Contains(TEXT("suppressed_writers=[]"))
+				&& !CharacterLine.Contains(TEXT("restored_writers=[]"))
+				&& CharacterLine.Contains(TEXT("muted_now=false")));
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The production pairing (Issue 54 R-007): a real Maya character rig from the
+// supplied scene and real Skeletal Meshes from the production project, driven
+// in a disposable editor scene. Opt in with the -MtoUMultiSubjectReal* flags.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectRealAssetTest,
+	"MtoUMultiSubjectPrototype.RealAssetPair",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
+{
+	FString MayapyPath;
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectMayapy="), MayapyPath);
+	FString PeerPath;
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectPeer="), PeerPath);
+	FString ScenePath;
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectMayaScene="), ScenePath);
+	if (MayapyPath.IsEmpty() || PeerPath.IsEmpty() || ScenePath.IsEmpty())
+	{
+		AddInfo(TEXT("Real-asset check not requested; supply MtoUMultiSubjectMayapy, "
+			"MtoUMultiSubjectPeer, MtoUMultiSubjectMayaScene, the two mesh flags and "
+			"MtoUMultiSubjectCharacterRoot."));
+		return true;
+	}
+	FString CharacterMeshPath;
+	FString PropMeshPath;
+	FString CharacterRoot;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectCharacterMesh="), CharacterMeshPath)
+		|| !FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectPropMesh="), PropMeshPath)
+		|| !FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectCharacterRoot="), CharacterRoot))
+	{
+		AddError(TEXT("the real-asset check needs MtoUMultiSubjectCharacterMesh, "
+			"MtoUMultiSubjectPropMesh and MtoUMultiSubjectCharacterRoot"));
+		return false;
+	}
+	FString Scenario = TEXT("real-body");
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectRealScenario="), Scenario);
+	FString PropRigSpec;
+	FString PropRigDir;
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectPropRigSpec="), PropRigSpec);
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectPropRigDir="), PropRigDir);
+	int32 Frames = 4;
+	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectFrames="), Frames);
+	TArray<double> Times;
+	{
+		FString TimesValue;
+		if (FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+				FCommandLine::Get(), TEXT("-MtoUMultiSubjectTimes="), TimesValue))
+		{
+			TestTrue(TEXT("the times argument is a comma-separated list of finite numbers"),
+				FMtoUMultiSubjectPeerRequest::ParseTimeList(TimesValue, Times));
+		}
+	}
+	auto ReadRepeatedArgument = [](const TCHAR* Prefix, TArray<FString>& OutValues)
+	{
+		const FString CommandLine = FCommandLine::Get();
+		int32 SearchFrom = 0;
+		FString Value;
+		while (SearchFrom < CommandLine.Len()
+			&& FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+				*CommandLine.Mid(SearchFrom), Prefix, Value))
+		{
+			OutValues.Add(Value);
+			SearchFrom += CommandLine.Mid(SearchFrom).Find(Prefix)
+				+ FCString::Strlen(Prefix) + Value.Len();
+		}
+	};
+	TArray<FString> SetCurves;
+	TArray<FString> ForceCurves;
+	ReadRepeatedArgument(TEXT("-MtoUMultiSubjectSetCurve="), SetCurves);
+	ReadRepeatedArgument(TEXT("-MtoUMultiSubjectForceCurve="), ForceCurves);
+	const bool bWantSequence =
+		FParse::Param(FCommandLine::Get(), TEXT("MtoUMultiSubjectSequence"));
+
+	USkeletalMesh* CharacterMesh = LoadObject<USkeletalMesh>(nullptr, *CharacterMeshPath);
+	USkeletalMesh* PropMesh = LoadObject<USkeletalMesh>(nullptr, *PropMeshPath);
+	if (!TestNotNull(TEXT("the real character mesh loads"), CharacterMesh)
+		|| !TestNotNull(TEXT("the real prop mesh loads"), PropMesh))
+	{
+		return false;
+	}
+	FString Error;
+
+	// The production assets are opened read-only: their packages and source
+	// files must be exactly as they were before and after the run.
+	auto FileDigest = [](const FString& Path) -> FString
+	{
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+		{
+			return FString();
+		}
+		return FMD5::HashBytes(Bytes.GetData(), Bytes.Num());
+	};
+	auto AssetFile = [](const UObject& Asset) -> FString
+	{
+		return FPackageName::LongPackageNameToFilename(
+			Asset.GetOutermost()->GetName(), FPackageName::GetAssetPackageExtension());
+	};
+	const FString CharacterAssetFile = AssetFile(*CharacterMesh);
+	const FString PropAssetFile = AssetFile(*PropMesh);
+	const FString CharacterDigestBefore = FileDigest(CharacterAssetFile);
+	const FString PropDigestBefore = FileDigest(PropAssetFile);
+	const FString SceneDigestBefore = FileDigest(ScenePath);
+	TestTrue(TEXT("the real character mesh source file is readable"), !CharacterDigestBefore.IsEmpty());
+	TestTrue(TEXT("the real prop mesh source file is readable"), !PropDigestBefore.IsEmpty());
+	TestTrue(TEXT("the supplied Maya scene is readable"), !SceneDigestBefore.IsEmpty());
+	const bool bCharacterDirtyBefore = CharacterMesh->GetOutermost()->IsDirty();
+	const bool bPropDirtyBefore = PropMesh->GetOutermost()->IsDirty();
+
+	UWorld* World = GEditor != nullptr ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("an editor world is available"), World))
+	{
+		return false;
+	}
+
+	const FString Directory = FPaths::Combine(EvidenceDirectory(), Scenario);
+	IFileManager::Get().MakeDirectory(*Directory, true);
+
+	// The two targets, at distinct non-origin placements. The prop anchor is
+	// placed so that the pair's relative transform matches the Maya scene's, so
+	// contact between the objects is preserved rather than assumed.
+	FMtoUMultiSubjectSessionConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.Scenario = Scenario;
+	if (!TestTrue(TEXT("a loopback port was reserved"), Config.Port != 0))
+	{
+		return false;
+	}
+
+	// First pass: a read-only probe tells us where the two Maya roots sit
+	// relative to each other, so the Unreal anchors can reproduce that space.
+	const FString ProbeEvidencePath =
+		FPaths::Combine(Directory, TEXT("mtou-multi-subject-probe.json"));
+	FTransform ProbeCharacterWorld = FTransform::Identity;
+	FTransform ProbePropWorld = FTransform::Identity;
+	{
+		// The probe talks to nobody; it is started directly instead of through
+		// the peer runner, and it never streams or saves.
+		FMtoUMultiSubjectPeerRequest Probe;
+		Probe.PeerScriptPath = PeerPath;
+		Probe.ScenePath = ScenePath;
+		Probe.ReferenceRigs.Add(FMtoUMultiSubjectFixtureBuilder::PropId());
+		Probe.SubjectOverrides.Add(
+			FString::Printf(TEXT("character=%s"), *CharacterRoot));
+		Probe.RigSpec = PropRigSpec;
+		Probe.RigDir = PropRigDir;
+		Probe.EvidencePath = ProbeEvidencePath;
+		// The script path has to come first: the flags that follow it must not
+		// be read as mayapy's own options.
+		Probe.ExtraArguments.Add(TEXT("--probe"));
+		Probe.ExtraArguments.Add(TEXT("--probe-times 1"));
+		Probe.ExtraArguments.Add(TEXT("--pair character+prop"));
+		int32 ReturnCode = -1;
+		FString ProbeStdOut;
+		FString ProbeStdErr;
+		(void)FPlatformProcess::ExecProcess(
+			*MayapyPath, *Probe.BuildCommandLine(),
+			&ReturnCode, &ProbeStdOut, &ProbeStdErr);
+		FFileHelper::SaveStringToFile(
+			FString::Printf(TEXT("[unreal] exit=%d\n%s\n%s"), ReturnCode, *ProbeStdOut, *ProbeStdErr),
+			*FPaths::Combine(Directory, TEXT("mtou-multi-subject-probe.log")),
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		TestTrue(TEXT("the read-only Maya probe runs"), ReturnCode == 0);
+		TSharedPtr<FJsonObject> ProbeJson;
+		FString ProbeText;
+		if (TestTrue(TEXT("the probe evidence reads back"),
+				FFileHelper::LoadFileToString(ProbeText, *ProbeEvidencePath)
+					&& ParseJsonLine(ProbeText, ProbeJson)))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Samples = nullptr;
+			const TSharedPtr<FJsonObject>* Subjects = nullptr;
+			if (ProbeJson->TryGetArrayField(TEXT("samples"), Samples) && Samples != nullptr
+				&& !Samples->IsEmpty()
+				&& (*Samples)[0]->AsObject()->TryGetObjectField(TEXT("subjects"), Subjects))
+			{
+				const TSharedPtr<FJsonObject>* CharacterSubject = nullptr;
+				const TSharedPtr<FJsonObject>* PropSubject = nullptr;
+				(*Subjects)->TryGetObjectField(TEXT("character"), CharacterSubject);
+				(*Subjects)->TryGetObjectField(TEXT("prop"), PropSubject);
+				const TArray<TSharedPtr<FJsonValue>>* CharacterRootRow = nullptr;
+				const TArray<TSharedPtr<FJsonValue>>* PropRootRow = nullptr;
+				if (CharacterSubject != nullptr && PropSubject != nullptr
+					&& (*CharacterSubject)->TryGetArrayField(TEXT("root"), CharacterRootRow)
+					&& (*PropSubject)->TryGetArrayField(TEXT("root"), PropRootRow)
+					&& CharacterRootRow->Num() == 10 && PropRootRow->Num() == 10)
+				{
+					auto Row = [](const TArray<TSharedPtr<FJsonValue>>& Values, double* Out)
+					{
+						for (int32 Index = 0; Index < 10; ++Index)
+						{
+							Out[Index] = (*Values[Index]).AsNumber();
+						}
+					};
+					double CharacterRow[10];
+					double PropRow[10];
+					Row(*CharacterRootRow, CharacterRow);
+					Row(*PropRootRow, PropRow);
+					const FTransform CharacterWorld(
+						FQuat(CharacterRow[3], CharacterRow[4], CharacterRow[5], CharacterRow[6]),
+						FVector(CharacterRow[0], CharacterRow[1], CharacterRow[2]),
+						FVector(CharacterRow[7], CharacterRow[8], CharacterRow[9]));
+					const FTransform PropWorld(
+						FQuat(PropRow[3], PropRow[4], PropRow[5], PropRow[6]),
+						FVector(PropRow[0], PropRow[1], PropRow[2]),
+						FVector(PropRow[7], PropRow[8], PropRow[9]));
+					ProbeCharacterWorld = CharacterWorld;
+					ProbePropWorld = PropWorld;
+					AddInfo(FString::Printf(
+						TEXT("Maya pair placement: character root (%s), prop root (%s)"),
+						*CharacterWorld.GetTranslation().ToCompactString(),
+						*PropWorld.GetTranslation().ToCompactString()));
+				}
+			}
+		}
+	}
+
+	// Both anchors carry one common placement applied to the pose each object
+	// has in the scene: the pair therefore sits in the disposable world the way
+	// the scene shows it (their relative placement is the scene's), and each
+	// target's own rest frame is what the projection cancels at run time. The
+	// character anchor is the chosen common placement, off-origin and rotated.
+	const FVector CharacterLocation(320.0, -180.0, 40.0);
+	const FRotator CharacterRotation(0.0, 25.0, 0.0);
+	const FTransform CommonPlacement(CharacterRotation, CharacterLocation);
+	const FTransform CharacterAnchorTransform = CommonPlacement * ProbeCharacterWorld;
+	const FTransform PropAnchorTransform = CommonPlacement * ProbePropWorld;
+	const FTransform SceneRelative = ProbeCharacterWorld.Inverse() * ProbePropWorld;
+
+	AActor* CharacterAnchor = nullptr;
+	AActor* PropAnchor = nullptr;
+	USkeletalMeshComponent* CharacterComponent = nullptr;
+	USkeletalMeshComponent* PropComponent = nullptr;
+	FMtoUMultiSubjectReceiver Receiver;
+	ON_SCOPE_EXIT
+	{
+		Receiver.Stop(TEXT("real-asset check finished"));
+	};
+	if (!TestTrue(TEXT("the real character target spawns"),
+			FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*World,
+				TEXT("MtoU_RealCharacterAnchor"), CharacterAnchorTransform.GetTranslation(),
+				CharacterAnchorTransform.Rotator(), *CharacterMesh,
+				CharacterAnchor, CharacterComponent))
+		|| !TestTrue(TEXT("the real prop target spawns"),
+			FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*World,
+				TEXT("MtoU_RealPropAnchor"), PropAnchorTransform.GetTranslation(),
+				PropAnchorTransform.Rotator(), *PropMesh,
+				PropAnchor, PropComponent)))
+	{
+		return false;
+	}
+	// The anchors reproduce the scene's own placement of the two objects, which
+	// is what "the pair keeps the scene's contact" means for a placement anchor.
+	const FTransform AnchorRelative = CharacterAnchorTransform.Inverse() * PropAnchorTransform;
+	AddInfo(FString::Printf(TEXT("scene relation: anchors %s vs Maya %s"),
+		*AnchorRelative.GetTranslation().ToCompactString(),
+		*SceneRelative.GetTranslation().ToCompactString()));
+	TestTrue(TEXT("the disposable scene reproduces the Maya pair's relative placement (contact)"),
+		MtoUSubjectTransformDelta(AnchorRelative, SceneRelative) < 1e-3);
+
+	// The real targets' own skeletons, so the run's negotiation can be read
+	// against what the meshes actually need (and a matching Maya rig can be
+	// generated for a target the scene does not already reference).
+	{
+		const TSharedRef<FJsonObject> Targets = MakeShared<FJsonObject>();
+		auto DescribeTarget = [](const FString& Id, USkeletalMesh& Mesh) -> TSharedRef<FJsonObject>
+		{
+			const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+			Object->SetStringField(TEXT("id"), Id);
+			Object->SetStringField(TEXT("mesh"), Mesh.GetPathName());
+			const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
+			Object->SetNumberField(TEXT("bones"), Skeleton.GetNum());
+			TArray<bool> Required;
+			FString Problem;
+			Object->SetBoolField(TEXT("skin_weights_readable"),
+				FMtoUMultiSubjectProtocol::CollectRequiredTargetBones(Mesh, Required, Problem));
+			Object->SetStringField(TEXT("skin_weight_problem"), Problem);
+			int32 RequiredCount = 0;
+			for (const bool bRequired : Required)
+			{
+				RequiredCount += bRequired ? 1 : 0;
+			}
+			Object->SetNumberField(TEXT("required_bones"), RequiredCount);
+			TArray<TSharedPtr<FJsonValue>> BoneValues;
+			auto NumberArray = [](const FVector& Vector)
+			{
+				TArray<TSharedPtr<FJsonValue>> Values;
+				Values.Add(MakeShared<FJsonValueNumber>(Vector.X));
+				Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
+				Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
+				return Values;
+			};
+			for (int32 BoneIndex = 0; BoneIndex < Skeleton.GetNum(); ++BoneIndex)
+			{
+				const FTransform& Pose = Skeleton.GetRefBonePose()[BoneIndex];
+				const TSharedRef<FJsonObject> BoneObject = MakeShared<FJsonObject>();
+				BoneObject->SetNumberField(TEXT("index"), BoneIndex);
+				BoneObject->SetStringField(TEXT("name"), Skeleton.GetBoneName(BoneIndex).ToString());
+				const int32 ParentIndex = Skeleton.GetParentIndex(BoneIndex);
+				BoneObject->SetStringField(TEXT("parent"),
+					ParentIndex == INDEX_NONE
+						? TEXT("none")
+						: Skeleton.GetBoneName(ParentIndex).ToString());
+				BoneObject->SetArrayField(TEXT("translation"), NumberArray(Pose.GetTranslation()));
+				const FQuat Rotation = Pose.GetRotation();
+				TArray<TSharedPtr<FJsonValue>> RotationValues;
+				RotationValues.Add(MakeShared<FJsonValueNumber>(Rotation.X));
+				RotationValues.Add(MakeShared<FJsonValueNumber>(Rotation.Y));
+				RotationValues.Add(MakeShared<FJsonValueNumber>(Rotation.Z));
+				RotationValues.Add(MakeShared<FJsonValueNumber>(Rotation.W));
+				BoneObject->SetArrayField(TEXT("rotation"), RotationValues);
+				BoneObject->SetArrayField(TEXT("scale"), NumberArray(Pose.GetScale3D()));
+				BoneValues.Add(MakeShared<FJsonValueObject>(BoneObject));
+			}
+			Object->SetArrayField(TEXT("skeleton"), BoneValues);
+			TArray<TSharedPtr<FJsonValue>> MorphValues;
+			for (const TObjectPtr<UMorphTarget>& Morph : Mesh.GetMorphTargets())
+			{
+				if (Morph != nullptr)
+				{
+					MorphValues.Add(MakeShared<FJsonValueString>(Morph->GetFName().ToString()));
+				}
+			}
+			Object->SetNumberField(TEXT("morph_targets"), MorphValues.Num());
+			Object->SetArrayField(TEXT("morph_names"), MorphValues);
+			return Object;
+		};
+		Targets->SetObjectField(TEXT("character"),
+			DescribeTarget(FMtoUMultiSubjectFixtureBuilder::CharacterId(), *CharacterMesh));
+		Targets->SetObjectField(TEXT("prop"),
+			DescribeTarget(FMtoUMultiSubjectFixtureBuilder::PropId(), *PropMesh));
+		FString TargetsText;
+		const TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> TargetsWriter =
+			TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&TargetsText);
+		FJsonSerializer::Serialize(Targets, TargetsWriter);
+		FFileHelper::SaveStringToFile(TargetsText,
+			*FPaths::Combine(Directory, TEXT("mtou-multi-subject-real-targets-unreal.json")),
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	}
+
+	// An optional transient animation track on the real character, so the
+	// preview takeover is verified against a Sequencer writer on a production
+	// skeleton instead of the fixture one. Nothing is saved.
+	UAnimSequence* CharacterAnimation = nullptr;
+	ULevelSequence* Sequence = nullptr;
+	UMovieSceneSkeletalAnimationTrack* CharacterTrack = nullptr;
+	FMtoUPoseSnapshot SequencePose;
+	if (bWantSequence)
+	{
+		CharacterAnimation = NewObject<UAnimSequence>(GetTransientPackage(),
+			TEXT("MtoUReal_CharacterAnim"), RF_Transient);
+		CharacterAnimation->SetSkeleton(CharacterMesh->GetSkeleton());
+		{
+			IAnimationDataController& Controller = CharacterAnimation->GetController();
+			Controller.InitializeModel();
+			Controller.OpenBracket(FText::FromString(TEXT("MtoU multi-subject real asset")), false);
+			Controller.SetFrameRate(FFrameRate(30, 1), false);
+			Controller.SetNumberOfFrames(FFrameNumber(20), false);
+			const FName RootBone = CharacterMesh->GetRefSkeleton().GetBoneName(0);
+			Controller.AddBoneCurve(RootBone, false);
+			TArray<FVector3f> Positions;
+			TArray<FQuat4f> Rotations;
+			TArray<FVector3f> Scales;
+			for (int32 Frame = 0; Frame <= 20; ++Frame)
+			{
+				Positions.Add(FVector3f(20.0f * Frame / 20.0f, 0.0f, 0.0f));
+				Rotations.Add(FQuat4f::Identity);
+				Scales.Add(FVector3f::OneVector);
+			}
+			Controller.SetBoneTrackKeys(RootBone, Positions, Rotations, Scales, false);
+			Controller.CloseBracket(false);
+			Controller.NotifyPopulated();
+		}
+		Sequence = NewObject<ULevelSequence>(GetTransientPackage(), NAME_None, RF_Transient);
+		Sequence->Initialize();
+		UMovieScene* MovieScene = Sequence->GetMovieScene();
+		MovieScene->SetDisplayRate(FFrameRate(30, 1));
+		MovieScene->SetTickResolutionDirectly(FFrameRate(30000, 1));
+		MovieScene->SetPlaybackRange(TRange<FFrameNumber>(
+			TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(30000)),
+			TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(30000 + 200000))));
+		const FGuid Binding = MovieScene->AddPossessable(
+			TEXT("RealCharacter"), USkeletalMeshComponent::StaticClass());
+		Sequence->BindPossessableObject(Binding, *CharacterComponent, World);
+		CharacterTrack = MovieScene->AddTrack<UMovieSceneSkeletalAnimationTrack>(Binding);
+		if (TestNotNull(TEXT("the transient real-skeleton animation track exists"), CharacterTrack))
+		{
+			CharacterTrack->SetEvalDisabled(false);
+			UMovieSceneSection* Section =
+				CharacterTrack->AddNewAnimation(FFrameNumber(30000), CharacterAnimation);
+			if (TestNotNull(TEXT("the transient real-skeleton section exists"), Section))
+			{
+				Section->SetRange(TRange<FFrameNumber>(
+					TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(30000)),
+					TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(230000))));
+			}
+			FMtoUPreviewWriter Writer;
+			Writer.Track = CharacterTrack;
+			Writer.TargetId = FMtoUMultiSubjectFixtureBuilder::CharacterId();
+			Config.PreviewWriters.Add(Writer);
+			MtoUCapturePoseSnapshot(*CharacterComponent, SequencePose);
+		}
+	}
+
+	const TArray<FMtoUTargetRegistration> Registrations = {
+		{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), CharacterAnchor, CharacterComponent },
+		{ FMtoUMultiSubjectFixtureBuilder::PropId(), PropAnchor, PropComponent } };
+	const TArray<FString> SubjectIds = {
+		FMtoUMultiSubjectFixtureBuilder::CharacterId(),
+		FMtoUMultiSubjectFixtureBuilder::PropId() };
+	if (!TestTrue(TEXT("the receiver starts on the real targets"),
+			Receiver.Start(*World, Registrations, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	FMtoUMultiSubjectPeerRequest Request;
+	Request.MayapyPath = MayapyPath;
+	Request.PeerScriptPath = PeerPath;
+	Request.Scenario = TEXT("character-prop");
+	Request.Port = Receiver.GetBoundPort();
+	Request.Frames = Frames;
+	Request.Times = Times;
+	Request.ScenePath = ScenePath;
+	Request.ReferenceRigs.Add(FMtoUMultiSubjectFixtureBuilder::PropId());
+	Request.SubjectOverrides.Add(
+		FString::Printf(TEXT("character=%s"), *CharacterRoot));
+	Request.RigSpec = PropRigSpec;
+	Request.RigDir = PropRigDir;
+	Request.EvidencePath = FPaths::Combine(Directory, TEXT("mtou-multi-subject-maya.json"));
+	Request.LogPath = FPaths::Combine(Directory, TEXT("mtou-multi-subject-maya.log"));
+	for (const FString& SetCurve : SetCurves)
+	{
+		Request.ExtraArguments.Add(FString::Printf(TEXT("--set-curve \"%s\""), *SetCurve));
+	}
+	for (const FString& ForceCurve : ForceCurves)
+	{
+		Request.ExtraArguments.Add(FString::Printf(TEXT("--force-curve \"%s\""), *ForceCurve));
+	}
+
+	FMtoUMultiSubjectPeerResult Result;
+	const bool bRan = RunMayaMultiSubjectPeer(Request, Receiver, Result, Error);
+	if (!TestTrue(TEXT("the Maya peer ran against the real targets"), bRan))
+	{
+		AddError(Error);
+	}
+	TestTrue(TEXT("the Maya peer started"), Result.bStarted);
+	TestEqual(TEXT("the Maya peer exited cleanly"), Result.ReturnCode, 0);
+	TestTrue(TEXT("the Maya evidence reports success"),
+		Result.bEvidenceOkField && Result.bEvidenceOk);
+	TestTrue(TEXT("the Maya evidence covers the requested frames"),
+		Result.EvidenceFrameCount >= Frames);
+	TestTrue(TEXT("the session streamed on the real pair"),
+		Receiver.GetAppliedFrameCount() >= Frames);
+
+	// The negotiation against the production meshes. The session is over by now
+	// (the peer disconnected), so the snapshot captured while it streamed is the
+	// record of what was negotiated.
+	const TArray<FMtoUNegotiatedSubject>& Subjects = Result.NegotiatedSubjects;
+	TestEqual(TEXT("two subjects were negotiated"), Subjects.Num(), 2);
+	for (const FMtoUNegotiatedSubject& Subject : Subjects)
+	{
+		AddInfo(FString::Printf(
+			TEXT("%s: declared=%d driven=%d required=%d source_only=%d undriven=%d"),
+			*Subject.Id, Subject.Declaration.Bones.Num(), Subject.Map.DrivenTargetBones.Num(),
+			Subject.Map.RequiredTargetBones.Num(), Subject.Map.SourceOnlyBones,
+			Subject.Map.UndrivenTargetBones.Num()));
+		TestTrue(FString::Printf(TEXT("'%s' covers every required target bone"), *Subject.Id),
+			Subject.Map.bCoversRequiredBones);
+		TestTrue(FString::Printf(TEXT("'%s' drives at least the required bones"), *Subject.Id),
+			Subject.Map.DrivenTargetBones.Num() >= Subject.Map.RequiredTargetBones.Num());
+	}
+	{
+		const FMtoUNegotiatedSubject* Character = Subjects.FindByPredicate(
+			[](const FMtoUNegotiatedSubject& Subject)
+			{
+				return Subject.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId();
+			});
+		if (TestNotNull(TEXT("the character subject is present"), Character))
+		{
+			TestTrue(TEXT("the real character mesh needs a bone subset of the rig"),
+				Character->Map.RequiredTargetBones.Num() > 0
+					&& Character->Map.RequiredTargetBones.Num()
+						<= Character->Declaration.Bones.Num());
+			// Every declared bone is either driven or reported as an ignored
+			// export branch: a target that owns the whole rig drives all of it,
+			// a smaller one ignores the rest instead of refusing it.
+			TestEqual(TEXT("every declared bone is driven or reported as an export branch"),
+				Character->Map.DrivenTargetBones.Num() + Character->Map.SourceOnlyBones,
+				Character->Declaration.Bones.Num());
+		}
+	}
+
+	// Per-frame numbers: the wire pose is what the real components hold.
+	double MaxBoneDelta = 0.0;
+	double MaxRootDelta = 0.0;
+	for (const FMtoUFrameRecord& Record : Receiver.GetFrameRecords())
+	{
+		for (const FMtoUSubjectMeasurement& Measurement : Record.Subjects)
+		{
+			MaxRootDelta = FMath::Max(MaxRootDelta, Measurement.RootWorldDelta);
+			for (const FMtoUBoneMeasurement& Bone : Measurement.Bones)
+			{
+				MaxBoneDelta = FMath::Max(MaxBoneDelta, Bone.Delta);
+			}
+		}
+	}
+	AddInfo(FString::Printf(TEXT("real pair deltas: max_bone=%.6f max_root_world=%.6f"),
+		MaxBoneDelta, MaxRootDelta));
+	// A production rig at centimetre scale is evaluated in float, so the
+	// prototype bound is looser than the fixture's; the measured values are the
+	// evidence, and they stay two orders of magnitude below it.
+	TestTrue(TEXT("every driven real bone holds the projected pose"), MaxBoneDelta < 0.01);
+	TestTrue(TEXT("the real root is anchored exactly once"), MaxRootDelta < 0.01);
+
+	// The two objects are driven in one world at one shared time; each root
+	// world pose is its own wire pose applied through its own anchor exactly
+	// once (measured above). The per-frame relation of the two targets is
+	// reported so the scene's placement can be compared across hosts.
+	{
+		bool bEveryFrameCarriesBothSubjects = Receiver.GetFrameRecords().Num() > 0;
+		TArray<FString> Relations;
+		for (const FMtoUFrameRecord& Record : Receiver.GetFrameRecords())
+		{
+			const FMtoUSubjectMeasurement* CharacterMeasurement = Record.Subjects.FindByPredicate(
+				[](const FMtoUSubjectMeasurement& Measurement)
+				{
+					return Measurement.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId();
+				});
+			const FMtoUSubjectMeasurement* PropMeasurement = Record.Subjects.FindByPredicate(
+				[](const FMtoUSubjectMeasurement& Measurement)
+				{
+					return Measurement.Id == FMtoUMultiSubjectFixtureBuilder::PropId();
+				});
+			bEveryFrameCarriesBothSubjects &= CharacterMeasurement != nullptr
+				&& PropMeasurement != nullptr;
+			if (CharacterMeasurement != nullptr && PropMeasurement != nullptr)
+			{
+				const FTransform Relative = CharacterMeasurement->RootWorld.Inverse()
+					* PropMeasurement->RootWorld;
+				Relations.Add(FString::Printf(TEXT("t=%.3f %s"), Record.Time,
+					*Relative.GetTranslation().ToCompactString()));
+			}
+		}
+		TestTrue(TEXT("every applied frame carried both objects at one time"),
+			bEveryFrameCarriesBothSubjects);
+		AddInfo(TEXT("per-frame pair relation: ") + FString::Join(Relations, TEXT("; ")));
+	}
+	// The scene the anchors reproduce is the one the peer actually streamed:
+	// its first applied frame's own relative placement has to be the relation
+	// the read-only probe measured.
+	{
+		const TArray<TSharedPtr<FJsonValue>>* MayaSessions = nullptr;
+		bool bProbeAgrees = false;
+		if (Result.Evidence.IsValid()
+			&& Result.Evidence->TryGetArrayField(TEXT("sessions"), MayaSessions)
+			&& MayaSessions != nullptr && !MayaSessions->IsEmpty())
+		{
+			const TSharedPtr<FJsonObject> MayaSession = (*MayaSessions)[0]->AsObject();
+			const TArray<TSharedPtr<FJsonValue>>* MayaFrames = nullptr;
+			if (MayaSession.IsValid()
+				&& MayaSession->TryGetArrayField(TEXT("frames"), MayaFrames)
+				&& MayaFrames != nullptr && !MayaFrames->IsEmpty())
+			{
+				const TSharedPtr<FJsonObject> MayaFrame = (*MayaFrames)[0]->AsObject();
+				const TArray<TSharedPtr<FJsonValue>>* MayaSubjects = nullptr;
+				if (MayaFrame.IsValid()
+					&& MayaFrame->TryGetArrayField(TEXT("subjects"), MayaSubjects)
+					&& MayaSubjects != nullptr)
+				{
+					auto RootRow = [](const TSharedPtr<FJsonObject>& Subject)
+					{
+						FTransform Transform = FTransform::Identity;
+						const TArray<TSharedPtr<FJsonValue>>* Row = nullptr;
+						if (Subject.IsValid()
+							&& Subject->TryGetArrayField(TEXT("root"), Row)
+							&& Row != nullptr && Row->Num() == 10)
+						{
+							Transform = FTransform(
+								FQuat((*Row)[3]->AsNumber(), (*Row)[4]->AsNumber(),
+									(*Row)[5]->AsNumber(), (*Row)[6]->AsNumber()),
+								FVector((*Row)[0]->AsNumber(), (*Row)[1]->AsNumber(),
+									(*Row)[2]->AsNumber()),
+								FVector((*Row)[7]->AsNumber(), (*Row)[8]->AsNumber(),
+									(*Row)[9]->AsNumber()));
+						}
+						return Transform;
+					};
+					FTransform CharacterWorld = FTransform::Identity;
+					FTransform PropWorld = FTransform::Identity;
+					for (const TSharedPtr<FJsonValue>& SubjectValue : *MayaSubjects)
+					{
+						const TSharedPtr<FJsonObject> Subject = SubjectValue->AsObject();
+						if (!Subject.IsValid())
+						{
+							continue;
+						}
+						const FString Id = Subject->GetStringField(TEXT("id"));
+						if (Id == FMtoUMultiSubjectFixtureBuilder::CharacterId())
+						{
+							CharacterWorld = RootRow(Subject);
+						}
+						else if (Id == FMtoUMultiSubjectFixtureBuilder::PropId())
+						{
+							PropWorld = RootRow(Subject);
+						}
+					}
+					bProbeAgrees = MtoUSubjectTransformDelta(
+						CharacterWorld.Inverse() * PropWorld, SceneRelative) < 1e-3;
+				}
+			}
+		}
+		TestTrue(TEXT("the streamed scene's own relation is the probed relation"),
+			bProbeAgrees);
+	}
+
+	// Morph values: the curve values the Maya peer sent are the values the real
+	// mesh holds, for every curve the target actually owns.
+	{
+		const TSharedPtr<FJsonObject> MayaEvidence = Result.Evidence;
+		const TArray<TSharedPtr<FJsonValue>>* MayaSessions = nullptr;
+		int32 ComparedCurves = 0;
+		double MaxCurveDelta = 0.0;
+		if (MayaEvidence.IsValid()
+			&& MayaEvidence->TryGetArrayField(TEXT("sessions"), MayaSessions)
+			&& MayaSessions != nullptr && !MayaSessions->IsEmpty())
+		{
+			const TSharedPtr<FJsonObject> MayaSession = (*MayaSessions)[0]->AsObject();
+			const TArray<TSharedPtr<FJsonValue>>* MayaFrames = nullptr;
+			if (MayaSession.IsValid()
+				&& MayaSession->TryGetArrayField(TEXT("frames"), MayaFrames)
+				&& MayaFrames != nullptr)
+			{
+				for (int32 FrameIndex = 0;
+					FrameIndex < MayaFrames->Num() && FrameIndex < Receiver.GetFrameRecords().Num();
+					++FrameIndex)
+				{
+					const TSharedPtr<FJsonObject> MayaFrame = (*MayaFrames)[FrameIndex]->AsObject();
+					const FMtoUFrameRecord& Record = Receiver.GetFrameRecords()[FrameIndex];
+					const TArray<TSharedPtr<FJsonValue>>* MayaSubjects = nullptr;
+					if (!MayaFrame.IsValid()
+						|| !MayaFrame->TryGetArrayField(TEXT("subjects"), MayaSubjects)
+						|| MayaSubjects == nullptr)
+					{
+						continue;
+					}
+					for (const TSharedPtr<FJsonValue>& MayaSubjectValue : *MayaSubjects)
+					{
+						const TSharedPtr<FJsonObject> MayaSubject = MayaSubjectValue->AsObject();
+						if (!MayaSubject.IsValid())
+						{
+							continue;
+						}
+						const FString SubjectId = MayaSubject->GetStringField(TEXT("id"));
+						const FMtoUSubjectMeasurement* Measurement = Record.Subjects.FindByPredicate(
+							[&SubjectId](const FMtoUSubjectMeasurement& Candidate)
+							{
+								return Candidate.Id == SubjectId;
+							});
+						const FMtoUNegotiatedSubject* Subject = Subjects.FindByPredicate(
+							[&SubjectId](const FMtoUNegotiatedSubject& Candidate)
+							{
+								return Candidate.Id == SubjectId;
+							});
+						const TArray<TSharedPtr<FJsonValue>>* MayaCurves = nullptr;
+						if (Measurement == nullptr || Subject == nullptr
+							|| !MayaSubject->TryGetArrayField(TEXT("curves"), MayaCurves)
+							|| MayaCurves == nullptr)
+						{
+							continue;
+						}
+						for (int32 CurveIndex = 0;
+							CurveIndex < MayaCurves->Num()
+								&& CurveIndex < Subject->Declaration.Curves.Num();
+							++CurveIndex)
+						{
+							if (Subject->Map.SourceOnlyCurves.Contains(
+									Subject->Declaration.Curves[CurveIndex]))
+							{
+								continue;
+							}
+							const TPair<FName, float>* Applied = Measurement->Curves.FindByPredicate(
+								[&Subject, CurveIndex](const TPair<FName, float>& Candidate)
+								{
+									return Candidate.Key == Subject->Declaration.Curves[CurveIndex];
+								});
+							if (Applied == nullptr)
+							{
+								continue;
+							}
+							MaxCurveDelta = FMath::Max(MaxCurveDelta,
+								FMath::Abs(Applied->Value
+									- static_cast<float>((*MayaCurves)[CurveIndex]->AsNumber())));
+							++ComparedCurves;
+						}
+					}
+				}
+			}
+		}
+		TestTrue(TEXT("at least one Morph curve was compared on the real mesh"),
+			ComparedCurves > 0);
+		TestTrue(TEXT("the real mesh holds the Morph values Maya sent"),
+			MaxCurveDelta < 1e-5);
+		AddInfo(FString::Printf(TEXT("Morph comparison: %d curve values, max delta %.9f"),
+			ComparedCurves, MaxCurveDelta));
+	}
+	if (!SetCurves.IsEmpty() || !ForceCurves.IsEmpty())
+	{
+		bool bNonZero = false;
+		for (const FMtoUFrameRecord& Record : Receiver.GetFrameRecords())
+		{
+			for (const FMtoUSubjectMeasurement& Measurement : Record.Subjects)
+			{
+				for (const TPair<FName, float>& Curve : Measurement.Curves)
+				{
+					bNonZero |= FMath::Abs(Curve.Value) > 1e-6f;
+				}
+			}
+		}
+		TestTrue(TEXT("the requested Morph override produced a non-zero applied value"), bNonZero);
+	}
+	if (!ForceCurves.IsEmpty())
+	{
+		// A forced override is a scene manipulation, and the evidence has to say
+		// what it disconnected: the value is only meaningful with that record.
+		const TArray<TSharedPtr<FJsonValue>>* Overrides = nullptr;
+		bool bRecorded = false;
+		if (Result.Evidence.IsValid()
+			&& Result.Evidence->TryGetArrayField(TEXT("curve_overrides"), Overrides)
+			&& Overrides != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& OverrideValue : *Overrides)
+			{
+				const TSharedPtr<FJsonObject> Override = OverrideValue->AsObject();
+				if (!Override.IsValid() || !GetBool(Override, TEXT("forced")))
+				{
+					continue;
+				}
+				const TArray<TSharedPtr<FJsonValue>>* Plugs = nullptr;
+				if (Override->TryGetArrayField(TEXT("plugs"), Plugs) && Plugs != nullptr)
+				{
+					for (const TSharedPtr<FJsonValue>& PlugValue : *Plugs)
+					{
+						const TSharedPtr<FJsonObject> Plug = PlugValue->AsObject();
+						if (Plug.IsValid()
+							&& (Plug->HasField(TEXT("disconnected"))
+								|| GetBool(Plug, TEXT("unlocked"))))
+						{
+							bRecorded = true;
+						}
+					}
+				}
+			}
+		}
+		TestTrue(TEXT("the forced Morph override records what it disconnected"), bRecorded);
+	}
+
+	// The exit: no target keeps the preview pose, and the writer state returns.
+	Receiver.Stop(TEXT("real-asset check finished"));
+	TestTrue(TEXT("the character target left the preview at its reference pose"),
+		MaxDeltaToReferencePose(*CharacterComponent) < 1e-3);
+	TestTrue(TEXT("the prop target left the preview at its reference pose"),
+		MaxDeltaToReferencePose(*PropComponent) < 1e-3);
+	if (bWantSequence)
+	{
+		TestNotNull(TEXT("the transient writer track still exists"), CharacterTrack);
+		TestFalse(TEXT("the transient writer track is enabled again"),
+			CharacterTrack->IsLocalEvalDisabled());
+	}
+
+	// A different skeleton's input must not silently drive this target: the
+	// character's own declaration against the prop target is refused, and a
+	// fresh negotiation with the target's own input is accepted.
+	{
+		const FMtoUSubjectDeclaration* CharacterDeclaration = nullptr;
+		const FMtoUSubjectDeclaration* PropDeclaration = nullptr;
+		for (const FMtoUNegotiatedSubject& Negotiated : Result.NegotiatedSubjects)
+		{
+			if (Negotiated.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId())
+			{
+				CharacterDeclaration = &Negotiated.Declaration;
+			}
+			else if (Negotiated.Id == FMtoUMultiSubjectFixtureBuilder::PropId())
+			{
+				PropDeclaration = &Negotiated.Declaration;
+			}
+		}
+		if (TestNotNull(TEXT("the character declaration was captured"), CharacterDeclaration)
+			&& TestNotNull(TEXT("the prop declaration was captured"), PropDeclaration))
+		{
+			FMtoUMultiSubjectReceiver LocalReceiver;
+			FMtoUScriptedPeer LocalPeer;
+			const FString LocalScenario = Scenario + TEXT("-renegotiation");
+			FMtoUMultiSubjectSessionConfig LocalConfig;
+			LocalConfig.Port = ReserveLoopbackPort();
+			LocalConfig.Scenario = LocalScenario;
+			AActor* LocalCharacterAnchor = nullptr;
+			AActor* LocalPropAnchor = nullptr;
+			USkeletalMeshComponent* LocalCharacterComponent = nullptr;
+			USkeletalMeshComponent* LocalPropComponent = nullptr;
+			if (!TestTrue(TEXT("the local renegotiation targets spawn"),
+					FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*World,
+						TEXT("MtoU_RealRenegotiationCharacter"), CharacterAnchorTransform.GetTranslation(),
+						CharacterAnchorTransform.Rotator(), *CharacterMesh,
+						LocalCharacterAnchor, LocalCharacterComponent))
+				|| !TestTrue(TEXT("the local prop target spawns"),
+					FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*World,
+						TEXT("MtoU_RealRenegotiationProp"), PropAnchorTransform.GetTranslation(),
+						PropAnchorTransform.Rotator(), *PropMesh,
+						LocalPropAnchor, LocalPropComponent)))
+			{
+				LocalReceiver.Stop(TEXT("setup failed"));
+				return false;
+			}
+			const TArray<FMtoUTargetRegistration> LocalRegistrations = {
+				{ FMtoUMultiSubjectFixtureBuilder::CharacterId(),
+					LocalCharacterAnchor, LocalCharacterComponent },
+				{ FMtoUMultiSubjectFixtureBuilder::PropId(),
+					LocalPropAnchor, LocalPropComponent } };
+			if (TestTrue(TEXT("the local receiver starts"),
+					LocalReceiver.Start(*World, LocalRegistrations, LocalConfig, Error))
+				&& TestTrue(TEXT("the local peer connects"),
+					LocalPeer.Connect(LocalConfig.Port, Error)))
+			{
+				FMtoUInitMessage Mismatched;
+				Mismatched.Version = MtoUMultiSubjectProtocol::Version;
+				Mismatched.Fps = 30.0;
+				Mismatched.Subjects.Add(*CharacterDeclaration);
+				Mismatched.Subjects.Add(*CharacterDeclaration);
+				Mismatched.Subjects[1].Id = FMtoUMultiSubjectFixtureBuilder::PropId();
+				FString Line;
+				if (TestTrue(TEXT("the mismatched real init is sent"),
+						LocalPeer.Send(EncodeInit(Mismatched), Error))
+					&& TestTrue(TEXT("the mismatched real init is answered"),
+						LocalPeer.ReadLine(LocalReceiver, Line, Error)))
+				{
+					FString Details;
+					ExpectError(*this, Line, TEXT("mismatched real init"),
+						MtoUMultiSubjectError::SkeletonMismatch, &Details);
+					TestTrue(TEXT("the refusal names the prop target's required bone"),
+						Details.Contains(TEXT("Box023_Jnt")) || Details.Contains(TEXT("Root")));
+				}
+				FMtoUInitMessage Correct;
+				Correct.Version = MtoUMultiSubjectProtocol::Version;
+				Correct.Fps = 30.0;
+				Correct.Subjects.Add(*CharacterDeclaration);
+				Correct.Subjects.Add(*PropDeclaration);
+				if (TestTrue(TEXT("the correct real init is sent"),
+						LocalPeer.Send(EncodeInit(Correct), Error))
+					&& TestTrue(TEXT("the correct real init is answered"),
+						LocalPeer.ReadLine(LocalReceiver, Line, Error)))
+				{
+					TSharedPtr<FJsonObject> Ready;
+					TestTrue(TEXT("the correct reply is JSON"), ParseJsonLine(Line, Ready));
+					TestEqual(TEXT("the renegotiated real init is ready"),
+						GetString(Ready, TEXT("type")), FString(TEXT("ready")));
+					FMtoUFrameMessage RestFrame;
+					RestFrame.Serial = 1;
+					RestFrame.Time = 1.0;
+					for (const FMtoUSubjectDeclaration& Declaration : Correct.Subjects)
+					{
+						FMtoUFrameSubject FrameSubject;
+						FrameSubject.Id = Declaration.Id;
+						FrameSubject.Transforms = Declaration.Bind;
+						FrameSubject.Curves.Init(0.0f, Declaration.Curves.Num());
+						RestFrame.Subjects.Add(MoveTemp(FrameSubject));
+					}
+					if (TestTrue(TEXT("the renegotiated rest frame is sent"),
+							LocalPeer.Send(EncodeFrame(RestFrame, LocalReceiver.GetSessionId()), Error))
+						&& TestTrue(TEXT("the renegotiated frame is acknowledged"),
+							LocalPeer.ReadLine(LocalReceiver, Line, Error)))
+					{
+						ExpectApplied(*this, Line, TEXT("renegotiated real frame"),
+							LocalReceiver.GetSessionId(), 1, 1.0,
+							{ { FMtoUMultiSubjectFixtureBuilder::CharacterId(), TEXT("applied") },
+								{ FMtoUMultiSubjectFixtureBuilder::PropId(), TEXT("applied") } });
+					}
+				}
+			}
+			else
+			{
+				AddError(Error);
+			}
+			LocalPeer.Close();
+			LocalReceiver.Stop(TEXT("local renegotiation finished"));
+		}
+	}
+
+	// BaseColor viewport evidence: the real meshes in a disposable level with
+	// the material's own colours, driven by a held preview frame. The session is
+	// kept alive past the test body (this run is one disposable editor process)
+	// so the renderer still sees the driven pose when it writes the image, and
+	// the request is verified by a latent command on a later frame.
+	if (!FParse::Param(FCommandLine::Get(), TEXT("NullRHI")) && GEditor != nullptr)
+	{
+		static TUniquePtr<FMtoUMultiSubjectReceiver> ScreenshotReceiver;
+		FMtoUMultiSubjectSessionConfig ScreenshotConfig;
+		ScreenshotConfig.Port = ReserveLoopbackPort();
+		ScreenshotConfig.Scenario = Scenario + TEXT("-viewport");
+		AActor* ScreenshotCharacterAnchor = nullptr;
+		AActor* ScreenshotPropAnchor = nullptr;
+		USkeletalMeshComponent* ScreenshotCharacterComponent = nullptr;
+		USkeletalMeshComponent* ScreenshotPropComponent = nullptr;
+		if (ScreenshotReceiver.IsValid())
+		{
+			ScreenshotReceiver->Stop(TEXT("previous viewport run"));
+			ScreenshotReceiver.Reset();
+		}
+		ScreenshotReceiver = MakeUnique<FMtoUMultiSubjectReceiver>();
+		const TArray<FMtoUTargetRegistration> ScreenshotRegistrations = {
+			{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), CharacterAnchor, CharacterComponent },
+			{ FMtoUMultiSubjectFixtureBuilder::PropId(), PropAnchor, PropComponent } };
+		TestTrue(TEXT("the viewport session starts on the real targets"),
+			ScreenshotReceiver->Start(*World, ScreenshotRegistrations, ScreenshotConfig, Error));
+		if (ScreenshotReceiver->IsRunning()
+			&& TestNotNull(TEXT("the character declaration was captured for the viewport hold"),
+				Result.NegotiatedSubjects.FindByPredicate(
+					[](const FMtoUNegotiatedSubject& Subject)
+					{
+						return Subject.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId();
+					}))
+			&& TestNotNull(TEXT("the prop declaration was captured for the viewport hold"),
+				Result.NegotiatedSubjects.FindByPredicate(
+					[](const FMtoUNegotiatedSubject& Subject)
+					{
+						return Subject.Id == FMtoUMultiSubjectFixtureBuilder::PropId();
+					})))
+		{
+			// A held frame: the character's root is lifted and yawed, the prop's
+			// second bone is rotated, everything else stays at its bind. It is a
+			// synthesized hold for the image, not a Maya sample - the Maya-sampled
+			// numbers are the evidence above.
+			FMtoUInitMessage HoldInit;
+			HoldInit.Version = MtoUMultiSubjectProtocol::Version;
+			HoldInit.Fps = 30.0;
+			FMtoUFrameMessage HoldFrame;
+			HoldFrame.Serial = 1;
+			HoldFrame.Time = 1.0;
+			for (const FMtoUNegotiatedSubject& Subject : Result.NegotiatedSubjects)
+			{
+				HoldInit.Subjects.Add(Subject.Declaration);
+				FMtoUFrameSubject FrameSubject;
+				FrameSubject.Id = Subject.Id;
+				FrameSubject.Transforms = Subject.Declaration.Bind;
+				FrameSubject.Curves.Init(0.0f, Subject.Declaration.Curves.Num());
+				if (FrameSubject.Transforms.Num() > 0
+					&& Subject.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId())
+				{
+					FrameSubject.Transforms[0] = FTransform(
+						FQuat(FRotator(0.0, 35.0, 0.0)), FVector(0.0, 0.0, 20.0));
+				}
+				if (FrameSubject.Transforms.Num() > 1
+					&& Subject.Id == FMtoUMultiSubjectFixtureBuilder::PropId())
+				{
+					FrameSubject.Transforms[1] = FTransform(
+						FQuat(FRotator(0.0, 0.0, 45.0)), FVector(1.3, 0.0, -14.48));
+				}
+				HoldFrame.Subjects.Add(MoveTemp(FrameSubject));
+			}
+			ScreenshotReceiver->HandleClientLine(EncodeInit(HoldInit).TrimEnd());
+			const int64 HoldSession = ScreenshotReceiver->GetSessionId();
+			ScreenshotReceiver->HandleClientLine(EncodeFrame(HoldFrame, HoldSession).TrimEnd());
+			TestTrue(TEXT("the viewport hold frame was applied"),
+				ScreenshotReceiver->GetAppliedFrameCount() > 0);
+		}
+		const FBoxSphereBounds Bounds = CharacterMesh->GetBounds();
+		const FVector Center = CharacterLocation;
+		for (FLevelEditorViewportClient* View : GEditor->GetLevelViewportClients())
+		{
+			if (View == nullptr || !View->IsPerspective())
+			{
+				continue;
+			}
+			const FVector Eye = Center + FVector(-Bounds.SphereRadius * 1.4,
+				-Bounds.SphereRadius * 1.4, Bounds.SphereRadius * 0.5);
+			View->SetViewLocation(Eye);
+			View->SetViewRotation((Center - Eye).Rotation());
+			View->SetRealtime(true);
+			View->ChangeBufferVisualizationMode(FName(TEXT("BaseColor")));
+			View->Invalidate();
+		}
+		const FString ScreenshotPath = FPaths::Combine(Directory, TEXT("basecolor-") + Scenario + TEXT(".png"));
+		FScreenshotRequest::RequestScreenshot(ScreenshotPath, false, false);
+		AddInfo(FString::Printf(TEXT("BaseColor screenshot requested: %s"), *ScreenshotPath));
+		ADD_LATENT_AUTOMATION_COMMAND(FMtoUWaitForScreenshot(
+			this, ScreenshotPath, FPlatformTime::Seconds() + 60.0));
+	}
+
+	// The production assets must be exactly as they were: source files unchanged,
+	// packages not dirtied by the run.
+	TestEqual(TEXT("the real character mesh file is unchanged"),
+		FileDigest(CharacterAssetFile), CharacterDigestBefore);
+	TestEqual(TEXT("the real prop mesh file is unchanged"), FileDigest(PropAssetFile), PropDigestBefore);
+	TestEqual(TEXT("the supplied Maya scene file is unchanged"), FileDigest(ScenePath), SceneDigestBefore);
+	TestEqual(TEXT("the character mesh package is not dirtied by the run"),
+		CharacterMesh->GetOutermost()->IsDirty(), bCharacterDirtyBefore);
+	TestEqual(TEXT("the prop mesh package is not dirtied by the run"),
+		PropMesh->GetOutermost()->IsDirty(), bPropDirtyBefore);
+
+	// The receiver's machine-readable evidence for the real pair.
+	{
+		FString EvidencePath;
+		TestTrue(TEXT("the real-pair receiver evidence is written"),
+			Receiver.SaveEvidence(Directory, EvidencePath, Error));
+		TSharedPtr<FJsonObject> Evidence;
+		FString EvidenceText;
+		if (TestTrue(TEXT("the real-pair evidence reads back"),
+				FFileHelper::LoadFileToString(EvidenceText, *EvidencePath)
+					&& ParseJsonLine(EvidenceText, Evidence)))
+		{
+			TestEqual(TEXT("the real-pair evidence records the applied frames"),
+				GetNumber(Evidence, TEXT("applied_frames")),
+				static_cast<double>(Receiver.GetAppliedFrameCount()));
+			TestFalse(TEXT("the real-pair evidence has no preview left"),
+				GetBool(Evidence, TEXT("preview_active")));
+		}
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The peer launch contract: a comma-list argument must not swallow the tokens
+// that follow it, and only validated time values reach the Maya argv.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectCommandLineTest,
+	"MtoUMultiSubjectPrototype.CommandLineArguments",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectCommandLineTest::RunTest(const FString& Parameters)
+{
+	const TCHAR* const TimesName = TEXT("-MtoUMultiSubjectTimes=");
+	FString Value;
+
+	// The value ends at the next token, wherever the times argument sits.
+	TestTrue(TEXT("a trailing argument is not swallowed"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("-MtoUMultiSubjectTimes=1,3,2,2 -abslog=logs/run.log"),
+			TimesName, Value)
+			&& Value == TEXT("1,3,2,2"));
+	TestTrue(TEXT("an argument in the middle only takes its own value"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("-MtoUEvidence=out -MtoUMultiSubjectTimes=1,3,2,2 -MtoUMultiSubjectFrames=4"),
+			TimesName, Value)
+			&& Value == TEXT("1,3,2,2"));
+	TestTrue(TEXT("a leading argument only takes its own value"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("-MtoUMultiSubjectTimes=1,3,2,2"),
+			TimesName, Value)
+			&& Value == TEXT("1,3,2,2"));
+	TestTrue(TEXT("a quoted list is read whole"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("-MtoUMultiSubjectTimes=\"1,3,2,2\" -abslog=x.log"),
+			TimesName, Value)
+			&& Value == TEXT("1,3,2,2"));
+	TestFalse(TEXT("a name inside another token does not match"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("x-MtoUMultiSubjectTimes=9,9"), TimesName, Value));
+	TestFalse(TEXT("an absent argument reports absence"),
+		FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+			TEXT("-MtoUEvidence=out -abslog=x.log"), TimesName, Value));
+
+	TArray<double> Times;
+	TestTrue(TEXT("a comma list parses into its values"),
+		FMtoUMultiSubjectPeerRequest::ParseTimeList(TEXT("1,3,2,2"), Times)
+			&& Times.Num() == 4
+			&& Times[0] == 1.0 && Times[1] == 3.0 && Times[2] == 2.0 && Times[3] == 2.0);
+	TestTrue(TEXT("spaces around entries are tolerated"),
+		FMtoUMultiSubjectPeerRequest::ParseTimeList(TEXT(" 1 , 2.5 "), Times) && Times.Num() == 2);
+	TestFalse(TEXT("an empty entry is refused"),
+		FMtoUMultiSubjectPeerRequest::ParseTimeList(TEXT("1,,2"), Times));
+	TestFalse(TEXT("a non-numeric entry is refused"),
+		FMtoUMultiSubjectPeerRequest::ParseTimeList(TEXT("1,3,oops"), Times));
+	TestFalse(TEXT("an empty list is refused"),
+		FMtoUMultiSubjectPeerRequest::ParseTimeList(TEXT(""), Times));
+
+	// The exact peer command line carries the validated values and none of the
+	// host-side arguments that followed them.
+	FMtoUMultiSubjectPeerRequest Request;
+	Request.PeerScriptPath = TEXT("maya/maya_peer.py");
+	Request.EvidencePath = TEXT("out/maya.json");
+	Request.Times = { 1.0, 3.0, 2.0, 2.0 };
+	const FString PeerCommandLine = Request.BuildCommandLine();
+	TestTrue(TEXT("the peer command line carries the four times"),
+		PeerCommandLine.Contains(TEXT("--times 1,3,2,2")));
+	TestFalse(TEXT("no host-side argument reaches the Maya command line"),
+		PeerCommandLine.Contains(TEXT("abslog")));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // The cross-host check: a real mayapy peer drives this receiver. Opt in with
 // -MtoUMultiSubjectMayapy= -MtoUMultiSubjectPeer= (-MtoUEvidence= optional).
 // ---------------------------------------------------------------------------
@@ -1974,8 +3773,24 @@ bool FMtoUMultiSubjectMayaPeerTest::RunTest(const FString& Parameters)
 	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectRemove="), Request.RemoveAtFrame);
 	FParse::Value(FCommandLine::Get(), TEXT("MtoUMultiSubjectDrop="), Request.DropAfterFrames);
 	// An explicit time list is how a reverse scrub or a same-frame re-edit is
-	// exercised end to end; FParse's string overload stops at the first comma.
-	Request.Times = CommandLineArgumentValue(TEXT("-MtoUMultiSubjectTimes="));
+	// exercised end to end. It is read with the peer's own token-boundary
+	// parser and re-encoded from validated numbers, so a later UE argument
+	// (`-abslog=...` and the like) can never reach the Maya argv.
+	{
+		FString TimesValue;
+		if (FMtoUMultiSubjectPeerRequest::TryReadArgumentValue(
+				FCommandLine::Get(), TEXT("-MtoUMultiSubjectTimes="), TimesValue))
+		{
+			if (!TestTrue(TEXT("the times argument is a comma-separated list of finite numbers"),
+					FMtoUMultiSubjectPeerRequest::ParseTimeList(TimesValue, Request.Times)))
+			{
+				AddError(FString::Printf(
+					TEXT("the times argument '%s' is not a comma-separated list of finite numbers"),
+					*TimesValue));
+				return false;
+			}
+		}
+	}
 
 	FMtoUMultiSubjectPeerResult Result;
 	const bool bRan = RunMayaMultiSubjectPeer(Request, Receiver, Result, Error);

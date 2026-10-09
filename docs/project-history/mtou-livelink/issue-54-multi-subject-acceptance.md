@@ -111,7 +111,49 @@ handoff is comment `5883765955`, updated with the 2026-10-09 review. The archive
 preserves its pre-review text; the earlier review text for the same comment ID
 remains in Git at `7efa9f80b577a5f181558f5e295ab45f70b89ed3` in that archive.
 
-## 2026-10-09 independent review
+## 2026-10-09 round: R-003, R-005 and R-006 fixed; real pairing (R-007)
+
+The review's three implementation findings are fixed in the prototype, and the
+real-asset pairing the handoff listed as the remaining acceptance gap now has
+its own run. Nothing in this round touches MtoULiveLink v9, the single-Subject
+product, its cache or the animation delivery flow.
+
+| Finding | What changed | Where it is exercised |
+| --- | --- | --- |
+| R-003: an active preview reported a previous session's exit | `FMtoUMultiSubjectTarget::TakeOver` clears the previous exit result and records that the target has been taken over; `DescribeExitState` reports the *current* state (`preview_active` before anything else), and the ownership report separates currently muted writers from already restored ones. The evidence carries `driving`, `exit` and `restored_to_reference_pose` (false while driving), plus `muted_now`/`restored` per writer | `OwnershipRenegotiation` (remove→init, same-connection re-init, post-exit report and evidence), `DriverExitOwnership` |
+| R-005: an ancestor-closed subset is not the necessary-bone contract | Required bones are computed from positive skin weights in every LOD plus their ancestors; the declaration must cover them with exactly one bone each, mapped by exact name inside the mapped parent scope, with the importer's rename forms (numeric suffix, `_`+32 hex) used only for a target bone no exact name owns; ambiguous mappings, uncovered weighted branches and non-invertible poses are refused; declared bones without a target counterpart are ignored and reported (`source_only_bones`), as are declared curves the target lacks (`source_only_curve_names`). Frames are projected with the product's bind/frame formula, so a rig whose skeleton root carries an import convention drives the target without tilting it; the remaining rest deviation is reported and bounded (5 cm / 10 deg / 5 %) | `WeightedBoneMotion`, `BindFrameProjection`, `FixtureAndAnchorRules` (required coverage, export branch, ambiguity, re-parenting, hash rename), `NegotiationRefusals` |
+| R-006: the time list swallowed later arguments | The test reads `-MtoUMultiSubjectTimes=` with a token-boundary parser (quoted values allowed), validates it as a comma list of finite numbers, and the peer re-encodes the validated values, so a following `-abslog=...` can never reach the Maya argv; the peer log records the exact command line | `CommandLineArguments`; the real-peer runs below pass `-MtoUMultiSubjectTimes=1,3,2,2` before other host arguments |
+
+R-001, R-002 and R-004 keep their reviewed status. The bounded prototype's
+product-side gaps (per-object product registry, multi-object cache, product
+Sequencer ownership UI) remain #47's and #55's decisions, and the prototype's
+bone-subset rule is now the shape #55 accepted rather than an arbitrary
+ancestor-closed subset.
+
+### Real pairing (R-007)
+
+`RealAssetPair` drives production assets in a disposable editor scene: the
+supplied Maya scene is opened read-only, the two real Skeletal Meshes are
+referenced by transient components, and the pair is placed so the disposable
+world reproduces the scene's own placement. Evidence per run is written beside
+the Git root (`../.tmp/mtou-issue54/fix-20261009/real-asset/`), together with
+the BaseColor screenshot of the non-NullRHI run.
+
+| Run | Result |
+| --- | --- |
+| C01 rig → `SK_C01_CombineBody_Clothes_12`, generated Box023 rig → `SK_Box023` | Negotiated 1854 declared bones: 1493 driven, 270 required (all covered), 361 ignored export branches, 0 undriven; five importer renames (`spine_04`, `clavicle_l/r`, `upperarm_l/r` to their hash-suffixed target bones); rest deviation 0.14 cm / 4.64 deg after the constant root frame; 241 declared curves with 217 source-only (the body mesh owns 24 of them). Max per-bone projected delta 0.000967, max root-world delta 0.000523 (cm). 96 Morph values compared (24 curves x 4 frames), max delta 0. The two mesh files, the scene file and both packages are byte-identical and dirty-state-identical after the run, and the peer's own checks confirm the scene was never saved |
+| C01 rig → `SK_C01_Head` with `--force-curve` | 1854 declared, 1854 driven, 520 required, 0 undriven; 648 Morph values compared with max delta 0, including the forced non-zero value (the head weight is DNA-driven, so the override unlocks and disconnects the plug and records that in the evidence) |
+| BaseColor viewport | A non-NullRHI run writes `basecolor-real-body.png` (821 KB) of the two real meshes under a held preview frame in BaseColor mode; a latent automation step waits for the renderer and asserts the file exists |
+
+The supplied C01 scene is a *binding* scene: its character root does not move
+and its Morph channels are at rest at every sampled time, so the real run's
+Morph evidence is a value match (96 curves) rather than scene-driven motion;
+parent motion is exercised by the generated prop rig's animated ancestor, which
+is visible in the per-frame pair relation. A production "arms" asset does not
+exist in this project, so the independent prop plays that role: its own skeleton
+matches its own input and a mismatched declaration is refused.
+
+
 
 [Formal review review-01](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6077332601)
 contains finding categories, reproduction conditions and the closure decision.

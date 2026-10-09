@@ -141,6 +141,8 @@ class MultiSubjectSession(object):
         self.connection = Connection(host, port, timeout)
         self.session = None
         self.summary = None
+        #: Applied Morph overrides, re-applied for every sampled frame.
+        self.curve_overrides = []
         #: Frames applied on this connection; the next serial is ``serial + 1``
         #: and the first frame is serial 1, which is what the receiver requires.
         self.serial = 0
@@ -245,6 +247,10 @@ class MultiSubjectSession(object):
         """
         records = self.active_records()
         scene.set_evaluated_time(time_value)
+        if self.curve_overrides:
+            # A keyed channel is rewritten by the evaluation, so the override is
+            # re-applied for the frame that is about to be sampled.
+            scene.reapply_curve_overrides(self.curve_overrides)
         serial = self.serial + 1
         direction = protocol.time_direction(self.last_time, float(time_value))
         subjects = []
@@ -347,6 +353,30 @@ def _expectations(args):
                 payload = [name.strip() for name in payload.split(split) if name.strip()]
             expectations.setdefault(subject_id.strip(), {})[key] = payload
     return expectations
+
+
+def _curve_overrides(args):
+    """``({subject_id: {curve: value}}, {subject_id: {curve: value}})``.
+
+    The first mapping is `--set-curve` (refused when the plug is driven), the
+    second is `--force-curve` (unlocks and disconnects, and says so in the
+    evidence).
+    """
+    strict = {}
+    forced = {}
+    for option, target in (("set_curve", strict), ("force_curve", forced)):
+        for value in getattr(args, option) or []:
+            parts = [part.strip() for part in value.split("=")]
+            if len(parts) != 3 or not parts[0] or not parts[1]:
+                raise ValueError("--{0} needs id=curve=value, got {1!r}".format(
+                    option.replace("_", "-"), value))
+            try:
+                number = float(parts[2])
+            except ValueError:
+                raise ValueError("--{0} value must be numeric, got {1!r}".format(
+                    option.replace("_", "-"), value))
+            target.setdefault(parts[0], {})[parts[1]] = number
+    return strict, forced
 
 
 def _spec_slug(recipe):
@@ -596,13 +626,19 @@ def _scenario_pairs(args):
 def _run_pair(args, evidence, manifest, pair, fps):
     roots = {subject_id: root for subject_id, root in _root_overrides(args).items()
              if subject_id in pair}
-    rigs = [rig_id for rig_id in pair if rig_id in manifest["rigs"]]
+    # With a supplied scene, only the rigs the caller asked to reference are
+    # added to it; the subjects a supplied scene already provides need no
+    # generated rig at all.
+    if args.scene and args.reference_rig:
+        rigs = [rig_id for rig_id in args.reference_rig if rig_id in manifest["rigs"]]
+    else:
+        rigs = [rig_id for rig_id in pair if rig_id in manifest["rigs"]]
     session = scene.SessionScene(manifest, rigs=rigs, scene_file=args.scene).open()
     driver = None
     try:
         scene_fps = scene.require_scene_units(fps)
         references = session.reference_records()
-        expected_references = [rig_id for rig_id in pair if rig_id in manifest["rigs"]]
+        expected_references = list(rigs)
         evidence.setdefault("scenes", []).append({
             "pair": list(pair),
             "file": args.scene,
@@ -620,8 +656,13 @@ def _run_pair(args, evidence, manifest, pair, fps):
         records = build_records(manifest, pair, roots=roots,
                                 expectations=_expectations(args),
                                 strict_ancestors=args.strict_ancestors)
+        curve_overrides, forced_curves = _curve_overrides(args)
+        if curve_overrides or forced_curves:
+            evidence["curve_overrides"] = scene.apply_curve_overrides(
+                records, curve_overrides, forced_curves)
         driver = MultiSubjectSession(records, args.host, args.port, fps,
                                      timeout=args.timeout).connect()
+        driver.curve_overrides = evidence.get("curve_overrides") or []
         substitute = None
         if args.scenario == "character-arms":
             # The replacement scenario declares the arms subject with the
@@ -774,6 +815,14 @@ def main(argv=None):
                         help="comma-separated Maya source frames, one per step; "
                              "a repeated or decreasing value exercises a re-edit "
                              "or a reverse scrub")
+    parser.add_argument("--set-curve", action="append", default=[],
+                        help="id=curve=value set on the disposable session scene "
+                             "before sampling, so a Morph channel carries a known "
+                             "value (repeatable)")
+    parser.add_argument("--force-curve", action="append", default=[],
+                        help="id=curve=value like --set-curve, but unlocks and "
+                             "disconnects a driven plug and records that in the "
+                             "evidence (repeatable)")
     parser.add_argument("--step", type=float, default=1.0)
     parser.add_argument("--remove-at", type=int, default=None,
                         help="after this 1-based frame, disable the second subject")

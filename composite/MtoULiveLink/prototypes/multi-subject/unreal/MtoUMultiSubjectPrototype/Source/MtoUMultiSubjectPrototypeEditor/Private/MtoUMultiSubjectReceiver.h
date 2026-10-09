@@ -36,13 +36,13 @@ struct FMtoUSessionSubject
 {
 	FString Id;
 	FMtoUSubjectDeclaration Declaration;
+	/** Which declared bone drives which target bone of this session's target. */
+	FMtoUNegotiationMap Map;
 	FMtoUMultiSubjectTarget* Target = nullptr;
 	bool bEnabled = false;
 	int64 AppliedFrames = 0;
 	double MaxBoneDelta = 0.0;
 	double MaxRootWorldDelta = 0.0;
-	/** Target bones this subject does not drive; they keep their reference pose. */
-	TArray<FName> UndrivenBones;
 };
 
 /**
@@ -98,6 +98,8 @@ public:
 	const TArray<FMtoUEvidenceError>& GetErrors() const { return Errors; }
 	const TArray<FMtoUFrameRecord>& GetFrameRecords() const { return FrameRecords; }
 	const TArray<FMtoUSessionSubject>& GetSubjects() const { return Subjects; }
+	/** Snapshot of the live session's declarations and mapping, for durable evidence. */
+	void CollectNegotiatedSubjects(TArray<FMtoUNegotiatedSubject>& OutSubjects) const;
 	const FMtoUMultiSubjectPreview& GetPreview() const { return Preview; }
 	const TArray<TUniquePtr<FMtoUMultiSubjectTarget>>& GetTargets() const { return Targets; }
 
@@ -114,7 +116,10 @@ private:
 	void HandleFrame(const TSharedPtr<FJsonObject>& Object);
 	void HandleRemove(const TSharedPtr<FJsonObject>& Object);
 
-	bool BeginSession(const FMtoUInitMessage& Init, FString& OutError);
+	bool BeginSession(
+		const FMtoUInitMessage& Init,
+		const TArray<FMtoUNegotiationMap>& Maps,
+		FString& OutError);
 	/** Refuses a message that names another session; returns true when refused. */
 	bool RefuseStaleSession(int64 MessageSession, const TCHAR* What);
 	void EndSession(const FString& Reason);
@@ -128,6 +133,15 @@ private:
 	TArray<FMtoUSessionSubject*> EnabledSubjects();
 	/** `bEnabledOnly` lists the subjects a frame carried; otherwise the whole set. */
 	void CollectSubjectStatuses(TArray<FMtoUSubjectStatus>& OutStatuses, bool bEnabledOnly) const;
+	/** One subject's negotiation and counters as the evidence file records them. */
+	static TSharedRef<FJsonObject> DescribeSubjectEvidence(
+		const FString& Id,
+		const FMtoUSubjectDeclaration& Declaration,
+		const FMtoUNegotiationMap& Map,
+		bool bEnabled,
+		int64 AppliedFrames,
+		double MaxBoneDelta,
+		double MaxRootWorldDelta);
 
 	UWorld* World = nullptr;
 	FMtoUMultiSubjectSessionConfig Config;
@@ -139,6 +153,8 @@ private:
 	FDelegateHandle WorldCleanupHandle;
 
 	TArray<FMtoUSessionSubject> Subjects;
+	/** What the last session negotiated, kept after the session ends for evidence. */
+	TArray<FMtoUNegotiatedSubject> LastNegotiatedSubjects;
 	bool bRunning = false;
 	bool bReady = false;
 	int64 SessionId = 0;

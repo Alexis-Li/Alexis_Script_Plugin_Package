@@ -7,6 +7,7 @@
 #include "MtoUMultiSubjectTypes.h"
 
 struct FReferenceSkeleton;
+class USkeletalMesh;
 
 /**
  * Fixed two-subject wire profile: parsing, shape validation and reply
@@ -65,39 +66,49 @@ public:
 	static bool ReadPoseTuple(const TArray<TSharedPtr<FJsonValue>>& Values, FTransform& OutTransform);
 
 	/**
-	 * Necessary-bone identity of one Maya declaration against an Unreal target
-	 * skeleton: every declared bone must exist in the target, carry the declared
-	 * parent, and have only declared bones above it, so no driven bone ever
-	 * hangs under a bone the sender does not drive. Target bones the declaration
-	 * does not name keep their reference pose and are listed by
-	 * `CollectUndrivenBones`. Returns an empty string when the declaration is
-	 * accepted; otherwise the first offending bone in one sentence.
+	 * The target's required bones: every bone that carries a positive skin
+	 * weight in any LOD, plus every ancestor of one. Returns false with a
+	 * diagnostic when the mesh does not expose reliable skinning data, because
+	 * a mapping decision is never guessed.
 	 */
-	static FString DescribeSkeletonMismatch(
-		const FMtoUSubjectDeclaration& Declaration,
-		const FReferenceSkeleton& Skeleton);
-
-	/** Target bones the declaration does not drive; they hold their reference pose. */
-	static void CollectUndrivenBones(
-		const FMtoUSubjectDeclaration& Declaration,
-		const FReferenceSkeleton& Skeleton,
-		TArray<FName>& OutBones);
+	static bool CollectRequiredTargetBones(
+		const USkeletalMesh& Mesh,
+		TArray<bool>& OutRequired,
+		FString& OutProblem);
 
 	/**
-	 * First advertised bind row that differs from the target's reference pose
-	 * beyond the prototype tolerances (translation 0.25 cm, rotation 0.5 deg,
-	 * scale 0.005). Names and parents are checked separately, so a difference
-	 * here really is a differently resting rig.
+	 * Maps one Maya declaration onto one Unreal target and fills `OutMap` with
+	 * the source-to-target assignment, the driven/required/undriven target
+	 * bones and the declared curves the target does not own.
+	 *
+	 * Rules: a declared bone drives the target bone of the same name inside the
+	 * already mapped parent scope; a declared bone without such a target bone is
+	 * an ignored export branch; two declared bones resolving to one target bone
+	 * are an ambiguity; every required target bone must be driven by exactly one
+	 * declared bone; every mapped bone's advertised bind must match the target
+	 * reference pose within the prototype tolerances (translation 0.25 cm,
+	 * rotation 0.5 deg, scale 0.005).
+	 *
+	 * Returns an empty string when the declaration is accepted; otherwise the
+	 * mismatch in one sentence.
 	 */
-	static FString DescribeBindMismatch(
+	static FString DescribeNegotiationMismatch(
 		const FMtoUSubjectDeclaration& Declaration,
-		const FReferenceSkeleton& Skeleton);
+		const USkeletalMesh& Mesh,
+		FMtoUNegotiationMap& OutMap);
 
-	/** The first declared curve that is not a Morph Target of the target mesh. */
-	static bool FindMissingCurve(
-		const FMtoUSubjectDeclaration& Declaration,
-		const USkeletalMeshComponent& Component,
-		FName& OutMissing);
+	/**
+	 * One vertex of the target mesh with a positive weight for the given target
+	 * bone, with the LOD it belongs to. The tests and the real-asset evidence
+	 * use it to check that a driven bone actually moves skinned vertices rather
+	 * than only being accepted by the negotiation.
+	 */
+	static bool FindWeightedTargetVertex(
+		const USkeletalMesh& Mesh,
+		int32 BoneIndex,
+		int32& OutLODIndex,
+		int32& OutVertexIndex,
+		FString& OutProblem);
 
 	/** Human-readable skeleton signature for evidence: names and parent names, in skeleton order. */
 	static FString DescribeSkeletonSignature(const FReferenceSkeleton& Skeleton);

@@ -70,6 +70,15 @@ def main(argv=None):
                              "or a reverse scrub")
     parser.add_argument("--strict-ancestors", action="store_true")
     parser.add_argument("--rig-dir", default=None)
+    parser.add_argument("--rig-spec", default=None,
+                        help="recipe JSON the fixture rigs are built from, instead "
+                             "of the checked-in one")
+    parser.add_argument("--set-curve", action="append", default=[],
+                        help="id=curve=value set on the disposable session scene "
+                             "before sampling (repeatable)")
+    parser.add_argument("--force-curve", action="append", default=[],
+                        help="id=curve=value like --set-curve, unlocking and "
+                             "disconnecting a driven plug (repeatable)")
     parser.add_argument("--regenerate-fixtures", action="store_true")
     parser.add_argument("--write-fixtures", action="store_true")
     parser.add_argument("--scene", default=None)
@@ -118,6 +127,12 @@ def main(argv=None):
         forwarded.append("--strict-ancestors")
     if args.rig_dir:
         forwarded += ["--rig-dir", args.rig_dir]
+    if args.rig_spec:
+        forwarded += ["--rig-spec", args.rig_spec]
+    for value in args.set_curve:
+        forwarded += ["--set-curve", value]
+    for value in args.force_curve:
+        forwarded += ["--force-curve", value]
     if args.regenerate_fixtures:
         forwarded.append("--regenerate-fixtures")
     if args.write_fixtures:

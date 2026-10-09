@@ -68,11 +68,17 @@ namespace
 	};
 	const TCHAR* FullBodyCurves[] = { TEXT("Shared") };
 
-	/** Prop rig: it shares the bone name Root with the character, and Shared with every rig. */
+	/**
+	 * Prop rig: it shares the bone name Root with the character and Shared with
+	 * every rig, and its weighted leaf carries one of the importer's hash
+	 * suffixes, so the Maya side's plain `PropTip` has to map through the
+	 * import-rename rule (the shape a real imported target has).
+	 */
 	const FBoneSpec PropBones[] = {
 		{ TEXT("Root"), INDEX_NONE, FVector::ZeroVector },
 		{ TEXT("PropBody"), 0, FVector(0.0, 0.0, 18.0) },
-		{ TEXT("PropTip"), 1, FVector(0.0, 0.0, 22.0) },
+		{ TEXT("PropTip_0123456789abcdef0123456789abcdef"), 1, FVector(0.0, 0.0, 22.0) },
+		{ TEXT("PropTipEnd"), 2, FVector(0.0, 0.0, 6.0) },
 	};
 	const TCHAR* PropCurves[] = { TEXT("Shared") };
 
@@ -182,11 +188,20 @@ namespace
 	}
 
 	/**
-	 * Gives the geometry exactly the fixture skeleton's bones, with every vertex
-	 * on the root. The engine's SkeletalCube names its bones Bone01/Bone02, so
-	 * the fixture writes the names of its own rig instead of remapping those.
+	 * Gives the geometry exactly the fixture skeleton's bones. The last
+	 * `WeightedVertexCount` vertices in vertex-id order are weighted to
+	 * `WeightedBone`, every other vertex to the root. The weights are what makes
+	 * a bone *required*: the receiver refuses a declaration that drops a bone
+	 * the mesh is actually skinned to, and the tests can watch a weighted vertex
+	 * move when that bone is driven. The engine's SkeletalCube names its bones
+	 * Bone01/Bone02, so the fixture writes the names of its own rig instead of
+	 * remapping those.
 	 */
-	bool ApplySkeletonBones(UE::Geometry::FDynamicMesh3& Geometry, const USkeleton& Skeleton)
+	bool ApplySkeletonBones(
+		UE::Geometry::FDynamicMesh3& Geometry,
+		const USkeleton& Skeleton,
+		const TCHAR* WeightedBone,
+		int32 WeightedVertexCount)
 	{
 		if (!Geometry.HasAttributes())
 		{
@@ -212,17 +227,38 @@ namespace
 			Parents->SetValue(BoneIndex, Reference.GetParentIndex(BoneIndex));
 			Poses->SetValue(BoneIndex, Reference.GetRefBonePose()[BoneIndex]);
 		}
-		UE::AnimationCore::FBoneWeights Uniform;
-		Uniform.SetBoneWeight(0, 1.0f);
+		const int32 WeightedBoneIndex = WeightedBone != nullptr
+			? Reference.FindBoneIndex(FName(WeightedBone))
+			: INDEX_NONE;
+		if (WeightedBone != nullptr && WeightedBoneIndex == INDEX_NONE)
+		{
+			return false;
+		}
+		UE::AnimationCore::FBoneWeights RootWeight;
+		RootWeight.SetBoneWeight(0, 1.0f);
+		UE::AnimationCore::FBoneWeights LeafWeight;
+		if (WeightedBoneIndex != INDEX_NONE)
+		{
+			LeafWeight.SetBoneWeight(WeightedBoneIndex, 1.0f);
+		}
 		UE::Geometry::FDynamicMeshVertexSkinWeightsAttribute* SkinWeights =
 			Attributes->GetSkinWeightsAttribute(FSkeletalMeshAttributes::DefaultSkinWeightProfileName);
 		if (SkinWeights == nullptr)
 		{
 			return false;
 		}
+		TArray<int32> VertexIds;
 		for (const int32 VertexID : Geometry.VertexIndicesItr())
 		{
-			SkinWeights->SetValue(VertexID, Uniform);
+			VertexIds.Add(VertexID);
+		}
+		VertexIds.Sort();
+		const int32 FirstWeighted = FMath::Max(0, VertexIds.Num() - FMath::Max(0, WeightedVertexCount));
+		for (int32 Index = 0; Index < VertexIds.Num(); ++Index)
+		{
+			SkinWeights->SetValue(
+				VertexIds[Index],
+				WeightedBoneIndex != INDEX_NONE && Index >= FirstWeighted ? LeafWeight : RootWeight);
 		}
 		return true;
 	}
@@ -237,6 +273,8 @@ namespace
 		const FDynamicMesh3& BaseGeometry,
 		const TCHAR* const* Curves,
 		int32 CurveCount,
+		const TCHAR* WeightedBone,
+		int32 WeightedVertexCount,
 		FString& OutError)
 	{
 		if (BaseGeometry.VertexCount() == 0)
@@ -255,7 +293,7 @@ namespace
 		Mesh->CalculateInvRefMatrices();
 
 		FDynamicMesh3 Geometry(BaseGeometry);
-		if (!ApplySkeletonBones(Geometry, Skeleton))
+		if (!ApplySkeletonBones(Geometry, Skeleton, WeightedBone, WeightedVertexCount))
 		{
 			OutError = TEXT("the fixture geometry could not be bound to the fixture skeleton");
 			return nullptr;
@@ -323,42 +361,6 @@ namespace
 		return Sequence;
 	}
 
-	bool SpawnAnchor(
-		UWorld& World,
-		const FString& Label,
-		const FVector& Location,
-		const FRotator& Rotation,
-		USkeletalMesh& Mesh,
-		AActor*& OutActor,
-		USkeletalMeshComponent*& OutComponent)
-	{
-		FActorSpawnParameters SpawnParameters;
-		SpawnParameters.ObjectFlags |= RF_Transient;
-		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		AActor* Actor = World.SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParameters);
-		if (Actor == nullptr)
-		{
-			return false;
-		}
-		// The anchor is a plain actor whose root the mesh component hangs under,
-		// so the component's world placement is exactly the anchor's placement.
-		USceneComponent* Root = NewObject<USceneComponent>(Actor, TEXT("AnchorRoot"));
-		Actor->SetRootComponent(Root);
-		Root->RegisterComponent();
-		Actor->SetActorLocationAndRotation(Location, Rotation);
-		Actor->SetActorLabel(Label);
-
-		USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(Actor, TEXT("SkeletalMeshComponent"));
-		Component->SetupAttachment(Root);
-		Component->SetSkeletalMeshAsset(&Mesh);
-		Component->SetUpdateAnimationInEditor(true);
-		Component->RegisterComponent();
-
-		OutActor = Actor;
-		OutComponent = Component;
-		return true;
-	}
-
 	/** Minimal Level Sequence: one skeletal animation track bound to the character component. */
 	bool BuildSequence(
 		UWorld& World,
@@ -415,6 +417,42 @@ namespace
 			FQuat(FRotator(0.0, 0.0, YawPerFrame * Step)),
 			FVector(Radius * FMath::Cos(Angle), Radius * FMath::Sin(Angle), SpawnZ + RiseZPerFrame * Step));
 	}
+}
+
+bool FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(
+	UWorld& World,
+	const FString& Label,
+	const FVector& Location,
+	const FRotator& Rotation,
+	USkeletalMesh& Mesh,
+	AActor*& OutActor,
+	USkeletalMeshComponent*& OutComponent)
+{
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.ObjectFlags |= RF_Transient;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Actor = World.SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParameters);
+	if (Actor == nullptr)
+	{
+		return false;
+	}
+	// The anchor is a plain actor whose root the mesh component hangs under,
+	// so the component's world placement is exactly the anchor's placement.
+	USceneComponent* Root = NewObject<USceneComponent>(Actor, TEXT("AnchorRoot"));
+	Actor->SetRootComponent(Root);
+	Root->RegisterComponent();
+	Actor->SetActorLocationAndRotation(Location, Rotation);
+	Actor->SetActorLabel(Label);
+
+	USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(Actor, TEXT("SkeletalMeshComponent"));
+	Component->SetupAttachment(Root);
+	Component->SetSkeletalMeshAsset(&Mesh);
+	Component->SetUpdateAnimationInEditor(true);
+	Component->RegisterComponent();
+
+	OutActor = Actor;
+	OutComponent = Component;
+	return true;
 }
 
 bool FMtoUMultiSubjectFixture::IsValid() const
@@ -681,15 +719,19 @@ bool FMtoUMultiSubjectFixtureBuilder::Build(
 		ArmsBones, UE_ARRAY_COUNT(ArmsBones));
 
 	const FDynamicMesh3 BaseGeometry = LoadBaseGeometry();
+	// The character, the prop and the arms rigs each skin two vertices to a
+	// non-root bone: that branch is *required* (a declaration that drops it is
+	// refused) and a driven pose has to move its weighted vertices.
 	Out.CharacterMesh = MakeMesh(*Out.CharacterSkeleton, BaseGeometry,
-		FullBodyCurves, UE_ARRAY_COUNT(FullBodyCurves), OutError);
+		FullBodyCurves, UE_ARRAY_COUNT(FullBodyCurves), TEXT("Head"), 2, OutError);
 	if (Out.CharacterMesh == nullptr)
 	{
 		Out.Destroy();
 		return false;
 	}
 	Out.PropMesh = MakeMesh(*Out.PropSkeleton, BaseGeometry,
-		PropCurves, UE_ARRAY_COUNT(PropCurves), OutError);
+		PropCurves, UE_ARRAY_COUNT(PropCurves),
+		TEXT("PropTip_0123456789abcdef0123456789abcdef"), 2, OutError);
 	if (Out.PropMesh == nullptr)
 	{
 		Out.Destroy();
@@ -698,7 +740,7 @@ bool FMtoUMultiSubjectFixtureBuilder::Build(
 	if (bArmsScenario)
 	{
 		Out.ArmsMesh = MakeMesh(*Out.ArmsSkeleton, BaseGeometry,
-			ArmsCurves, UE_ARRAY_COUNT(ArmsCurves), OutError);
+			ArmsCurves, UE_ARRAY_COUNT(ArmsCurves), TEXT("UpperArm_L"), 2, OutError);
 		if (Out.ArmsMesh == nullptr)
 		{
 			Out.Destroy();
@@ -713,7 +755,7 @@ bool FMtoUMultiSubjectFixtureBuilder::Build(
 	Out.ArmsDeclaration = MakeDeclaration(ArmsId(), FixtureArmsRoot,
 		*Out.ArmsSkeleton, ArmsCurves, UE_ARRAY_COUNT(ArmsCurves));
 
-	if (!SpawnAnchor(*Out.World, TEXT("MtoU_CharacterAnchor"), CharacterAnchorLocation,
+	if (!FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*Out.World, TEXT("MtoU_CharacterAnchor"), CharacterAnchorLocation,
 			CharacterAnchorRotation, *Out.CharacterMesh, Out.CharacterAnchor, Out.CharacterComponent))
 	{
 		OutError = TEXT("the character anchor could not be spawned");
@@ -723,7 +765,7 @@ bool FMtoUMultiSubjectFixtureBuilder::Build(
 	Out.Actors.Add(Out.CharacterAnchor);
 	if (bArmsScenario)
 	{
-		if (!SpawnAnchor(*Out.World, TEXT("MtoU_ArmsAnchor"), ArmsAnchorLocation,
+		if (!FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*Out.World, TEXT("MtoU_ArmsAnchor"), ArmsAnchorLocation,
 				ArmsAnchorRotation, *Out.ArmsMesh, Out.ArmsAnchor, Out.ArmsComponent))
 		{
 			OutError = TEXT("the arms anchor could not be spawned");
@@ -734,7 +776,7 @@ bool FMtoUMultiSubjectFixtureBuilder::Build(
 	}
 	else
 	{
-		if (!SpawnAnchor(*Out.World, TEXT("MtoU_PropAnchor"), PropAnchorLocation,
+		if (!FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*Out.World, TEXT("MtoU_PropAnchor"), PropAnchorLocation,
 				PropAnchorRotation, *Out.PropMesh, Out.PropAnchor, Out.PropComponent))
 		{
 			OutError = TEXT("the prop anchor could not be spawned");

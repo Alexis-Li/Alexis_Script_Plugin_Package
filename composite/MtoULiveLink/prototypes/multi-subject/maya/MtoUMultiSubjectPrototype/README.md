@@ -69,7 +69,8 @@ beyond the ones exercised below.
 | --- | --- |
 | `scripts/mtou_multi_subject_protocol.py` | Pure wire contract: framing, builders, strict validation, reply/session rules, evidence helpers. No Maya imports. |
 | `scripts/mtou_multi_subject_scene.py` | Fixture recipe materialisation, reference session scenes, subject capture through the product's `_capture_subject`, sampling through the product's `_sample_pose`/`convert_transform`, and the identity/time/space guards. |
-| `scripts/mtou_multi_subject_recipe.json` | The checked-in fixture recipe (three rigs, keyframes, Morph timelines). `--rig-spec FILE` builds a different recipe of the same shape, for matching another host's target skeletons. |
+| `scripts/mtou_multi_subject_recipe.json` | The checked-in fixture recipe (three rigs, keyframes, Morph timelines). `--rig-spec FILE` builds a different recipe of the same shape, for matching another host's target skeletons; a bone may carry a `rotate` (Euler degrees, `xyz`) as well as a `translate`, because an imported target can rest rotated. |
+| `scripts/rig_spec_from_targets.py` | Turns an Unreal target-skeleton dump into such a recipe: the bone translations and rotations are inverted from the dump's UE-space values with the product's own `convert_transform` mapping and verified before they are written, so a spec this tool emits either binds or is refused. |
 | `scripts/MtoUMultiSubjectPrototype.py` | CLI and session driver: `--write-fixtures`, `--probe`, scenarios `character-prop`, `character-arms`, `role-replace`. |
 | `tests/maya_host_multi_subject_tests.py` | mayapy host checks: fixtures, references, same-time isolation, guards, socket session, renegotiation, fault paths, cleanup. |
 | `tests/maya_peer.py` | Standalone peer for a real Unreal receiver; `--spawn-mock` runs the stand-in receiver in-process. |

@@ -345,7 +345,14 @@ void FMtoUMultiSubjectPrototypeModule::RegisterCommands()
 			Request.Frames = ParseIntArgument(Args, TEXT("frames"), 24);
 			Request.StartFrame = ParseIntArgument(Args, TEXT("start-frame"), 1);
 			Request.DropAfterFrames = ParseIntArgument(Args, TEXT("drop-after"), 0);
-			Request.Times = ParseStringArgument(Args, TEXT("times"));
+			const FString TimesValue = ParseStringArgument(Args, TEXT("times"));
+			if (!TimesValue.IsEmpty()
+				&& !FMtoUMultiSubjectPeerRequest::ParseTimeList(TimesValue, Request.Times))
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("%s: times must be a comma-separated list of finite numbers"), LogCategory);
+				return;
+			}
 			Request.EvidencePath = FPaths::Combine(OutDirectory, TEXT("mtou-multi-subject-maya.json"));
 			Request.LogPath = FPaths::Combine(OutDirectory, TEXT("mtou-multi-subject-maya.log"));
 

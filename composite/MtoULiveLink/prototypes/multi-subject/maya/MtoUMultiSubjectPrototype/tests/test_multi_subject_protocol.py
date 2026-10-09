@@ -114,10 +114,23 @@ class InitValidationTests(unittest.TestCase):
         self._refuse(invalid, protocol.CODE_SUBJECT_ID_INVALID)
 
     def test_bones_parents_and_curves(self):
+        # A repeated name under *different* parents is a real rig's shape and is
+        # accepted; the receiver resolves it inside the parent scope. Two bones
+        # of one name below one parent cannot be addressed and are refused.
+        accepted = pair()
+        accepted[1]["bones"] = [{"name": "Root", "parent": -1},
+                                {"name": "Branch", "parent": 0},
+                                {"name": "Root", "parent": 1},
+                                {"name": "Tip", "parent": 2}]
+        accepted[1]["bind"] = [list(ROW) for _ in accepted[1]["bones"]]
+        summary = protocol.validate_init(
+            {"type": "init", "version": 1, "fps": 30.0, "subjects": accepted})
+        self.assertEqual(summary["parents"]["prop"][2], 1)
         broken = pair()
         broken[1]["bones"] = [{"name": "Root", "parent": -1},
-                              {"name": "Root", "parent": 0},
-                              {"name": "Tip", "parent": 1}]
+                              {"name": "Branch", "parent": 0},
+                              {"name": "Branch", "parent": 0}]
+        broken[1]["bind"] = [list(ROW) for _ in broken[1]["bones"]]
         self._refuse(broken, protocol.CODE_BONE_NAME_DUPLICATE)
         broken = pair()
         broken[0]["bones"] = [{"name": "Root", "parent": -1},

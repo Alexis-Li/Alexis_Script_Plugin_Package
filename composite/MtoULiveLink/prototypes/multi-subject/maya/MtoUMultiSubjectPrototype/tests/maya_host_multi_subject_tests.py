@@ -23,6 +23,7 @@ acceptance criteria of the Maya slice:
 
 import argparse
 import json
+import math
 import sys
 import time
 import traceback
@@ -719,6 +720,53 @@ def main(argv=None):
         checks.close("a spec-driven frame keeps its sampled values",
                      frames[0]["subjects"][0]["curves"] and
                      frames[-1]["subjects"][0]["curves"][0], 0.8, tolerance=1e-6)
+
+        # A bone's resting rotation is part of the rig: an imported target can
+        # rest rotated, and the observation bind has to carry it.
+        rotated_spec = json.loads(json.dumps(spec))
+        rotated_spec["name"] = "host-check-spec-rotated"
+        rotated_spec["rigs"]["character"]["bones"][1]["rotate"] = [90.0, 0.0, 0.0]
+        rotated_path = Path(fixture_dir) / "host-check-spec-rotated.json"
+        with open(str(rotated_path), "w", encoding="utf-8") as stream:
+            json.dump(rotated_spec, stream, indent=2)
+        rotated_dir = Path(fixture_dir) / "spec-rotated-fixtures"
+        rotated_manifest = scene.build_fixtures(
+            rotated_spec, directory=str(rotated_dir), force=True)
+        rotated_session = scene.SessionScene(
+            rotated_manifest, rigs=("character", "prop")).open()
+        try:
+            rotated_record = scene.capture_subject(
+                "character", rotated_session.root_for("character"))
+            expected_bind = scene.product().convert_transform(
+                [0.0, 0.0, 0.0], [0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
+                [1.0, 1.0, 1.0], 1.0)
+            expected_quaternion = expected_bind[3:7]
+            joint_row = rotated_record["wire"]["bind"][1]
+            dot = abs(sum(a * b for a, b in zip(joint_row[3:7], expected_quaternion)))
+            checks.close(
+                "a spec bone's resting rotation reaches the wire bind",
+                math.degrees(2.0 * math.acos(min(1.0, dot))), 0.0, tolerance=0.05)
+        finally:
+            scene.cmds().file(new=True, force=True)
+
+        # A known Morph value can be set on the disposable session scene, so a
+        # Morph channel is verified with a value rather than only with zeroes.
+        code, evidence, receiver = drive(
+            ("character", "prop"), 4, manifest_override=spec_manifest,
+            rig_spec=str(spec_path), rig_dir=str(spec_dir),
+            arguments=["--set-curve", "character=Shared=0.42"])
+        overrides = evidence.get("curve_overrides") or []
+        override_frames = (evidence.get("sessions") or [{}])[0].get("frames") or []
+        checks.check(
+            "a Morph override is applied to the disposable scene and streamed",
+            code == 0 and len(overrides) == 1
+            and overrides[0]["curve"] == "Shared"
+            and override_frames
+            and all(abs(frame["subjects"][0]["curves"][0] - 0.42) < 1e-6
+                    for frame in override_frames),
+            {"overrides": overrides,
+             "values": [frame["subjects"][0]["curves"][0]
+                        for frame in override_frames]})
 
         # ------------------------------------------------------ fault paths
         report["phase"] = "faults"

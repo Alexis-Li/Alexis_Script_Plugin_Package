@@ -361,6 +361,12 @@ def _validate_bones(subject_id, bones):
                             "subject {0} declared {1!r}".format(subject_id, bones))
     names = []
     parents = []
+    # A real rig may repeat a joint name in different branches (mirrored cloth
+    # chains, layered detail bones). What cannot be addressed is two bones of
+    # one name in one parent scope, so only that is refused here; the receiver
+    # maps bones by name inside their declared parent scope and refuses a
+    # mapping that stays ambiguous.
+    claimed = {}
     for index, bone in enumerate(bones):
         if not isinstance(bone, dict):
             raise ProtocolError(CODE_BONE_NAME_INVALID, "bone must be an object",
@@ -369,11 +375,6 @@ def _validate_bones(subject_id, bones):
         if not isinstance(name, str) or not name:
             raise ProtocolError(CODE_BONE_NAME_INVALID, "bone name must be a string",
                                 "{0}[{1}] name is {2!r}".format(subject_id, index, name))
-        if name in names:
-            raise ProtocolError(
-                CODE_BONE_NAME_DUPLICATE,
-                "bone names must be unique inside a subject",
-                "subject {0} repeats {1!r}".format(subject_id, name))
         parent = bone.get("parent")
         if isinstance(parent, bool) or not isinstance(parent, int) \
                 or parent < -1 or parent >= index:
@@ -381,6 +382,14 @@ def _validate_bones(subject_id, bones):
                 CODE_BONE_PARENT_INVALID,
                 "bone parent must index an earlier bone (-1 for the root)",
                 "{0}[{1}].parent is {2!r}".format(subject_id, index, parent))
+        key = (name, int(parent))
+        if key in claimed:
+            raise ProtocolError(
+                CODE_BONE_NAME_DUPLICATE,
+                "two bones of one name cannot share one parent scope",
+                "subject {0} repeats {1!r} below the same parent ({2} and {3})".format(
+                    subject_id, name, claimed[key], index))
+        claimed[key] = index
         names.append(name)
         parents.append(int(parent))
     return names, parents

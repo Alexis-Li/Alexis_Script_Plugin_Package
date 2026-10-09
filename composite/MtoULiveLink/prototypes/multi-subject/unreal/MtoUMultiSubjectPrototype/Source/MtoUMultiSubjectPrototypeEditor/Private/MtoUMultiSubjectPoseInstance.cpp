@@ -29,19 +29,22 @@ bool FMtoUMultiSubjectPoseProxy::Evaluate(FPoseContext& Output)
 	}
 
 	const FBoneContainer& BoneContainer = Output.Pose.GetBoneContainer();
-	for (int32 BoneIndex = 0; BoneIndex < Pose->BoneNames.Num(); ++BoneIndex)
+	for (int32 BoneIndex = 0; BoneIndex < Pose->LocalTransforms.Num(); ++BoneIndex)
 	{
-		if (!Pose->LocalTransforms.IsValidIndex(BoneIndex))
+		if (!Pose->BoneIndices.IsValidIndex(BoneIndex))
 		{
 			continue;
 		}
-		const int32 MeshBoneIndex = BoneContainer.GetPoseBoneIndexForBoneName(Pose->BoneNames[BoneIndex]);
-		if (MeshBoneIndex == INDEX_NONE)
+		// The target bone index comes from the negotiation map, so a target whose
+		// skeleton repeats a name can never be driven on the wrong bone by a
+		// name lookup.
+		const int32 TargetBoneIndex = Pose->BoneIndices[BoneIndex];
+		if (TargetBoneIndex == INDEX_NONE)
 		{
 			continue;
 		}
 		const FCompactPoseBoneIndex CompactIndex =
-			BoneContainer.MakeCompactPoseIndex(FMeshPoseBoneIndex(MeshBoneIndex));
+			BoneContainer.MakeCompactPoseIndex(FMeshPoseBoneIndex(TargetBoneIndex));
 		if (CompactIndex != INDEX_NONE)
 		{
 			Output.Pose[CompactIndex] = Pose->LocalTransforms[BoneIndex];

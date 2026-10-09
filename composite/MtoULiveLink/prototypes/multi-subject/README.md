@@ -31,7 +31,18 @@ animation import/export, or package this prototype as a production plugin.
    production scene. The UE suite also opens a real transient Sequencer with
    an existing skeletal animation track, checks exclusive control, and exits
    to the previous animation state.
-3. Inspect the peer and receiver JSON reports in the evidence directory:
+3. Optionally run the production pairing in the same suite: `RealAssetPair`
+   takes a supplied Maya scene plus two real Skeletal Meshes and their ids
+   (`-MtoUMultiSubjectMayaScene=`, `-MtoUMultiSubjectCharacterMesh=`,
+   `-MtoUMultiSubjectPropMesh=`, `-MtoUMultiSubjectCharacterRoot=`), places the
+   pair in the scene's own relative placement, streams the real session, and
+   records per-object errors, Morph values, exit restore, file digests and a
+   BaseColor viewport screenshot. A target the scene does not already contain
+   is paired with a generated rig built by
+   `scripts/rig_spec_from_targets.py` from the target dump the run writes
+   (`--rig-spec`/`--rig-dir`). Nothing is saved: the scene is opened read-only
+   and every actor, mesh reference and sequence is transient.
+4. Inspect the peer and receiver JSON reports in the evidence directory:
    subject IDs, negotiated session, source times with the direction each one
    moved in, serials, bone and Morph values, undriven target bones, measured
    pose and anchored-root disagreement, error codes, drive ownership and target

@@ -425,6 +425,7 @@ void FMtoUMultiSubjectReceiver::HandleInit(const TSharedPtr<FJsonObject>& Object
 	// Validation runs before anything changes: a refused init leaves a running
 	// session exactly as it was, so a wrong pairing can never half-apply.
 	TArray<FMtoUMultiSubjectTarget*> ResolvedTargets;
+	TArray<FMtoUNegotiationMap> NegotiatedMaps;
 	for (const FMtoUSubjectDeclaration& Declaration : Init.Subjects)
 	{
 		FMtoUMultiSubjectTarget* Target = FindTarget(Declaration.Id);
@@ -464,7 +465,8 @@ void FMtoUMultiSubjectReceiver::HandleInit(const TSharedPtr<FJsonObject>& Object
 			SendError(MtoUMultiSubjectError::TargetReused, Details);
 			return;
 		}
-		const FString Mismatch = Target->DescribeDeclarationMismatch(Declaration);
+		FMtoUNegotiationMap Map;
+		const FString Mismatch = Target->DescribeDeclarationMismatch(Declaration, Map);
 		if (!Mismatch.IsEmpty())
 		{
 			const FString Details = FString::Printf(TEXT("subject '%s': %s"), *Declaration.Id, *Mismatch);
@@ -472,24 +474,15 @@ void FMtoUMultiSubjectReceiver::HandleInit(const TSharedPtr<FJsonObject>& Object
 			SendError(MtoUMultiSubjectError::SkeletonMismatch, Details);
 			return;
 		}
-		FName MissingCurve;
-		if (Target->FindMissingCurve(Declaration, MissingCurve))
-		{
-			const FString Details = FString::Printf(
-				TEXT("subject '%s': Maya curve '%s' is not a Morph Target of the Unreal target mesh"),
-				*Declaration.Id, *MissingCurve.ToString());
-			NoteError(MtoUMultiSubjectError::CurveNotInTarget, Details, LastAppliedSerial);
-			SendError(MtoUMultiSubjectError::CurveNotInTarget, Details);
-			return;
-		}
 		ResolvedTargets.Add(Target);
+		NegotiatedMaps.Add(MoveTemp(Map));
 	}
 
 	// The init is usable: a new negotiation always replaces the old session.
 	EndSession(TEXT("new negotiation"));
 
 	FString BeginError;
-	if (!BeginSession(Init, BeginError))
+	if (!BeginSession(Init, NegotiatedMaps, BeginError))
 	{
 		NoteError(MtoUMultiSubjectError::PreviewConflict, BeginError, SessionId);
 		SendError(MtoUMultiSubjectError::PreviewConflict, BeginError);
@@ -502,24 +495,39 @@ void FMtoUMultiSubjectReceiver::HandleInit(const TSharedPtr<FJsonObject>& Object
 		ReceiverLogCategory, SessionId, *Config.Scenario);
 }
 
-bool FMtoUMultiSubjectReceiver::BeginSession(const FMtoUInitMessage& Init, FString& OutError)
+bool FMtoUMultiSubjectReceiver::BeginSession(
+	const FMtoUInitMessage& Init,
+	const TArray<FMtoUNegotiationMap>& Maps,
+	FString& OutError)
 {
 	Subjects.Reset();
-	for (const FMtoUSubjectDeclaration& Declaration : Init.Subjects)
+	for (int32 SubjectIndex = 0; SubjectIndex < Init.Subjects.Num(); ++SubjectIndex)
 	{
+		const FMtoUSubjectDeclaration& Declaration = Init.Subjects[SubjectIndex];
 		FMtoUSessionSubject Subject;
 		Subject.Id = Declaration.Id;
 		Subject.Declaration = Declaration;
 		Subject.Target = FindTarget(Declaration.Id);
 		Subject.bEnabled = true;
-		if (Subject.Target != nullptr)
+		// The map was computed while the init was validated; it carries which
+		// target bones this subject drives and which target bones stay at their
+		// reference pose, so the evidence never implies a whole-skeleton match.
+		if (Maps.IsValidIndex(SubjectIndex))
 		{
-			// What the target owns but this subject does not drive stays at its
-			// reference pose; the evidence has to say so instead of implying the
-			// whole target skeleton was matched.
-			Subject.Target->CollectUndrivenBones(Declaration, Subject.UndrivenBones);
+			Subject.Map = Maps[SubjectIndex];
 		}
 		Subjects.Add(MoveTemp(Subject));
+	}
+	// A session is forgotten when it ends, but what it negotiated is evidence:
+	// keep the last one so the written report still shows the mapping.
+	LastNegotiatedSubjects.Reset();
+	for (const FMtoUSessionSubject& Subject : Subjects)
+	{
+		FMtoUNegotiatedSubject Snapshot;
+		Snapshot.Id = Subject.Id;
+		Snapshot.Declaration = Subject.Declaration;
+		Snapshot.Map = Subject.Map;
+		LastNegotiatedSubjects.Add(MoveTemp(Snapshot));
 	}
 
 	++SessionId;
@@ -667,7 +675,9 @@ void FMtoUMultiSubjectReceiver::HandleFrame(const TSharedPtr<FJsonObject>& Objec
 	{
 		FMtoUSubjectMeasurement Measurement;
 		FString TargetError;
-		if (!Entry.Subject->Target->ApplyPose(Entry.Subject->Declaration, *Entry.Frame, Measurement, TargetError))
+		if (!Entry.Subject->Target->ApplyPose(
+				Entry.Subject->Declaration, Entry.Subject->Map, *Entry.Frame,
+				Measurement, TargetError))
 		{
 			NoteError(MtoUMultiSubjectError::PreviewConflict, TargetError, Frame.Serial);
 			SendError(MtoUMultiSubjectError::PreviewConflict, TargetError);
@@ -921,11 +931,88 @@ FMtoUMultiSubjectTarget* FMtoUMultiSubjectReceiver::FindTarget(const FString& Id
 	return nullptr;
 }
 
+void FMtoUMultiSubjectReceiver::CollectNegotiatedSubjects(
+	TArray<FMtoUNegotiatedSubject>& OutSubjects) const
+{
+	OutSubjects.Reset();
+	for (const FMtoUSessionSubject& Subject : Subjects)
+	{
+		FMtoUNegotiatedSubject Snapshot;
+		Snapshot.Id = Subject.Id;
+		Snapshot.Declaration = Subject.Declaration;
+		Snapshot.Map = Subject.Map;
+		OutSubjects.Add(MoveTemp(Snapshot));
+	}
+}
+
+TSharedRef<FJsonObject> FMtoUMultiSubjectReceiver::DescribeSubjectEvidence(
+	const FString& Id,
+	const FMtoUSubjectDeclaration& Declaration,
+	const FMtoUNegotiationMap& Map,
+	bool bEnabled,
+	int64 AppliedFrames,
+	double MaxBoneDelta,
+	double MaxRootWorldDelta)
+{
+	const TSharedRef<FJsonObject> SubjectObject = MakeShared<FJsonObject>();
+	SubjectObject->SetStringField(TEXT("id"), Id);
+	SubjectObject->SetStringField(TEXT("root"), Declaration.Root);
+	SubjectObject->SetBoolField(TEXT("enabled"), bEnabled);
+	SubjectObject->SetNumberField(TEXT("applied_frames"), static_cast<double>(AppliedFrames));
+	SubjectObject->SetNumberField(TEXT("max_bone_delta"), MaxBoneDelta);
+	SubjectObject->SetNumberField(TEXT("max_root_world_delta"), MaxRootWorldDelta);
+	SubjectObject->SetNumberField(TEXT("declared_bones"),
+		static_cast<double>(Declaration.Bones.Num()));
+	// What the negotiation established: the driven/required coverage of the
+	// target, the ignored source branches, and the target bones that keep their
+	// reference pose.
+	SubjectObject->SetNumberField(TEXT("driven_bones"),
+		static_cast<double>(Map.DrivenTargetBones.Num()));
+	SubjectObject->SetNumberField(TEXT("required_target_bones"),
+		static_cast<double>(Map.RequiredTargetBones.Num()));
+	SubjectObject->SetNumberField(TEXT("source_only_bones"),
+		static_cast<double>(Map.SourceOnlyBones));
+	// How far the two rigs rest apart after the constant root frame: the
+	// bind/frame projection absorbs this, and the numbers stay visible.
+	SubjectObject->SetNumberField(TEXT("rest_deviation_translation_cm"), Map.MaxRestTranslationCm);
+	SubjectObject->SetNumberField(TEXT("rest_deviation_rotation_degrees"), Map.MaxRestRotationDegrees);
+	SubjectObject->SetNumberField(TEXT("rest_deviation_scale"), Map.MaxRestScale);
+	SubjectObject->SetNumberField(TEXT("undriven_bones"),
+		static_cast<double>(Map.UndrivenTargetBones.Num()));
+	TArray<TSharedPtr<FJsonValue>> UndrivenValues;
+	for (const FName& Bone : Map.UndrivenTargetBones)
+	{
+		UndrivenValues.Add(MakeShared<FJsonValueString>(Bone.ToString()));
+	}
+	SubjectObject->SetArrayField(TEXT("undriven_bone_names"), UndrivenValues);
+	TArray<TSharedPtr<FJsonValue>> CurveValues;
+	for (const FName& Curve : Declaration.Curves)
+	{
+		CurveValues.Add(MakeShared<FJsonValueString>(Curve.ToString()));
+	}
+	SubjectObject->SetArrayField(TEXT("curves"), CurveValues);
+	TArray<TSharedPtr<FJsonValue>> SourceOnlyCurveValues;
+	for (const FName& Curve : Map.SourceOnlyCurves)
+	{
+		SourceOnlyCurveValues.Add(MakeShared<FJsonValueString>(Curve.ToString()));
+	}
+	SubjectObject->SetArrayField(TEXT("source_only_curve_names"), SourceOnlyCurveValues);
+	TArray<TSharedPtr<FJsonValue>> RenameValues;
+	for (const FString& Rename : Map.ImportRenames)
+	{
+		RenameValues.Add(MakeShared<FJsonValueString>(Rename));
+	}
+	SubjectObject->SetArrayField(TEXT("import_renames"), RenameValues);
+	return SubjectObject;
+}
+
 TArray<FString> FMtoUMultiSubjectReceiver::DescribeDriveOwnership() const
 {
 	// Drive ownership is a question an operator has to be able to answer ("who
 	// writes this pose now?"), so it is reported explicitly instead of being
-	// left implicit in a hidden local mute.
+	// left implicit in a hidden local mute. Writers the preview muted are
+	// separated from writers an earlier exit already restored, so a restored
+	// writer is never mistaken for a write the preview is still suppressing.
 	TArray<FString> Lines;
 	const TArray<FMtoUSuppressedWriter>& Writers = Preview.GetSuppressedWriters();
 	for (const TUniquePtr<FMtoUMultiSubjectTarget>& Target : Targets)
@@ -934,26 +1021,29 @@ TArray<FString> FMtoUMultiSubjectReceiver::DescribeDriveOwnership() const
 		{
 			continue;
 		}
-		TArray<FString> WriterNames;
+		TArray<FString> SuppressedNames;
+		TArray<FString> RestoredNames;
 		for (const FMtoUSuppressedWriter& Writer : Writers)
 		{
-			if (Writer.TargetId == Target->GetId() || Writer.TargetId.IsEmpty())
+			if (Writer.TargetId != Target->GetId() && !Writer.TargetId.IsEmpty())
 			{
-				WriterNames.Add(FString::Printf(TEXT("%s (saved_asset=%s)"),
-					Writer.Track.IsValid() ? *Writer.Track->GetName() : TEXT("<no track>"),
-					Writer.bRepresentsSavedAsset ? TEXT("true") : TEXT("false")));
+				continue;
 			}
+			const FString Name = FString::Printf(TEXT("%s (saved_asset=%s, muted_now=%s)"),
+				Writer.Track.IsValid() ? *Writer.Track->GetName() : TEXT("<no track>"),
+				Writer.bRepresentsSavedAsset ? TEXT("true") : TEXT("false"),
+				!Writer.bRestored ? TEXT("true") : TEXT("false"));
+			(Writer.bRestored ? RestoredNames : SuppressedNames).Add(Name);
 		}
 		Lines.Add(FString::Printf(
-			TEXT("%s: component_driver=%s, suppressed_writers=[%s], exit=%s"),
+			TEXT("%s: component_driver=%s, suppressed_writers=[%s], restored_writers=[%s], exit=%s"),
 			*Target->GetId(),
 			Target->GetSnapshot().PriorDriver.IsEmpty()
 				? TEXT("not_taken_over")
 				: *Target->GetSnapshot().PriorDriver,
-			*FString::Join(WriterNames, TEXT("; ")),
-			Target->DidRestoreToReferencePose()
-				? TEXT("reference_pose")
-				: (Target->IsDriving() ? TEXT("preview_active") : TEXT("own_driver_restored"))));
+			*FString::Join(SuppressedNames, TEXT("; ")),
+			*FString::Join(RestoredNames, TEXT("; ")),
+			Target->DescribeExitState()));
 	}
 	return Lines;
 }
@@ -1026,8 +1116,13 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 			Target->GetSnapshot().PriorDriver.IsEmpty()
 				? TEXT("not_taken_over")
 				: Target->GetSnapshot().PriorDriver);
+		// The current ownership state, not a historical flag: `exit` is
+		// `preview_active` while the preview drives the target, and
+		// `restored_to_reference_pose` can only be true for a completed exit.
+		TargetObject->SetBoolField(TEXT("driving"), Target->IsDriving());
+		TargetObject->SetStringField(TEXT("exit"), Target->DescribeExitState());
 		TargetObject->SetBoolField(TEXT("restored_to_reference_pose"),
-			Target->DidRestoreToReferencePose());
+			Target->DescribeExitState() == FString(TEXT("reference_pose")));
 		TargetValues.Add(MakeShared<FJsonValueObject>(TargetObject));
 	}
 	Root->SetArrayField(TEXT("targets"), TargetValues);
@@ -1035,32 +1130,22 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 	TArray<TSharedPtr<FJsonValue>> SubjectValues;
 	for (const FMtoUSessionSubject& Subject : Subjects)
 	{
-		const TSharedRef<FJsonObject> SubjectObject = MakeShared<FJsonObject>();
-		SubjectObject->SetStringField(TEXT("id"), Subject.Id);
-		SubjectObject->SetStringField(TEXT("root"), Subject.Declaration.Root);
-		SubjectObject->SetBoolField(TEXT("enabled"), Subject.bEnabled);
-		SubjectObject->SetNumberField(TEXT("applied_frames"), static_cast<double>(Subject.AppliedFrames));
-		SubjectObject->SetNumberField(TEXT("max_bone_delta"), Subject.MaxBoneDelta);
-		SubjectObject->SetNumberField(TEXT("max_root_world_delta"), Subject.MaxRootWorldDelta);
-		SubjectObject->SetNumberField(TEXT("declared_bones"),
-			static_cast<double>(Subject.Declaration.Bones.Num()));
-		SubjectObject->SetNumberField(TEXT("undriven_bones"),
-			static_cast<double>(Subject.UndrivenBones.Num()));
-		TArray<TSharedPtr<FJsonValue>> UndrivenValues;
-		for (const FName& Bone : Subject.UndrivenBones)
-		{
-			UndrivenValues.Add(MakeShared<FJsonValueString>(Bone.ToString()));
-		}
-		SubjectObject->SetArrayField(TEXT("undriven_bone_names"), UndrivenValues);
-		TArray<TSharedPtr<FJsonValue>> CurveValues;
-		for (const FName& Curve : Subject.Declaration.Curves)
-		{
-			CurveValues.Add(MakeShared<FJsonValueString>(Curve.ToString()));
-		}
-		SubjectObject->SetArrayField(TEXT("curves"), CurveValues);
-		SubjectValues.Add(MakeShared<FJsonValueObject>(SubjectObject));
+		SubjectValues.Add(MakeShared<FJsonValueObject>(
+			DescribeSubjectEvidence(Subject.Id, Subject.Declaration, Subject.Map, Subject.bEnabled,
+				Subject.AppliedFrames, Subject.MaxBoneDelta, Subject.MaxRootWorldDelta)));
 	}
 	Root->SetArrayField(TEXT("subjects"), SubjectValues);
+
+	// The last session is gone by the time most reports are written, so what it
+	// negotiated is reported separately and survives the session end.
+	TArray<TSharedPtr<FJsonValue>> NegotiatedValues;
+	for (const FMtoUNegotiatedSubject& Subject : LastNegotiatedSubjects)
+	{
+		NegotiatedValues.Add(MakeShared<FJsonValueObject>(
+			DescribeSubjectEvidence(Subject.Id, Subject.Declaration, Subject.Map,
+				/*bEnabled=*/true, 0, 0.0, 0.0)));
+	}
+	Root->SetArrayField(TEXT("negotiated"), NegotiatedValues);
 
 	TArray<TSharedPtr<FJsonValue>> OwnershipValues;
 	for (const FString& Line : DescribeDriveOwnership())
@@ -1079,6 +1164,10 @@ bool FMtoUMultiSubjectReceiver::SaveEvidence(
 		WriterObject->SetBoolField(TEXT("track_was_locally_disabled"), Writer.bTrackWasLocallyDisabled);
 		WriterObject->SetBoolField(TEXT("represents_saved_asset"), Writer.bRepresentsSavedAsset);
 		WriterObject->SetBoolField(TEXT("player_paused"), Writer.bPlayerPaused);
+		// A restored writer was muted by an earlier exit; only an unrestored one
+		// is suppressed by the preview right now.
+		WriterObject->SetBoolField(TEXT("restored"), Writer.bRestored);
+		WriterObject->SetBoolField(TEXT("muted_now"), !Writer.bRestored);
 		WriterValues.Add(MakeShared<FJsonValueObject>(WriterObject));
 	}
 	Root->SetArrayField(TEXT("preview_writers"), WriterValues);

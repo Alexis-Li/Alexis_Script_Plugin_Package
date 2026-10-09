@@ -15,7 +15,8 @@ retargeting, no Additional Parts, and no cache.
 | Requirement | How this prototype covers it |
 | --- | --- |
 | One explicit root per object, one Unreal target per root | `FMtoUTargetRegistration` pairs an actor anchor with one `USkeletalMeshComponent`; the wire `init` names each subject's `root` and the receiver refuses a declaration whose root is not the first, parentless bone |
-| Strict skeleton identity, necessary bones only | Every declared bone must exist in the target, carry the declared parent and have only declared bones above it; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`, so a target with legitimate extra branches can still pair. A declared bone the target lacks, or a dropped bone a declared child needs, is `skeleton_mismatch`. Every advertised `bind` row must match the target's reference pose within the prototype tolerance (0.25 cm translation, 0.5 deg rotation, 0.005 scale). Declared curves must be Morph Targets of the target mesh (`curve_not_in_target`) |
+| Strict skeleton identity, necessary bones only | A declaration drives a target bone when the target owns a bone of that name in the already mapped parent scope; a declared bone without one is an ignored export branch, two declared bones resolving to one target bone are `skeleton_mismatch`, and the importer's rename forms (a numeric suffix, or `_` plus 32 hexadecimal digits) are used only for a target bone no exact name owns. The target's *required* bones - every bone with a positive skin weight in any LOD plus its ancestors - must each be driven by exactly one declared bone, so omitting a weighted branch is refused even when the rest is ancestor-closed; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`. The two rigs must rest within one constant component-space frame: the remaining deviation is reported as `rest_deviation_translation_cm` / `_rotation_degrees` / `_scale`, and more than 5 cm, 10 deg or 5% scale is a different rig (`skeleton_mismatch`). Declared curves the target has no Morph Target for are ignored and reported (`source_only_curve_names`) |
+| Bind/frame projection | Frames are projected, not copied bone-local to bone-local: `target_current = target_reference * declared_bind⁻¹ * source_current`, published as locals. The target keeps its own rest pose and receives the source's motion, so a rig whose skeleton root carries an import convention (a rotated root joint) cannot tilt the target. Every mapped bone's projected pose is measured against the component's actual pose and reported per frame |
 | Two objects on one shared time | One `frame` message carries the negotiated `session`, a strictly increasing `serial` (the evaluation identity), a Maya source `time` and every enabled subject; the receiver applies a frame only after every subject validated, then answers one `applied`. The source time may reverse or repeat on a re-edit, and each applied frame records `first`/`forward`/`backward`/`hold` |
 | Frames belong to their negotiation | Every `frame` and `remove` repeats the `session` it was negotiated under; a message naming another session is `session_mismatch`, applies nothing and leaves the serial untouched, so a pose sampled for a previous pair can never drive a renegotiated one |
 | Same-named bones and Morphs stay apart | Each subject owns one target and one pose instance; the character and prop both have a bone named `Root` and a Morph named `Shared`, and the tests assert each target holds only its own values |
@@ -126,7 +127,7 @@ receiver stores them unchanged.
 
 Stable error codes: `version_unsupported`, `subjects_shape`, `message_shape`,
 `unknown_subject_id`, `target_reused`, `skeleton_mismatch`,
-`curve_not_in_target`, `anchor_conflict`, `target_detached`, `no_session`,
+`anchor_conflict`, `target_detached`, `no_session`,
 `session_mismatch`, `frame_order`, `frame_subjects`, `frame_shape`,
 `subject_not_enabled`, `malformed_json`, `too_large`, `preview_conflict`.
 
@@ -170,40 +171,62 @@ schema `mtou-multi-subject-evidence/1`:
   state the takeover saved, whether that component had an animation driver at
   all, and whether the last exit had to put it back into its reference pose.
 * `subjects[]` — active negotiated declarations, frame counts, maximum measured
-  bone/root-world deltas, and the target bones this subject does not drive
-  (`undriven_bones`); this array is empty once the session ends. The retained
-  `frames[]` still contain the per-object measurements.
+  bone/root-world deltas, the driven/required/ignored bone counts
+  (`driven_bones`, `required_target_bones`, `source_only_bones`), the target
+  bones this subject does not drive (`undriven_bones`), the import renames it
+  used (`import_renames`), the declared curves the target has no Morph Target
+  for (`source_only_curve_names`) and how far the two rigs rest apart
+  (`rest_deviation_translation_cm`, `_rotation_degrees`, `_scale`); this array is
+  empty once the session ends. The retained `frames[]` still contain the
+  per-object measurements.
 * `frames[]` — per frame: session, serial, time, `time_direction`, `apply_ms`,
-  whether the preview was active, and per subject every bone's received local
-  pose, component-space pose and delta, the root world position, and the Morph
-  values the component holds. The record is bounded (`MaxRecordedFrames`, default 240).
-* `preview_writers[]` — writer state, including restored local-mute flags after
-  exit. `preview_writers_suppressed` is false once preview has ended.
-* `drive_ownership[]` — one line per target naming the driver it had, the writers
-  that were muted (with `saved_asset`), and how the target left.
+  whether the preview was active, and per subject every driven bone's received
+  local pose, its projected component-space pose and the delta against what the
+  component actually holds, the root world position, and the Morph values the
+  component holds. The record is bounded (`MaxRecordedFrames`, default 240).
+* `preview_writers[]` — writer state, including whether each writer is still
+  muted (`muted_now`) or was restored by an earlier exit (`restored`).
+  `preview_writers_suppressed` is false once preview has ended.
+* `drive_ownership[]` — one line per target naming the driver it had, the
+  writers that are currently suppressed and those already restored, and the
+  target's *current* state (`preview_active`, `reference_pose`,
+  `own_driver_restored`, `not_taken_over`). A new takeover clears the previous
+  session's exit result, so an active preview is never reported as an exit.
 * `errors[]` — every rejection with its stable code, details and serial.
 
 ## Automation tests
 
 `MtoUMultiSubjectPrototype.*` (`EditorContext | EngineFilter`):
 
-* `FixtureAndAnchorRules` — sample skeletons, necessary-bone identity (including
-  the bind comparison, its refusal for a wrongly resting rig, an accepted
-  declaration that leaves a leaf undriven and a refusal for a dropped parent),
-  anchor-once, and the refusal of a socket-attached target.
+* `FixtureAndAnchorRules` — sample skeletons, the necessary-bone negotiation
+  (required coverage, accepted export branches, ambiguity and re-parenting
+  refusals, the importer's hash rename, the rest-pose bound), anchor-once, and
+  the refusal of a socket-attached target.
+* `BindFrameProjection` — a declaration whose root joint carries an import
+  convention (every component pose left-multiplied by one constant frame) is
+  accepted and drives the target to exactly the same pose as the
+  convention-free declaration.
+* `WeightedBoneMotion` — the target's own required bones come from real skin
+  weights: dropping a weighted leaf is refused, driving one moves its skinned
+  vertices, and a target bone outside the declaration stays at its reference
+  pose.
 * `CharacterPropStream` — real socket session: `init`/`ready`, three frames
   applied, anchor-once and pose measurements, same-named bone and Morph
   isolation, single-subject removal with restore, a refused partial frame,
   disconnect cleanup, and the evidence file.
 * `NegotiationRefusals` — two ids registering one target, frame before `init`,
-  wrong version, three subjects, unknown id, unknown curve, parent mismatch,
-  same names/parents with a wrong advertised bind, the `character-arms`
-  mismatch-then-renegotiate path, and framing close semantics.
+  wrong version, three subjects, unknown id, a declared curve the target lacks
+  (accepted and reported), parent mismatch, a rest pose beyond the bound, the
+  `character-arms` mismatch-then-renegotiate path, and framing close semantics.
 * `SessionAndTimeIdentity` — a renegotiation hands out a new session, and frames
   and removes that still name the previous one are refused without applying
   anything; within a session the serial must increase while the source time may
   go forward, backward (reverse scrub) or stay put (a re-edit), each direction
   being recorded per frame.
+* `OwnershipRenegotiation` — the ownership report and the evidence follow the
+  *current* state: after a renegotiation the driving targets report
+  `preview_active` (never the previous exit), a removed subject reports its own
+  driver restored, and a restored writer is listed separately from a muted one.
 * `DriverExitOwnership` — the ownership report names each target's prior driver
   while it streams, and a target that nothing else drove is back at its reference
   pose after the exit instead of keeping the preview's last pose.
@@ -214,10 +237,45 @@ schema `mtou-multi-subject-evidence/1`:
   the exit.
 * `WorldCleanup` — a session dies with its world, and a cleanup of another world
   is ignored.
+* `CommandLineArguments` — the `-MtoUMultiSubjectTimes=` value ends at the next
+  command-line token (a following `-abslog=...` never reaches the Maya argv) and
+  only a validated comma list of numbers is forwarded.
 * `RealMayaPeer` — opt-in host check:
   `-MtoUMultiSubjectMayapy=<mayapy> -MtoUMultiSubjectPeer=<peer.py> [-MtoUEvidence=<dir>] [-MtoUMultiSubjectScenario=] [-MtoUMultiSubjectFrames=] [-MtoUMultiSubjectRemove=] [-MtoUMultiSubjectDrop=]`.
   Without the flags the test reports that the host check was not requested
   instead of failing.
+* `RealAssetPair` — opt-in production pairing (see below); without its flags it
+  reports that the check was not requested.
+
+## Real-asset pairing (production meshes)
+
+`RealAssetPair` drives real project Skeletal Meshes from a real Maya scene in a
+disposable editor world:
+
+```
+-MtoUMultiSubjectMayapy=<mayapy> -MtoUMultiSubjectPeer=<peer.py>
+-MtoUMultiSubjectMayaScene=<scene.ma>              # opened read-only
+-MtoUMultiSubjectCharacterMesh=/Game/.../SK_...
+-MtoUMultiSubjectPropMesh=/Game/.../SK_...
+-MtoUMultiSubjectCharacterRoot=|Group|root
+[-MtoUMultiSubjectPropRigSpec=<recipe.json> -MtoUMultiSubjectPropRigDir=<dir>]
+[-MtoUMultiSubjectSetCurve=id=curve=value] [-MtoUMultiSubjectForceCurve=id=curve=value]
+[-MtoUMultiSubjectRealScenario=<name>] [-MtoUMultiSubjectFrames=] [-MtoUMultiSubjectTimes=]
+[-MtoUMultiSubjectSequence] [-MtoUEvidence=<dir>]
+```
+
+It first runs the Maya peer in `--probe` mode to learn the scene's relative
+placement, places the two actors so that the pair's *rest* relation in the
+editor world is the scene's relation, then streams the real session. The test
+asserts the negotiation (driven/required/ignored bones), the per-bone projected
+pose deltas, the shared frame time, the Morph values the real mesh holds, the
+exit restore, that the mesh/scene files and packages are unchanged, and - when
+rendering is available - writes a BaseColor viewport screenshot of the real
+meshes under a held preview frame. A target whose skeleton the scene does not
+contain can be paired with a generated rig built from
+`scripts/rig_spec_from_targets.py` (a recipe derived from the target's own
+skeleton dump, which the test writes to
+`mtou-multi-subject-real-targets-unreal.json`).
 
 ## Measured limits
 

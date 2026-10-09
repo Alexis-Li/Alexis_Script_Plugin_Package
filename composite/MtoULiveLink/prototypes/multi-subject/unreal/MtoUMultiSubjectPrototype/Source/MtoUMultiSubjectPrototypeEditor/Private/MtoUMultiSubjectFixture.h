@@ -88,4 +88,19 @@ public:
 	static TArray<FString> ScenarioSubjects(const FString& Scenario);
 
 	static bool Build(const FString& Scenario, FMtoUMultiSubjectFixture& Out, FString& OutError);
+
+	/**
+	 * One transient anchor actor with one skeletal mesh component on the given
+	 * mesh, placed off-origin and rotated. Used by the fixture and by the
+	 * real-asset pair, which points the same shape at production meshes; nothing
+	 * is saved and every object is transient.
+	 */
+	static bool SpawnAssetTarget(
+		UWorld& World,
+		const FString& Label,
+		const FVector& Location,
+		const FRotator& Rotation,
+		USkeletalMesh& Mesh,
+		AActor*& OutActor,
+		USkeletalMeshComponent*& OutComponent);
 };

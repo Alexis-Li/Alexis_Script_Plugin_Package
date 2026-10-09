@@ -11,7 +11,9 @@
 /** One subject pose the receiver published, in the declaration's bone order. */
 struct FMtoUSubjectPose
 {
-	/** Declared bone names, in the order the transforms follow. */
+	/** Target skeleton bone indices, one per (driven) pose entry. */
+	TArray<int32> BoneIndices;
+	/** Declared bone names, in the order the transforms follow; evidence only. */
 	TArray<FName> BoneNames;
 	/** Local (parent-relative) transforms; the root entry is the Maya world pose. */
 	TArray<FTransform> LocalTransforms;

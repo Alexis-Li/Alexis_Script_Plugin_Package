@@ -278,7 +278,14 @@ class MockReceiver(object):
         self._reply(connection, {"type": "ready", "session": self.sessions})
 
     def _fingerprint_mismatch(self, message, summary):
-        """Compare the declared subjects against the configured targets."""
+        """Compare the declared subjects against the configured targets.
+
+        Mirror of the Unreal receiver's necessary-bone rule: every target bone
+        (name and parent scope) must be resolved by exactly one declared bone,
+        with the declared hierarchy agreeing with the target's. The declaration
+        may carry extra export branches and extra curves; those are ignored and
+        reported, never refused.
+        """
         if not self.fingerprints:
             return None
         for subject in message["subjects"]:
@@ -286,20 +293,40 @@ class MockReceiver(object):
             if expected is None:
                 return (CODE_SKELETON_MISMATCH,
                         "no target for subject {0!r}".format(subject["id"]))
-            bones = [bone["name"] for bone in subject["bones"]]
-            parents = [int(bone["parent"]) for bone in subject["bones"]]
-            if bones != list(expected["bones"]):
-                return (CODE_SKELETON_MISMATCH,
-                        "{0} bones {1} are not the target skeleton".format(
-                            subject["id"], bones))
-            if parents != [int(value) for value in expected["parents"]]:
-                return (CODE_BONE_PARENT_MISMATCH,
-                        "{0} parents {1} are not the target hierarchy".format(
-                            subject["id"], parents))
-            if list(subject["curves"]) != list(expected["curves"]):
-                return (CODE_CURVE_NOT_IN_TARGET,
-                        "{0} curves {1} are not the target Morph set".format(
-                            subject["id"], subject["curves"]))
+            expected_keys = {}
+            for index, name in enumerate(expected["bones"]):
+                parent = int(expected["parents"][index])
+                parent_name = None if parent < 0 else expected["bones"][parent]
+                expected_keys.setdefault((name, parent_name), []).append(index)
+            declared = subject["bones"]
+            claims = {}
+            mapped = {}
+            for index, bone in enumerate(declared):
+                parent = int(bone["parent"])
+                if parent < 0:
+                    parent_name = None
+                elif parent in mapped:
+                    parent_name = mapped[parent]
+                else:
+                    # A bone under an unmapped export branch cannot address a
+                    # target bone in a mapped parent scope.
+                    continue
+                key = (bone["name"], parent_name)
+                if key not in expected_keys:
+                    continue
+                if key in claims:
+                    return (CODE_SKELETON_MISMATCH,
+                            "declared bones {0} and {1} both map to target bone "
+                            "'{2}' below '{3}'; the source mapping is ambiguous".format(
+                                claims[key], index, bone["name"], parent_name))
+                claims[key] = index
+                mapped[index] = bone["name"]
+            for key, indices in expected_keys.items():
+                name, parent_name = key
+                if key not in claims:
+                    return (CODE_SKELETON_MISMATCH,
+                            "target bone '{0}' below '{1}' is not driven by the "
+                            "declaration".format(name, parent_name))
         return None
 
     # ----------------------------------------------------------------- frames

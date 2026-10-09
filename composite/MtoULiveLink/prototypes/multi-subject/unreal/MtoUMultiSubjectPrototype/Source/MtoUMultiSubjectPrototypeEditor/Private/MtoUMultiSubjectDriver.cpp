@@ -136,14 +136,16 @@ bool FMtoUMultiSubjectTarget::Initialize(
 }
 
 FString FMtoUMultiSubjectTarget::DescribeDeclarationMismatch(
-	const FMtoUSubjectDeclaration& Declaration) const
+	const FMtoUSubjectDeclaration& Declaration,
+	FMtoUNegotiationMap& OutMap) const
 {
+	OutMap = FMtoUNegotiationMap();
 	const USkeletalMeshComponent* ResolvedComponent = Component.Get();
 	if (ResolvedComponent == nullptr || ResolvedComponent->GetSkeletalMeshAsset() == nullptr)
 	{
 		return FString::Printf(TEXT("target '%s' is no longer available"), *Id);
 	}
-	const FReferenceSkeleton& Skeleton = ResolvedComponent->GetSkeletalMeshAsset()->GetRefSkeleton();
+	const USkeletalMesh* Mesh = ResolvedComponent->GetSkeletalMeshAsset();
 
 	const FString RootLeaf = MayaLeafName(Declaration.Root);
 	if (Declaration.Bones.IsEmpty() || Declaration.Bones[0].Name != FName(*RootLeaf))
@@ -153,44 +155,9 @@ FString FMtoUMultiSubjectTarget::DescribeDeclarationMismatch(
 			*Declaration.Root, *RootLeaf,
 			Declaration.Bones.IsEmpty() ? TEXT("<none>") : *Declaration.Bones[0].Name.ToString());
 	}
-
-	const FString SkeletonDifference =
-		FMtoUMultiSubjectProtocol::DescribeSkeletonMismatch(Declaration, Skeleton);
-	if (!SkeletonDifference.IsEmpty())
-	{
-		return SkeletonDifference;
-	}
-	// Same names and parents is not enough: a rig resting differently would
-	// deform on the same skeleton, so the advertised bind must match the target
-	// reference pose within the prototype tolerance.
-	return FMtoUMultiSubjectProtocol::DescribeBindMismatch(Declaration, Skeleton);
-}
-
-bool FMtoUMultiSubjectTarget::FindMissingCurve(
-	const FMtoUSubjectDeclaration& Declaration,
-	FName& OutMissing) const
-{
-	const USkeletalMeshComponent* ResolvedComponent = Component.Get();
-	if (ResolvedComponent == nullptr)
-	{
-		OutMissing = NAME_None;
-		return false;
-	}
-	return FMtoUMultiSubjectProtocol::FindMissingCurve(Declaration, *ResolvedComponent, OutMissing);
-}
-
-void FMtoUMultiSubjectTarget::CollectUndrivenBones(
-	const FMtoUSubjectDeclaration& Declaration,
-	TArray<FName>& OutBones) const
-{
-	OutBones.Reset();
-	const USkeletalMeshComponent* ResolvedComponent = Component.Get();
-	if (ResolvedComponent == nullptr || ResolvedComponent->GetSkeletalMeshAsset() == nullptr)
-	{
-		return;
-	}
-	FMtoUMultiSubjectProtocol::CollectUndrivenBones(
-		Declaration, ResolvedComponent->GetSkeletalMeshAsset()->GetRefSkeleton(), OutBones);
+	// The mapping is the whole identity check: every required target bone has to
+	// be covered unambiguously, and the mapped bones carry the advertised bind.
+	return FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(Declaration, *Mesh, OutMap);
 }
 
 bool FMtoUMultiSubjectTarget::TakeOver(FString& OutError)
@@ -264,6 +231,11 @@ bool FMtoUMultiSubjectTarget::TakeOver(FString& OutError)
 	}
 	PoseInstance = Instance;
 	bHasPose = false;
+	// A new takeover replaces any previous session's exit result: the ownership
+	// report must describe who drives the target now, not how an earlier
+	// session ended.
+	bTakenOver = true;
+	bRestoredToReferencePose = false;
 	return true;
 }
 
@@ -342,6 +314,7 @@ bool FMtoUMultiSubjectTarget::Restore(FString& OutError)
 
 bool FMtoUMultiSubjectTarget::ApplyPose(
 	const FMtoUSubjectDeclaration& Declaration,
+	const FMtoUNegotiationMap& Map,
 	const FMtoUFrameSubject& Frame,
 	FMtoUSubjectMeasurement& OutMeasurement,
 	FString& OutError)
@@ -366,21 +339,73 @@ bool FMtoUMultiSubjectTarget::ApplyPose(
 			Declaration.Bones.Num(), Declaration.Curves.Num());
 		return false;
 	}
+	if (Map.SourceToTarget.Num() != Declaration.Bones.Num())
+	{
+		OutError = FString::Printf(
+			TEXT("target '%s' has no negotiation map for its declaration"), *Id);
+		return false;
+	}
+
+	// Only mapped bones are published: a declared export branch the target does
+	// not own has no target bone to drive. The target bone index comes from the
+	// map, so the pose never depends on a name lookup.
+	// The product's bind/frame projection: the target keeps its own reference
+	// pose and receives the source's motion, measured against the source's own
+	// bind. A rig whose root joint carries an import convention (a rotated
+	// skeleton root) therefore cannot tilt the target, and a rest difference
+	// that the negotiation accepted is absorbed here instead of deforming.
+	TArray<FTransform> SourceCurrentComponent;
+	SourceCurrentComponent.Init(FTransform::Identity, Map.SourceToTarget.Num());
+	TArray<FTransform> TargetCurrentComponent;
+	TargetCurrentComponent.Init(FTransform::Identity, Map.SourceToTarget.Num());
+	TArray<FTransform> PublishedLocal;
+	PublishedLocal.Init(FTransform::Identity, Map.SourceToTarget.Num());
+	for (int32 SourceIndex = 0; SourceIndex < Map.SourceToTarget.Num(); ++SourceIndex)
+	{
+		if (Map.SourceToTarget[SourceIndex] == INDEX_NONE)
+		{
+			continue;
+		}
+		const int32 Parent = Declaration.Bones[SourceIndex].Parent;
+		const FTransform& SourceCurrentLocal = Frame.Transforms[SourceIndex];
+		SourceCurrentComponent[SourceIndex] = Parent == INDEX_NONE
+			? SourceCurrentLocal
+			: SourceCurrentLocal * SourceCurrentComponent[Parent];
+		TargetCurrentComponent[SourceIndex] = Map.TargetRefComponentPose[SourceIndex]
+			* Map.SourceBindComponentPose[SourceIndex].Inverse()
+			* SourceCurrentComponent[SourceIndex];
+		PublishedLocal[SourceIndex] = Parent == INDEX_NONE
+			? TargetCurrentComponent[SourceIndex]
+			: TargetCurrentComponent[SourceIndex] * TargetCurrentComponent[Parent].Inverse();
+	}
 
 	FMtoUSubjectPose Pose;
-	Pose.BoneNames.Reserve(Declaration.Bones.Num());
-	Pose.LocalTransforms.Reserve(Frame.Transforms.Num());
-	for (int32 BoneIndex = 0; BoneIndex < Declaration.Bones.Num(); ++BoneIndex)
+	Pose.BoneNames.Reserve(Map.DrivenTargetBones.Num());
+	Pose.BoneIndices.Reserve(Map.DrivenTargetBones.Num());
+	Pose.LocalTransforms.Reserve(Map.DrivenTargetBones.Num());
+	for (int32 SourceIndex = 0; SourceIndex < Map.SourceToTarget.Num(); ++SourceIndex)
 	{
-		Pose.BoneNames.Add(Declaration.Bones[BoneIndex].Name);
-		Pose.LocalTransforms.Add(Frame.Transforms[BoneIndex]);
+		const int32 TargetIndex = Map.SourceToTarget[SourceIndex];
+		if (TargetIndex == INDEX_NONE)
+		{
+			continue;
+		}
+		Pose.BoneNames.Add(Declaration.Bones[SourceIndex].Name);
+		Pose.BoneIndices.Add(TargetIndex);
+		Pose.LocalTransforms.Add(PublishedLocal[SourceIndex]);
 	}
 	// GetMorphTarget reads the component's explicit MorphTargetCurves map,
 	// not the animation proxy's curve container. Keep the values scoped to
-	// this component so same-named curves cannot bleed between subjects.
+	// this component so same-named curves cannot bleed between subjects; a
+	// declared curve the target has no Morph Target for is not applied.
 	for (int32 CurveIndex = 0; CurveIndex < Declaration.Curves.Num(); ++CurveIndex)
 	{
-		ResolvedComponent->SetMorphTarget(Declaration.Curves[CurveIndex], Frame.Curves[CurveIndex]);
+		const FName& Curve = Declaration.Curves[CurveIndex];
+		if (Map.SourceOnlyCurves.Contains(Curve))
+		{
+			continue;
+		}
+		ResolvedComponent->SetMorphTarget(Curve, Frame.Curves[CurveIndex]);
 	}
 	Instance->SetSubjectPose(Pose);
 	bHasPose = true;
@@ -390,32 +415,24 @@ bool FMtoUMultiSubjectTarget::ApplyPose(
 	ResolvedComponent->TickAnimation(1.0f / 60.0f, false);
 	ResolvedComponent->RefreshBoneTransforms();
 
-	// Measure the applied pose against the wire values, composing the declared
-	// hierarchy exactly as the animation pipeline does.
-	const FReferenceSkeleton& Skeleton =
-		ResolvedComponent->GetSkeletalMeshAsset()->GetRefSkeleton();
+	// Measure the applied pose against the projected pose the wire describes.
+	// Only the mapped bones are measured; an ignored export branch has no
+	// target bone to compare.
 	const TArray<FTransform>& ComponentSpace = ResolvedComponent->GetComponentSpaceTransforms();
-	TArray<FTransform> Expected;
-	Expected.SetNum(Declaration.Bones.Num());
-	for (int32 BoneIndex = 0; BoneIndex < Declaration.Bones.Num(); ++BoneIndex)
+	OutMeasurement.Bones.Reserve(Map.DrivenTargetBones.Num());
+	for (int32 SourceIndex = 0; SourceIndex < Map.SourceToTarget.Num(); ++SourceIndex)
 	{
-		const int32 ParentIndex = Declaration.Bones[BoneIndex].Parent;
-		Expected[BoneIndex] = ParentIndex == INDEX_NONE
-			? Frame.Transforms[BoneIndex]
-			: Frame.Transforms[BoneIndex] * Expected[ParentIndex];
-	}
-
-	OutMeasurement.Bones.Reserve(Declaration.Bones.Num());
-	for (int32 BoneIndex = 0; BoneIndex < Declaration.Bones.Num(); ++BoneIndex)
-	{
-		const FName BoneName = Declaration.Bones[BoneIndex].Name;
-		const int32 SkeletonIndex = Skeleton.FindBoneIndex(BoneName);
+		const int32 TargetIndex = Map.SourceToTarget[SourceIndex];
+		if (TargetIndex == INDEX_NONE)
+		{
+			continue;
+		}
 		FMtoUBoneMeasurement Measurement;
-		Measurement.BoneName = BoneName;
-		Measurement.ReceivedLocal = Frame.Transforms[BoneIndex];
-		Measurement.ExpectedComponentSpace = Expected[BoneIndex];
-		Measurement.ComponentSpace = ComponentSpace.IsValidIndex(SkeletonIndex)
-			? ComponentSpace[SkeletonIndex]
+		Measurement.BoneName = Declaration.Bones[SourceIndex].Name;
+		Measurement.ReceivedLocal = Frame.Transforms[SourceIndex];
+		Measurement.ExpectedComponentSpace = TargetCurrentComponent[SourceIndex];
+		Measurement.ComponentSpace = ComponentSpace.IsValidIndex(TargetIndex)
+			? ComponentSpace[TargetIndex]
 			: FTransform::Identity;
 		Measurement.Delta = MtoUSubjectTransformDelta(
 			Measurement.ExpectedComponentSpace, Measurement.ComponentSpace);
@@ -425,20 +442,28 @@ bool FMtoUMultiSubjectTarget::ApplyPose(
 	OutMeasurement.Curves.Reserve(Declaration.Curves.Num());
 	for (int32 CurveIndex = 0; CurveIndex < Declaration.Curves.Num(); ++CurveIndex)
 	{
+		const FName& Curve = Declaration.Curves[CurveIndex];
+		if (Map.SourceOnlyCurves.Contains(Curve))
+		{
+			continue;
+		}
 		OutMeasurement.Curves.Add(TPair<FName, float>(
-			Declaration.Curves[CurveIndex],
-			ResolvedComponent->GetMorphTarget(Declaration.Curves[CurveIndex])));
+			Curve, ResolvedComponent->GetMorphTarget(Curve)));
 	}
 
 	// Anchor applied exactly once: the root bone's world transform is the
-	// component placement composed with the received Maya world root pose.
+	// component placement composed with the projected root pose.
 	const FTransform AnchorTransform = ResolvedComponent->GetComponentTransform();
 	OutMeasurement.AnchorLocation = AnchorTransform.GetLocation();
 	OutMeasurement.AnchorRotation = AnchorTransform.GetRotation();
 	OutMeasurement.AnchorScale = AnchorTransform.GetScale3D();
-	OutMeasurement.RootWorld = ResolvedComponent->GetBoneTransform(
-		Declaration.Bones[0].Name, RTS_World);
+	const int32 RootTargetIndex = Map.SourceToTarget.IsValidIndex(0)
+		? Map.SourceToTarget[0]
+		: INDEX_NONE;
+	OutMeasurement.RootWorld = RootTargetIndex != INDEX_NONE
+		? ResolvedComponent->GetBoneTransform(Declaration.Bones[0].Name, RTS_World)
+		: FTransform::Identity;
 	OutMeasurement.RootWorldDelta = MtoUSubjectTransformDelta(
-		Frame.Transforms[0] * AnchorTransform, OutMeasurement.RootWorld);
+		TargetCurrentComponent[0] * AnchorTransform, OutMeasurement.RootWorld);
 	return true;
 }

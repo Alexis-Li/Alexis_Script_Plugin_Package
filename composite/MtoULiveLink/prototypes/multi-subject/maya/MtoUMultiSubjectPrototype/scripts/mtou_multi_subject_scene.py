@@ -56,6 +56,7 @@ CODE_FIXTURE_MISSING = "FIXTURE_MISSING"
 CODE_SCENE_OPEN_FAILED = "SCENE_OPEN_FAILED"
 CODE_REFERENCE_COUNT = "REFERENCE_COUNT"
 CODE_PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE"
+CODE_CURVE_OVERRIDE = "CURVE_OVERRIDE"
 
 _cmds_module = None
 _product_module = None
@@ -181,6 +182,21 @@ def _key_rows(value, field):
     return sorted(rows)
 
 
+def _three_numbers(value, field, context):
+    """An optional three-number vector; ``None`` means the default."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 3:
+        raise SceneRefused(CODE_RECIPE_INVALID, "{0} must be three numbers".format(field),
+                           context)
+    for number in value:
+        if isinstance(number, bool) or not isinstance(number, (int, float)) \
+                or not math.isfinite(float(number)):
+            raise SceneRefused(CODE_RECIPE_INVALID,
+                               "{0} must be three finite numbers".format(field), context)
+    return [float(number) for number in value]
+
+
 def validate_recipe(recipe):
     """Structural validation of a fixture recipe. Raises ``SceneRefused``."""
     if not isinstance(recipe, dict):
@@ -222,6 +238,7 @@ def validate_recipe(recipe):
             if not isinstance(ancestor, dict) or not isinstance(ancestor.get("name"), str):
                 raise SceneRefused(CODE_RECIPE_INVALID, "ancestor needs a name", rig_id)
             ancestor_names.append(ancestor["name"])
+            _three_numbers(ancestor.get("rotate"), "ancestor rotate", rig_id)
             for attribute, keys in sorted((ancestor.get("animation") or {}).items()):
                 _key_rows(keys, "{0}.{1}.{2}".format(rig_id, ancestor["name"], attribute))
         bones = rig.get("bones")
@@ -242,6 +259,7 @@ def validate_recipe(recipe):
                 raise SceneRefused(CODE_RECIPE_INVALID,
                                    "bone translate must be three numbers",
                                    "{0}[{1}]".format(rig_id, index))
+            _three_numbers(bone.get("rotate"), "bone rotate", "{0}[{1}]".format(rig_id, index))
             names.append(bone["name"])
         if len(set(names)) != len(names):
             raise SceneRefused(CODE_RECIPE_INVALID, "bone names must be unique", rig_id)
@@ -307,6 +325,8 @@ def _build_rig(rig_id, rig, fps, directory):
         node = maya.createNode("transform", name=ancestor["name"])
         translate = ancestor.get("translate") or [0.0, 0.0, 0.0]
         maya.setAttr(node + ".translate", *[float(value) for value in translate])
+        rotate = ancestor.get("rotate") or [0.0, 0.0, 0.0]
+        maya.setAttr(node + ".rotate", *[float(value) for value in rotate])
         if parent is not None:
             maya.parent(node, parent)
         parent = node
@@ -317,6 +337,12 @@ def _build_rig(rig_id, rig, fps, directory):
         node = maya.createNode("joint", name=bone["name"])
         translate = bone.get("translate") or [0.0, 0.0, 0.0]
         maya.setAttr(node + ".translate", *[float(value) for value in translate])
+        # A joint's local rotation is part of the rig, not only its translation:
+        # an imported target can rest rotated (a -90 degree skeleton root), and
+        # the observation bind has to match it.
+        rotate = bone.get("rotate") or [0.0, 0.0, 0.0]
+        maya.setAttr(node + ".rotateOrder", 0)  # xyz
+        maya.setAttr(node + ".rotate", *[float(value) for value in rotate])
         if index == 0:
             if parent is not None:
                 maya.parent(node, parent)
@@ -805,6 +831,92 @@ def sample_subject(record):
             "pose sampling refused",
             "{0}: {1}".format(type(error).__name__, error))
     return [list(row) for row in transforms], list(curves)
+
+
+def apply_curve_overrides(records, overrides, forced=None):
+    """Set Morph weights on the disposable session scene before sampling.
+
+    The prototype never saves the session scene; this makes a Morph channel
+    carry a known value for the pair that is being verified. A curve that the
+    subject did not capture, or a plug that cannot be written, is refused
+    instead of silently streaming zero.
+
+    ``forced`` (``--force-curve``) writes a plug that the scene drives: it
+    unlocks a locked plug, disconnects the incoming connection and records both
+    in the evidence, so a Morph value can be demonstrated on a production mesh
+    whose channels are driven. The manipulation stays in the disposable scene.
+    """
+    maya = cmds()
+    forced = forced or {}
+    applied = []
+    for record in records:
+        wanted = dict(overrides.get(record["id"]) or {})
+        want_forced = dict(forced.get(record["id"]) or {})
+        if not wanted and not want_forced:
+            continue
+        captured = record["profile"]["curves"]
+        plugs_by_curve = record["profile"]["curve_plugs"]
+        missing = sorted(name for name in list(wanted) + list(want_forced)
+                         if name not in captured)
+        if missing:
+            raise SceneRefused(
+                CODE_CURVE_OVERRIDE,
+                "the subject did not capture the requested curve",
+                "{0}: {1}".format(record["id"], missing))
+        for index, curve in enumerate(captured):
+            if curve not in wanted and curve not in want_forced:
+                continue
+            plugs = list(plugs_by_curve[index])
+            if not plugs:
+                raise SceneRefused(
+                    CODE_CURVE_OVERRIDE,
+                    "the curve has no writable plug",
+                    "{0}.{1}".format(record["id"], curve))
+            force = curve in want_forced
+            value = float(want_forced[curve] if force else wanted[curve])
+            entries = []
+            for plug in plugs:
+                entry = {"plug": plug}
+                if force:
+                    if bool(maya.getAttr(plug, lock=True)):
+                        maya.setAttr(plug, lock=False)
+                        entry["unlocked"] = True
+                    sources = maya.listConnections(
+                        plug, plugs=True, destination=False, source=True) or []
+                    for source in sources:
+                        maya.disconnectAttr(source, plug)
+                    if sources:
+                        entry["disconnected"] = list(sources)
+                try:
+                    maya.setAttr(plug, value)
+                except Exception as error:
+                    raise SceneRefused(
+                        CODE_CURVE_OVERRIDE,
+                        "the Morph plug could not be written",
+                        "{0}: {1}".format(plug, error))
+                entries.append(entry)
+            applied.append({
+                "id": record["id"],
+                "curve": curve,
+                "value": value,
+                "forced": force,
+                "plugs": entries,
+            })
+    return applied
+
+
+def reapply_curve_overrides(applied):
+    """Set every overridden plug to its value again, after a scene evaluation.
+
+    A keyed channel is rewritten by the evaluation at every sampled time, so the
+    override is applied again for each frame that is streamed; the value the
+    peer sends is therefore the value it set, and the evidence shows it.
+    """
+    maya = cmds()
+    for entry in applied:
+        for plug in entry["plugs"]:
+            maya.setAttr(plug["plug"], entry["value"])
+    return applied
 
 
 def mismatched_subject(record, substitute=None, bone_name="Chest"):

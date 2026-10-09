@@ -37,15 +37,53 @@ Contract summary (version 1):
 
 ## Necessary bones, not whole-table equality
 
-A declaration must name every bone it needs and nothing it cannot drive: each
-declared bone has to exist in the target, carry the declared parent, and have
-only declared bones above it, so no driven bone ever hangs under a bone nobody
-drives. Bones the target owns but the declaration does not name stay at their
-reference pose and are reported per subject as `undriven_bones`, so the evidence
-never implies that the whole target skeleton was matched. This is the negotiation
-shape #55 accepted for a real rig: a production C01 skeleton legitimately has
-branches a simplified preview target does not drive. Declaring a bone the target
-lacks, or dropping a bone a declared child needs, is still `skeleton_mismatch`.
+A declaration drives a target bone when the target owns a bone of that name
+inside the already mapped parent scope; a declared bone without such a target
+bone is an ignored export branch, and two declared bones resolving to one target
+bone are `skeleton_mismatch` as an ambiguous mapping. Repeated names under
+different parents are legal - a real rig has them - and are resolved inside
+their scope. The importer's rename forms - a numeric suffix, or `_` plus the 32
+hexadecimal digits of one import hash - are matched after every exact name is
+claimed and only for a target bone no exact name owns, so a rename can never
+displace an exact match and two candidates are refused rather than guessed.
+
+The target's *required* bones are every bone with a positive skin weight in any
+LOD plus every ancestor of one. Each required bone must be driven by exactly one
+declared bone: a declaration that omits a weighted branch is refused even when
+what remains is still ancestor-closed, because that branch would keep its
+reference pose while its mesh deforms around it. Bones the target owns but the
+declaration does not drive stay at their reference pose and are reported per
+subject as `undriven_bones`, so the evidence never implies that the whole target
+skeleton was matched. A target mesh whose skin weights cannot be read is refused
+instead of guessed.
+
+The declared rig and the target must also rest in the same place up to one
+constant component-space frame: the frame is taken from the declared root, and
+the largest remaining deviation is reported as `rest_deviation_translation_cm`,
+`rest_deviation_rotation_degrees` and `rest_deviation_scale`. A gross
+disagreement (more than 5 cm, 10 degrees or 5% scale) is a different rig and is
+refused; anything inside those bounds is absorbed by the projection below.
+
+## Bind/frame projection
+
+Frames are not applied bone-local to bone-local. Every mapped bone is projected
+exactly like the product's bind/frame conversion:
+
+```
+target_current_component = target_reference_component
+                         * declared_bind_component⁻¹
+                         * source_current_component
+```
+
+and the published local is `target_current_component *
+target_current_parent_component⁻¹`. The target therefore keeps its own rest
+pose and receives the source's *motion*, so a rig whose skeleton root carries an
+import convention (a rotating root joint) cannot tilt the target: the constant
+frame cancels. This is what lets the production C01 rig - whose Maya root joint
+is rotated relative to the Unreal skeleton's root and whose rest poses differ by
+up to a couple of centimetres on a few bones - drive real Unreal meshes without
+being re-exported or retargeted, and the measured per-frame difference between
+the projected pose and the component's actual pose is reported per bone.
 
 Maya captures the *evaluated* DAG joint matrices and BlendShape values, not
 controller or constraint wiring; its saved reference assets remain untouched.
