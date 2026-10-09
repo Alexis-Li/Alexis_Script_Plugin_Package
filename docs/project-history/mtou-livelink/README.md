@@ -259,36 +259,15 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   The [acceptance record](issue-50-interactive-playback-acceptance.md) holds
   the deterministic and real-peer evidence.
 
-- **2026-09-29:** Extended the Issue #53 FBX prototype with the image-data
-  policy, explicit world conversion, mixed-Blueprint filtering, staged updates
-  and real-level checks. The final review accepts useful bounded evidence but
-  confirms swap rollback, namespace ownership and partial-import cleanup defects;
-  Landscape fails Maya manifest verification, and unloaded World Partition
-  content lacks a complete inventory. Issue #53 remains open for those fixes and
-  acceptance gaps. The [acceptance record](issue-53-scene-reference-acceptance.md)
-  separates development results from review probes and owns the current support
-  boundary; the [comment archive](issue-53-comment-archive.json) retains the
-  original reports. Combined product integration belongs to #47 after #52–54
-  have their agreed prototype evidence.
-
-- **2026-09-28:** Verified Issue #53 with a bounded two-host scene-reference
-  prototype. Unreal resolves an explicit level scope (the loaded level plus the
-  sublevels the caller names), exports it through its own FBX level exporter and
-  writes a manifest of the world data it evaluated; Maya imports that file into
-  one container namespace, puts the geometry on a single gray material and
-  compares position, bounding-box size, pivot offset and surface centroid
-  against the manifest. Ten objects, including instanced, off-origin, rotated,
-  non-uniformly scaled and Blueprint-component samples, matched with a position
-  error of `0.0 cm`, a size error of `4.5e-13 cm` and an axis-fit residual of
-  `9.2e-13 cm`, so no geometry is mirrored. The handoff writes one file with no
-  image files and no texture records. Material texture records are permitted
-  under the current image-data policy; image files and embedded media remain
-  rejected. The measured axis
-  convention is `(x, z, y)` by default and `(-y, z, x)` with the forced front
-  axis, neither of which is the camera route's `(y, z, -x)`, so the two routes
-  need one explicit conversion. The [acceptance record](issue-53-scene-reference-acceptance.md)
-  owns the evidence, the support list and the pending decisions. No product
-  code, protocol, or package changed, and Issue #53 remains open.
+- **2026-10-09:** Accepted and closed Issue #53 after independent review-03
+  of `e2462d9`. The bounded UE-to-Maya scene-reference prototype uses the engine
+  FBX exporter, explicit loaded-level scope, image-data refusal, two explicit
+  world mappings and owned-container recovery. R-001 through R-006 are closed
+  within the [final acceptance record](issue-53-scene-reference-acceptance.md)'s
+  limits; [final evidence](issue-53-acceptance-evidence.json) and the
+  [source archive](issue-53-comment-archive.json) preserve verification provenance.
+  Production-scale and broader object support remain outside acceptance;
+  combined product integration belongs to #47.
 
 - **2026-10-08:** Accepted and closed Issue #52 after independent review-02
   at `25336fa`: R-007–R-009 are verified closed; 145 Maya/Arnold checks, 63

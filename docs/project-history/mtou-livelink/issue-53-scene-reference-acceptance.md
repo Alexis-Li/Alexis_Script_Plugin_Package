@@ -8,9 +8,8 @@ bounded approval. The final current conclusion links the published implementatio
 with #47 after the three prototypes have runnable evidence and stated limits.
 
 The [final current conclusion](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53#issuecomment-5888512464)
-records the issue disposition. The reviewed delivery dev-03 (source archive entry 6073878619) has an incorrect full SHA in its header; `git rev-parse e2462d9` resolves to the
-implementation above, and that is the code actually tested. The full value
-printed in that delivery cannot be resolved as a local Git object.
+records the issue disposition. The verified implementation SHA above is authoritative; source archive entry
+6073878619 retains the original dev-03 report with its superseded baseline typo.
 
 ## Final verification
 
@@ -63,10 +62,12 @@ archive check.
 ```
 
 `<prototype>` is `composite/MtoULiveLink/prototypes/scene-reference/maya/MtoUSceneRefPrototype`.
-Use an isolated MAYA_APP_DIR. This run's local scratch logs are repository-adjacent
-`.tmp/issue53-review03-20261009/` (pure.log, host.json/log, recovery.json/log,
-extra.py/json/log). The final summary links to the immutable published archive and evidence. Repository validation, report/archive checks and diff checks
-passed; no repository-wide unit suite was rerun for these acceptance-only edits.
+Use an isolated MAYA_APP_DIR and regenerate handoffs using the prototype README.
+The final evidence's `adjacent_probe_source` preserves the four independent
+fault-injection inputs with their reproduction conditions; the main recovery
+failures have maintained regression coverage. Disposable logs, fixtures and
+publication helpers are not reproduction dependencies. The final summary links
+to the published archive and evidence. Archival checks do not rerun host acceptance.
 
 ## What was delivered
 
@@ -227,9 +228,9 @@ when the manifest declares an export option whose factor was measured.
 
 ## Product candidates for #47
 
-#52, #53 and #54 continue their own bounded verification and fixes. Once all
-three have runnable prototypes, reproducible evidence, support boundaries and
-remaining issues, #47 owns a combined integration plan. The options below do
+#53 has completed its bounded verification. Once #52, #53 and #54 have their
+agreed prototype evidence and support boundaries, #47 owns a combined integration
+plan. The options below do
 not supersede this issue's current explicit-level scope or image-data policy.
 The R-001/R-002 recovery fixes belong to this issue and do not change the
 integration options.

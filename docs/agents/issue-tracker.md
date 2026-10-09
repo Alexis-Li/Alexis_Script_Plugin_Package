@@ -154,15 +154,6 @@ Do not require a new history document for each small task.
   and referenced documents that claim current status agree. Correct contradicted
   current conclusions in place; preserve historical facts in the archive. If
   synchronization is unavailable, list it as unfinished work.
-- For completed issues, the current history tree keeps the final acceptance
-  record, one source-comment archive and only evidence needed to substantiate
-  acceptance, a material limit, or an otherwise unreproducible finding. Keep
-  reproduction inputs only when maintained tests do not replace them. Do not
-  copy every run, failed iteration, draft or disposal log out of scratch into
-  history. Preserve already-committed intermediate material through an immutable
-  Git reference; extract unique durable facts before removing redundant files.
-  Give each retained evidence file a purpose in the existing record or a compact
-  evidence index. Update existing records instead of adding a closeout diary.
 - Before deleting comments, commit and publish the source archive, verify the
   remotely accessible content against the captured IDs, bodies and timestamps,
   and publish/read back the validated final summary. Replace live references to
@@ -173,10 +164,54 @@ Do not require a new history document for each small task.
   If publication or deletion is unavailable, report closeout as incomplete.
 - Report actual remaining comment counts (agent reports versus preserved human
   discussion), the retained evidence set and reasons, reference checks, and
-  commit/publication state. A unique current marker, successful archive check,
-  clean scratch directory or passing tests alone does not establish closeout.
+  commit/publication state. For completed-issue closeout, also satisfy the
+  history and scratch completion checks below. A unique current marker,
+  successful archive check or passing tests alone does not establish closeout.
 - Product integration decisions stay in their owning parent issue. Consolidating
   a child does not authorize integration or raise its agreed acceptance bar.
+
+### Completed-issue archival and closeout
+
+A request to archive, tidy or close out a completed issue (归档、整理、收尾)
+covers comments, project-history records and issue-owned temporary files unless
+the user explicitly limits the scope. A comment-only request remains comment-only.
+Issue acceptance/closure and archival closeout are separate states: a closed
+issue or published archive does not establish that cleanup is complete. The
+request authorizes removal of superseded material after the preservation checks;
+do not require another cleanup request or add an optional skill confirmation gate.
+
+1. **Inventory the whole issue.** Inspect its history records and indexes, both
+   scratch locations resolved from the Git root, and known output paths referenced
+   by its reports/scripts. Include earlier rounds and the current archival task;
+   filename matching alone is insufficient. Establish ownership and ongoing use
+   before deletion; preserve unrelated work, shared inputs and uncertain files.
+2. **Consolidate durable knowledge.** Update the final acceptance record and
+   indexes in place, maintain one source-comment archive, and remove superseded
+   plans, duplicate records and redundant evidence from the current history tree.
+   Retain evidence needed for acceptance, material limits or otherwise
+   unreproducible findings, and reproduction inputs not replaced by maintained
+   tests; state each file's purpose in the existing record or evidence index.
+   Preserve historical versions through accessible immutable Git references.
+   Extract unique conclusions and verify required evidence before removing its
+   scratch source. Do not copy every run, failed iteration or disposal log into
+   history, or add a closeout diary instead of updating existing records.
+3. **Finish publication, then clean scratch.** Complete the authorized commit,
+   publication and comment read-back checks before deleting their working files.
+   Remove obsolete issue-owned logs, generated fixtures/results and temporary
+   scripts from all inventoried rounds. This includes the archival task's own
+   helpers, snapshots, Markdown drafts, API payloads and disposal reports. Do not
+   archive these scaffolding files merely to avoid deleting them. Remove empty
+   owned directories after validating resolved paths remain within the intended
+   cleanup scope. Retain evidence still needed for an unresolved check or handoff.
+4. **Verify the final state.** Re-read comments and history references, then
+   re-scan all inventoried temporary locations after the last publication or
+   helper run. No disposable issue-owned files, including closeout helpers, may
+   remain when reporting full completion. Report remaining comment counts,
+   retained history files and purposes, scratch files removed and remaining,
+   reference/check results, and commit/publication state. List every retained
+   temporary path with its reason and next owner/action. Unresolved ownership,
+   failed deletion or deferred cleanup makes that part incomplete; report it
+   explicitly rather than claiming the whole archival closeout is complete.
 
 ### Publishing and verification
 

@@ -53,6 +53,12 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - A tool or host may create its own internal temporary files through `TEMP`,
   `TMP`, or equivalent settings. This rule does not redirect those processes;
   set their temporary-directory environment explicitly when a task requires it.
+- Completed-issue closeout includes deleting obsolete issue-owned scratch files
+  and the closeout's own helper scripts, report drafts and API payloads after
+  necessary evidence is durably preserved and publication is verified. Inspect
+  both scratch locations and known issue-specific output paths; preserve files
+  still used by other work. Re-scan after cleanup and report any retained paths
+  and reasons under the issue tracker's closeout completion checks.
 
 ## Documentation
 
@@ -136,8 +142,13 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   archive and verify source reports, then remove superseded agent reports so
   only the final summary remains; preserve human discussion and decisions.
   Keep final conclusions and necessary evidence in the current history tree,
-  leaving redundant intermediate runs and drafts in Git history. Follow the
-  tracker protocol's publication, deletion, and closeout verification checks.
+  leaving redundant intermediate runs and drafts in Git history. Unless the
+  user explicitly narrows scope, requests to archive, tidy or close out a
+  completed issue (归档、整理、收尾) include comment consolidation, history
+  consolidation and scratch cleanup, including the cleanup task's own output.
+  This request authorizes that scoped cleanup after preservation checks; do not
+  defer it to a second request or an optional skill's extra confirmation stage.
+  Follow the tracker protocol's publication, deletion, and completion checks.
   Consolidation must not silently change scope or acceptance. These requirements
   apply regardless of the skill used to produce the underlying work.
 - For issue classification, read `docs/agents/triage-labels.md`.

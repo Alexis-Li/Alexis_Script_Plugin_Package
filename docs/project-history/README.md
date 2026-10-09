@@ -24,7 +24,11 @@ and production acceptance evidence without keeping temporary agent plans.
   scratch disposal log in the current tree. Extract unique durable facts and
   use immutable Git references for previously committed intermediate material.
 - Follow [the issue tracker protocol](../agents/issue-tracker.md) for comment
-  consolidation and verify both the remaining comments and current file set.
+  consolidation and completed-issue archival. Archival includes consolidating
+  the current history tree and cleaning issue-owned scratch, including the
+  archival task's own scripts and drafts, after preserving necessary evidence.
+  Verify comments, history references and temporary-file remnants before
+  reporting completion; publishing an archive alone is not completed closeout.
 
 ## Projects
 
