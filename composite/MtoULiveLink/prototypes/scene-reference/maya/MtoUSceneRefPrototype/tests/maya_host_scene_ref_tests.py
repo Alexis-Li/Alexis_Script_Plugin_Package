@@ -3157,6 +3157,210 @@ def main(argv=None):
               ["|" + leaked_name + ":PartialFbxImport"],
               json.dumps(checks.evidence["cleanup_failure_recovery"]))
 
+        # --------------------------- continued recovery of one failed takeover
+        # R-001: an exception in the final read back whose rollback the host refuses,
+        # then two dry runs -- the continuous recovery path the review's probe walks.
+        make_production_scene(cmds)
+        continuous_report, continuous_code = proto.run(str(clean_fbx), str(manifest_path))
+        continuous_group = cmds.ls(
+            proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER, long=True)[0]
+        continuous_uuid = cmds.ls(continuous_group, uuid=True)[0]
+        check("the continuous recovery probe starts from one good reference",
+              continuous_code == 0 and continuous_report["ok"] is True and
+              node_alive(cmds, continuous_uuid),
+              json.dumps({"exit": continuous_code,
+                          "problems": continuous_report["problems"]}))
+
+        original_rehome = proto.SceneRefImporter._rehome_paths
+        original_guard_namespace = cmds.namespace
+        continuous_retiring = proto.DEFAULT_CONTAINER + proto.RETIRING_SUFFIX
+
+        def raising_rehome(importer_self):
+            raise RuntimeError("injected final read back failure")
+
+        def refuse_destination_delete(*args, **kwargs):
+            if (kwargs.get("removeNamespace") == proto.DEFAULT_CONTAINER and
+                    kwargs.get("deleteNamespaceContent")):
+                raise RuntimeError("injected destination cleanup refusal")
+            return original_guard_namespace(*args, **kwargs)
+
+        proto.SceneRefImporter._rehome_paths = raising_rehome
+        cmds.namespace = refuse_destination_delete
+        try:
+            importer = proto.SceneRefImporter(str(clean_fbx), str(manifest_path))
+            try:
+                takeover_report, takeover_code = importer.run()
+                takeover_escaped = None
+            except Exception:  # noqa: BLE001 - the probe records an escape
+                takeover_report, takeover_code = importer.report, None
+                takeover_escaped = traceback.format_exc()
+            takeover_update = takeover_report["update"]
+            takeover_staging = takeover_update["staging_namespace"]
+            refused_retry_report, refused_retry_code = proto.run(
+                str(clean_fbx), str(manifest_path), dry_run=True)
+        finally:
+            proto.SceneRefImporter._rehome_paths = original_rehome
+            cmds.namespace = original_guard_namespace
+        # The completion mark must not have been written while the retiring copy is
+        # still there: the half-swapped group keeps the staging name's mark, and the
+        # copy the interrupted run retired is still in the scene.
+        refused_half_token = ownership_token(
+            cmds, proto.OWNERSHIP_ATTRIBUTE,
+            "|" + proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER)
+        refused_retiring_exists = cmds.namespace(exists=continuous_retiring)
+        refused_retired_group = cmds.objExists(
+            continuous_retiring + ":" + proto.DEFAULT_CONTAINER)
+        recovered_report, recovered_code = proto.run(str(clean_fbx), str(manifest_path),
+                                                     dry_run=True)
+        recovered_update = recovered_report["update"]
+        checks.record("continuous_recovery", {
+            "takeover": {"escaped": takeover_escaped is not None,
+                         "exit": takeover_code, "phase": takeover_report["phase"],
+                         "problems": takeover_report["problems"],
+                         "update": {key: takeover_update.get(key) for key in
+                                    ("mode", "swapped", "rolled_back",
+                                     "rollback_reason", "rollback")},
+                         "container": takeover_report["container"]},
+            "retry_refused": {"exit": refused_retry_code,
+                              "phase": refused_retry_report["phase"],
+                              "problems": refused_retry_report["problems"],
+                              "update": {key: refused_retry_report["update"].get(key)
+                                         for key in ("staging_namespace", "discarded",
+                                                     "recovery")}},
+            "recovered": {"exit": recovered_code, "ok": recovered_report["ok"],
+                          "problems": recovered_report["problems"],
+                          "update": {key: recovered_update.get(key) for key in
+                                     ("staging_namespace", "recovery")},
+                          "container": recovered_report["container"]},
+            "reference_alive": node_alive(cmds, continuous_uuid),
+            "retiring_after_retry": refused_retiring_exists,
+            "retired_group_after_retry": refused_retired_group,
+            "half_token_after_retry": refused_half_token,
+            "staging_mark": "{0} {1}".format(proto.OWNERSHIP_TOKEN, takeover_staging)})
+        check("a refused rollback leaves the previous reference in its retiring name",
+              takeover_escaped is None and takeover_code == 1 and
+              takeover_report["phase"] == "refused" and
+              any("STAGED_SWAP_FAILED" in problem
+                  for problem in takeover_report["problems"]) and
+              takeover_update["rolled_back"] is True and
+              takeover_update["swapped"] is False and
+              takeover_update["rollback"]["previous_reference_restored"] is False and
+              node_alive(cmds, continuous_uuid),
+              json.dumps(checks.evidence["continuous_recovery"]["takeover"]))
+        check("the retry with the deletion still refused refuses instead of finishing",
+              refused_retry_code == 1 and
+              refused_retry_report["phase"] == "refused" and
+              any("RECOVERY_REFUSED" in problem
+                  for problem in refused_retry_report["problems"]),
+              json.dumps(checks.evidence["continuous_recovery"]["retry_refused"]))
+        check("the refused retry keeps the retiring copy and completes nothing",
+              node_alive(cmds, continuous_uuid) and
+              checks.evidence["continuous_recovery"]["retiring_after_retry"] is True and
+              checks.evidence["continuous_recovery"]["retired_group_after_retry"] is True and
+              checks.evidence["continuous_recovery"]["half_token_after_retry"] ==
+              "{0} {1}".format(proto.OWNERSHIP_TOKEN, takeover_staging) and
+              refused_retry_report["update"]["staging_namespace"] is None and
+              refused_retry_report["update"]["discarded"] is False,
+              json.dumps(checks.evidence["continuous_recovery"]["retry_refused"]))
+        check("the retry after the fault is gone restores the previous reference",
+              recovered_code == 0 and recovered_report["ok"] is True and
+              node_alive(cmds, continuous_uuid) and
+              recovered_report["container"]["kept_existing"] is True and
+              recovered_report["container"]["previous_reference_uuid"] ==
+              continuous_uuid and
+              recovered_update["recovery"]["restored_previous_reference"] ==
+              continuous_retiring and
+              recovered_update["recovery"]["interrupted_container_removed"] is True and
+              not recovered_update["recovery"]["finished_interrupted_container"] and
+              recovered_update["recovery"]["retired_leftovers_removed"] == [] and
+              not cmds.namespace(exists=continuous_retiring),
+              json.dumps(checks.evidence["continuous_recovery"]["recovered"]))
+
+        # R-002: the same refusal for a half-swapped destination namespace. The
+        # namespace an interrupted takeover left holds its staged group next to an
+        # object the scene owns, with the previous reference waiting in a retiring
+        # name -- deleting the namespace to restore the reference would take the
+        # foreign object with it.
+        destination_group = cmds.ls(
+            proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER, long=True)[0]
+        destination_uuid = cmds.ls(destination_group, uuid=True)[0]
+        destination_retiring = proto.DEFAULT_CONTAINER + proto.RETIRING_SUFFIX
+        cmds.namespace(rename=(proto.DEFAULT_CONTAINER, destination_retiring))
+        cmds.namespace(add=proto.DEFAULT_CONTAINER)
+        half_swapped_group = cmds.createNode(
+            "transform",
+            name=proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER)
+        cmds.addAttr(half_swapped_group, longName=proto.OWNERSHIP_ATTRIBUTE,
+                     dataType="string")
+        cmds.setAttr(half_swapped_group + "." + proto.OWNERSHIP_ATTRIBUTE,
+                     "{0} {1}".format(proto.OWNERSHIP_TOKEN,
+                                      proto.DEFAULT_CONTAINER + proto.STAGING_SUFFIX),
+                     type="string")
+        destination_foreign = cmds.createNode(
+            "transform", name=proto.DEFAULT_CONTAINER + ":ProductionObject")
+        destination_foreign_uuid = cmds.ls(destination_foreign, uuid=True)[0]
+        destination_retired_nodes = container_nodes(cmds, destination_retiring)
+        destination_report, destination_code = proto.run(
+            str(clean_fbx), str(manifest_path), dry_run=True)
+        checks.record("mixed_half_swapped_destination", {
+            "exit": destination_code, "phase": destination_report["phase"],
+            "problems": destination_report["problems"],
+            "update": {key: destination_report["update"].get(key) for key in
+                       ("staging_namespace", "discarded", "recovery")},
+            "namespace_nodes": container_nodes(cmds, proto.DEFAULT_CONTAINER),
+            "foreign_alive": node_alive(cmds, destination_foreign_uuid),
+            "group_alive": cmds.objExists(half_swapped_group),
+            "retired_namespace": destination_retiring,
+            "retired_nodes": container_nodes(cmds, destination_retiring),
+            "reference_alive": node_alive(cmds, destination_uuid)})
+        check("a half-swapped destination with a foreign object is refused",
+              destination_code == 1 and destination_report["phase"] == "refused" and
+              any("CONTAINER_NOT_OWNED" in problem
+                  for problem in destination_report["problems"]),
+              json.dumps(checks.evidence["mixed_half_swapped_destination"]))
+        check("the refusal deleted nothing: foreign object, staged group and retired "
+              "reference all survive",
+              node_alive(cmds, destination_foreign_uuid) and
+              cmds.objExists(half_swapped_group) and
+              node_alive(cmds, destination_uuid) and
+              container_nodes(cmds, proto.DEFAULT_CONTAINER) ==
+              sorted([proto.DEFAULT_CONTAINER + ":" + proto.DEFAULT_CONTAINER,
+                      proto.DEFAULT_CONTAINER + ":ProductionObject"]) and
+              cmds.objExists(destination_retiring + ":" + proto.DEFAULT_CONTAINER) and
+              container_nodes(cmds, destination_retiring) ==
+              destination_retired_nodes and
+              destination_report["update"]["staging_namespace"] is None and
+              destination_report["update"]["discarded"] is False,
+              json.dumps(checks.evidence["mixed_half_swapped_destination"]))
+        # A normal run in the same mixed state takes the same refusal before it
+        # imports anything, so the foreign object and the old reference survive it.
+        destination_swap_report, destination_swap_code = proto.run(
+            str(clean_fbx), str(manifest_path))
+        checks.record("mixed_half_swapped_destination_swap", {
+            "exit": destination_swap_code, "phase": destination_swap_report["phase"],
+            "problems": destination_swap_report["problems"],
+            "swapped": destination_swap_report["update"]["swapped"],
+            "namespace_nodes": container_nodes(cmds, proto.DEFAULT_CONTAINER),
+            "foreign_alive": node_alive(cmds, destination_foreign_uuid),
+            "group_alive": cmds.objExists(half_swapped_group),
+            "retired_nodes": container_nodes(cmds, destination_retiring),
+            "reference_alive": node_alive(cmds, destination_uuid)})
+        check("a normal retry in that state is refused by the same rule",
+              destination_swap_code == 1 and
+              destination_swap_report["phase"] == "refused" and
+              any("CONTAINER_NOT_OWNED" in problem
+                  for problem in destination_swap_report["problems"]) and
+              destination_swap_report["update"]["swapped"] is False and
+              node_alive(cmds, destination_foreign_uuid) and
+              cmds.objExists(half_swapped_group) and
+              node_alive(cmds, destination_uuid) and
+              container_nodes(cmds, destination_retiring) ==
+              destination_retired_nodes,
+              json.dumps(checks.evidence["mixed_half_swapped_destination_swap"]))
+        cmds.namespace(removeNamespace=proto.DEFAULT_CONTAINER,
+                       deleteNamespaceContent=True)
+        cmds.namespace(rename=(destination_retiring, proto.DEFAULT_CONTAINER))
+
         # ---------------------------------------------------- command line
         report["phase"] = "commandline"
         cli_report_path = scratch / "cli.report.json"

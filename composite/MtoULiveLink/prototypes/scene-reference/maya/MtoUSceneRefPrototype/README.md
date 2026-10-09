@@ -144,11 +144,21 @@ while unmarked top-level nodes are left exactly as they are and reported
 (`update.recovery.partial_cleanups`, with the nodes removed and the nodes kept),
 and a *retiring* namespace that holds unmarked nodes next to the previous
 reference is refused with `CONTAINER_NOT_OWNED`, because a previous reference is
-restored or deleted whole and never in parts. A cleanup the host refuses is
-reported, never raised: `update.discard_attempted`, `update.discard_errors` and
-`update.residual` name what could not be deleted and what is still there, a
-refused cleanup adds a `STAGING_CLEANUP_FAILED` problem so the run never looks
-successful, and the next run's recovery sweeps it.
+restored or deleted whole and never in parts. The same ownership rule covers the
+container's own name: a half-swapped namespace — one whose takeover was
+interrupted before its ownership mark was rewritten — is deleted whole and the
+retired reference put back only while it holds nothing the tool does not own, and
+a completion mark is never written next to a retiring copy that still exists, so
+an unverified takeover is never promoted to a finished one. A recovery the host
+refuses (the half-swapped namespace or a retired copy that cannot be deleted, or
+a retiring reference that cannot be renamed back) refuses the run with
+`RECOVERY_REFUSED` (exit 1) instead of guessing: the previous reference stays in
+its retiring name and its UUID survives every retry until the obstruction is gone
+and a run restores it. A cleanup the host refuses is reported, never raised:
+`update.discard_attempted`, `update.discard_errors` and `update.residual` name
+what could not be deleted and what is still there, a refused cleanup adds a
+`STAGING_CLEANUP_FAILED` problem so the run never looks successful, and the next
+run's recovery sweeps it.
 
 What this host's `fbxmaya` plugin actually accepts is recorded in the report:
 
@@ -448,7 +458,7 @@ additions are `decided_by`, `winner`, `camera_contract`, `node_frame_factor`,
 
 ## Evidence
 
-`tests/maya_host_scene_ref_tests.py` (291 checks) authors its own reference
+`tests/maya_host_scene_ref_tests.py` (299 checks) authors its own reference
 geometry and handoffs, synthesizes the manifest from the measured scene values
 through the documented axis map, and asserts on a disposable scene: the clean
 handoff imports with every object matched by name and every error inside
@@ -472,8 +482,15 @@ that raises rolls back instead of leaving a half-committed container, and the
 retry after it keeps the previous reference; a stale staging namespace that also
 holds an unmarked object keeps that object while only the marked group is deleted
 and reported, and a retiring namespace in that state is refused rather than
-emptied; a cleanup the host refuses returns a report instead of raising, with the
-residual resources and a `STAGING_CLEANUP_FAILED` problem, and the next run sweeps
+emptied; a failed takeover whose rollback the host refuses, followed by a dry run
+with the deletion still refused and one after the fault is gone, refuses the
+first retry with `RECOVERY_REFUSED` instead of completing the unverified
+takeover, keeps the previous reference's UUID through all three runs and
+restores it under the container's name once the name is free again; a half-swapped
+destination namespace that holds a foreign object is refused with
+`CONTAINER_NOT_OWNED` and deletes nothing; a cleanup the host refuses returns a
+report instead of raising, with the residual resources and a
+`STAGING_CLEANUP_FAILED` problem, and the next run sweeps
 what it can prove is its own; the contract's report shape; and the command line
 entry point in its own process, which writes its own report and exits 0.
 

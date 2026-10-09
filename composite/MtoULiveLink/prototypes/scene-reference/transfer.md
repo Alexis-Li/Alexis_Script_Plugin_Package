@@ -277,11 +277,21 @@ the previous reference before the new one has taken its place:
    (`update.recovery.partial_cleanups`, with the nodes removed and the nodes left),
    and a *retiring* namespace that holds unmarked nodes next to the previous
    reference is refused with `CONTAINER_NOT_OWNED`: a previous reference is
-   restored or deleted whole, never in parts. Everything the recovery did, skipped
-   or could not do is reported in `update.recovery` (`stale_staging_namespaces`,
-   `restored_previous_reference`, `retired_leftovers_removed`,
-   `interrupted_container_removed`, `finished_interrupted_container`,
-   `partial_cleanups`, `skipped_namespaces`, `events`).
+   restored or deleted whole, never in parts. The same rule covers the container's
+   own name: a *half-swapped* namespace -- one whose takeover was interrupted
+   before its ownership mark was rewritten -- is deleted whole and the retired
+   reference put back only while it holds nothing the tool does not own, and a
+   completion mark is never written next to a retiring copy that still exists.
+   A recovery the host refuses -- the half-swapped namespace or a retired copy
+   that cannot be deleted, or a retiring reference that cannot be renamed back --
+   refuses the run with `RECOVERY_REFUSED` (exit 1) instead of guessing: the
+   previous reference stays in its retiring name, its UUID survives every retry,
+   and the run after the obstruction is gone restores it. Everything the recovery
+   did, skipped or could not do is reported in `update.recovery`
+   (`stale_staging_namespaces`, `restored_previous_reference`,
+   `retired_leftovers_removed`, `interrupted_container_removed`,
+   `finished_interrupted_container`, `partial_cleanups`, `skipped_namespaces`,
+   `events`).
 9. Only nodes carrying this tool's ownership mark, and the staging and retiring
    namespaces this tool created, are ever deleted. Nothing else in the scene is
    renamed, reparented, reassigned or deleted.

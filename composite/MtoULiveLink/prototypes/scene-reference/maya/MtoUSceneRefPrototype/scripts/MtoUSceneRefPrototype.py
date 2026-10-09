@@ -113,6 +113,7 @@ CATEGORY_IMPORT_FAILED = "FBX_IMPORT_FAILED"
 CATEGORY_GRAY_MATERIAL = "GRAY_MATERIAL_CONFLICT"
 CATEGORY_SWAP_FAILED = "STAGED_SWAP_FAILED"
 CATEGORY_CONTAINER_NOT_OWNED = "CONTAINER_NOT_OWNED"
+CATEGORY_RECOVERY_REFUSED = "RECOVERY_REFUSED"
 
 #: Most faces accumulated per object for the world surface centroid check. Above
 #: it the faces are sampled evenly, so a huge handoff cannot turn the check into
@@ -1551,7 +1552,8 @@ class SceneRefImporter(object):
     def _recover_previous_runs(self):
         """Undo or finish what an interrupted run of this tool left behind.
 
-        Only resources this tool can prove it created are touched.
+        Only resources this tool can prove it created are touched, and a state the
+        run cannot resolve is refused instead of guessed at.
 
         A namespace holding a previous reference in its retiring name is put back
         under the container's name -- but only while every one of its top-level nodes
@@ -1562,12 +1564,27 @@ class SceneRefImporter(object):
 
         A staging namespace of this tool's family is cleaned up node by node: the
         marked group is deleted, and a namespace that still holds unmarked nodes
-        afterwards is left in place and reported instead of being emptied. When the
-        container name is already taken, a retired copy is deleted only if the
-        container is a *finished* takeover (its group carries the mark for the
-        container's own name); a half-renamed container is deleted and the retired
-        reference put back, so a retry or a dry run can never delete the previous
-        reference of an unverified commit.
+        afterwards is left in place and reported instead of being emptied.
+
+        The container name itself decides the rest. A half-swapped namespace -- one
+        whose takeover was interrupted before the ownership mark was rewritten --
+        holds only this tool's staged import, so it is deleted whole and the
+        retiring reference put back. That deletion refuses the run rather than
+        working around a host refusal when the namespace also holds a node the tool
+        does not own: neither putting the old reference back nor completing an
+        unverified takeover is safe while the container's name is still taken. A
+        finished takeover (its group carries the mark for the container's own name)
+        is the reference a retiring copy was replaced by, so that copy is deleted;
+        a host that refuses the deletion refuses the run instead of reporting a
+        success with the copy still in the scene.
+
+        Only when no previous reference is waiting in any retiring name does the
+        run finish a half-swapped container by renaming and re-marking its group:
+        the staged content was verified before its takeover started, so the group
+        name and the mark are what an interruption can have cost it, and writing
+        the completion mark is then the only way back to a state a later run can
+        work with. The mark is never written next to a retiring copy that still
+        exists.
         """
         maya_cmds = commands()
         recovery = {"stale_staging_namespaces": [], "restored_previous_reference": None,
@@ -1591,42 +1608,85 @@ class SceneRefImporter(object):
                                             _namespace_top_nodes(name))),
                     exit_code=EXIT_CHECK_FAILED)
             if container_state["group"] or container_state["root_group"]:
+                # The container under that name is a finished takeover, so this
+                # retiring copy is the reference that takeover replaced. It is
+                # deleted as a whole namespace or the run refuses with it still
+                # named: reporting a success while an unhandled copy of a previous
+                # reference sits in the scene is what a retry must never do.
                 removed, error = self._remove_namespace(name)
-                if removed:
-                    recovery["retired_leftovers_removed"].append(name)
-                    recovery["events"].append(
-                        "RETIRED_LEFTOVER_REMOVED: the interrupted run's previous "
-                        "reference {0} was a copy of the verified container and has "
-                        "been deleted".format(name))
-                else:
-                    recovery["events"].append(
-                        "RETIRED_LEFTOVER_KEPT: the copy {0} could not be deleted: "
-                        "{1}".format(name, error))
+                if not removed:
+                    raise SceneRefRefused(
+                        CATEGORY_RECOVERY_REFUSED,
+                        "the retired reference {0!r} of the finished container could "
+                        "not be deleted ({1}), so the run is refused instead of "
+                        "reporting a success with the copy still in the scene; run "
+                        "again once the name can be removed".format(name, error),
+                        exit_code=EXIT_CHECK_FAILED)
+                recovery["retired_leftovers_removed"].append(name)
+                recovery["events"].append(
+                    "RETIRED_LEFTOVER_REMOVED: the interrupted run's previous "
+                    "reference {0} was a copy of the verified container and has "
+                    "been deleted".format(name))
                 continue
             if container_state["incomplete"]:
+                # A half-swapped namespace: the takeover never wrote the mark that
+                # proves it, so its top level holds nothing but this tool's staged
+                # import. A namespace that also holds a node the tool does not own
+                # is refused with its content named -- it is never emptied -- and a
+                # host that refuses the removal refuses the run, because the
+                # previous reference stays in its retiring name and the container's
+                # name stays taken by an unverified takeover until it is dealt with.
+                if container_state["foreign_nodes"]:
+                    raise SceneRefRefused(
+                        CATEGORY_CONTAINER_NOT_OWNED,
+                        "the namespace {0!r} was left half swapped by an interrupted "
+                        "run next to nodes this tool does not own ({1}), so the "
+                        "previous reference {2!r} is neither restored nor deleted; "
+                        "rename or remove the foreign nodes and run again".format(
+                            self.container,
+                            _node_summary(container_state["foreign_nodes"]), name),
+                        exit_code=EXIT_CHECK_FAILED)
                 removed, error = self._remove_namespace(self.container)
                 recovery["interrupted_container_removed"] = bool(removed)
+                if not removed:
+                    raise SceneRefRefused(
+                        CATEGORY_RECOVERY_REFUSED,
+                        "the half swapped namespace {0!r} could not be deleted ({1}), "
+                        "so the previous reference {2!r} stays in its retiring name "
+                        "and the run is refused instead of completing a takeover "
+                        "that was never verified; run again once the name can be "
+                        "removed".format(self.container, error, name),
+                        exit_code=EXIT_CHECK_FAILED)
                 recovery["events"].append(
                     "INTERRUPTED_CONTAINER_REMOVED: the half swapped namespace {0} "
                     "was left by an interrupted run and has been deleted".format(
-                        self.container) if removed else
-                    "INTERRUPTED_CONTAINER_KEPT: the half swapped namespace {0} could "
-                    "not be deleted: {1}".format(self.container, error))
-                if not removed:
-                    continue
-            maya_cmds.namespace(rename=(name, self.container))
+                        self.container))
+            try:
+                maya_cmds.namespace(rename=(name, self.container))
+            except Exception as error:  # noqa: BLE001 - reported, never raised
+                raise SceneRefRefused(
+                    CATEGORY_RECOVERY_REFUSED,
+                    "the previous reference {0!r} could not be put back under the "
+                    "container's name {1!r} ({2}); it stays in its retiring name "
+                    "until a run can restore it".format(name, self.container, error),
+                    exit_code=EXIT_CHECK_FAILED)
             recovery["restored_previous_reference"] = name
             recovery["events"].append(
                 "RESTORED_PREVIOUS_REFERENCE: the previous reference {0} was put "
                 "back under the container's name {1} after an interrupted "
                 "run".format(name, self.container))
             container_state = self._container_state(self.container)
-            break
-        if not recovery["restored_previous_reference"] and container_state["incomplete"]:
+        if (not recovery["restored_previous_reference"]
+                and not container_state["group"] and not container_state["root_group"]
+                and container_state["incomplete"]
+                and not container_state["foreign_nodes"]):
             # The container namespace holds a group this tool staged but never renamed
             # and no previous reference is waiting in a retiring name, so the
             # interrupted run had already deleted it: finishing the takeover is what
             # restores the state the contract promises instead of refusing to run.
+            # A namespace that also holds foreign nodes never reaches this point --
+            # with a retiring copy it is refused above, without one the container's
+            # own conflict check refuses it before anything is imported.
             finished = self._finish_interrupted_container(container_state)
             recovery["finished_interrupted_container"] = finished
             if finished:
@@ -1669,10 +1729,18 @@ class SceneRefImporter(object):
         """Rename and re-mark the group of a container an interrupted run left behind.
 
         The container namespace holds a group this tool staged -- its mark names the
-        staging family -- and no previous reference is waiting in a retiring name, so the
-        interrupted run had already deleted it. Completing the takeover (the group name and
-        mark the contract promises) is then the only way back to a state a later run can
-        work with. Returns whether the group was finished.
+        staging family -- and no previous reference is waiting in a retiring name,
+        so the interrupted run had already deleted it. Completing the takeover (the
+        group name and mark the contract promises) is then the only way back to a
+        state a later run can work with: the staged content itself was verified
+        before its takeover started, so the group name and the mark are what the
+        interruption can have cost it.
+
+        This runs only while no retiring copy exists and the namespace holds no node
+        the tool does not own: a completion mark is never written next to an
+        unresolved previous reference, and one marked group of an unknown
+        arrangement is not an authorisation to own a namespace. Returns whether the
+        group was finished.
         """
         incomplete = list(state["incomplete"])
         if len(incomplete) != 1:
