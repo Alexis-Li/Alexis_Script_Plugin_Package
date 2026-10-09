@@ -130,10 +130,16 @@ Do not require a new history document for each small task.
   concatenating rounds. Preserve unresolved dissent, user decisions and still
   applicable evidence. Never turn development assertions into reviewer approval.
 - Preserve original reports before substantive replacement. Corrections to
-  factual errors may be made in place, with source history recoverable. Default
-  to retaining old comments and marking superseded reports; where authorized,
-  hide obsolete reports with their successor link. Deleting comments requires
-  explicit authorization and a verified durable archive first.
+  factual errors may be made in place, with source history recoverable. During
+  active development, retain separate delivery/review reports as needed. A user
+  request to consolidate comments or close out a completed issue authorizes
+  removing superseded agent-authored reports after durable archival and
+  verification: keep exactly one final summary among agent reports, including
+  the final review's conclusion, provenance and limits in that summary. Merely
+  marking old reports superseded or hiding them does not complete this request.
+  Preserve human discussion, user decisions and unresolved dissent; do not infer
+  permission to delete these or unrelated comments. Without a consolidation or
+  closeout request, maintain the current handoff without deleting comments.
 - For archives use `github-issue-comment-archive/1`: `issue`, `archived_on`,
   `purpose`, `current_status_comment`, and `comments` containing each original
   `id`, `created_at`, `updated_at`, `author`, `original_url`, and full `body`.
@@ -148,6 +154,27 @@ Do not require a new history document for each small task.
   and referenced documents that claim current status agree. Correct contradicted
   current conclusions in place; preserve historical facts in the archive. If
   synchronization is unavailable, list it as unfinished work.
+- For completed issues, the current history tree keeps the final acceptance
+  record, one source-comment archive and only evidence needed to substantiate
+  acceptance, a material limit, or an otherwise unreproducible finding. Keep
+  reproduction inputs only when maintained tests do not replace them. Do not
+  copy every run, failed iteration, draft or disposal log out of scratch into
+  history. Preserve already-committed intermediate material through an immutable
+  Git reference; extract unique durable facts before removing redundant files.
+  Give each retained evidence file a purpose in the existing record or a compact
+  evidence index. Update existing records instead of adding a closeout diary.
+- Before deleting comments, commit and publish the source archive, verify the
+  remotely accessible content against the captured IDs, bodies and timestamps,
+  and publish/read back the validated final summary. Replace live references to
+  removed reports with archive references identifying the original report ID;
+  historical archived bodies stay intact. Re-read each targeted comment just
+  before deletion and reconcile concurrent changes first. Delete by exact ID,
+  then paginate all comments to verify the final count and sole summary marker.
+  If publication or deletion is unavailable, report closeout as incomplete.
+- Report actual remaining comment counts (agent reports versus preserved human
+  discussion), the retained evidence set and reasons, reference checks, and
+  commit/publication state. A unique current marker, successful archive check,
+  clean scratch directory or passing tests alone does not establish closeout.
 - Product integration decisions stay in their owning parent issue. Consolidating
   a child does not authorize integration or raise its agreed acceptance bar.
 

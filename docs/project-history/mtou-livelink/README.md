@@ -298,7 +298,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   The [acceptance record](issue-52-camera-sync-acceptance.md) owns the effective
   scope/limits; the [unified comment archive](issue-52-comment-archive.json)
   preserves earlier reports, and the [evidence archive](issue-52-camera-sync-evidence/README.md)
-  preserves meaningful results and reproductions before scratch cleanup.
+  retains final review results and its independent reproduction inputs.
   Interactive callbacks and sustained playback remain non-blocking follow-ups;
   product integration stays unified under #47.
 

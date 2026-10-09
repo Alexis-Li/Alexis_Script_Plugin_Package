@@ -132,6 +132,12 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - Maintain one current handoff per issue. Preserve source reports before
   replacement, keep referenced current records consistent, and distinguish
   defects, unverified risks, acceptance gaps, and proposals for later work.
+  When the user requests comment consolidation or completed-issue closeout,
+  archive and verify source reports, then remove superseded agent reports so
+  only the final summary remains; preserve human discussion and decisions.
+  Keep final conclusions and necessary evidence in the current history tree,
+  leaving redundant intermediate runs and drafts in Git history. Follow the
+  tracker protocol's publication, deletion, and closeout verification checks.
   Consolidation must not silently change scope or acceptance. These requirements
   apply regardless of the skill used to produce the underlying work.
 - For issue classification, read `docs/agents/triage-labels.md`.

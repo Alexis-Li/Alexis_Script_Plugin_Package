@@ -8,8 +8,8 @@ prototype code is identical. UE C++ is unchanged from the review-01 build at
 and does not claim a new build.
 
 The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-5888803268)
-owns issue status; [review-02](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/52#issuecomment-6055097768)
-owns independent acceptance. The archival closeout inspected existing evidence
+owns issue status; independent acceptance comes from review-02, original comment
+`6055097768`, preserved in the [source-comment archive](issue-52-comment-archive.json). The archival closeout inspected existing evidence
 and verified preservation; it did not rerun host acceptance or change scope.
 
 ## Accepted scope
@@ -40,11 +40,11 @@ were not opened or modified. Official-source conclusions are historical review.
 | Check | Result | Durable evidence |
 | --- | --- | --- |
 | Mapping under system Python and mayapy | Each interpreter passed 63/63. | Original review-02 in the [comment archive](issue-52-comment-archive.json), maintained tests. |
-| Maya host/Arnold | 145 checks, zero failures, including 50 safety checks; four film-fit configurations. Largest compared visible-marker component error 0.196001 px, tolerance 2 px. | [Host result](issue-52-camera-sync-evidence/issue52-review02-20261008/maya-host.json). |
-| Independent review-01 failure inputs | Public disconnect restores time 17, 800×600 gate, camera/socket ownership and original failure reason. Connection refusal preserves disabled undo. Animated borrowing is rejected without key changes or fabricated success; locked borrowing preserves locks/values. | [Result](issue-52-camera-sync-evidence/issue52-review02-20261008/review-repro.json), [portable reproduction](issue-52-camera-sync-evidence/review-02-reproduction.py). |
-| UE Automation with both opt-in real peers | 11 succeeded, zero failed/skipped/warned; exit 0. | [Automation report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-automation/index.json). |
-| RealMayaPeer | Generation 2 converged; maximum actual read-back marker difference 1.08873e-07 NDC. No anomalous lines, trailing bytes or failed sends. Superseded/synthetic replay refusals are expected negative cases. | [UE peer report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-evidence/camera-sync-ue-report.json). |
-| EditorLoopFollow | All 13 steps pass; six connection lifetimes restore; ten fractional-time applications. Maximum read-back difference 7.5052e-07 NDC, peer exit 0. | [Editor-loop report](issue-52-camera-sync-evidence/issue52-review02-20261008/ue-evidence/editor-loop/editor-loop-report.json). |
+| Maya host/Arnold | 145 checks, zero failures, including 50 safety checks; four film-fit configurations. Largest compared visible-marker component error 0.196001 px, tolerance 2 px. | [Host result](issue-52-camera-sync-evidence/maya-host.json). |
+| Independent review-01 failure inputs | Public disconnect restores time 17, 800×600 gate, camera/socket ownership and original failure reason. Connection refusal preserves disabled undo. Animated borrowing is rejected without key changes or fabricated success; locked borrowing preserves locks/values. | [Result](issue-52-camera-sync-evidence/review-reproduction.json), [portable reproduction](issue-52-camera-sync-evidence/review-02-reproduction.py). |
+| UE Automation with both opt-in real peers | 11 succeeded, zero failed/skipped/warned; exit 0. | [Automation report](issue-52-camera-sync-evidence/ue-automation.json). |
+| RealMayaPeer | Generation 2 converged; maximum actual read-back marker difference 1.08873e-07 NDC. No anomalous lines, trailing bytes or failed sends. Superseded/synthetic replay refusals are expected negative cases. | [UE peer report](issue-52-camera-sync-evidence/ue-peer.json). |
+| EditorLoopFollow | All 13 steps pass; six connection lifetimes restore; ten fractional-time applications. Maximum read-back difference 7.5052e-07 NDC, peer exit 0. | [Editor-loop report](issue-52-camera-sync-evidence/editor-loop-ue.json). |
 | Official capabilities and product boundary | Review-01's source/license/version inspection remains applicable to unchanged records. No new official-plugin build or installation claimed. | Archived review-01 and official capability/mapping records. |
 
 The module ticker drives the natural loop: drag, cut, parked-camera editing,
@@ -76,26 +76,19 @@ triggers/code references/interim conclusions remain in the comment archive.
 
 ## Archive and reproduction
 
-- [Unified comment archive](issue-52-comment-archive.json): five live reports
-  before consolidation and thirteen earlier snapshots, including previously
-  removed reports. IDs/authors/timestamps are preserved. Affected bodies mark
-  machine-path normalization and retain original SHA-256. Nested historical
-  archives use `github-issue-comment-archive/1`; the former separate review-02
-  handoff archive is incorporated here.
-- [Evidence archive](issue-52-camera-sync-evidence/README.md): meaningful JSON
-  results from development/review, including unsuccessful intermediate runs,
-  and two independent reproductions. The [manifest](issue-52-camera-sync-evidence/manifest.json)
-  maps source paths/hashes to retained files or disposal reasons.
-- Use the maintained prototype commands for host/Arnold and UE acceptance;
-  both real peer arguments must be enabled. A run skipping them is insufficient.
-- Supplementary current reproduction:
+- [Source-comment archive](issue-52-comment-archive.json): exact IDs, authors,
+  timestamps and full bodies of the five reports captured before consolidation.
+  Review-02 is comment `6055097768`; review-01 is `6051051676`. Earlier snapshots
+  remain accessible through the archive's immutable `previous_archive` reference.
+- [Acceptance evidence](issue-52-camera-sync-evidence/README.md): seven final
+  review result files and the independent review-02 reproduction script, with
+  each file's purpose. Superseded runs and the old manifest remain in Git history.
+- Use maintained prototype commands for host/Arnold and UE acceptance; both
+  real peer arguments must be enabled. A run skipping them is insufficient.
+- Supplementary independent reproduction:
   `mayapy <repo>/docs/project-history/mtou-livelink/issue-52-camera-sync-evidence/review-02-reproduction.py <scratch>/review-repro.json`.
-  Repository/output lookup is portable; assertions are unchanged. Review-01's
-  script is historical and deliberately reproduces its old failing baseline.
 
-Raw logs, preferences, generated fixtures/render files and publication drafts
-are disposable after archiving numeric observations, source reports and
-reproduction inputs. Render images themselves are omitted; measured coordinates
-and errors remain in host JSON, and maintained tests regenerate them. Archive
-adaptations were syntax-checked, not executed as a new runtime review.
+Render images are omitted; measured coordinates and errors remain in host JSON,
+and maintained tests regenerate them. Archival closeout verifies preserved
+content and references; it does not establish new runtime acceptance.
 Closing this prototype does not grant product acceptance or implement #47.

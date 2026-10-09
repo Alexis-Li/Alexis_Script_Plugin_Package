@@ -16,6 +16,15 @@ and production acceptance evidence without keeping temporary agent plans.
   history documents may link to those rules but must not duplicate them.
 - Git history remains the source for discarded intermediate drafts and detailed
   step-by-step implementation activity.
+- Completed issues retain final acceptance conclusions, one source-comment
+  archive and the minimum evidence needed to support acceptance or material
+  limits. Keep essential reproduction inputs when maintained tests do not
+  replace them; explain retained files in the acceptance record or evidence index.
+  Do not preserve every development run, failed iteration, publication draft or
+  scratch disposal log in the current tree. Extract unique durable facts and
+  use immutable Git references for previously committed intermediate material.
+- Follow [the issue tracker protocol](../agents/issue-tracker.md) for comment
+  consolidation and verify both the remaining comments and current file set.
 
 ## Projects
 
