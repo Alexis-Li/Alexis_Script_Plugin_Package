@@ -1,62 +1,64 @@
 # Issue #53: selected-level reference geometry in Maya
 
-Date: 2026-10-08. The independent review of local implementation
-`29a1bb5cd515df1cbca6a60e7352ccbc9facd707` (fix
-`489b1c57bdd1f6814c020639c6927efea6394444`, dead-member removal
-`0b304aaa834c0f9550f93f403eacbd4adfdb9e66`) required changes for R-001, R-002 and
-R-006. Those three are fixed in `1a3cede`, which is **not yet independently
-re-verified**; R-003, R-004 and R-005 keep the closed status the review gave them
-within their stated scope. The implementation remains local; neither the review
-nor this fix pushed it, and the prototype is not integrated into MtoU. The
-[review comment](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53#issuecomment-5888512464)
-and the [review-01 report](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53) own the next action;
-superseded bodies and deliveries are preserved in
-[the 2026-10-08 source archive](issue-53-comment-archive-20261008.json) and
-[the original archive](issue-53-comment-archive.json).
+Date: 2026-10-09. Independent review-02 of implementation
+`1a3cede888722d879ff462d818bda118d44468dd` requires changes: R-001 and R-002
+remain blocking recovery defects; R-006 is independently reverified closed.
+R-003, R-004 and R-005 retain their bounded approval. The inspected checkout is
+`d79f309df8744a19d9be36aa96ec3d9dc6361107`; its prototype sources are identical
+to the implementation commit. These commits are local, not pushed. Issue #53
+remains open, and product integration remains with #47 after all three prototypes
+have runnable evidence and explicit boundaries.
 
-The fix round reran the Maya 2024 pure suite (110 passing tests) and host suite
-(291 checks, zero failures, including the three new probes below), and reran the
-Unreal automation suite (10 of 10, including the real Maya peer) over the same
-tree; the UE sources are unchanged from the review baseline. No production rig,
-production terrain or process-crash scenario was touched.
+The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53#issuecomment-5888512464)
+owns the next action. [Development dev-02](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/53#issuecomment-6056055116)
+is the reviewed delivery. Exact source reports before this review are preserved
+in [the 2026-10-09 archive](issue-53-comment-archive-20261009.json); earlier versions
+remain in the existing 2026-10-08 and original archives. The new archive is committed
+locally; remote publication is pending. No source comments are deleted.
 
-Independent re-verification ran the Maya 2024 pure suite (110 passing tests), host
-suite (274 checks, zero failures), three imports of the development run's UE 5.7.4
-handoffs, and additional in-process fault/ownership probes. It did not rebuild or
-rerun UE, re-export the production level, or open the C01 production rig. UE source
-is unchanged between the fix and reviewed commits. The development report's UE
-10/10 result remains development evidence, not an independently repeated UE run.
-
-The official FBX route, explicit loaded-level scope, media policy and isolated
-prototype remain viable. R-003, R-004 and R-005 are closed within the conditions
-below. R-001 and R-002 remain unresolved; R-006 is a new cleanup-error defect.
-Issue #53 cannot receive whole-issue acceptance while those blockers remain.
-Large production terrains, complex Nanite assets, process crashes and production
-scale are unverified extensions, not silently added prototype acceptance gates.
-All three prototypes (#52/#53/#54) must first have runnable evidence and explicit
-boundaries; #47 then owns one combined MtoU integration decision.
+This review ran 110 pure tests and 291 Maya 2024 host checks (all passing),
+repeated the prior review's fault probes, and imported the development run's
+Landscape and two World Partition handoffs in fresh Maya scenes. All three
+handoffs passed within their fixture scope. Two additional recovery probes below
+reproduced data loss despite the passing maintained suite. UE code is unchanged;
+this review did not rebuild UE, rerun its automation, re-export the production
+level or open the C01 rig. The development UE 10/10 remains historical development
+evidence, not this review's independently executed result.
 
 ## Outstanding acceptance
 
-IDs retain the findings first assigned in this record. The current independent
-review closes only the stated scope, not every failure mode in the same subsystem.
+Finding IDs are retained because these are unresolved paths of the same recovery
+and ownership requirements, not new requirements or production-scale extensions.
 
 | ID / type / status | Current evidence | Completion criterion / owner |
 | --- | --- | --- |
-| R-001 / confirmed defect / fixed, awaiting re-verification, P1 | The rename/group-rename and missing-path probes passed before and still pass. `_finalise` now runs the namespace rename, the group rename, the recorded-path read back and the mark rewrite inside one rollback boundary: an exception from any of them (including the reviewed `_rehome_paths` throw) is caught, the container this run created is deleted, the retired reference is renamed back, and the run refuses with `update.rolled_back`, `update.rollback.previous_reference_restored`, the failing step in `update.rollback_reason` and the traceback in `update.rollback_error`. The container group is marked for its own name only *after* the paths resolved, so a half-committed container is no longer indistinguishable from a verified one; `_recover_previous_runs` deletes a retired copy only when the container is a finished takeover, and restores it otherwise. Host probes assert the previous UUID is alive under the container name after the throw, that no staging or retiring namespace is left, and that a following `--dry-run` keeps that UUID (`update.recovery.retired_leftovers_removed == []`). | Completion criterion met in code and in the maintained probes; needs independent re-verification on this baseline, including the reviewer's exact reproduction. |
-| R-002 / confirmed defect / fixed, awaiting re-verification, P1 | Recovery now touches only resources it can prove are its own. A stale staging namespace is emptied node by node: the marked group is deleted (`_remove_owned_nodes`), unmarked top-level nodes are never deleted, and a namespace that still holds them is left in place and reported in `update.recovery.partial_cleanups` (nodes removed, nodes left) with a `STALE_STAGING_PARTIAL` warning instead of a namespace-wide deletion. The host probe that puts a marked group next to an unmarked `ProductionObject` in `<container>_Incoming` asserts the foreign UUID survives, the group is gone, the namespace and its remaining node are untouched, and the run still swaps its own container under another free staging name. A *retiring* namespace in that state is refused with `CONTAINER_NOT_OWNED` (`exit 1`) rather than emptied, because a previous reference is restored or deleted whole; the probe asserts both nodes and the ID of the standing reference are still there and the run imported nothing. | Completion criterion met in code and in the maintained probes; needs independent re-verification, including the reviewer's exact reproduction. |
-| R-003 / confirmed defect / reverified closed | The maintained partial-import probe now takes cleanup responsibility before import: exit 1, discarded partial nodes, no staging namespace, old UUID preserved. Independent host suite passed. | Closed for partial-import failure when cleanup succeeds; cleanup failure is separately tracked as R-006. |
-| R-004 / acceptance gap / reverified closed, fixture only | Independent Maya dry-run of the new Landscape FBX/manifest passes: 7938 triangles, position/size/offset errors 0 cm, surface-centroid error 6.4311e-13 cm, no problems/warnings. | Closed for one flat, single-component, LOD0 terrain without visibility holes. Multiple components, other LODs and visibility layers remain outside this evidence. |
-| R-005 / acceptance gap / reverified closed, descriptor scope | Independent imports both pass. Streaming-on manifest reports 76 descriptors, 9 spawned, 3 unspawned authored actors and 64 unspawned HLOD proxies; Maya emits `SCOPE_LOADED_ONLY`. Streaming-off handoff reports confirmed descriptor coverage, 4 matched objects, no coverage warning. | Closed for the fixture's descriptor-level loaded-content statement, not general runtime cell streaming or arbitrary nested partition layouts. No automatic loading was added. |
-| R-006 / confirmed defect / fixed, awaiting re-verification, P2 | Namespace removal is no longer able to raise out of the API: `_remove_namespace` returns `(removed, error)`, `_discard_staging` records the error in `update.discard_errors`, the nodes still present in `update.residual`, and adds a `STAGING_CLEANUP_FAILED` problem instead of letting the run look successful, and `_cleanup_after_failure` wraps every failure handler so `run()` always returns its `(report, exit_code)`. The original failure is kept (`FBX_IMPORT_FAILED`), and the host probe asserts: no exception escapes, exit 1, `discarded: false` with `discard_attempted: true`, the residual namespace and its nodes named, the previous reference and the production object untouched, and that the next run's recovery deletes the marked group it can prove and reports the unmarked leftover of the failed import instead of deleting it. | Completion criterion met in code and in the maintained probes; needs independent re-verification, including the reviewer's exact reproduction. |
+| R-001 / confirmed defect / unresolved, P1, blocking | The original final-path exception now rolls back when deletion succeeds. When `_rehome_paths` raises and deletion of the destination container is refused, the old UUID remains in Retiring. A following dry-run with deletion still refused nevertheless calls `_finish_interrupted_container`, writes the completed ownership mark and returns success. A third dry-run after removing the fault deletes the old UUID as `RETIRED_LEFTOVER_REMOVED`. | A failed recovery must retain the incomplete marker and the old UUID; never promote a destination while a retiring reference remains unresolved. Verify two consecutive recovery attempts, reporting refusal until rollback really succeeds. Owner: #53 implementation, then independent review. |
+| R-002 / confirmed defect / unresolved, P1, blocking | Mixed Incoming and Retiring namespace probes pass. However, a half-swapped destination containing a staging-marked group and an unmarked top-level ProductionObject is deleted wholesale while a valid Retiring reference exists. Dry-run returns success, restores the old reference, and the foreign UUID is gone. `_recover_previous_runs` lines 1606–1616 ignore the destination's `foreign_nodes` before namespace deletion. | Apply the same ownership/conflict rules to the destination as to Incoming and Retiring. Refuse a mixed destination or remove only proven resources, preserve the foreign UUID and the old reference, and cover retry/dry-run in maintained tests. Owner: #53 implementation. |
+| R-003 / confirmed defect / reverified closed | Partial import with successful cleanup preserves the old reference and removes staging; maintained suite rerun passes. | Closed for successful cleanup, not arbitrary host failure. |
+| R-004 / acceptance gap / reverified closed, fixture only | Fresh Maya import of the existing UE handoff passes: 7938 triangles, zero position/size/offset errors, centroid error approximately 6.4e-13 cm. | One flat single-component LOD0 terrain without visibility holes. |
+| R-005 / acceptance gap / reverified closed, descriptor scope | Both existing partition handoffs pass in fresh Maya. Streaming-on reports 76 total descriptors, 9 spawned, 3 unspawned authored actors and 64 HLOD proxies with SCOPE_LOADED_ONLY; the comparison handoff has confirmed descriptor coverage and no such warning. | Descriptor scope only, not runtime streaming or arbitrary nested worlds. |
+| R-006 / Standards confirmed defect / reverified closed, P2 | Independent partial-import plus namespace-removal refusal returns exit 1 without escaping; both FBX_IMPORT_FAILED and STAGING_CLEANUP_FAILED remain in problems, discard errors/residual nodes are recorded and old UUID survives. Maintained suite also verifies subsequent recovery retaining unmarked leftovers. | Closed for the reported cleanup-exception contract. Does not imply R-001 recovery is safe. |
 
-Probe entry: repository-adjacent `.tmp/issue53-reacceptance-20261008/reverify.py`
-with the repository root as its sole argument. `reverify.json` and `reverify.log`
-hold raw results; `host.json`, `host.log` and `pure.log` hold reruns. These scratch
-files are supplemental local evidence, not a published archive. The table above,
-the review comment and the source archive preserve the observed outcomes and
-reproduction conditions. Maintained checks live in
-`prototypes/scene-reference/maya/MtoUSceneRefPrototype/tests/maya_host_scene_ref_tests.py`.
+## Review-02 reproduction and retained evidence
+
+The minimal [probe script](issue-53-review-02-probes.py) covers the two failing
+paths absent from the maintained suite. The [compact evidence](issue-53-review-02-evidence.json)
+preserves the exact tested baselines, handoff hashes, counts and structured
+observations. These files are retained to reproduce and substantiate the blockers;
+full logs and exploratory reports remain scratch evidence, not durable attachments.
+
+```text
+<mayapy> docs/project-history/mtou-livelink/issue-53-review-02-probes.py --fbx <main-fixture>.fbx --manifest <main-fixture>.manifest.json --result <scratch>/recovery.json
+```
+
+On this baseline both `R-001_reproduced` and `R-002_reproduced` are true and the
+probe exits 1. This is intentional diagnostic failure; successful script execution
+does not establish product acceptance. Use isolated MAYA_APP_DIR and disposable
+standalone scenes. Generate the main handoff through the maintained prototype's
+Unreal fixture/RealMayaPeer route. This review reused the 2026-10-08 development
+handoff rather than regenerating it. Scratch evidence is repository-adjacent
+`.tmp/issue53-acceptance-20261009/` (`pure.log`, `host.json`, `host.log`,
+`reverify.py/json/log`, `recovery.json/log`). No actual host crash was induced.
 
 ## What was delivered
 
@@ -75,14 +77,14 @@ reproduction conditions. Maintained checks live in
 | Check the official level-export capability and deliver a minimal UE → file → Maya sample; do not build a general mesh serializer | Done. The geometry comes from `ULevelExporterFBX` through `UAssetExportTask`; the prototype only resolves the scope, filters the components, drives the editor selection the exporter reads, inspects what it wrote, and serializes a manifest of transforms. The OBJ level exporter was measured as the alternative and rejected (below). |
 | Cover plain static meshes and repeated instances, including off-origin, rotated and non-uniformly scaled samples; compare Maya world position, orientation and size against Unreal, and verify axes and units | Done for all four sample kinds. Twelve objects across the persistent level, its sublevel and the mixed Blueprint arrive in the container, all twelve matched (nine by node name, three instanced children by world position). Position error `0.0 cm`, bounding-box size error `4.5e-13 cm`, pivot-offset error `1.1e-13 cm`, surface centroid error `9.3e-13 cm`, and the worst node axis angle `1.2e-6` degrees over the two objects whose identification size pins their axes. The centroid is the mirror check; the orientation check compares each node matrix against `frame . L_ue . map`, the relation the file really uses (below). |
 | Do not generate, copy, package or embed image files/data; permit material assignments and external texture paths, and provide gray display | Verified by output inspection. Image files in the handoff directory and embedded FBX media refuse normal import (`IMAGE_DATA_PRESENT`); `--allow-image-data` is a diagnostic bypass. Material/texture records are allowed, path resolution is reported separately, and gray viewport display preserves material assignments by default. This does not promise that Maya will never resolve an existing external image path. |
-| State the level/sublevel selection semantics and report support/omissions for each object type | Partially accepted, re-measured 2026-10-08. Explicit loaded-level scope, mixed-Blueprint filtering and Level Instance refusal keep their evidence. Nanite still has only a flagged cube sample. Landscape now passes Maya verification for the fixture (R-004); a partitioned scope states its own completeness from a read-only descriptor inventory and the Maya side warns when it is not confirmed (R-005). R-004 and R-005 independently pass within these fixture-level conditions; see the current review table. |
-| Reference geometry enters an identifiable container; repeated runs do not overwrite or mix with production objects; large inputs report scale/time/memory without a performance promise | Not accepted as a whole: normal replacement, the maintained swap-failure cases and partial-import cleanup pass, but R-001/R-002/R-006 remain confirmed blockers. Geometry/time/memory reporting exists; no production-scale performance claim is made. |
+| State the level/sublevel selection semantics and report support/omissions for each object type | Accepted within the reported fixture boundaries, independently rechecked 2026-10-09. Explicit loaded-level scope, mixed-Blueprint filtering and Level Instance refusal keep their evidence. Nanite still has only a flagged cube sample. Landscape now passes Maya verification for the fixture (R-004); a partitioned scope states its own completeness from a read-only descriptor inventory and the Maya side warns when it is not confirmed (R-005). R-004 and R-005 independently pass within these fixture-level conditions; see the current review table. |
+| Reference geometry enters an identifiable container; repeated runs do not overwrite or mix with production objects; large inputs report scale/time/memory without a performance promise | Not accepted as a whole: normal replacement, the maintained swap-failure cases and partial-import cleanup pass, but R-001/R-002 remain confirmed blockers; R-006 is independently closed. Geometry/time/memory reporting exists; no production-scale performance claim is made. |
 | Preserve world space; if a reference origin offset is proposed, give one shared conversion contract for camera, character and props; do not depend on the camera prototype to verify the geometry | Done, with the checked contract: the engine handoff's point map is `ue (x, y, z) -> maya (x, z, y)`, and the product's own animation route sends Maya coordinates to Unreal with the same `(x, z, y)` map (`MtoULiveLink.py`'s `convert_transform`, self-inverse), so the reference imported in the handoff's own world already agrees with the character and props the artist animates. The camera route's `(y, z, -x)` is the divergent map, and the reference import now delivers that world explicitly (`--target-world camera`, one conversion `camera_map . engine_map^-1`, determinant `+1`, 90 degrees about the up axis, applied to every root, reported with its matrix, angle and root count). Both worlds were verified on the same non-origin sample and on the real level. No origin offset is proposed. |
-| Deliver the sample, measurements, support list, reusable API and a minimal product proposal | Runnable prototype and measured samples exist; failure-recovery acceptance remains blocked by R-001, R-002 and R-006. Product candidates below belong to #47. |
+| Deliver the sample, measurements, support list, reusable API and a minimal product proposal | Runnable prototype and measured samples exist; failure-recovery acceptance remains blocked by R-001 and R-002. Product candidates below belong to #47. |
 
 ## Evidence
 
-The table below preserves development-run observations; the independent 2026-10-08 results and provenance are recorded above. The final 2026-09-29
+The table below preserves development-run observations; the current independent 2026-10-09 results and provenance are recorded above. The final 2026-09-29
 review reran Maya pure tests (103/103) and host checks (251, zero failures), then
 ran the failure probes and Landscape dry-run described above. It inspected the
 existing UE reports but did not rebuild UE, rerun UE Automation or re-export the
@@ -170,9 +172,9 @@ when the manifest declares an export option whose factor was measured.
   inside it; a foreign node deeper inside an owned container namespace is not
   classified, and the check itself is only as strong as the string attribute it
   reads.
-- Provenance is what recovery can prove, not what the tool once did: only the
-  marked group (and the nodes under it) is deleted from a namespace a previous run
-  left behind. An unmarked top-level node in such a namespace — which is how a
+- Incoming recovery deletes only the marked group (and the nodes under it).
+  This protection does not yet cover the half-swapped destination (R-002).
+  An unmarked top-level node in an Incoming namespace — which is how a
   partially imported FBX failure looks, and equally how an object the scene put
   there looks — is left in place and reported
   (`update.recovery.partial_cleanups`), so the operator decides. A production object
@@ -220,7 +222,7 @@ when the manifest declares an export option whose factor was measured.
 three have runnable prototypes, reproducible evidence, support boundaries and
 remaining issues, #47 owns a combined integration plan. The options below do
 not supersede this issue's current explicit-level scope or image-data policy,
-and do not replace or block the current R-001/R-002/R-006 fixes.
+and do not replace or block the current R-001/R-002 fixes.
 
 1. Which world the product standardises on: the handoff and animation route's
    `(x, z, y)` (the current default, consistent with the character and props), or
