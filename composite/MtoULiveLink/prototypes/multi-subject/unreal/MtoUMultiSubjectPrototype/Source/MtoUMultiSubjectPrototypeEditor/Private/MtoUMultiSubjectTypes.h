@@ -100,11 +100,13 @@ struct FMtoUFrameSubject
  * One declaration mapped onto one target. The target's *required* bones are the
  * bones that actually deform its mesh - positive skin weight in any LOD - plus
  * every ancestor of those; each required bone has to be driven by exactly one
- * declared bone, with the declared hierarchy agreeing with the target's. A
- * declared bone without a target counterpart is an ignored export branch, and a
- * target bone outside the required set may stay undriven at its reference pose.
- * The mapping is by exact name inside the already mapped parent scope, so two
- * indistinguishable declared bones never silently resolve to one target bone.
+ * declared bone, with the declared hierarchy agreeing with the target's.
+ * A declared bone without a target counterpart is an ignored export branch, and
+ * a target bone outside the required set deforms nothing: it is never a
+ * candidate and keeps its reference pose. The mapping is resolved per mapped
+ * parent scope over the complete candidate relation with one unique assignment,
+ * so two indistinguishable declared bones never silently resolve to one target
+ * bone and the outcome never depends on the declaration order.
  */
 struct FMtoUNegotiationMap
 {
@@ -121,12 +123,13 @@ struct FMtoUNegotiationMap
 	/**
 	 * Declared bones mapped through the importer's rename forms (a numeric
 	 * suffix or `_` plus 32 hexadecimal digits), reported as `source -> target`.
-	 * An exact name always wins; a rename is only used for a target bone no
-	 * exact name owns, and two candidates are an ambiguity.
+	 * An exact name always wins; a rename is used only for a duplicated declared
+	 * short name, only inside the mapped parent scope, and only for a target
+	 * bone no exact name owns; competing sources or candidates are an ambiguity.
 	 */
 	TArray<FString> ImportRenames;
 
-	/** Declared bones ignored because the target has no matching bone. */
+	/** Declared bones ignored because the necessary target has no bone for them. */
 	int32 SourceOnlyBones = 0;
 	/** True when every required target bone is driven by exactly one declared bone. */
 	bool bCoversRequiredBones = false;

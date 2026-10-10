@@ -619,15 +619,26 @@ bool FMtoUMultiSubjectProtocol::CollectRequiredTargetBones(
 
 namespace
 {
-	/** All target bones with one name: a skeleton may repeat a name under different parents. */
-	void IndexTargetBonesByName(
-		const FReferenceSkeleton& Skeleton,
-		TMap<FName, TArray<int32>>& OutIndices)
+	/**
+	 * One negotiated target bone. The negotiated target is the *necessary* set
+	 * only: every target bone with a positive skin weight in any LOD plus every
+	 * ancestor of one, the same target the product's necessary-dependency
+	 * negotiation consumes. A target bone outside it deforms nothing, so it is
+	 * never a mapping candidate and its bind can never veto a declaration.
+	 */
+	struct FMtoUTargetBone
 	{
-		for (int32 BoneIndex = 0; BoneIndex < Skeleton.GetNum(); ++BoneIndex)
-		{
-			OutIndices.FindOrAdd(Skeleton.GetBoneName(BoneIndex)).Add(BoneIndex);
-		}
+		FName Name;
+		/** Parent slot inside the necessary set, or INDEX_NONE for a root. */
+		int32 Parent = INDEX_NONE;
+	};
+
+	/** The mapped parent's name inside one target scope, or `<root>`. */
+	FString TargetScopeParentLabel(const TArray<FMtoUTargetBone>& Target, int32 Slot)
+	{
+		return Slot == INDEX_NONE || Target[Slot].Parent == INDEX_NONE
+			? FString(TEXT("<root>"))
+			: Target[Target[Slot].Parent].Name.ToString();
 	}
 
 	FString TargetParentLabel(const FReferenceSkeleton& Skeleton, int32 BoneIndex)
@@ -692,6 +703,520 @@ namespace
 		return IsNumericSuffixRename(DeclaredName, TargetName)
 			|| IsHashSuffixRename(DeclaredName, TargetName);
 	}
+
+	/** `root/group/joint`: the declared ancestor chain of one bone, for reports. */
+	FString SourcePath(const TArray<FMtoUBoneDeclaration>& Bones, int32 Index)
+	{
+		TArray<int32> Chain;
+		for (int32 Current = Index; Current != INDEX_NONE && Bones.IsValidIndex(Current);
+			Current = Bones[Current].Parent)
+		{
+			Chain.Add(Current);
+		}
+		FString Path;
+		for (int32 Depth = Chain.Num() - 1; Depth >= 0; --Depth)
+		{
+			if (!Path.IsEmpty())
+			{
+				Path += TEXT("/");
+			}
+			Path += Bones[Chain[Depth]].Name.ToString();
+		}
+		return Path;
+	}
+
+	/** One declared bone's complete candidate relation inside one mapped parent scope. */
+	struct FMtoUScopeBone
+	{
+		int32 SourceIndex = INDEX_NONE;
+		/** First exact-name target below the mapped parent, when one exists. */
+		int32 ExactTarget = INDEX_NONE;
+		int32 ExactCount = 0;
+		/** Import-rename targets that no exact sibling name reserves. */
+		TArray<int32> RenameTargets;
+		/** Set once the bone is mapped or left as an ignored export branch. */
+		bool bResolved = false;
+	};
+
+	/** One mapped parent scope: its children and their complete candidate relation. */
+	struct FMtoUScope
+	{
+		int32 ExpectedParent = INDEX_NONE;
+		TArray<int32> Siblings;
+		TArray<FMtoUScopeBone> Bones;
+		/** Every published short name the children carry. */
+		TSet<FName> SiblingNames;
+		/** How many children carry each short name. */
+		TMap<FName, int32> NameCounts;
+		/** First child carrying each short name, for one report per conflict. */
+		TMap<FName, int32> FirstWithName;
+	};
+
+	/** Everything one mapping pass produces; every index is a necessary-set slot. */
+	struct FMtoUMappingPass
+	{
+		/** Target slot per declared bone; INDEX_NONE marks an ignored export branch. */
+		TArray<int32> SourceToTarget;
+		TSet<int32> Skipped;
+		TSet<int32> Used;
+		TArray<FString> MappingAmbiguities;
+		TArray<FString> BoneNameMappings;
+	};
+
+	void MapScopeBone(
+		FMtoUMappingPass& Pass,
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target,
+		int32 SourceIndex,
+		int32 TargetSlot)
+	{
+		Pass.SourceToTarget[SourceIndex] = TargetSlot;
+		Pass.Used.Add(TargetSlot);
+		const FName SourceName = Declaration.Bones[SourceIndex].Name;
+		if (SourceName != Target[TargetSlot].Name)
+		{
+			Pass.BoneNameMappings.Add(FString::Printf(TEXT("%s -> %s"),
+				*SourceName.ToString(), *Target[TargetSlot].Name.ToString()));
+		}
+	}
+
+	/** Collects the children of one mapped parent and their complete candidate relation. */
+	FMtoUScope BuildScope(
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target,
+		const TArray<int32>& Siblings,
+		int32 ExpectedParent,
+		const FMtoUMappingPass& Pass)
+	{
+		FMtoUScope Scope;
+		Scope.ExpectedParent = ExpectedParent;
+		Scope.Siblings = Siblings;
+		Scope.Bones.SetNum(Siblings.Num());
+		for (int32 Slot = 0; Slot < Siblings.Num(); ++Slot)
+		{
+			const FName Name = Declaration.Bones[Siblings[Slot]].Name;
+			Scope.SiblingNames.Add(Name);
+			int32& Count = Scope.NameCounts.FindOrAdd(Name);
+			if (Count == 0)
+			{
+				Scope.FirstWithName.Add(Name, Slot);
+			}
+			++Count;
+		}
+		for (int32 Slot = 0; Slot < Siblings.Num(); ++Slot)
+		{
+			const int32 SourceIndex = Siblings[Slot];
+			const FMtoUBoneDeclaration& SourceBone = Declaration.Bones[SourceIndex];
+			FMtoUScopeBone& Bone = Scope.Bones[Slot];
+			Bone.SourceIndex = SourceIndex;
+			for (int32 TargetSlot = 0; TargetSlot < Target.Num(); ++TargetSlot)
+			{
+				if (Pass.Used.Contains(TargetSlot))
+				{
+					continue;
+				}
+				const FMtoUTargetBone& TargetBone = Target[TargetSlot];
+				if (TargetBone.Name == SourceBone.Name)
+				{
+					if (TargetBone.Parent == ExpectedParent)
+					{
+						if (Bone.ExactCount == 0)
+						{
+							Bone.ExactTarget = TargetSlot;
+						}
+						++Bone.ExactCount;
+					}
+				}
+				// #44/#46 rename applicability: a numeric suffix, or `_` plus 32
+				// hexadecimal digits, of the complete declared name; only inside
+				// the mapped parent scope; never for a target bone an exact name
+				// owns. The complete relation below decides contested candidates
+				// by unique assignment instead of capture order.
+				else if (SourceBone.Parent != INDEX_NONE
+					&& TargetBone.Parent == ExpectedParent
+					&& IsImportedRename(SourceBone.Name, TargetBone.Name)
+					&& !Scope.SiblingNames.Contains(TargetBone.Name))
+				{
+					Bone.RenameTargets.Add(TargetSlot);
+				}
+			}
+		}
+		return Scope;
+	}
+
+	/**
+	 * Exact names claim their targets first. Children sharing one short name are
+	 * indistinguishable, so none of them may own the target even when a renamed
+	 * target is still free.
+	 */
+	void ResolveExactNames(
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target,
+		FMtoUScope& Scope,
+		FMtoUMappingPass& Pass)
+	{
+		for (int32 Slot = 0; Slot < Scope.Bones.Num(); ++Slot)
+		{
+			FMtoUScopeBone& Bone = Scope.Bones[Slot];
+			const FName Name = Declaration.Bones[Bone.SourceIndex].Name;
+			const int32 NameCount = Scope.NameCounts.FindChecked(Name);
+			if (NameCount > 1)
+			{
+				if (Bone.ExactCount == 0)
+				{
+					continue;   // the import renames below decide this name
+				}
+				if (Scope.FirstWithName.FindChecked(Name) == Slot)
+				{
+					TArray<FString> Paths;
+					Paths.Reserve(NameCount);
+					for (const int32 Other : Scope.Siblings)
+					{
+						if (Declaration.Bones[Other].Name == Name)
+						{
+							Paths.Add(SourcePath(Declaration.Bones, Other));
+						}
+					}
+					Paths.Sort();
+					Pass.MappingAmbiguities.Add(FString::Printf(
+						TEXT("'%s' below %s is claimed by %d declared bones: %s"),
+						*Name.ToString(),
+						*TargetScopeParentLabel(Target, Scope.ExpectedParent),
+						NameCount,
+						*FString::Join(Paths, TEXT(", "))));
+				}
+				Bone.bResolved = true;
+				continue;
+			}
+			if (Bone.ExactCount == 1)
+			{
+				Bone.bResolved = true;
+				MapScopeBone(Pass, Declaration, Target, Bone.SourceIndex, Bone.ExactTarget);
+				continue;
+			}
+			if (Bone.ExactCount > 1)
+			{
+				Bone.bResolved = true;
+				Pass.MappingAmbiguities.Add(FString::Printf(
+					TEXT("%s below %s has %d candidates"),
+					*Name.ToString(),
+					*TargetScopeParentLabel(Target, Scope.ExpectedParent),
+					Bone.ExactCount));
+			}
+		}
+	}
+
+	/**
+	 * True when another assignment of sources to targets covers the same targets.
+	 * The alternating digraph of the matching gains one virtual node joined to
+	 * every free source and to every target, so a cycle is exactly an alternating
+	 * cycle or an alternating path from a free source.
+	 */
+	bool HasCompetingAssignment(
+		const FMtoUScope& Scope,
+		const TArray<int32>& SourceSlots,
+		const TArray<int32>& TargetSlots,
+		const TArray<int32>& SourceOfTarget,
+		const TArray<int32>& TargetOfSource,
+		const TMap<int32, int32>& TargetSlotByIndex)
+	{
+		const int32 NodeCount = SourceSlots.Num() + TargetSlots.Num() + 1;
+		const int32 VirtualNode = NodeCount - 1;
+		TArray<TArray<int32>> Edges;
+		Edges.SetNum(NodeCount);
+		TArray<int32> InDegree;
+		InDegree.Init(0, NodeCount);
+		const auto AddEdge = [&](int32 From, int32 To)
+		{
+			Edges[From].Add(To);
+			++InDegree[To];
+		};
+		for (int32 TargetSlot = 0; TargetSlot < TargetSlots.Num(); ++TargetSlot)
+		{
+			AddEdge(SourceSlots.Num() + TargetSlot, SourceOfTarget[TargetSlot]);
+			AddEdge(SourceSlots.Num() + TargetSlot, VirtualNode);
+		}
+		for (int32 SourceSlot = 0; SourceSlot < SourceSlots.Num(); ++SourceSlot)
+		{
+			if (TargetOfSource[SourceSlot] == INDEX_NONE)
+			{
+				AddEdge(VirtualNode, SourceSlot);
+			}
+			for (const int32 Candidate : Scope.Bones[SourceSlots[SourceSlot]].RenameTargets)
+			{
+				const int32* TargetSlot = TargetSlotByIndex.Find(Candidate);
+				if (TargetSlot && *TargetSlot != TargetOfSource[SourceSlot])
+				{
+					AddEdge(SourceSlot, SourceSlots.Num() + *TargetSlot);
+				}
+			}
+		}
+		TArray<int32> Ready;
+		for (int32 Node = 0; Node < NodeCount; ++Node)
+		{
+			if (InDegree[Node] == 0)
+			{
+				Ready.Add(Node);
+			}
+		}
+		int32 Removed = 0;
+		for (int32 Cursor = 0; Cursor < Ready.Num(); ++Cursor)
+		{
+			++Removed;
+			for (const int32 Next : Edges[Ready[Cursor]])
+			{
+				if (--InDegree[Next] == 0)
+				{
+					Ready.Add(Next);
+				}
+			}
+		}
+		return Removed != NodeCount;
+	}
+
+	/**
+	 * Import renames are resolved as one relation over the whole scope: a target
+	 * an exact sibling name reserves is never a rename target, the necessary
+	 * targets are driven only by the assignment that is the only one covering
+	 * them, and a source that can drive several remaining targets is refused
+	 * rather than settled by capture order.
+	 */
+	void ResolveImportRenames(
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target,
+		FMtoUScope& Scope,
+		FMtoUMappingPass& Pass)
+	{
+		TArray<int32> SourceSlots;
+		for (int32 Slot = 0; Slot < Scope.Bones.Num(); ++Slot)
+		{
+			if (!Scope.Bones[Slot].bResolved && !Scope.Bones[Slot].RenameTargets.IsEmpty())
+			{
+				SourceSlots.Add(Slot);
+			}
+		}
+		TArray<int32> TargetSlots;
+		TMap<int32, int32> TargetSlotByIndex;
+		for (int32 Candidate = 0; Candidate < Target.Num(); ++Candidate)
+		{
+			if (Target[Candidate].Parent == Scope.ExpectedParent
+				&& !Scope.SiblingNames.Contains(Target[Candidate].Name)
+				&& !Pass.Used.Contains(Candidate))
+			{
+				TargetSlotByIndex.Add(Candidate, TargetSlots.Add(Candidate));
+			}
+		}
+		if (SourceSlots.IsEmpty() || TargetSlots.IsEmpty())
+		{
+			return;
+		}
+
+		TArray<TArray<int32>> TargetSources;
+		TargetSources.SetNum(TargetSlots.Num());
+		TArray<int32> SourceOfTarget;
+		SourceOfTarget.Init(INDEX_NONE, TargetSlots.Num());
+		TArray<int32> TargetOfSource;
+		TargetOfSource.Init(INDEX_NONE, SourceSlots.Num());
+		for (int32 SourceSlot = 0; SourceSlot < SourceSlots.Num(); ++SourceSlot)
+		{
+			for (const int32 Candidate : Scope.Bones[SourceSlots[SourceSlot]].RenameTargets)
+			{
+				if (const int32* TargetSlot = TargetSlotByIndex.Find(Candidate))
+				{
+					TargetSources[*TargetSlot].Add(SourceSlot);
+				}
+			}
+		}
+
+		// Maximum matching, targets and sources both in capture order.
+		auto TryMatch = [&](auto&& Self, int32 TargetSlot, TArray<bool>& Visited) -> bool
+		{
+			for (const int32 SourceSlot : TargetSources[TargetSlot])
+			{
+				if (Visited[SourceSlot])
+				{
+					continue;
+				}
+				Visited[SourceSlot] = true;
+				const int32 PreviousTarget = TargetOfSource[SourceSlot];
+				if (PreviousTarget == INDEX_NONE || Self(Self, PreviousTarget, Visited))
+				{
+					TargetOfSource[SourceSlot] = TargetSlot;
+					SourceOfTarget[TargetSlot] = SourceSlot;
+					return true;
+				}
+			}
+			return false;
+		};
+		for (int32 TargetSlot = 0; TargetSlot < TargetSlots.Num(); ++TargetSlot)
+		{
+			TArray<bool> Visited;
+			Visited.Init(false, SourceSlots.Num());
+			TryMatch(TryMatch, TargetSlot, Visited);
+		}
+
+		bool bCovered = true;
+		for (int32 TargetSlot = 0; TargetSlot < TargetSlots.Num(); ++TargetSlot)
+		{
+			bCovered &= SourceOfTarget[TargetSlot] != INDEX_NONE;
+		}
+		if (bCovered
+			&& !HasCompetingAssignment(Scope, SourceSlots, TargetSlots,
+				SourceOfTarget, TargetOfSource, TargetSlotByIndex))
+		{
+			for (int32 SourceSlot = 0; SourceSlot < SourceSlots.Num(); ++SourceSlot)
+			{
+				const int32 TargetSlot = TargetOfSource[SourceSlot];
+				if (TargetSlot != INDEX_NONE)
+				{
+					FMtoUScopeBone& Bone = Scope.Bones[SourceSlots[SourceSlot]];
+					Bone.bResolved = true;
+					MapScopeBone(Pass, Declaration, Target, Bone.SourceIndex, TargetSlots[TargetSlot]);
+				}
+			}
+			return;
+		}
+
+		// Refuse instead of splitting the sources by capture order: report every
+		// target two or more sources can drive, then every source that still has
+		// a choice between targets. A source with a single, uncontested target is
+		// forced and keeps its mapping.
+		for (int32 TargetSlot = 0; TargetSlot < TargetSlots.Num(); ++TargetSlot)
+		{
+			if (TargetSources[TargetSlot].Num() < 2)
+			{
+				continue;
+			}
+			TArray<FString> Paths;
+			Paths.Reserve(TargetSources[TargetSlot].Num());
+			for (const int32 SourceSlot : TargetSources[TargetSlot])
+			{
+				Paths.Add(SourcePath(Declaration.Bones, Scope.Bones[SourceSlots[SourceSlot]].SourceIndex));
+			}
+			Paths.Sort();
+			Pass.MappingAmbiguities.Add(FString::Printf(
+				TEXT("'%s' below %s is claimed by %d declared bones: %s"),
+				*Target[TargetSlots[TargetSlot]].Name.ToString(),
+				*TargetScopeParentLabel(Target, Scope.ExpectedParent),
+				Paths.Num(),
+				*FString::Join(Paths, TEXT(", "))));
+			for (const int32 SourceSlot : TargetSources[TargetSlot])
+			{
+				FMtoUScopeBone& Bone = Scope.Bones[SourceSlots[SourceSlot]];
+				if (!Bone.bResolved)
+				{
+					Bone.bResolved = true;
+				}
+			}
+		}
+		for (int32 SourceSlot = 0; SourceSlot < SourceSlots.Num(); ++SourceSlot)
+		{
+			FMtoUScopeBone& Bone = Scope.Bones[SourceSlots[SourceSlot]];
+			if (Bone.bResolved)
+			{
+				continue;
+			}
+			TArray<int32> Feasible;
+			for (const int32 Candidate : Bone.RenameTargets)
+			{
+				if (TargetSlotByIndex.Contains(Candidate))
+				{
+					Feasible.Add(Candidate);
+				}
+			}
+			Bone.bResolved = true;
+			if (Feasible.Num() == 1)
+			{
+				// No other source can drive this target, so every covering
+				// assignment uses the pair.
+				MapScopeBone(Pass, Declaration, Target, Bone.SourceIndex, Feasible[0]);
+				continue;
+			}
+			Pass.MappingAmbiguities.Add(FString::Printf(
+				TEXT("%s below %s has %d candidates"),
+				*Declaration.Bones[Bone.SourceIndex].Name.ToString(),
+				*TargetScopeParentLabel(Target, Scope.ExpectedParent),
+				Feasible.Num()));
+		}
+	}
+
+	/** Children with no candidate at all are ignored export branches. */
+	void ResolveUnmatchedSiblings(FMtoUScope& Scope, FMtoUMappingPass& Pass)
+	{
+		for (FMtoUScopeBone& Bone : Scope.Bones)
+		{
+			if (Bone.bResolved)
+			{
+				continue;
+			}
+			Bone.bResolved = true;
+			Pass.Skipped.Add(Bone.SourceIndex);
+		}
+	}
+
+	/** Resolves every child of one mapped parent as a single scope. */
+	void ResolveScope(
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target,
+		const TArray<int32>& Siblings,
+		int32 ExpectedParent,
+		FMtoUMappingPass& Pass)
+	{
+		FMtoUScope Scope = BuildScope(
+			Declaration, Target, Siblings, ExpectedParent, Pass);
+		ResolveExactNames(Declaration, Target, Scope, Pass);
+		ResolveImportRenames(Declaration, Target, Scope, Pass);
+		ResolveUnmatchedSiblings(Scope, Pass);
+	}
+
+	/**
+	 * Maps declared bones parent-first. Every child of one mapped parent is
+	 * resolved as a single scope, over its complete candidate relation, so no
+	 * mapping decision depends on the order the declaration lists its bones in.
+	 */
+	FMtoUMappingPass RunMappingPass(
+		const FMtoUSubjectDeclaration& Declaration,
+		const TArray<FMtoUTargetBone>& Target)
+	{
+		FMtoUMappingPass Pass;
+		Pass.SourceToTarget.Init(INDEX_NONE, Declaration.Bones.Num());
+
+		// Children of every declared bone, and the roots, in declaration order.
+		const int32 RootScope = Declaration.Bones.Num();
+		TArray<TArray<int32>> Children;
+		Children.SetNum(Declaration.Bones.Num() + 1);
+		for (int32 SourceIndex = 0; SourceIndex < Declaration.Bones.Num(); ++SourceIndex)
+		{
+			const int32 ParentIndex = Declaration.Bones[SourceIndex].Parent;
+			Children[Declaration.Bones.IsValidIndex(ParentIndex) ? ParentIndex : RootScope].Add(SourceIndex);
+		}
+
+		// Scopes are resolved top-down, so a bone is negotiated only after its
+		// parent is mapped. Children of a skipped or unmapped parent are ignored
+		// export branches too: they cannot address a mapped parent scope.
+		TArray<int32> PendingScopes;
+		PendingScopes.Add(RootScope);
+		for (int32 Cursor = 0; Cursor < PendingScopes.Num(); ++Cursor)
+		{
+			const int32 ScopeKey = PendingScopes[Cursor];
+			if (ScopeKey != RootScope
+				&& (Pass.Skipped.Contains(ScopeKey) || Pass.SourceToTarget[ScopeKey] == INDEX_NONE))
+			{
+				for (const int32 Child : Children[ScopeKey])
+				{
+					Pass.Skipped.Add(Child);
+				}
+				PendingScopes.Append(Children[ScopeKey]);
+				continue;
+			}
+			const int32 ExpectedParent = ScopeKey == RootScope
+				? INDEX_NONE
+				: Pass.SourceToTarget[ScopeKey];
+			ResolveScope(Declaration, Target, Children[ScopeKey], ExpectedParent, Pass);
+			PendingScopes.Append(Children[ScopeKey]);
+		}
+		return Pass;
+	}
 }
 
 FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
@@ -714,127 +1239,57 @@ FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
 	{
 		return FString::Printf(TEXT("the Unreal target %s"), *SkinProblem);
 	}
+	// The negotiated *target* of the necessary-dependency rules is the necessary
+	// set: the bones that deform the mesh and their ancestors. It is what the
+	// declaration must cover and what the two rigs have to agree on. Other
+	// target bones deform nothing, so a matched one only follows its declared
+	// motion and a bind difference there never vetoes the declaration.
+	TArray<FMtoUTargetBone> Target;
+	Target.SetNum(Skeleton.GetNum());
 	for (int32 BoneIndex = 0; BoneIndex < Skeleton.GetNum(); ++BoneIndex)
 	{
 		if (Required[BoneIndex])
 		{
 			OutMap.RequiredTargetBones.Add(BoneIndex);
 		}
+		Target[BoneIndex].Name = Skeleton.GetBoneName(BoneIndex);
+		Target[BoneIndex].Parent = Skeleton.GetParentIndex(BoneIndex);
 	}
 
-	TMap<FName, TArray<int32>> TargetByName;
-	IndexTargetBonesByName(Skeleton, TargetByName);
+	// Every child of one mapped parent is resolved as one scope over its
+	// complete candidate relation, and the targets are driven by the one
+	// assignment that covers them: the decision never depends on the order the
+	// declaration lists its bones in. Only the necessary set above is required
+	// and bind-checked; other matched bones follow their declared motion.
+	const FMtoUMappingPass Pass = RunMappingPass(Declaration, Target);
 
-	// The assignment is built in declaration order, which the wire contract
-	// already requires to be parent-first, so a bone's mapped parent is known
-	// before the bone itself is resolved. Each round sweeps exact names and
-	// then the importer's rename forms (a numeric suffix, or `_` plus the 32
-	// hexadecimal digits of one import hash), and repeats while either sweep
-	// claims something: a renamed bone may be the parent scope its own child
-	// resolves in. An exact name is only ever claimed for a target bone no
-	// exact name owns, so a rename can never displace an exact match.
 	OutMap.SourceToTarget.Init(INDEX_NONE, Declaration.Bones.Num());
 	TArray<int32> ClaimedBy;
 	ClaimedBy.Init(INDEX_NONE, Skeleton.GetNum());
-	bool bProgress = true;
-	while (bProgress)
+	for (int32 SourceIndex = 0; SourceIndex < Declaration.Bones.Num(); ++SourceIndex)
 	{
-		bProgress = false;
-		for (int32 Sweep = 0; Sweep < 2; ++Sweep)
+		const int32 TargetSlot = Pass.SourceToTarget[SourceIndex];
+		if (TargetSlot == INDEX_NONE)
 		{
-			const bool bRenames = Sweep == 1;
-			for (int32 SourceIndex = 0; SourceIndex < Declaration.Bones.Num(); ++SourceIndex)
-			{
-				if (OutMap.SourceToTarget[SourceIndex] != INDEX_NONE)
-				{
-					continue;
-				}
-				const FMtoUBoneDeclaration& Bone = Declaration.Bones[SourceIndex];
-				int32 MappedParent = INDEX_NONE;
-				if (Bone.Parent != INDEX_NONE)
-				{
-					MappedParent = OutMap.SourceToTarget[Bone.Parent];
-					if (MappedParent == INDEX_NONE)
-					{
-						// The source parent is an ignored export branch, so this
-						// bone cannot be addressed in a mapped parent scope either.
-						continue;
-					}
-				}
-				int32 Match = INDEX_NONE;
-				if (!bRenames)
-				{
-					const TArray<int32>* const Exact = TargetByName.Find(Bone.Name);
-					if (Exact != nullptr)
-					{
-						for (const int32 Candidate : *Exact)
-						{
-							if (Skeleton.GetParentIndex(Candidate) != MappedParent)
-							{
-								continue;
-							}
-							if (Match != INDEX_NONE)
-							{
-								return FString::Printf(
-									TEXT("the Unreal target skeleton names two bones '%s' below '%s'; "
-										 "a declaration cannot address them unambiguously"),
-									*Bone.Name.ToString(), *TargetParentLabel(Skeleton, Match));
-							}
-							Match = Candidate;
-						}
-					}
-				}
-				else
-				{
-					// One rename candidate in the same parent scope; two would be
-					// an ambiguity, so a suffix never picks silently.
-					for (int32 Candidate = 0; Candidate < Skeleton.GetNum(); ++Candidate)
-					{
-						if (Skeleton.GetParentIndex(Candidate) != MappedParent
-							|| ClaimedBy[Candidate] != INDEX_NONE
-							|| !IsImportedRename(Bone.Name, Skeleton.GetBoneName(Candidate)))
-						{
-							continue;
-						}
-						if (Match != INDEX_NONE)
-						{
-							return FString::Printf(
-								TEXT("two Unreal target bones ('%s' and '%s') look like imports of '%s' "
-									 "below '%s'; the rename is ambiguous"),
-								*Skeleton.GetBoneName(Match).ToString(),
-								*Skeleton.GetBoneName(Candidate).ToString(),
-								*Bone.Name.ToString(), *TargetParentLabel(Skeleton, Match));
-						}
-						Match = Candidate;
-					}
-				}
-				if (Match == INDEX_NONE)
-				{
-					// Nothing in this sweep; a later sweep may still resolve it
-					// once its parent scope is mapped.
-					continue;
-				}
-				if (ClaimedBy[Match] != INDEX_NONE)
-				{
-					return FString::Printf(
-						TEXT("Maya bones %d and %d both map to target bone '%s' below '%s'; "
-							 "the source mapping is ambiguous"),
-						ClaimedBy[Match], SourceIndex, *Bone.Name.ToString(),
-						*TargetParentLabel(Skeleton, Match));
-				}
-				ClaimedBy[Match] = SourceIndex;
-				OutMap.SourceToTarget[SourceIndex] = Match;
-				OutMap.DrivenTargetBones.Add(Match);
-				bProgress = true;
-				if (bRenames)
-				{
-					OutMap.ImportRenames.Add(FString::Printf(TEXT("%s -> %s"),
-						*Bone.Name.ToString(), *Skeleton.GetBoneName(Match).ToString()));
-				}
-			}
+			continue;
 		}
+		const int32 BoneIndex = TargetSlot;
+		OutMap.SourceToTarget[SourceIndex] = BoneIndex;
+		OutMap.DrivenTargetBones.Add(BoneIndex);
+		ClaimedBy[BoneIndex] = SourceIndex;
 	}
+	OutMap.ImportRenames = Pass.BoneNameMappings;
 	OutMap.SourceOnlyBones = Declaration.Bones.Num() - OutMap.DrivenTargetBones.Num();
+
+	// Two sources claiming one target, or one source with several targets the
+	// relation does not settle, are refused before anything is applied instead
+	// of being settled by capture order.
+	if (!Pass.MappingAmbiguities.IsEmpty())
+	{
+		TArray<FString> Ambiguities = Pass.MappingAmbiguities;
+		Ambiguities.Sort();
+		return FString::Printf(TEXT("the declared mapping is ambiguous: %s"), *Ambiguities[0]);
+	}
 
 	// Coverage: every bone that deforms the target mesh, and every ancestor of
 	// one, has to be driven by a declared bone. Omitting one would leave that
@@ -867,6 +1322,35 @@ FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
 					TEXT("; the declaration's '%s' sits below '%s'"),
 					*RequiredName.ToString(), *TargetParentLabel(Skeleton, MappedParent));
 			break;
+		}
+		if (Hint.IsEmpty())
+		{
+			// #46 diagnostic boundary: declared bones shaped like an importer
+			// rename of the uncovered bone, and why the strict rules did not
+			// apply them, so a refused rename is never silent.
+			TArray<FString> RenameHints;
+			for (int32 SourceIndex = 0; SourceIndex < Declaration.Bones.Num(); ++SourceIndex)
+			{
+				const FMtoUBoneDeclaration& SourceBone = Declaration.Bones[SourceIndex];
+				if (SourceBone.Parent == INDEX_NONE
+					|| !IsImportedRename(SourceBone.Name, RequiredName))
+				{
+					continue;
+				}
+				RenameHints.Add(FString::Printf(
+					TEXT("'%s' (it addresses %s)"),
+					*SourceBone.Name.ToString(),
+					OutMap.SourceToTarget[SourceIndex] == INDEX_NONE
+						? TEXT("an ignored export branch")
+						: TEXT("another target bone")));
+			}
+			if (!RenameHints.IsEmpty())
+			{
+				RenameHints.Sort();
+				Hint = FString::Printf(
+					TEXT("; declared %s look like importer renames of it and were not applied"),
+					*FString::Join(RenameHints, TEXT(", ")));
+			}
 		}
 		return FString::Printf(
 			TEXT("target bone '%s' below '%s' deforms the mesh but the declaration drives no bone for it%s"),
@@ -926,6 +1410,14 @@ FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
 				TEXT("target bone '%s' or its declared source counterpart rests with a "
 					 "zero scale, so the pose cannot be projected"),
 				*BoneName.ToString());
+		}
+		// Only the necessary set carries the rig-agreement check: a bone that
+		// deforms nothing can rest anywhere, so a non-essential bind difference
+		// never vetoes the declaration. A mapped bone outside it is still
+		// projected, so its bind only has to stay invertible.
+		if (!Required[OutMap.SourceToTarget[SourceIndex]])
+		{
+			continue;
 		}
 		const FTransform Aligned = InverseRootFrame * SourceBind;
 		const double TranslationDelta = static_cast<double>(

@@ -15,7 +15,7 @@ retargeting, no Additional Parts, and no cache.
 | Requirement | How this prototype covers it |
 | --- | --- |
 | One explicit root per object, one Unreal target per root | `FMtoUTargetRegistration` pairs an actor anchor with one `USkeletalMeshComponent`; the wire `init` names each subject's `root` and the receiver refuses a declaration whose root is not the first, parentless bone |
-| Strict skeleton identity, necessary bones only | A declaration drives a target bone when the target owns a bone of that name in the already mapped parent scope; a declared bone without one is an ignored export branch, two declared bones resolving to one target bone are `skeleton_mismatch`, and the importer's rename forms (a numeric suffix, or `_` plus 32 hexadecimal digits) are used only for a target bone no exact name owns. The target's *required* bones - every bone with a positive skin weight in any LOD plus its ancestors - must each be driven by exactly one declared bone, so omitting a weighted branch is refused even when the rest is ancestor-closed; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`. The two rigs must rest within one constant component-space frame: the remaining deviation is reported as `rest_deviation_translation_cm` / `_rotation_degrees` / `_scale`, and more than 5 cm, 10 deg or 5% scale is a different rig (`skeleton_mismatch`). Declared curves the target has no Morph Target for are ignored and reported (`source_only_curve_names`) |
+| Strict skeleton identity, necessary bones only | A declaration drives a target bone when the target owns a bone of that name in the already mapped parent scope; a declared bone without one is an ignored export branch, two declared bones resolving to one target bone are `skeleton_mismatch`, and the importer's rename forms (a numeric suffix, or `_` plus 32 hexadecimal digits) are used only for a target bone no exact name owns. Every child of one mapped parent resolves as one scope over its complete candidate relation and the one assignment that covers the targets, so competing sources, competing targets and several covering assignments are refused in every declaration order instead of being settled by capture order. The target's *required* bones - every bone with a positive skin weight in any LOD plus its ancestors - must each be driven by exactly one declared bone, so omitting a weighted branch is refused even when the rest is ancestor-closed; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`. The two rigs must rest within one constant component-space frame on the required bones: the remaining deviation is reported as `rest_deviation_translation_cm` / `_rotation_degrees` / `_scale`, and more than 5 cm, 10 deg or 5% scale is a different rig (`skeleton_mismatch`); a bind difference on a non-required target bone never vetoes the declaration. Declared curves the target has no Morph Target for are ignored and reported (`source_only_curve_names`) |
 | Bind/frame projection | Frames are projected, not copied bone-local to bone-local: `target_current = target_reference * declared_bind⁻¹ * source_current`, published as locals. The target keeps its own rest pose and receives the source's motion, so a rig whose skeleton root carries an import convention (a rotated root joint) cannot tilt the target. Every mapped bone's projected pose is measured against the component's actual pose and reported per frame |
 | Two objects on one shared time | One `frame` message carries the negotiated `session`, a strictly increasing `serial` (the evaluation identity), a Maya source `time` and every enabled subject; the receiver applies a frame only after every subject validated, then answers one `applied`. The source time may reverse or repeat on a re-edit, and each applied frame records `first`/`forward`/`backward`/`hold` |
 | Frames belong to their negotiation | Every `frame` and `remove` repeats the `session` it was negotiated under; a message naming another session is `session_mismatch`, applies nothing and leaves the serial untouched, so a pose sampled for a previous pair can never drive a renegotiated one |
@@ -57,12 +57,15 @@ arms       ArmsRoot(-1)  UpperArm_L(0)  Forearm_L(1)  Hand_L(2)
   element is compared with the first (parentless) declared bone. The recipe's
   paths are `|character:Group|character:Root`, `|prop:Root` and
   `|arms:Socket|arms:ArmsRoot`, so the compared names are `Root`, `Root` and
-  `ArmsRoot`. `bind` needs one ten-number tuple per bone; the receiver
-  is checked against the target's reference pose (0.25 cm translation, 0.5 deg
-  rotation, 0.005 scale). A bone whose rest pose differs is refused with
-  `skeleton_mismatch` naming the bone: identical names and parents alone would
-  still deform wrongly. The tolerances are prototype noise bounds, not a
-  deformation budget; the recipe's advertised bind locals match the fixture.
+  `ArmsRoot`. `bind` needs one ten-number tuple per bone. On the *required*
+  bones - the weighted ones and their ancestors - the declared rig is checked
+  against the target's reference pose up to one constant root frame (5 cm
+  translation, 10 degrees rotation, 5% scale), and a gross disagreement is
+  refused with `skeleton_mismatch` naming the bone: identical names and parents
+  alone would still deform wrongly. A bone that deforms nothing can rest
+  anywhere, so a bind difference on a non-required target bone never vetoes the
+  declaration. The tolerances are prototype noise bounds, not a deformation
+  budget; the recipe's advertised bind locals match the fixture.
 * Maya-side ancestors (the character's static `Group`, the arms' keyed
   `Socket`) stay inside Maya: the declared root pose is the evaluated world pose
   of the rig, and the Unreal side applies its own actor anchor exactly once.
@@ -240,6 +243,15 @@ schema `mtou-multi-subject-evidence/1`:
 * `CommandLineArguments` — the `-MtoUMultiSubjectTimes=` value ends at the next
   command-line token (a following `-abslog=...` never reaches the Maya argv) and
   only a validated comma list of numbers is forwarded.
+* `RenameCandidateContracts` — the mapping is decided by the complete candidate
+  relation and its unique assignment, never by declaration order: a renamed
+  target two sources can drive is refused in both orders (on both subject
+  targets), a uniquely assignable rename resolves identically in both sibling
+  orders, two indistinguishable sources for two renamed targets are refused in
+  both orders, and an exact name always wins over a rename.
+* `NonEssentialBindDifferences` — a bind difference on a target bone that
+  deforms nothing is accepted and reported, while the same difference on a
+  necessary bone is still refused.
 * `RealMayaPeer` — opt-in host check:
   `-MtoUMultiSubjectMayapy=<mayapy> -MtoUMultiSubjectPeer=<peer.py> [-MtoUEvidence=<dir>] [-MtoUMultiSubjectScenario=] [-MtoUMultiSubjectFrames=] [-MtoUMultiSubjectRemove=] [-MtoUMultiSubjectDrop=]`.
   Without the flags the test reports that the host check was not requested
@@ -269,10 +281,19 @@ placement, places the two actors so that the pair's *rest* relation in the
 editor world is the scene's relation, then streams the real session. The test
 asserts the negotiation (driven/required/ignored bones), the per-bone projected
 pose deltas, the shared frame time, the Morph values the real mesh holds, the
-exit restore, that the mesh/scene files and packages are unchanged, and - when
-rendering is available - writes a BaseColor viewport screenshot of the real
-meshes under a held preview frame. A target whose skeleton the scene does not
-contain can be paired with a generated rig built from
+exit restore, that the mesh/scene files and packages are unchanged, and the
+real-asset lifecycle: the two subjects stream one sampled frame together, the
+second subject is removed alone (back at its reference pose) while the first
+keeps its own sampled stream, a disconnect ends the session and restores both,
+and a fresh negotiation accepts the target's own input while refusing the other
+skeleton's. The lifecycle frames and the BaseColor hold replay recorded Maya
+samples of the run instead of a synthesized pose. When rendering is available
+the test writes two BaseColor viewport screenshots: one at the scene's own
+placement, and one after a documented reposition of the disposable second
+target, because a scene that references both rigs at the world origin would
+otherwise show the pair superimposed; each capture checks geometrically that
+both targets fit the view cone completely. A target whose skeleton the scene
+does not contain can be paired with a generated rig built from
 `scripts/rig_spec_from_targets.py` (a recipe derived from the target's own
 skeleton dump, which the test writes to
 `mtou-multi-subject-real-targets-unreal.json`).

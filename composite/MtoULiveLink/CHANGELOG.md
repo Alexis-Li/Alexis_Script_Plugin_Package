@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Fix the independent Issue #54 two-subject prototype's bone negotiation
+  (R-005/R-008). Each subject now negotiates its necessary target bones - the
+  positive skin weights of every LOD and their ancestors - over the complete
+  candidate relation and the one assignment that covers them: competing
+  sources, competing targets and several covering assignments are refused in
+  every declaration order instead of being settled by capture order, and an
+  exact name still wins over an importer rename. A bind difference on a bone
+  that deforms nothing no longer rejects the declaration; the required bones
+  keep the constant-root-frame rest check and the invalid-bind refusals. The
+  real C01 animation plus the C02 second character now stream against their
+  production meshes with common frames, independent removal, renegotiation,
+  disconnect restore and BaseColor evidence. Product components and protocol
+  v9 are unchanged.
+
 - Fix the independent Issue #52 camera prototype's Maya failure cleanup.
   Public run/setup exits now release session resources and restore scene/undo
   state. Driven or protected borrowed cameras/gates are refused before writes;

@@ -39,13 +39,18 @@ Contract summary (version 1):
 
 A declaration drives a target bone when the target owns a bone of that name
 inside the already mapped parent scope; a declared bone without such a target
-bone is an ignored export branch, and two declared bones resolving to one target
-bone are `skeleton_mismatch` as an ambiguous mapping. Repeated names under
-different parents are legal - a real rig has them - and are resolved inside
-their scope. The importer's rename forms - a numeric suffix, or `_` plus the 32
-hexadecimal digits of one import hash - are matched after every exact name is
-claimed and only for a target bone no exact name owns, so a rename can never
-displace an exact match and two candidates are refused rather than guessed.
+bone is an ignored export branch. Repeated names under different parents are
+legal - a real rig has them - and are resolved inside their scope. The
+importer's rename forms - a numeric suffix, or `_` plus the 32 hexadecimal
+digits of one import hash - are matched after every exact name is claimed and
+only for a target bone no exact name owns, so a rename can never displace an
+exact match. Every child of one mapped parent is resolved as one scope over its
+*complete* candidate relation, and the targets are driven by the single
+assignment of sources to targets that covers them: two declared bones claiming
+one target, one declared bone with several targets the relation does not
+settle, and several covering assignments are all `skeleton_mismatch` naming the
+target, its parent and the declared bones, instead of being settled by the
+order the declaration lists its bones in.
 
 The target's *required* bones are every bone with a positive skin weight in any
 LOD plus every ancestor of one. Each required bone must be driven by exactly one
@@ -58,11 +63,15 @@ skeleton was matched. A target mesh whose skin weights cannot be read is refused
 instead of guessed.
 
 The declared rig and the target must also rest in the same place up to one
-constant component-space frame: the frame is taken from the declared root, and
-the largest remaining deviation is reported as `rest_deviation_translation_cm`,
-`rest_deviation_rotation_degrees` and `rest_deviation_scale`. A gross
-disagreement (more than 5 cm, 10 degrees or 5% scale) is a different rig and is
-refused; anything inside those bounds is absorbed by the projection below.
+constant component-space frame on the *required* bones above: the frame is taken
+from the declared root, and the largest remaining deviation is reported as
+`rest_deviation_translation_cm`, `rest_deviation_rotation_degrees` and
+`rest_deviation_scale`. A gross disagreement (more than 5 cm, 10 degrees or 5%
+scale) is a different rig and is refused; anything inside those bounds is
+absorbed by the projection below. A bone that deforms nothing can rest anywhere:
+a bind difference on a non-required target bone never vetoes the declaration,
+and a mapped bone outside the required set is only required to stay invertible
+for the projection.
 
 ## Bind/frame projection
 
