@@ -34,11 +34,6 @@ Inputs below are relative to the user-supplied `MtoU_tmp` asset directory:
 | C01 animated character | `C01_Body_IdleStand02_ChangeClothes.ma`, referencing `SK_C01.ma`; root `\|SK_C01:Group\|SK_C01:root` | `/Game/Animation/C01/Rigging/SK_C01_Clothes_09_All` |
 | C02 independent character | `C02/SK_C02_05MH.ma`, added as a real reference in an unsaved session; root `\|prop:Group\|prop:root` | `/Game/Animation/C02/Rigging/SK_C02_CombineBody_Clothes_05` |
 
-`SK_C02_CombineBody_Clothes_05` is the UE Skeletal Mesh, not a Maya
-animation file. The Maya input is `C02/SK_C02_05MH.ma`. This review finds no
-evidence that the UE asset is faulty or needs re-export; the false refusal
-belongs to the prototype negotiation.
-
 The wire ID `prop` is the existing second-subject slot; its input is C02.
 Both references were read successfully at 30 fps in centimetres. Samples at
 1, 120, 60, 60 show changing C01 bone digests and 24, 18, 25, 25 non-zero
@@ -154,7 +149,16 @@ No repository-wide checks were rerun for this documentation-only review.
 
 ## Handoff and retained evidence
 
-The implementer should fix R-005/R-008, preserve the passed R-003/R-006 tests,
+The implementer should reuse the accepted product required-bone negotiation
+and complete-candidate mapping for each Subject, preserving the established
+bind/current projection semantics. Adapt the existing dependency resolution,
+MtoUConnectionNegotiator and MtoULiveLinkProtocol behavior rather than maintaining
+a second simplified compatibility algorithm. Reuse the RequiredBoneSources,
+RequiredBoneRenameOrder and CharacterPartRenameProjection contracts; add
+conformance checks for the two-subject adapter and the review counterexamples.
+Do not fix these findings with special-case names, fixed capture sorting,
+declaration trimming or broader rest tolerances. Keep #45 character parts
+distinct from #54 independent-character pairing. Preserve R-003/R-006 tests
 and repeat the complete real pair with no declaration trimming. Capture
 actual sampled-frame BaseColor views with both actors visibly framed, plus
 per-object numeric and ownership evidence. The prototype's cache remains a
