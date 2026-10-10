@@ -4,7 +4,7 @@ Current review: **2026-10-10, changes required; issue remains open**.
 Implementation and reviewed baseline:
 `07c9039defaaecb79274f38d1e53b4be15473d89` (local, not pushed).
 R-001/R-002/R-003/R-004/R-006 pass within the tested prototype scope.
-R-005 and R-007 remain open; R-008 is a newly reproduced mapping defect.
+R-005 and R-007 remain open; R-008 is a mapping defect reproduced in this prototype, which omitted an already accepted product fix.
 The [formal review](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6095144149) gives the findings and completion conditions;
 the [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955)
 is the actionable issue summary.
@@ -33,6 +33,11 @@ Inputs below are relative to the user-supplied `MtoU_tmp` asset directory:
 | --- | --- | --- |
 | C01 animated character | `C01_Body_IdleStand02_ChangeClothes.ma`, referencing `SK_C01.ma`; root `\|SK_C01:Group\|SK_C01:root` | `/Game/Animation/C01/Rigging/SK_C01_Clothes_09_All` |
 | C02 independent character | `C02/SK_C02_05MH.ma`, added as a real reference in an unsaved session; root `\|prop:Group\|prop:root` | `/Game/Animation/C02/Rigging/SK_C02_CombineBody_Clothes_05` |
+
+`SK_C02_CombineBody_Clothes_05` is the UE Skeletal Mesh, not a Maya
+animation file. The Maya input is `C02/SK_C02_05MH.ma`. This review finds no
+evidence that the UE asset is faulty or needs re-export; the false refusal
+belongs to the prototype negotiation.
 
 The wire ID `prop` is the existing second-subject slot; its input is C02.
 Both references were read successfully at 30 fps in centimetres. Samples at
@@ -83,6 +88,15 @@ not an appropriate fix. Add both a non-required bind-conflict positive case
 and a required bind-conflict refusal case.
 
 ### R-008: two sources can silently compete for one renamed target
+
+This problem class was already fixed in product issue #55, following #44
+(structural-node capture) and #46 (hash-suffix mapping and diagnostics).
+[The #55 final acceptance](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/55#issuecomment-5814972885)
+validated unique complete assignments and capture-order independence. Current
+product `MtoUConnectionNegotiator.cpp` retains that logic; this prototype uses
+a separate greedy implementation. R-008 is a new finding ID within #54, not
+evidence that the accepted product fix has failed. Reuse the accepted semantics
+and regression cases. This provenance clarification reran no host tests.
 
 In a disposable character fixture, rename weighted target `Head` to `Joint12`.
 Rename its declared source to `Joint`, then add same-parent `Joint1` with the
