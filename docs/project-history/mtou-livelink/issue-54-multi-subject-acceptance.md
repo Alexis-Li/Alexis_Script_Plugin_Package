@@ -1,167 +1,156 @@
 # Issue #54: independent prop and second-character preview
 
-Current delivery: **2026-10-10, R-005/R-008 fixed and R-007 real pair verified;
-pending review**. Implementation baseline: the commit that contains this record
-(see the delivery comment for its SHA; local then pushed to
-`origin/codex/mtou-preview-workflow`). Reviewed baseline before this delivery:
-`76ae463400c4a6b493fda5ceda05f0e6bca7b136`.
-R-001/R-002/R-003/R-004/R-006 keep their closed findings; R-005, R-007 and
-R-008 are **已修复，待复验** within the prototype scope.
-The [formal review](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-6095144149)
-owns the findings and completion conditions; the
-[current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955)
-is the actionable issue summary.
+Current review: **2026-10-12, changes required; issue remains open**.
+Implementation and reviewed baseline: `5add03e155c8ea8eb8b98765c9627cd309696887` (remotely accessible).
+R-005, R-007 and R-008 remain open; R-009 records the real-pair anchor defect.
+R-001/R-002/R-003/R-004/R-006 remain verified closed.
+The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955) owns the next action.
+This record and its new evidence are committed locally only; no push is authorized.
 
-## Scope and selected assets
+## Scope and inputs
 
-This is an editor-only, bounded two-subject realtime prototype. It does not
-change MtoULiveLink v9, the single-Subject product, cache playback or the
-existing animation export/import workflow. The runnable entry points are in
-[the prototype README](../../../composite/MtoULiveLink/prototypes/multi-subject/README.md).
+This is the bounded two-subject realtime prototype, independently runnable from
+[its README](../../../composite/MtoULiveLink/prototypes/multi-subject/README.md).
 [The protocol](../../../composite/MtoULiveLink/prototypes/multi-subject/protocol.md)
-owns the identity/time/space design, cache-only design and proposed product
-contract changes. Product integration remains #47's combined decision after
-#52–54; completion of a product registry, cache or ownership UI is not added
-to this prototype's acceptance scope.
+contains the identity/time/space proposal, cache-only design and proposed product
+contract inventory. Product v9 integration, cache implementation and ownership UI
+remain with #47, after #52–54; Additional Parts remain distinct from this pairing.
 
-On 2026-10-10 the user explicitly selected **C01 plus C02**, with C02 serving
-as the second character in place of an unavailable standalone heroine arm, and
-accepted the located C01 animation scene. Missing arm assets are not an
-acceptance blocker and the generated Box023 rig does not substitute for the
-requested second character. The user also supplied the binding-file directory
-`MtoU_tmp/ceshi`, whose `C01/111_MH_Backups.0002.ma` and `C02/SK_C02_05MH.ma`
-are byte-identical to the earlier `MtoU_tmp` copies (SHA-256 prefixes
-`0c65ae6f…`, `d17c119f…`).
+The user-approved scope from 2026-10-10 is animated C01 plus C02 instead of an
+unavailable standalone heroine arm. Paths below are relative to `MtoU_tmp`:
 
-Inputs are relative to the user-supplied `MtoU_tmp` asset directory:
-
-| Role | Maya input / root | UE target |
+| Subject | Maya input and root | Unreal mesh |
 | --- | --- | --- |
-| C01 animated character | `C01_Body_IdleStand02_ChangeClothes.ma`, referencing `SK_C01.ma`; root `\|SK_C01:Group\|SK_C01:root` | `/Game/Animation/C01/Rigging/SK_C01_Clothes_09_All` |
-| C02 independent character | `ceshi/C02/SK_C02_05MH.ma`, referenced read-only as namespace `prop`; root `\|prop:Group\|prop:root` | `/Game/Animation/C02/Rigging/SK_C02_CombineBody_Clothes_05` |
+| character | `C01_Body_IdleStand02_ChangeClothes.ma`, referencing `SK_C01.ma`; `\|SK_C01:Group\|SK_C01:root` | `/Game/Animation/C01/Rigging/SK_C01_Clothes_09_All` |
+| prop (C02) | `ceshi/C02/SK_C02_05MH.ma`; `\|prop:Group\|prop:root` | `/Game/Animation/C02/Rigging/SK_C02_CombineBody_Clothes_05` |
 
-The wire ID `prop` is the existing second-subject slot; its input is C02.
-`SK_C01_CombineBody_Clothes_12` is incompatible with this older animation's
-1399-bone rig (it needs `upperarm_r_twist_0001`): that refusal is valid and is
-not a program defect. The bone-table-matching `SK_C01_Clothes_09_All` is the
-C01 target used below.
+`SK_C01_CombineBody_Clothes_12` requires `upperarm_r_twist_0001`, absent from this
+older animated rig. Its refusal remains valid. No additional arm asset is needed.
 
-## Current findings
+## Current findings and completion conditions
 
-| ID | Status / blocking | Evidence and completion condition |
+| ID | Current status | Result and remaining condition |
 | --- | --- | --- |
-| R-001 | Verified closed / no | SessionAndTimeIdentity rejects stale-session frames/removes and preserves current-session admission. |
-| R-002 | Verified closed / no | A strictly increasing serial identifies evaluation; source time may reverse or repeat. Real peer times 1→120→60→60 report first/forward/backward/hold. |
-| R-003 | Verified closed / no | OwnershipRenegotiation and the evidence show driving=true, exit=preview_active and restored_to_reference_pose=false after takeover/re-init. |
-| R-004 | Verified closed / no | DriverExitOwnership restores a previously undriven target to reference pose; fixture disconnect/world cleanup checks pass. |
-| R-005 | Fixed, pending review / yes | The necessary set (all-LOD positive skin weights and ancestors) is the negotiation's target: every necessary bone is driven by one declared bone, and a bind difference on a bone that deforms nothing no longer vetoes the declaration. Untrimmed C01 and C02 declarations negotiate and stream against the production meshes (numbers below). |
-| R-006 | Verified closed / no | CommandLineArguments and an actual peer with Times before Remove/abslog pass; Maya exits normally and applies four frames plus the removal. |
-| R-007 | Fixed, pending review / yes | The real C01 animation plus the real C02 second character now stream one session: four common frames at 1→120→60→60, independent removal of the C02 subject, a C01-only sample frame, a disconnect that restores both targets, a renegotiation that refuses the wrong skeleton and accepts the right one, and two BaseColor captures of a real sampled frame with both targets framed (numbers and images below). |
-| R-008 | Fixed, pending review / yes | The mapping is one scope-wise complete candidate relation with a unique assignment; competing sources, competing targets and several covering assignments are refused in every declaration order. The review's `Joint`/`Joint1` → weighted `Joint12` case is refused in both orders on both subject targets, a uniquely assignable rename chain resolves identically in both sibling orders, and an exact name still wins over a rename. |
+| R-001/R-002 | Verified closed | Session identity and serial-based forward/backward/hold timing pass. |
+| R-003/R-004/R-006 | Verified closed | Ownership re-init, undriven-target reference restore and Times/Remove argument parsing pass, including a real Maya peer. |
+| R-005 | Open, confirmed defect, P1 | Non-essential bind differences now pass, but the full target skeleton still enters mapping and any optional ambiguity vetoes the pair. Map against necessary dependencies before optional handling. |
+| R-008 | Open, confirmed contract deviation, P1 | Declaration-order ambiguity and unique assignment regressions pass. The product's globally duplicated-short-name precondition is still absent; restore it and adapt fixtures to exercise legal rename cases. |
+| R-009 | Open, confirmed test/placement defect, P2 | RealAssetPair reinserts the source root's 90-degree import convention through its Anchor after bind projection. Correct world placement and use an independent world-space oracle. |
+| R-007 | Open, acceptance gap, P2 | Full real declarations, four frames and lifecycle now pass. Correct-world-space BaseColor and numerical acceptance remain blocked by R-009; strict pairing remains blocked by R-005/R-008. |
 
-## What changed
+### R-005: necessary dependencies must define the mapping target
 
-`MtoUMultiSubjectProtocol.cpp`'s negotiation was rebuilt around the product's
-accepted rules (the prototype stays independently installable, so the rules are
-adapted in place and checked by the mirrored contract cases below):
+`MtoUMultiSubjectProtocol.cpp:1248–1287` constructs the complete Skeleton target,
+runs mapping on it, then rejects any ambiguity. Required flags only narrow rest
+and coverage checks. In the original prop fixture, target `PropTipEnd` (index 3)
+is outside all-LOD positive weights and their ancestors. Renaming it `End12` and
+declaring `End` and `End1` at the same source parent rejects in both orders.
+Removing those optional sources immediately accepts the same necessary bones.
+The original fixture also accepts. `NonRequiredAmbiguity` fails two assertions.
 
-* The negotiation target is the necessary set only - every target bone with a
-  positive skin weight in any LOD plus its ancestors, the same set
-  `MtoUCharacterComposition` resolves. Coverage and the rest check apply to it;
-  a bind difference on a target bone that deforms nothing is accepted and
-  reported instead of rejecting the declaration (R-005).
-* Every child of one mapped parent resolves as one scope over its complete
-  candidate relation - exact names first, then the importer's rename forms (a
-  numeric suffix, or `_` plus 32 hexadecimal digits) for target bones no exact
-  name owns - and the targets are driven by the single assignment of sources to
-  targets that covers them. Two sources claiming one target, one source with
-  several targets the relation does not settle, and several covering
-  assignments are `skeleton_mismatch` naming the target, its parent and the
-  declared bones, in every declaration order (R-008). The rename applicability
-  stays the prototype's documented wire rule: a rename-shaped target is a
-  candidate in the mapped parent scope, an exact name always wins, and a
-  contested candidate set is refused rather than guessed. The product's
-  stricter "duplicated short name only" precondition is deliberately not
-  imported, because this prototype's own uniquely-assignable rename case and
-  the review's counterexample both exercise unique short names; the two rules
-  coincide on every real rig sampled here (all rename targets of the real
-  C01/C02 declarations come from duplicated short names).
-* The rest check keeps its constant-root-frame form and its prototype noise
-  bounds (5 cm, 10°, 5% scale) but only over the necessary set, and a mapped
-  bone outside it only has to stay invertible for the projection. The frame
-  projection is the product's bind/current conversion unchanged.
+Construct the required target graph with original Skeleton indices, preserving
+required coverage, hierarchy and ambiguity rejection. Optional mappings must not
+alter acceptance of the required graph. Ambiguous optional bones can remain at
+reference pose with explicit reporting. Test both orders and optional candidates
+that interfere with an otherwise unique required assignment.
 
-New regression tests: `RenameCandidateContracts` (the review's contested-rename
-case on both subject targets, both orders; a unique-assignment rename chain in
-both sibling orders; two indistinguishable sources for two renamed targets in
-both orders; exact-name priority) and `NonEssentialBindDifferences` (a
-non-essential same-name bind difference accepted and excluded from the
-rig-agreement numbers, the same difference on a necessary bone refused).
-The existing fixture assertions - necessary-bone coverage, ignored export
-branches, weighted-leaf motion, rename reporting, ownership, session identity,
-Sequencer takeover and cleanup - are unchanged and still pass.
+### R-008: retain the import-rename precondition
 
-`RealAssetPair` gained the R-007 lifecycle evidence and picture: the lifecycle
-phases replay recorded real Maya samples instead of a synthesized hold, the
-second subject is removed alone while the first keeps streaming, a disconnect
-restores both targets, and the BaseColor captures fit both targets' world
-bounds with a geometric framing check. One documented reposition of the
-disposable second target is captured separately, because the supplied scene
-references both rigs at the world origin and the pair would otherwise render
-superimposed.
+The original two-source counterexample and existing unique-assignment/order tests
+pass. However a single globally unique `Joint` now drives required target `Joint12`
+(index 3, one rename report). `UniqueNameRename` fails the rejection assertion.
+Prototype Protocol:835 omits the product Negotiator's `SourceCount > 1` condition.
+This was explicitly retained by review-02 and acknowledged as omitted in dev-03;
+an existing permissive prototype test does not authorize changing that contract.
 
-## Executed verification and evidence limits
+Reuse global short-name counts with parent scope, exact priority, suffix shape and
+unique matching. A unique short name must not use this import-rename exception.
+Adapt valid rename fixtures to duplicated short names in distinct source branches.
+An old counterexample lacking the precondition should still reject, but need not
+report ambiguity; test ambiguity with inputs that satisfy the precondition.
 
-All raw evidence is local under the Git root's sibling directory
-`../.tmp/mtou-issue54/fix-20261010/`. Environment: Windows 10, Maya 2024,
-UE 5.7.4, ToolsLab plus the one-shot Backups-content shell project.
+### R-009/R-007: the world-space oracle must be independent
 
-| Check | Result / evidence |
+At t=120 the original Maya C01 head converted to UE axes is
+`(6.843089, 3.659079, 167.400818)` cm. The actual UE component head is
+`(6.843093, 3.659080, 167.400817)`: sampling and component projection keep it upright.
+The root has a 90-degree import convention. Tests:2917–2919 multiply that sampled
+root into `(CommonPlacement * ProbeRootWorld) * WorldLift`, reintroducing the
+convention after projection. An independent UE FTransform calculation measures
+90.000003 degrees extra rotation and changes the common position from
+`(320,-180,440)` to `(320,-40,220)`. Both fresh BaseColor images show the pair lying
+sideways. This is a world placement defect, not evidence of bone stretching or a
+sideways source scene.
+
+The current bone residual only validates the component pose; root-world residual
+validates application of the supplied Anchor. The probe comparison compares two
+Maya inputs. None independently compares actual UE world landmarks to converted
+Maya world landmarks under the intended common placement. Equal, zero-position
+roots mask the issue in the pair-relative checks.
+
+Separate import bind conventions, source scene/ancestor motion and common UE
+placement. Apply each once. Add independent world-space landmarks and cases with
+nonzero separation, distinct root orientations and moving parents, then capture
+properly oriented BaseColor with both objects framed. Camera rotation or raising
+the pair is not a substitute for correcting world-space transforms.
+
+## Review execution and evidence
+
+Windows, Maya 2024, UE 5.7.4. This review executed the checks below against
+`5add03e155c8ea8eb8b98765c9627cd309696887` without modifying runtime source. A separate diagnostic plugin preserves
+all 18 original source files byte-for-byte and adds only the linked review tests.
+
+| Check | Observed result |
 | --- | --- |
-| Prototype pure Python unittest discovery | 23/23 passed. |
-| Maya 2024 host test | 104 checks, zero failures; `host.json`. |
-| UE 5.7.4 prototype suite (ToolsLab, real mayapy fixture peer) | 15 tests performed, all passed: the 13 previous checks plus `RenameCandidateContracts` and `NonEssentialBindDifferences`. RealMayaPeer streamed four frames with Remove=2 and Times=1,3,2,2. `RealAssetPair` is the opt-in real-asset check and reported "not requested" inside this run. |
-| Real pair, Backups-content shell, real mayapy peer | `RealAssetPair` passed; `realpair/c01-c02/`. C01 declared=1399 driven=1399 required=647, C02 declared=1502 driven=1502 required=187, source_only=0 and undriven=0 for both; necessary-set rest deviation 0.0000848 cm / 0.0389° (C01) and 0.0000088 cm / 0.0549° (C02). These are the review's own required-only comparison values, now produced end to end by the untrimmed declarations. |
-| Real sampled frames | Four applied frames at Maya times 1→120→60→60, directions first/forward/backward/hold; per-object maximum projected-pose delta 0.00151 (character) and 0.00146 (C02). 428 real Morph values compared on the production meshes, maximum difference 1.2e-6. Three declared C01 curves the target has no Morph for are reported as `source_only_curve_names`. |
-| Real lifecycle | `realpair/c01-c02/lifecycle/`: frame 1 (time 120) carries both subjects, the C02 `remove` reports prop=disabled while character=applied and the prop returns to its reference pose, frame 2 (time 1) streams the character alone with a 54.76 cm component-space pose change between the two real samples, the disconnect ends the session and both targets report `exit=reference_pose, restored_to_reference_pose=true`. |
-| Renegotiation | The character's declaration against the C02 target is refused with `skeleton_mismatch` naming the target's required bone; the correct declarations are accepted on a fresh session and a frame applies to both. |
-| BaseColor evidence | `basecolor-c01-c02.png` (scene placement; the two rigs coincide at the scene's own origin, so the pair renders superimposed) and `basecolor-c01-c02-separated.png` (the documented reposition of the disposable second target, the pair side by side). Both show one real Maya-sampled frame (time 120) and pass the geometric framing check that each target's bounding sphere fits the view cone completely. |
-| Source preservation | The run's own digests verify the two Skeletal Mesh files, the supplied Maya scene and both packages are unchanged and not dirtied; the peer evidence verifies the referenced rig files are unchanged. No original scene or mesh was saved. |
+| Prototype Python discovery | 23/23 passed |
+| Maya host tests | 104 checks, zero failures |
+| ToolsLab and isolated diagnostic builds | Succeeded |
+| ToolsLab prototype suite with real fixture peer | 15 Success entries; 14 executed, RealAssetPair opt-in skipped. Four frames, Remove=2, Times=1,3,2,2. |
+| Separate real C01+C02 run, Backups Content shell, non-NullRHI | RealAssetPair Success, with the R-009 oracle gap described above |
+| Full declarations | C01 1399 driven / 647 required; C02 1502 driven / 187 required; no source-only or undriven bones |
+| Real frames and Morphs | Times 1→120→60→60; maximum component pose delta 0.001510; 428 Morph comparisons, max difference 0.000001236 |
+| Real lifecycle | Remove C02 independently; C01 changes 54.763369 cm between real samples; disconnect restores both to reference; wrong-target renegotiation refuses and correct declarations apply |
+| Review diagnostics | NonRequiredAmbiguity: 2 failing assertions; AnchorConvention: 1; UniqueNameRename: 1 |
+| Original Maya scene probe | t=1/120 world-space head/pelvis/root/neck coordinates, scene not saved |
+| Repository and report gates | Repository validator passed; 37 repository tests passed with no skips; review and source archive validated by issue_report.py |
 
-Known limits of this round: the production C01 meshes reference an old Anim
-Blueprint whose KawaiiPhysics nodes need a plug-in this host does not have, so
-loading the user's asset logs property errors; `RealAssetPair` marks those
-expected so its own assertions stay visible, and the boundary is recorded here.
-The supplied rig roots carry the scene's import convention (a 90° root
-rotation), so the disposable-world pair inherits it through the placement
-anchor; the pose evidence is the per-bone projection delta, not the picture's
-world orientation. The BaseColor images show the sampled frame at one instant;
-continuous playback performance, Maya 2022, product caches and product
-integration were not tested, and the picture is not a deformation-quality
-claim. The pure-Python, Maya host and ToolsLab suites were executed for this
-delivery; the earlier fixture results in `review-20261010/` remain valid for
-the closed findings.
+Original Maya scenes, rig references and target mesh assets were not saved.
+The existing real-pair digest/dirty checks passed. UE-generated ToolsLab config
+changes were removed after the run. Known missing KawaiiPhysics errors from an
+old production Anim Blueprint remain expected input limitations in the original
+test. Maya 2022, sustained playback, product cache and product integration were
+not tested and are not new prototype acceptance requirements.
 
-## Next action
+Maintained review evidence:
 
-Review the delivery against R-005/R-007/R-008: the negotiation rewrite in
-`composite/MtoULiveLink/prototypes/multi-subject/unreal/MtoUMultiSubjectPrototype/Source/MtoUMultiSubjectPrototypeEditor/Private/MtoUMultiSubjectProtocol.cpp`,
-the two new regression tests, the real-pair evidence above and the BaseColor
-images. Keep #45 character parts distinct from #54 independent-character
-pairing. Product integration, the multi-object cache and the product ownership
-UI stay with #47. The prototype's cache remains a design for a shared time
-lattice/range/fps and atomic readiness/failure.
+- [ReviewDiagnostics.cpp](issue-54-review-evidence/ReviewDiagnostics.cpp): the three
+  independent counterexamples. Compile in an isolated copy of the prototype's
+  Private/Tests directory, run `Automation RunTests Issue54Review` with NullRHI.
+- [results.json](issue-54-review-evidence/results.json): condensed actual diagnostic
+  output and baseline provenance; expected failing assertions demonstrate blockers.
+- [source_orientation.py](issue-54-review-evidence/source_orientation.py): run with
+  Maya mayapy and positional arguments `<C01 animation scene> <output.json>`;
+  opens without saving and samples the original source independently.
+- [source-orientation.json](issue-54-review-evidence/source-orientation.json): this
+  review's source-world coordinates, free of private absolute paths.
 
-## Record index
+Complete local output remains in `../.tmp/mtou-issue54/review-20261012/`:
+`ue-suite/report`, `realpair/report`, `realpair/c01-c02` (fresh BaseColor and lifecycle),
+`diagnostics/report`, `rename-precondition/report`, host logs and the isolated host.
+It is retained for unresolved-finding reproduction, not claimed remotely available.
+Earlier `fix-20261010/` and `review-20261010/` remain comparison evidence; the shared
+Backups shell in `fix-20261008/backups-copy/` remains a test host. No archival
+closeout or scratch cleanup of those ongoing inputs is claimed.
 
-The [source archive](issue-54-comment-archive.json) preserves exact live report
-IDs, bodies and timestamps of the reports replaced by the current handoff,
-including dev-02 and review-02. One machine-specific asset path in an archived
-body was redacted to the user-relative `MtoU_tmp/` form before publication, as
-the archive rule's private-path inspection requires; the live report keeps its
-original text. Earlier implementation and review evidence
-remains historical (`review-20261009/`, `review-20261010/`, `fix-20261008/`,
-`fix-20261009/`, the shared `fix-20261008/backups-copy/` host), not a
-contradictory current acceptance claim. This delivery's raw evidence lives in
-`fix-20261010/`. This is an open-issue delivery record, not an archival-closeout
-claim.
+## Handoff and preservation
+
+Implement the remaining R-005/R-008 contract corrections and R-009 placement fix,
+then re-run R-007 with full C01/C02 inputs while keeping lifecycle and Sequencer
+regressions. Keep issue #54 open. Do not integrate product changes or add cache
+implementation under this review.
+
+[The comment archive](issue-54-comment-archive.json) preserves the current handoff
+before replacement and dev-03 with exact IDs, bodies and timestamps. Earlier
+snapshots remain in Git history; an older entry's machine path was already
+redacted before this review. No live reports are deleted. The review report and
+current handoff are published to GitHub; new local records are not pushed.
