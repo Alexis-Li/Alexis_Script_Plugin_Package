@@ -5,7 +5,8 @@ Implementation and reviewed baseline: `5add03e155c8ea8eb8b98765c9627cd309696887`
 R-005, R-007 and R-008 remain open; R-009 records the real-pair anchor defect.
 R-001/R-002/R-003/R-004/R-006 remain verified closed.
 The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955) owns the next action.
-This record and its new evidence are committed locally only; no push is authorized.
+This record and its compact evidence are published on `codex/mtou-preview-workflow`.
+The user authorized publication for comment consolidation on 2026-10-12.
 
 ## Scope and inputs
 
@@ -149,8 +150,20 @@ then re-run R-007 with full C01/C02 inputs while keeping lifecycle and Sequencer
 regressions. Keep issue #54 open. Do not integrate product changes or add cache
 implementation under this review.
 
-[The comment archive](issue-54-comment-archive.json) preserves the current handoff
-before replacement and dev-03 with exact IDs, bodies and timestamps. Earlier
+[The comment archive](issue-54-comment-archive.json) preserves all seven reports
+captured before consolidation, with exact IDs, bodies and timestamps. Its immutable
+publication is commit `3d602e7ac0a7582e23176068644016ee354cc131`; the remotely read
+archive was checked against every captured report before any deletion. Earlier
 snapshots remain in Git history; an older entry's machine path was already
-redacted before this review. No live reports are deleted. The review report and
-current handoff are published to GitHub; new local records are not pushed.
+redacted before this review.
+
+Four comments remain: one current summary, unchanged review-03, and two short
+archive pointers at the original review-02 and dev-03 IDs. These pointers preserve
+the latest review's source links. Superseded dev-01, review-01 and dev-02 were
+removed after preservation and summary read-back. There were no separate human
+discussion comments. The latest review's body and update timestamp are unchanged,
+and no live source link points to a removed comment. Issue #54 remains open;
+this consolidation changed neither findings nor acceptance scope. Publication
+includes the review evidence and source archive; raw host evidence stays local
+for unresolved-finding reproduction. This was comment-only consolidation, not
+completed-issue archival closeout.
