@@ -15,13 +15,13 @@ retargeting, no Additional Parts, and no cache.
 | Requirement | How this prototype covers it |
 | --- | --- |
 | One explicit root per object, one Unreal target per root | `FMtoUTargetRegistration` pairs an actor anchor with one `USkeletalMeshComponent`; the wire `init` names each subject's `root` and the receiver refuses a declaration whose root is not the first, parentless bone |
-| Strict skeleton identity, necessary bones only | A declaration drives a target bone when the target owns a bone of that name in the already mapped parent scope; a declared bone without one is an ignored export branch, two declared bones resolving to one target bone are `skeleton_mismatch`, and the importer's rename forms (a numeric suffix, or `_` plus 32 hexadecimal digits) are used only for a target bone no exact name owns. Every child of one mapped parent resolves as one scope over its complete candidate relation and the one assignment that covers the targets, so competing sources, competing targets and several covering assignments are refused in every declaration order instead of being settled by capture order. The target's *required* bones - every bone with a positive skin weight in any LOD plus its ancestors - must each be driven by exactly one declared bone, so omitting a weighted branch is refused even when the rest is ancestor-closed; bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`. The two rigs must rest within one constant component-space frame on the required bones: the remaining deviation is reported as `rest_deviation_translation_cm` / `_rotation_degrees` / `_scale`, and more than 5 cm, 10 deg or 5% scale is a different rig (`skeleton_mismatch`); a bind difference on a non-required target bone never vetoes the declaration. Declared curves the target has no Morph Target for are ignored and reported (`source_only_curve_names`) |
+| Strict skeleton identity, necessary bones only | A declaration drives a target bone when the target owns a bone of that name in the already mapped parent scope; a declared bone without one is an ignored export branch, and the importer's rename forms (a numeric suffix, or `_` plus 32 hexadecimal digits) are used only for a short name the declaration repeats, only inside the mapped parent scope and only for a target bone no exact name owns. Each mapped parent's children resolve as one scope over that phase's complete candidate relation: the *necessary* phase - the target's required bones, every bone with a positive skin weight in any LOD plus its ancestors - decides acceptance, so competing sources, competing targets and several covering assignments there are `skeleton_mismatch` in every declaration order instead of being settled by capture order, and omitting a weighted branch is refused even when the rest is ancestor-closed. Everything outside the necessary set deforms nothing: it is resolved in a second phase, keeps every necessary assignment, cannot veto the declaration, and stays at its reference pose with the reason reported in `optional_ambiguities` when it cannot be settled uniquely. Bones the target owns but the declaration does not drive keep their reference pose and are reported as `undriven_bones`. The two rigs must rest within one constant component-space frame on the required bones: the remaining deviation is reported as `rest_deviation_translation_cm` / `_rotation_degrees` / `_scale`, and more than 5 cm, 10 deg or 5% scale is a different rig (`skeleton_mismatch`); a bind difference on a non-required target bone never vetoes the declaration. Declared curves the target has no Morph Target for are ignored and reported (`source_only_curve_names`) |
 | Bind/frame projection | Frames are projected, not copied bone-local to bone-local: `target_current = target_reference * declared_bind⁻¹ * source_current`, published as locals. The target keeps its own rest pose and receives the source's motion, so a rig whose skeleton root carries an import convention (a rotated root joint) cannot tilt the target. Every mapped bone's projected pose is measured against the component's actual pose and reported per frame |
 | Two objects on one shared time | One `frame` message carries the negotiated `session`, a strictly increasing `serial` (the evaluation identity), a Maya source `time` and every enabled subject; the receiver applies a frame only after every subject validated, then answers one `applied`. The source time may reverse or repeat on a re-edit, and each applied frame records `first`/`forward`/`backward`/`hold` |
 | Frames belong to their negotiation | Every `frame` and `remove` repeats the `session` it was negotiated under; a message naming another session is `session_mismatch`, applies nothing and leaves the serial untouched, so a pose sampled for a previous pair can never drive a renegotiated one |
 | Same-named bones and Morphs stay apart | Each subject owns one target and one pose instance; the character and prop both have a bone named `Root` and a Morph named `Shared`, and the tests assert each target holds only its own values |
 | Single-subject removal, disconnect, world close | `remove` disables one subject, restores its prior animation state and re-enables only the writers that belong to that subject, so the other subject keeps streaming; a TCP disconnect and a world cleanup restore both and leave no session |
-| Anchor applied exactly once | The Maya root pose is a world pose; the target's placement is the actor anchor only. The tests assert Unreal's `RootWorld == receivedRoot * AnchorTransform` and the preflight refuses any socket or parent motion that would apply the parent twice |
+| Anchor applied exactly once | The Maya root pose is a world pose; the target's placement is the actor anchor only. Both targets share one placement anchor, so the pair's own arrangement reaches the world through the applied pose. The tests assert Unreal's `RootWorld == receivedRoot * AnchorTransform`, the preflight refuses any socket or parent motion that would apply the parent twice, and the opt-in real-asset run compares landmark bones' actual world positions against Maya's own evaluated world positions of the same bones placed by the common anchor |
 | Existing animation / Sequencer takeover | `SetLocalEvalDisabled` (a flag that is *not* serialized with the Level Sequence) plus a real Sequencer evaluation releases a skeletal animation track; exiting restores the track and the component's animation state, and the tests compare the evaluated pose before, during and after |
 | Drive ownership is reported | Each target's prior driver, the writers the preview muted (with whether each is a saved asset) and how the target exited are reported by `MtoUMultiSubject.Ownership` and in `drive_ownership[]`, because the local mute is invisible in the Sequencer UI |
 | Exit leaves nothing driven-but-frozen | A target that had no animation driver before the preview is put back into its reference pose on exit and removal (`restored_to_reference_pose`), instead of keeping the preview's last pose |
@@ -43,10 +43,18 @@ on a transient world:
 
 ```
 character  Root(-1)  Spine(0)  Chest(1)  Head(2)                       cube 14x70x14
-prop       Root(-1)  PropBody(0)  PropTip(1)                            cube 26x40x8
+prop       Root(-1)  PropBody(0)  PropTip_0123…(1)                      cube 26x40x8
 arms       ArmsRoot(-1)  UpperArm_L(0)  Forearm_L(1)  Hand_L(2)
                         UpperArm_R(0)  Forearm_R(4)  Hand_R(5)          cube 80x20x20
 ```
+
+The prop's weighted leaf carries one of the importer's hash suffixes, the shape
+a real imported target has (`PropTip_0123456789abcdef0123456789abcdef`, written
+`PropTip_0123…` above). A declaration reaches such a bone through the rename
+rule only for a short name it repeats, so the rename tests build their
+duplicated short names in distinct declared branches - the distribution the
+real C01/C02 rigs have - and the recipe's own prop rig keeps the target's name
+instead of relying on a rename.
 
 * Every subject declares exactly one curve, `Shared`; `character` and `prop`
   share the bone name `Root`, so same-named bone and Morph isolation is
@@ -176,8 +184,9 @@ schema `mtou-multi-subject-evidence/1`:
 * `subjects[]` — active negotiated declarations, frame counts, maximum measured
   bone/root-world deltas, the driven/required/ignored bone counts
   (`driven_bones`, `required_target_bones`, `source_only_bones`), the target
-  bones this subject does not drive (`undriven_bones`), the import renames it
-  used (`import_renames`), the declared curves the target has no Morph Target
+  bones this subject does not drive (`undriven_bones`), the optional bones the
+  second phase could not settle uniquely (`optional_ambiguities`), the import
+  renames it used (`import_renames`), the declared curves the target has no Morph Target
   for (`source_only_curve_names`) and how far the two rigs rest apart
   (`rest_deviation_translation_cm`, `_rotation_degrees`, `_scale`); this array is
   empty once the session ends. The retained `frames[]` still contain the
@@ -246,9 +255,17 @@ schema `mtou-multi-subject-evidence/1`:
 * `RenameCandidateContracts` — the mapping is decided by the complete candidate
   relation and its unique assignment, never by declaration order: a renamed
   target two sources can drive is refused in both orders (on both subject
-  targets), a uniquely assignable rename resolves identically in both sibling
-  orders, two indistinguishable sources for two renamed targets are refused in
-  both orders, and an exact name always wins over a rename.
+  targets), a globally unique short name is refused and the same name repeated
+  in another branch is accepted, a uniquely assignable rename resolves
+  identically in both sibling orders, two indistinguishable sources for two
+  renamed targets are refused in both orders, and an exact name always wins
+  over a rename.
+* `NecessaryScopeMapping` — the necessary relation decides and nothing outside
+  it can veto: an ambiguity between two declared bones that only claim a
+  non-required target is accepted in both orders, that target is reported as
+  undriven and in `optional_ambiguities`, an optional rename-shaped candidate
+  never changes which declared bone drives a necessary target, and two sources
+  claiming one weighted target are still refused in both orders.
 * `NonEssentialBindDifferences` — a bind difference on a target bone that
   deforms nothing is accepted and reported, while the same difference on a
   necessary bone is still refused.

@@ -985,6 +985,15 @@ TSharedRef<FJsonObject> FMtoUMultiSubjectReceiver::DescribeSubjectEvidence(
 		UndrivenValues.Add(MakeShared<FJsonValueString>(Bone.ToString()));
 	}
 	SubjectObject->SetArrayField(TEXT("undriven_bone_names"), UndrivenValues);
+	// Bones outside the necessary set that the optional relation could not
+	// settle uniquely: they keep their reference pose, and the reason stays
+	// visible instead of looking like a target the declaration never mentioned.
+	TArray<TSharedPtr<FJsonValue>> OptionalValues;
+	for (const FString& Ambiguity : Map.OptionalAmbiguities)
+	{
+		OptionalValues.Add(MakeShared<FJsonValueString>(Ambiguity));
+	}
+	SubjectObject->SetArrayField(TEXT("optional_ambiguities"), OptionalValues);
 	TArray<TSharedPtr<FJsonValue>> CurveValues;
 	for (const FName& Curve : Declaration.Curves)
 	{

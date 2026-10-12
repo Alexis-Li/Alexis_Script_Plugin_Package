@@ -81,24 +81,29 @@ public:
 	 * the source-to-target assignment, the driven/required/undriven target
 	 * bones and the declared curves the target does not own.
 	 *
-	 * Rules (the product's necessary-dependency contract): the negotiated
-	 * target is the necessary set only - every target bone with a positive skin
-	 * weight in any LOD plus every ancestor of one. A declared bone drives the
-	 * target bone of the same name inside the already mapped parent scope; an
-	 * importer rename (a numeric suffix, or `_` plus 32 hexadecimal digits) is
-	 * used only for a *duplicated* declared short name, only inside the mapped
-	 * parent scope, and only for a target bone no exact name owns. Every child
-	 * of one mapped parent is resolved as one scope over its complete candidate
-	 * relation, and the necessary targets are driven only by the one assignment
-	 * that covers them: several sources for one target, several targets for one
-	 * source, or several covering assignments are `skeleton_mismatch` instead of
-	 * a capture-order choice. A declared bone without a necessary target
-	 * counterpart is an ignored export branch; every necessary target bone must
-	 * be driven by exactly one declared bone; every driven bone's advertised
-	 * bind must match the target reference pose within the prototype tolerances
-	 * (translation 5 cm, rotation 10 deg, scale 0.05) up to the constant root
-	 * frame. A target bone outside the necessary set deforms nothing: it is
-	 * never a candidate and its bind never vetoes the declaration.
+	 * Rules (the product's necessary-dependency contract): the mapping target
+	 * that decides acceptance is the necessary set only - every target bone with
+	 * a positive skin weight in any LOD plus every ancestor of one. A declared
+	 * bone drives the target bone of the same name inside the already mapped
+	 * parent scope; an importer rename (a numeric suffix, or `_` plus 32
+	 * hexadecimal digits) is used only for a short name the declaration repeats,
+	 * only inside the mapped parent scope, and only for a target bone no exact
+	 * name owns. Every child of one mapped parent is resolved as one scope over
+	 * its complete candidate relation, and the necessary targets are driven only
+	 * by the one assignment that covers them: several sources for one target,
+	 * several targets for one source, or several covering assignments are
+	 * `skeleton_mismatch` instead of a capture-order choice. Everything outside
+	 * the necessary set deforms nothing: it is resolved in a separate phase,
+	 * once the necessary relation is fixed, where it can neither change that
+	 * relation nor veto the declaration; a bone that phase cannot settle
+	 * uniquely stays at its reference pose and is reported in
+	 * `OptionalAmbiguities` and `UndrivenTargetBones`. A declared bone without
+	 * any target counterpart is an ignored export branch; every necessary target
+	 * bone must be driven by exactly one declared bone; every driven bone's
+	 * advertised bind must match the target reference pose within the prototype
+	 * tolerances (translation 5 cm, rotation 10 deg, scale 0.05) up to the
+	 * constant root frame, and a bind difference on a non-necessary bone never
+	 * vetoes the declaration.
 	 *
 	 * Returns an empty string when the declaration is accepted; otherwise the
 	 * mismatch in one sentence.

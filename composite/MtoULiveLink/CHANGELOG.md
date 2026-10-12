@@ -3,18 +3,27 @@
 ## Unreleased
 
 - Fix the independent Issue #54 two-subject prototype's bone negotiation
-  (R-005/R-008). Each subject now negotiates its necessary target bones - the
-  positive skin weights of every LOD and their ancestors - over the complete
-  candidate relation and the one assignment that covers them: competing
-  sources, competing targets and several covering assignments are refused in
-  every declaration order instead of being settled by capture order, and an
-  exact name still wins over an importer rename. A bind difference on a bone
-  that deforms nothing no longer rejects the declaration; the required bones
-  keep the constant-root-frame rest check and the invalid-bind refusals. The
-  real C01 animation plus the C02 second character now stream against their
-  production meshes with common frames, independent removal, renegotiation,
-  disconnect restore and BaseColor evidence. Product components and protocol
-  v9 are unchanged.
+  (R-005/R-008) and its real-pair world placement (R-009). Mapping now runs in
+  two phases per mapped parent scope: the *necessary* targets - the positive
+  skin weights of every LOD and their ancestors - decide acceptance, so
+  competing sources, competing targets and several covering assignments there
+  are refused in every declaration order instead of being settled by capture
+  order, and an exact name still wins over an importer rename. Everything
+  outside that set is resolved afterwards, can never change a necessary
+  assignment and can never veto a declaration: an unresolved optional bone keeps
+  its reference pose and its reason is reported (`optional_ambiguities`). The
+  importer's rename forms now require the product's applicability condition - a
+  short name the declaration repeats - so a globally unique short name is no
+  longer renamed onto a suffixed target. A bind difference on a bone that
+  deforms nothing still does not reject the declaration. The opt-in real-asset
+  run places both targets with one common anchor and verifies landmark bones'
+  actual world positions against Maya's own evaluated world poses of the same
+  bones (`--probe-bones`) placed by that anchor, so an import convention applied
+  twice or a second root application is measured in world space instead of being
+  hidden by small per-bone residuals. The real C01 animation plus the C02 second
+  character stream against their production meshes with common frames,
+  independent removal, renegotiation, disconnect restore and BaseColor evidence.
+  Product components and protocol v9 are unchanged.
 
 - Fix the independent Issue #52 camera prototype's Maya failure cleanup.
   Public run/setup exits now release session resources and restore scene/undo

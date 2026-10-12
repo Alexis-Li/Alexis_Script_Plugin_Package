@@ -40,6 +40,7 @@ CODE_RECIPE_INVALID = "RECIPE_INVALID"
 CODE_MISSING_ROOT = "MISSING_ROOT"
 CODE_AMBIGUOUS_ROOT = "AMBIGUOUS_ROOT"
 CODE_NOT_A_JOINT = "NOT_A_JOINT"
+CODE_MISSING_BONE = "MISSING_BONE"
 CODE_DUPLICATE_ROOT = "DUPLICATE_ROOT"
 CODE_ROLE_SWAP = "ROLE_SWAP"
 CODE_WRONG_BONES = "WRONG_BONES"
@@ -831,6 +832,32 @@ def sample_subject(record):
             "pose sampling refused",
             "{0}: {1}".format(type(error).__name__, error))
     return [list(row) for row in transforms], list(curves)
+
+
+def sample_world_bones(record, bone_names):
+    """Named bones' evaluated world transforms, in the product's wire rows.
+
+    This is the independent world-space oracle of a pair check: the row is the
+    bone's Maya world matrix (``inclusiveMatrix``) converted exactly like a
+    root pose, so an Unreal-side landmark can be measured against Maya's own
+    evaluation instead of against the projection the receiver derives from the
+    same wire rows. Only read operations are used.
+    """
+    module = product()
+    by_name = {}
+    for bone in record["subject"]["bones"]:
+        by_name.setdefault(bone["name"], bone)
+    missing = sorted(name for name in bone_names if name not in by_name)
+    if missing:
+        raise SceneRefused(
+            CODE_MISSING_BONE,
+            "a requested landmark bone is not part of the captured subject",
+            "{0}: {1}".format(record["id"], ", ".join(missing)))
+    rows = {}
+    for name in bone_names:
+        matrix = by_name[name]["dag_path"].inclusiveMatrix()
+        rows[name] = list(module._sample_matrix(matrix, record["subject"]["unit_scale"]))
+    return rows
 
 
 def apply_curve_overrides(records, overrides, forced=None):

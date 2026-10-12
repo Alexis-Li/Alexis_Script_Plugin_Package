@@ -44,13 +44,28 @@ legal - a real rig has them - and are resolved inside their scope. The
 importer's rename forms - a numeric suffix, or `_` plus the 32 hexadecimal
 digits of one import hash - are matched after every exact name is claimed and
 only for a target bone no exact name owns, so a rename can never displace an
-exact match. Every child of one mapped parent is resolved as one scope over its
-*complete* candidate relation, and the targets are driven by the single
-assignment of sources to targets that covers them: two declared bones claiming
-one target, one declared bone with several targets the relation does not
-settle, and several covering assignments are all `skeleton_mismatch` naming the
-target, its parent and the declared bones, instead of being settled by the
-order the declaration lists its bones in.
+exact match, and they apply only to a short name the declaration *repeats*: the
+importer generated the suffix because that short name occurred more than once,
+so the applicable count is taken over the whole declaration exactly like the
+product negotiator's (`SourceCount > 1`). A globally unique short name is a
+different bone with a similar name and is never an import rename. Every child of
+one mapped parent is resolved as one scope over its *complete* candidate
+relation, and the targets are driven by the single assignment of sources to
+targets that covers them: two declared bones claiming one target, one declared
+bone with several targets the relation does not settle, and several covering
+assignments are all `skeleton_mismatch` naming the target, its parent and the
+declared bones, instead of being settled by the order the declaration lists its
+bones in.
+
+Mapping runs in two phases. The *necessary* phase - the required bones below -
+decides acceptance; everything the target owns outside that set deforms nothing,
+so it is resolved afterwards, when the necessary relation is already fixed, and
+none of those candidates can change which declared bone drives a necessary
+target. A bone the second phase cannot settle uniquely stays at its reference
+pose with its reason reported in `optional_ambiguities`; it never refuses the
+declaration. Everything reported by that second phase is listed in
+`undriven_bones` as well, so the evidence never implies that the whole target
+skeleton was matched.
 
 The target's *required* bones are every bone with a positive skin weight in any
 LOD plus every ancestor of one. Each required bone must be driven by exactly one
@@ -116,6 +131,29 @@ the prop target to a *moving* UE socket and then adding that movement again is
 invalid: use a world-anchored target, or explicitly remove the shared parent
 transform before using a socket. Do not silently choose one by name. Sequencer
 placement should likewise be an anchor, not a second root-motion writer.
+
+Three contributions are kept apart and each is applied exactly once:
+
+* the rig's **import bind convention** (a rotated root joint, a rest offset)
+  is what the bind/frame projection absorbs - it is never re-added as
+  placement;
+* the **scene and reference-parent motion** is carried by the root world pose
+  the evaluated DAG root reports, and travels inside the anchor's local space;
+* the **common UE placement** is the anchor itself, the same one for every
+  subject of the run.
+
+Consequently the pair's own arrangement - how far the prop stands from the
+character, which way each root faces - reaches the world through the applied
+pose, and the expected world transform of a bone is
+`anchor * maya_world_pose(bone)`. That equality is what the real-asset
+comparison measures: the probe records named landmark bones' Maya-evaluated
+world poses (`--probe-bones id=bone,bone`) at the same source times, and the
+Unreal side compares the driven bones' actual world positions with those,
+placed by the anchor. The per-bone projected/actual residual alone is not
+sufficient evidence: it only proves the component pose, so a placement that
+carries the sampled root a second time, or a second anchor on top of the
+projection, still leaves it small while the world pose is rotated by the
+convention.
 
 Explicit preview takeover means pausing/disabling an existing animation or
 Sequencer track's write to each participating target, saving its former driver

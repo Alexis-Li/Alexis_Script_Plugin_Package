@@ -117,11 +117,24 @@ python -m unittest discover \
 "$MAYAPY" composite/MtoULiveLink/prototypes/multi-subject/maya/MtoUMultiSubjectPrototype/scripts/MtoUMultiSubjectPrototype.py --probe \
   --scene /path/to/real.ma --reference-rig prop \
   --subject "character=|Group|root" --probe-times 1,1.5 --evidence probe.json
+
+# 6. same probe, plus named landmark bones' evaluated world poses in UE rows
+"$MAYAPY" composite/MtoULiveLink/prototypes/multi-subject/maya/MtoUMultiSubjectPrototype/scripts/MtoUMultiSubjectPrototype.py --probe \
+  --scene /path/to/real.ma --reference-rig prop \
+  --subject "character=|Group|root" --probe-times 1,120 \
+  --probe-bones character=head,pelvis --evidence probe.json
 ```
 
 `--probe` opens the supplied scene, reads units, references, root hierarchies,
 Morph names and sampled poses, and never saves; `--fps` is only compared when
-given, because a probe reports the scene's own frame rate.
+given, because a probe reports the scene's own frame rate. `--probe-bones
+id=bone,bone` (repeatable) additionally records each named bone's *evaluated
+world* pose per sample, converted exactly like a root pose; a bone the subject
+does not capture is refused with `MISSING_BONE`. That is the independent
+world-space oracle of a pair comparison: the Unreal side can compare a driven
+bone's actual world position against Maya's own evaluation of the same bone at
+the same source time instead of against the projection it derives from the same
+wire rows. Non-root rows of the ordinary samples stay parent-relative.
 
 ## Driving a real Unreal receiver
 

@@ -415,6 +415,20 @@ def _probe_times(value):
     return [float(part) for part in str(value).split(",") if part.strip()]
 
 
+def _probe_bone_requests(args):
+    """``{subject_id: [bone, ...]}`` for ``--probe-bones id=bone,bone``."""
+    requests = {}
+    for value in getattr(args, "probe_bones", None) or []:
+        if "=" not in value:
+            raise ValueError("--probe-bones needs id=bone,bone, got {0!r}".format(value))
+        subject_id, payload = value.split("=", 1)
+        names = [name.strip() for name in payload.split(",") if name.strip()]
+        if not names:
+            raise ValueError("--probe-bones needs at least one bone, got {0!r}".format(value))
+        requests.setdefault(subject_id.strip(), []).extend(names)
+    return requests
+
+
 # ------------------------------------------------------------------- probing
 
 def build_records(manifest, pair, roots=None, expectations=None,
@@ -489,6 +503,12 @@ def probe(args):
             for record in records]
         protocol.add_check(evidence, "two subjects captured", len(records) == 2,
                            "captured {0}".format([r["id"] for r in records]))
+        landmark_requests = _probe_bone_requests(args)
+        unknown = sorted(set(landmark_requests) - set(record["id"] for record in records))
+        if unknown:
+            raise ValueError(
+                "--probe-bones names subjects this pair does not capture: {0}".format(
+                    ", ".join(unknown)))
         evidence["samples"] = []
         for time_value in args.probe_times:
             scene.set_evaluated_time(time_value)
@@ -501,6 +521,10 @@ def probe(args):
                     "transforms": len(transforms),
                     "digest": digest_transforms(transforms),
                 }
+                wanted = landmark_requests.get(record["id"])
+                if wanted:
+                    samples[record["id"]]["world_bones"] = \
+                        scene.sample_world_bones(record, wanted)
             evidence["samples"].append({"time": float(time_value),
                                         "subjects": samples})
         evidence["cleanup"] = {"scene_saved": False}
@@ -856,6 +880,10 @@ def main(argv=None):
     parser.add_argument("--probe", action="store_true",
                         help="read-only inventory and sampling, no streaming")
     parser.add_argument("--probe-times", type=_probe_times, default=(1.0, 3.0, 5.25))
+    parser.add_argument("--probe-bones", action="append", default=[],
+                        help="landmark bone world rows id=bone,bone recorded for "
+                             "every probe sample, as the independent world-space "
+                             "oracle of a pair comparison (repeatable)")
     parser.add_argument("--leave-scene", action="store_true",
                         help="keep the session scene open instead of discarding it")
     parser.add_argument("--evidence", default=None,

@@ -620,18 +620,37 @@ bool FMtoUMultiSubjectProtocol::CollectRequiredTargetBones(
 namespace
 {
 	/**
-	 * One negotiated target bone. The negotiated target is the *necessary* set
-	 * only: every target bone with a positive skin weight in any LOD plus every
-	 * ancestor of one, the same target the product's necessary-dependency
-	 * negotiation consumes. A target bone outside it deforms nothing, so it is
-	 * never a mapping candidate and its bind can never veto a declaration.
+	 * One target bone. The *necessary* set - every target bone with a positive
+	 * skin weight in any LOD plus every ancestor of one, the target the
+	 * product's necessary-dependency negotiation consumes - alone decides
+	 * acceptance. A bone outside it deforms nothing: it is never a candidate of
+	 * the necessary relation, so it can neither veto a declaration nor change
+	 * which declared bone a necessary target is driven by. It is resolved
+	 * afterwards, once that relation is fixed, and stays at its reference pose
+	 * with an explicit report when the resolution is not unique.
 	 */
 	struct FMtoUTargetBone
 	{
 		FName Name;
-		/** Parent slot inside the necessary set, or INDEX_NONE for a root. */
+		/** Parent slot inside the target, or INDEX_NONE for a root. */
 		int32 Parent = INDEX_NONE;
+		/** Positive skin weight in some LOD, or an ancestor of such a bone. */
+		bool bRequired = false;
 	};
+
+	/** Which target bones one mapping phase may consider. */
+	enum class EMtoUTargetPhase : uint8
+	{
+		/** The necessary set: decides coverage, hierarchy, ambiguity and bind. */
+		Required,
+		/** Every other target bone: resolved second and never able to veto. */
+		Optional,
+	};
+
+	bool IsPhaseCandidate(const FMtoUTargetBone& TargetBone, EMtoUTargetPhase Phase)
+	{
+		return Phase == EMtoUTargetPhase::Required ? TargetBone.bRequired : !TargetBone.bRequired;
+	}
 
 	/** The mapped parent's name inside one target scope, or `<root>`. */
 	FString TargetScopeParentLabel(const TArray<FMtoUTargetBone>& Target, int32 Slot)
@@ -752,14 +771,17 @@ namespace
 		TMap<FName, int32> FirstWithName;
 	};
 
-	/** Everything one mapping pass produces; every index is a necessary-set slot. */
+	/** Everything one mapping pass produces; every index is a target bone slot. */
 	struct FMtoUMappingPass
 	{
 		/** Target slot per declared bone; INDEX_NONE marks an ignored export branch. */
 		TArray<int32> SourceToTarget;
 		TSet<int32> Skipped;
 		TSet<int32> Used;
+		/** Necessary-relation ambiguities: they refuse the declaration. */
 		TArray<FString> MappingAmbiguities;
+		/** Optional-relation ambiguities: they only leave bones at their reference pose. */
+		TArray<FString> OptionalAmbiguities;
 		TArray<FString> BoneNameMappings;
 	};
 
@@ -780,12 +802,18 @@ namespace
 		}
 	}
 
-	/** Collects the children of one mapped parent and their complete candidate relation. */
+	/**
+	 * Collects the children of one mapped parent and their complete candidate
+	 * relation inside one phase. Siblings the previous phase already mapped stay
+	 * claimed: the optional phase only adds mappings.
+	 */
 	FMtoUScope BuildScope(
 		const FMtoUSubjectDeclaration& Declaration,
 		const TArray<FMtoUTargetBone>& Target,
+		const TMap<FName, int32>& SourceNameCounts,
 		const TArray<int32>& Siblings,
 		int32 ExpectedParent,
+		EMtoUTargetPhase Phase,
 		const FMtoUMappingPass& Pass)
 	{
 		FMtoUScope Scope;
@@ -809,6 +837,15 @@ namespace
 			const FMtoUBoneDeclaration& SourceBone = Declaration.Bones[SourceIndex];
 			FMtoUScopeBone& Bone = Scope.Bones[Slot];
 			Bone.SourceIndex = SourceIndex;
+			// A bone the previous phase already mapped keeps its target and is
+			// resolved here; it stays a mapped parent for its own children.
+			Bone.bResolved = Pass.SourceToTarget.IsValidIndex(SourceIndex)
+				&& Pass.SourceToTarget[SourceIndex] != INDEX_NONE;
+			// #44/#46 rename applicability: the importer generates a suffix only
+			// for a *duplicated* short name, so the count is taken over the whole
+			// declaration exactly like the product negotiator. A globally unique
+			// short name is a different bone with a similar name, never a rename.
+			const int32 SourceCount = SourceNameCounts.FindChecked(SourceBone.Name);
 			for (int32 TargetSlot = 0; TargetSlot < Target.Num(); ++TargetSlot)
 			{
 				if (Pass.Used.Contains(TargetSlot))
@@ -816,6 +853,10 @@ namespace
 					continue;
 				}
 				const FMtoUTargetBone& TargetBone = Target[TargetSlot];
+				if (!IsPhaseCandidate(TargetBone, Phase))
+				{
+					continue;
+				}
 				if (TargetBone.Name == SourceBone.Name)
 				{
 					if (TargetBone.Parent == ExpectedParent)
@@ -827,13 +868,14 @@ namespace
 						++Bone.ExactCount;
 					}
 				}
-				// #44/#46 rename applicability: a numeric suffix, or `_` plus 32
-				// hexadecimal digits, of the complete declared name; only inside
-				// the mapped parent scope; never for a target bone an exact name
-				// owns. The complete relation below decides contested candidates
-				// by unique assignment instead of capture order.
+				// A numeric suffix, or `_` plus 32 hexadecimal digits, of the
+				// complete declared name; only inside the mapped parent scope;
+				// never for a target bone an exact name owns. The complete
+				// relation below decides contested candidates by unique
+				// assignment instead of capture order.
 				else if (SourceBone.Parent != INDEX_NONE
 					&& TargetBone.Parent == ExpectedParent
+					&& SourceCount > 1
 					&& IsImportedRename(SourceBone.Name, TargetBone.Name)
 					&& !Scope.SiblingNames.Contains(TargetBone.Name))
 				{
@@ -844,20 +886,32 @@ namespace
 		return Scope;
 	}
 
+	/** Records one ambiguity in the phase's own list: only the necessary phase refuses. */
+	void ReportScopeAmbiguity(EMtoUTargetPhase Phase, FMtoUMappingPass& Pass, FString&& Text)
+	{
+		(Phase == EMtoUTargetPhase::Required ? Pass.MappingAmbiguities : Pass.OptionalAmbiguities)
+			.Add(MoveTemp(Text));
+	}
+
 	/**
 	 * Exact names claim their targets first. Children sharing one short name are
 	 * indistinguishable, so none of them may own the target even when a renamed
-	 * target is still free.
+	 * target is still free. Bones an earlier phase already mapped stay mapped.
 	 */
 	void ResolveExactNames(
 		const FMtoUSubjectDeclaration& Declaration,
 		const TArray<FMtoUTargetBone>& Target,
+		EMtoUTargetPhase Phase,
 		FMtoUScope& Scope,
 		FMtoUMappingPass& Pass)
 	{
 		for (int32 Slot = 0; Slot < Scope.Bones.Num(); ++Slot)
 		{
 			FMtoUScopeBone& Bone = Scope.Bones[Slot];
+			if (Bone.bResolved)
+			{
+				continue;
+			}
 			const FName Name = Declaration.Bones[Bone.SourceIndex].Name;
 			const int32 NameCount = Scope.NameCounts.FindChecked(Name);
 			if (NameCount > 1)
@@ -878,7 +932,7 @@ namespace
 						}
 					}
 					Paths.Sort();
-					Pass.MappingAmbiguities.Add(FString::Printf(
+					ReportScopeAmbiguity(Phase, Pass, FString::Printf(
 						TEXT("'%s' below %s is claimed by %d declared bones: %s"),
 						*Name.ToString(),
 						*TargetScopeParentLabel(Target, Scope.ExpectedParent),
@@ -897,7 +951,7 @@ namespace
 			if (Bone.ExactCount > 1)
 			{
 				Bone.bResolved = true;
-				Pass.MappingAmbiguities.Add(FString::Printf(
+				ReportScopeAmbiguity(Phase, Pass, FString::Printf(
 					TEXT("%s below %s has %d candidates"),
 					*Name.ToString(),
 					*TargetScopeParentLabel(Target, Scope.ExpectedParent),
@@ -976,14 +1030,16 @@ namespace
 
 	/**
 	 * Import renames are resolved as one relation over the whole scope: a target
-	 * an exact sibling name reserves is never a rename target, the necessary
+	 * an exact sibling name reserves is never a rename target, the phase's
 	 * targets are driven only by the assignment that is the only one covering
 	 * them, and a source that can drive several remaining targets is refused
-	 * rather than settled by capture order.
+	 * rather than settled by capture order. A refusal inside the optional phase
+	 * only leaves those bones at their reference pose.
 	 */
 	void ResolveImportRenames(
 		const FMtoUSubjectDeclaration& Declaration,
 		const TArray<FMtoUTargetBone>& Target,
+		EMtoUTargetPhase Phase,
 		FMtoUScope& Scope,
 		FMtoUMappingPass& Pass)
 	{
@@ -1000,6 +1056,7 @@ namespace
 		for (int32 Candidate = 0; Candidate < Target.Num(); ++Candidate)
 		{
 			if (Target[Candidate].Parent == Scope.ExpectedParent
+				&& IsPhaseCandidate(Target[Candidate], Phase)
 				&& !Scope.SiblingNames.Contains(Target[Candidate].Name)
 				&& !Pass.Used.Contains(Candidate))
 			{
@@ -1094,7 +1151,7 @@ namespace
 				Paths.Add(SourcePath(Declaration.Bones, Scope.Bones[SourceSlots[SourceSlot]].SourceIndex));
 			}
 			Paths.Sort();
-			Pass.MappingAmbiguities.Add(FString::Printf(
+			ReportScopeAmbiguity(Phase, Pass, FString::Printf(
 				TEXT("'%s' below %s is claimed by %d declared bones: %s"),
 				*Target[TargetSlots[TargetSlot]].Name.ToString(),
 				*TargetScopeParentLabel(Target, Scope.ExpectedParent),
@@ -1132,7 +1189,7 @@ namespace
 				MapScopeBone(Pass, Declaration, Target, Bone.SourceIndex, Feasible[0]);
 				continue;
 			}
-			Pass.MappingAmbiguities.Add(FString::Printf(
+			ReportScopeAmbiguity(Phase, Pass, FString::Printf(
 				TEXT("%s below %s has %d candidates"),
 				*Declaration.Bones[Bone.SourceIndex].Name.ToString(),
 				*TargetScopeParentLabel(Target, Scope.ExpectedParent),
@@ -1158,28 +1215,45 @@ namespace
 	void ResolveScope(
 		const FMtoUSubjectDeclaration& Declaration,
 		const TArray<FMtoUTargetBone>& Target,
+		const TMap<FName, int32>& SourceNameCounts,
 		const TArray<int32>& Siblings,
 		int32 ExpectedParent,
+		EMtoUTargetPhase Phase,
 		FMtoUMappingPass& Pass)
 	{
 		FMtoUScope Scope = BuildScope(
-			Declaration, Target, Siblings, ExpectedParent, Pass);
-		ResolveExactNames(Declaration, Target, Scope, Pass);
-		ResolveImportRenames(Declaration, Target, Scope, Pass);
+			Declaration, Target, SourceNameCounts, Siblings, ExpectedParent, Phase, Pass);
+		ResolveExactNames(Declaration, Target, Phase, Scope, Pass);
+		ResolveImportRenames(Declaration, Target, Phase, Scope, Pass);
 		ResolveUnmatchedSiblings(Scope, Pass);
 	}
 
 	/**
-	 * Maps declared bones parent-first. Every child of one mapped parent is
-	 * resolved as a single scope, over its complete candidate relation, so no
-	 * mapping decision depends on the order the declaration lists its bones in.
+	 * Maps declared bones parent-first for one phase. Every child of one mapped
+	 * parent is resolved as a single scope, over that phase's complete candidate
+	 * relation, so no mapping decision depends on the order the declaration
+	 * lists its bones in. The optional phase starts from the necessary phase's
+	 * assignments: a bone already mapped keeps its target, and the pass can only
+	 * add mappings, so it can never change the necessary relation's outcome.
 	 */
 	FMtoUMappingPass RunMappingPass(
 		const FMtoUSubjectDeclaration& Declaration,
-		const TArray<FMtoUTargetBone>& Target)
+		const TArray<FMtoUTargetBone>& Target,
+		const TMap<FName, int32>& SourceNameCounts,
+		EMtoUTargetPhase Phase,
+		FMtoUMappingPass Pass)
 	{
-		FMtoUMappingPass Pass;
-		Pass.SourceToTarget.Init(INDEX_NONE, Declaration.Bones.Num());
+		// The phase starts from the previous one's assignments; a slot the
+		// previous phase did not have starts unmapped instead of at target zero.
+		TArray<int32> SourceToTarget;
+		SourceToTarget.Init(INDEX_NONE, Declaration.Bones.Num());
+		const int32 Carried = FMath::Min(Pass.SourceToTarget.Num(), SourceToTarget.Num());
+		for (int32 SourceIndex = 0; SourceIndex < Carried; ++SourceIndex)
+		{
+			SourceToTarget[SourceIndex] = Pass.SourceToTarget[SourceIndex];
+		}
+		Pass.SourceToTarget = MoveTemp(SourceToTarget);
+		Pass.Skipped.Reset();
 
 		// Children of every declared bone, and the roots, in declaration order.
 		const int32 RootScope = Declaration.Bones.Num();
@@ -1212,7 +1286,8 @@ namespace
 			const int32 ExpectedParent = ScopeKey == RootScope
 				? INDEX_NONE
 				: Pass.SourceToTarget[ScopeKey];
-			ResolveScope(Declaration, Target, Children[ScopeKey], ExpectedParent, Pass);
+			ResolveScope(
+				Declaration, Target, SourceNameCounts, Children[ScopeKey], ExpectedParent, Phase, Pass);
 			PendingScopes.Append(Children[ScopeKey]);
 		}
 		return Pass;
@@ -1254,14 +1329,37 @@ FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
 		}
 		Target[BoneIndex].Name = Skeleton.GetBoneName(BoneIndex);
 		Target[BoneIndex].Parent = Skeleton.GetParentIndex(BoneIndex);
+		Target[BoneIndex].bRequired = Required[BoneIndex];
 	}
 
-	// Every child of one mapped parent is resolved as one scope over its
-	// complete candidate relation, and the targets are driven by the one
-	// assignment that covers them: the decision never depends on the order the
-	// declaration lists its bones in. Only the necessary set above is required
-	// and bind-checked; other matched bones follow their declared motion.
-	const FMtoUMappingPass Pass = RunMappingPass(Declaration, Target);
+	// The importer rename form exists only for a *duplicated* short name, so the
+	// applicability test counts the declared names over the whole declaration,
+	// exactly like the product negotiator.
+	TMap<FName, int32> SourceNameCounts;
+	SourceNameCounts.Reserve(Declaration.Bones.Num());
+	for (const FMtoUBoneDeclaration& Bone : Declaration.Bones)
+	{
+		++SourceNameCounts.FindOrAdd(Bone.Name);
+	}
+
+	// Two phases. The necessary relation - every target bone that deforms the
+	// mesh and every ancestor of one - decides acceptance: coverage, hierarchy,
+	// ambiguity and bind all veto there. The optional relation runs afterwards
+	// on the remaining target bones, keeps every necessary assignment, and can
+	// only add mappings; a bone it cannot settle uniquely stays at its reference
+	// pose with an explicit report instead of refusing the declaration. Both
+	// phases resolve one whole parent scope at a time over the complete
+	// candidate relation of their own phase, so no decision depends on the order
+	// the declaration lists its bones in and no optional candidate can change
+	// which declared bone a necessary target is driven by.
+	FMtoUMappingPass NecessaryPass = RunMappingPass(
+		Declaration, Target, SourceNameCounts, EMtoUTargetPhase::Required, FMtoUMappingPass());
+	const FMtoUMappingPass Pass = RunMappingPass(
+		Declaration, Target, SourceNameCounts, EMtoUTargetPhase::Optional, MoveTemp(NecessaryPass));
+	// The optional findings are a report, not a decision: they are sorted so the
+	// evidence does not depend on the order the declaration lists its bones in.
+	OutMap.OptionalAmbiguities = Pass.OptionalAmbiguities;
+	OutMap.OptionalAmbiguities.Sort();
 
 	OutMap.SourceToTarget.Init(INDEX_NONE, Declaration.Bones.Num());
 	TArray<int32> ClaimedBy;
@@ -1337,12 +1435,20 @@ FString FMtoUMultiSubjectProtocol::DescribeNegotiationMismatch(
 				{
 					continue;
 				}
+				const int32 SourceCount = SourceNameCounts.FindChecked(SourceBone.Name);
 				RenameHints.Add(FString::Printf(
-					TEXT("'%s' (it addresses %s)"),
+					TEXT("'%s' (%s)"),
 					*SourceBone.Name.ToString(),
-					OutMap.SourceToTarget[SourceIndex] == INDEX_NONE
-						? TEXT("an ignored export branch")
-						: TEXT("another target bone")));
+					SourceCount <= 1
+						// The product's applicability condition: the importer
+						// only suffixed a name it saw more than once, so a
+						// unique short name is a different bone with a similar
+						// name and must not be renamed.
+						? TEXT("its short name occurs once in this declaration, so it is "
+							   "not an import rename")
+						: OutMap.SourceToTarget[SourceIndex] == INDEX_NONE
+							? TEXT("it addresses an ignored export branch")
+							: TEXT("it addresses another target bone")));
 			}
 			if (!RenameHints.IsEmpty())
 			{

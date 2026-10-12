@@ -89,6 +89,7 @@ def main(argv=None):
     parser.add_argument("--expect-namespace", action="append", default=[])
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--probe-times", default=None)
+    parser.add_argument("--probe-bones", action="append", default=[])
     parser.add_argument("--leave-scene", action="store_true")
     parser.add_argument("--evidence", default=None)
     parser.add_argument("--spawn-mock", action="store_true",
@@ -153,6 +154,8 @@ def main(argv=None):
         forwarded.append("--probe")
     if args.probe_times:
         forwarded += ["--probe-times", args.probe_times]
+    for value in args.probe_bones:
+        forwarded += ["--probe-bones", value]
     if args.leave_scene:
         forwarded.append("--leave-scene")
     if args.evidence:

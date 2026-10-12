@@ -1,9 +1,9 @@
 {
   "name": "mtou-multi-subject-default",
-  "revision": 2,
+  "revision": 3,
   "fps": 30.0,
   "range": [1.0, 6.0],
-  "notes": "Deterministic minimal rigs for the bounded two-subject prototype. Every rig is an independent Maya file, referenced by namespace into the session scene, with its own skin, its own blendShape alias 'Shared' and its own keyed root motion. Linear tangents keep fractional-time samples exact. 'character' and 'prop' deliberately share the bone name 'Root' and the Morph alias 'Shared' so duplicate-name isolation is exercised; 'arms' is a distinct skeleton used for role replacement on a new connection. 'character' has a static ancestor group, 'arms' has a keyed (moving) ancestor socket, so the ancestor/socket guard has a deterministic target.",
+  "notes": "Deterministic minimal rigs for the bounded two-subject prototype. Every rig is an independent Maya file, referenced by namespace into the session scene, with its own skin, its own blendShape alias 'Shared' and its own keyed root motion. Linear tangents keep fractional-time samples exact. 'character' and 'prop' deliberately share the bone name 'Root' and the Morph alias 'Shared' so duplicate-name isolation is exercised; 'arms' is a distinct skeleton used for role replacement on a new connection. 'character' has a static ancestor group, 'arms' has a keyed (moving) ancestor socket, so the ancestor/socket guard has a deterministic target. The prop tip carries the Unreal target's own name: the importer's rename form applies only to a short name the declaration repeats (the product negotiator's condition), which a three-bone fixture rig cannot show without a second branch; the rename rule is exercised by the declaration-level tests and by the real C01/C02 rigs.",
   "rigs": {
     "character": {
       "namespace": "character",
@@ -41,7 +41,7 @@
       "bones": [
         { "name": "Root", "parent": -1, "translate": [0.0, 0.0, 0.0] },
         { "name": "PropBody", "parent": 0, "translate": [0.0, 18.0, 0.0] },
-        { "name": "PropTip", "parent": 1, "translate": [0.0, 22.0, 0.0] }
+        { "name": "PropTip_0123456789abcdef0123456789abcdef", "parent": 1, "translate": [0.0, 22.0, 0.0] }
       ],
       "mesh": { "name": "propMesh", "size": [26.0, 40.0, 8.0] },
       "curves": {

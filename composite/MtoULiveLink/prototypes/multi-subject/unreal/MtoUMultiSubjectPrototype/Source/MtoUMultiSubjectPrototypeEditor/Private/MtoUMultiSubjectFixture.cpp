@@ -71,8 +71,11 @@ namespace
 	/**
 	 * Prop rig: it shares the bone name Root with the character and Shared with
 	 * every rig, and its weighted leaf carries one of the importer's hash
-	 * suffixes, so the Maya side's plain `PropTip` has to map through the
-	 * import-rename rule (the shape a real imported target has).
+	 * suffixes, the shape a real imported target has. A declaration reaches that
+	 * leaf through the rename rule only for a short name it repeats (the product
+	 * negotiator's precondition), so the rename cases build their duplicated
+	 * short names in distinct declared branches, exactly like the real C01/C02
+	 * rigs, instead of relying on a uniquely named bone.
 	 */
 	const FBoneSpec PropBones[] = {
 		{ TEXT("Root"), INDEX_NONE, FVector::ZeroVector },

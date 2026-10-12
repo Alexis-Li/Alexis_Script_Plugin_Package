@@ -711,9 +711,16 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 			// declaration that names it the way Maya does has to map through the
 			// rename rule instead of leaving a required bone undriven - and its
 			// child, which resolves exactly, only becomes addressable once the
-			// renamed parent scope exists.
+			// renamed parent scope exists. The rule applies to a short name the
+			// declaration *repeats* (the product negotiator's precondition), so
+			// the declaration carries the second `PropTip` in another branch: the
+			// distribution a real rig has, where the same short name exists in
+			// distinct branches. That donor is an ignored export branch here (no
+			// target bone below Root owns the name).
 			FMtoUSubjectDeclaration RenamedLeaf = Fixture.PropDeclaration;
 			RenamedLeaf.Bones[2].Name = FName(TEXT("PropTip"));
+			RenamedLeaf.Bones.Add({ FName(TEXT("PropTip")), 0 });
+			RenamedLeaf.Bind.Add(Fixture.PropDeclaration.Bind[0]);
 			FMtoUNegotiationMap RenameMap;
 			TestTrue(TEXT("a declared name maps onto the target's import rename"),
 				PropTarget.DescribeDeclarationMismatch(RenamedLeaf, RenameMap).IsEmpty());
@@ -725,6 +732,8 @@ bool FMtoUMultiSubjectFixtureTest::RunTest(const FString& Parameters)
 				RenameMap.DrivenTargetBones.Num(), 4);
 			TestEqual(TEXT("the renamed branch leaves no target bone undriven"),
 				RenameMap.UndrivenTargetBones.Num(), 0);
+			TestEqual(TEXT("the repeated-name donor is an ignored export branch"),
+				RenameMap.SourceOnlyBones, 1);
 			TestEqual(TEXT("the renamed leaf still covers its required bone"),
 				RenameMap.DrivenTargetBones.Num() >= RenameMap.RequiredTargetBones.Num(), true);
 			FMtoUSubjectDeclaration PropWrongBind = Fixture.PropDeclaration;
@@ -2800,9 +2809,8 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 	const FString Directory = FPaths::Combine(EvidenceDirectory(), Scenario);
 	IFileManager::Get().MakeDirectory(*Directory, true);
 
-	// The two targets, at distinct non-origin placements. The prop anchor is
-	// placed so that the pair's relative transform matches the Maya scene's, so
-	// contact between the objects is preserved rather than assumed.
+	// The two targets, driven from one common placement anchor; the pair's own
+	// arrangement arrives with the pose, which the world oracle below measures.
 	FMtoUMultiSubjectSessionConfig Config;
 	Config.Port = ReserveLoopbackPort();
 	Config.Scenario = Scenario;
@@ -2811,8 +2819,92 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// First pass: a read-only probe tells us where the two Maya roots sit
-	// relative to each other, so the Unreal anchors can reproduce that space.
+	// The independent world-space oracle: Maya's own evaluated world pose of
+	// landmark bones, read by a probe that never streams and never saves. The
+	// expectation for Unreal is the same landmark placed by the common anchor,
+	// computed from Maya's evaluation - never from the projection the receiver
+	// derives from the same wire rows.
+	struct FLandmarkSample
+	{
+		double Time = 0.0;
+		FString SubjectId;
+		FString BoneName;
+		FVector MayaWorldCm = FVector::ZeroVector;
+	};
+	TArray<FLandmarkSample> ProbeLandmarks;
+	const TArray<TPair<FString, USkeletalMesh*>> LandmarkTargets = {
+		{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), CharacterMesh },
+		{ FMtoUMultiSubjectFixtureBuilder::PropId(), PropMesh } };
+	TMap<FString, TArray<FString>> LandmarkBones;
+	{
+		// The names come from the loaded targets, so the probe is asked for bones
+		// the target really owns and the oracle stays asset-driven. Only a bone
+		// inside the target's *necessary* set qualifies: that is the set whose
+		// bind the negotiation verified against the rig, which is the premise of
+		// comparing the component pose with Maya's world pose. A bone outside it
+		// may legitimately rest centimetres off and would fail the oracle for the
+		// wrong reason.
+		const TArray<FName> Preferred = {
+			FName(TEXT("head")), FName(TEXT("pelvis")), FName(TEXT("neck_01")) };
+		for (const TPair<FString, USkeletalMesh*>& Pair : LandmarkTargets)
+		{
+			const FReferenceSkeleton& Skeleton = Pair.Value->GetRefSkeleton();
+			TArray<bool> Required;
+			FString SkinProblem;
+			if (!TestTrue(TEXT("the world oracle reads the target's necessary set"),
+					FMtoUMultiSubjectProtocol::CollectRequiredTargetBones(
+						*Pair.Value, Required, SkinProblem)))
+			{
+				AddError(SkinProblem);
+				return false;
+			}
+			TArray<FString>& Names = LandmarkBones.Add(Pair.Key);
+			for (const FName& Name : Preferred)
+			{
+				const int32 Index = Skeleton.FindBoneIndex(Name);
+				if (Index != INDEX_NONE && Required.IsValidIndex(Index) && Required[Index]
+					&& Names.Num() < 2)
+				{
+					Names.Add(Name.ToString());
+				}
+			}
+			AddInfo(FString::Printf(TEXT("world oracle landmarks for '%s': %s"),
+				*Pair.Key, *FString::Join(Names, TEXT(", "))));
+		}
+	}
+	// Every held source time is sampled, so each held frame of the run below has
+	// Maya's own evaluation of that time to compare against.
+	TArray<double> ProbeTimeList;
+	if (Times.IsEmpty())
+	{
+		ProbeTimeList.Add(1.0);
+	}
+	else
+	{
+		for (const double Time : Times)
+		{
+			bool bAlreadyListed = false;
+			for (const double Existing : ProbeTimeList)
+			{
+				bAlreadyListed |= FMath::IsNearlyEqual(Existing, Time, 1.0e-9);
+			}
+			if (!bAlreadyListed)
+			{
+				ProbeTimeList.Add(Time);
+			}
+		}
+	}
+	FString ProbeTimes;
+	for (const double Time : ProbeTimeList)
+	{
+		if (!ProbeTimes.IsEmpty())
+		{
+			ProbeTimes += TEXT(",");
+		}
+		ProbeTimes += FString::Printf(TEXT("%g"), Time);
+	}
+	// The pair relation is read at the first streamed time.
+	const double ProbeRelationTime = Times.IsEmpty() ? ProbeTimeList[0] : Times[0];
 	const FString ProbeEvidencePath =
 		FPaths::Combine(Directory, TEXT("mtou-multi-subject-probe.json"));
 	FTransform ProbeCharacterWorld = FTransform::Identity;
@@ -2832,8 +2924,17 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 		// The script path has to come first: the flags that follow it must not
 		// be read as mayapy's own options.
 		Probe.ExtraArguments.Add(TEXT("--probe"));
-		Probe.ExtraArguments.Add(TEXT("--probe-times 1"));
+		Probe.ExtraArguments.Add(FString::Printf(TEXT("--probe-times %s"), *ProbeTimes));
 		Probe.ExtraArguments.Add(TEXT("--pair character+prop"));
+		for (const TPair<FString, TArray<FString>>& Pair : LandmarkBones)
+		{
+			if (Pair.Value.IsEmpty())
+			{
+				continue;
+			}
+			Probe.ExtraArguments.Add(FString::Printf(
+				TEXT("--probe-bones %s=%s"), *Pair.Key, *FString::Join(Pair.Value, TEXT(","))));
+		}
 		int32 ReturnCode = -1;
 		FString ProbeStdOut;
 		FString ProbeStdErr;
@@ -2851,72 +2952,106 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 				FFileHelper::LoadFileToString(ProbeText, *ProbeEvidencePath)
 					&& ParseJsonLine(ProbeText, ProbeJson)))
 		{
-			const TArray<TSharedPtr<FJsonValue>>* Samples = nullptr;
-			const TSharedPtr<FJsonObject>* Subjects = nullptr;
-			if (ProbeJson->TryGetArrayField(TEXT("samples"), Samples) && Samples != nullptr
-				&& !Samples->IsEmpty()
-				&& (*Samples)[0]->AsObject()->TryGetObjectField(TEXT("subjects"), Subjects))
+			auto PoseRow = [](const TArray<TSharedPtr<FJsonValue>>& Row, FTransform& OutTransform)
 			{
-				const TSharedPtr<FJsonObject>* CharacterSubject = nullptr;
-				const TSharedPtr<FJsonObject>* PropSubject = nullptr;
-				(*Subjects)->TryGetObjectField(TEXT("character"), CharacterSubject);
-				(*Subjects)->TryGetObjectField(TEXT("prop"), PropSubject);
-				const TArray<TSharedPtr<FJsonValue>>* CharacterRootRow = nullptr;
-				const TArray<TSharedPtr<FJsonValue>>* PropRootRow = nullptr;
-				if (CharacterSubject != nullptr && PropSubject != nullptr
-					&& (*CharacterSubject)->TryGetArrayField(TEXT("root"), CharacterRootRow)
-					&& (*PropSubject)->TryGetArrayField(TEXT("root"), PropRootRow)
-					&& CharacterRootRow->Num() == 10 && PropRootRow->Num() == 10)
+				if (Row.Num() != 10)
 				{
-					auto Row = [](const TArray<TSharedPtr<FJsonValue>>& Values, double* Out)
+					return false;
+				}
+				OutTransform = FTransform(
+					FQuat((Row[3])->AsNumber(), (Row[4])->AsNumber(),
+						(Row[5])->AsNumber(), (Row[6])->AsNumber()),
+					FVector((Row[0])->AsNumber(), (Row[1])->AsNumber(),
+						(Row[2])->AsNumber()),
+					FVector((Row[7])->AsNumber(), (Row[8])->AsNumber(),
+						(Row[9])->AsNumber()));
+				return true;
+			};
+			auto RootRow = [&PoseRow](const TSharedPtr<FJsonObject>& Subject, FTransform& OutTransform)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Row = nullptr;
+				if (!Subject.IsValid()
+					|| !Subject->TryGetArrayField(TEXT("root"), Row)
+					|| Row == nullptr)
+				{
+					return false;
+				}
+				return PoseRow(*Row, OutTransform);
+			};
+			const TArray<TSharedPtr<FJsonValue>>* Samples = nullptr;
+			if (ProbeJson->TryGetArrayField(TEXT("samples"), Samples) && Samples != nullptr)
+			{
+				for (const TSharedPtr<FJsonValue>& SampleValue : *Samples)
+				{
+					const TSharedPtr<FJsonObject> Sample = SampleValue->AsObject();
+					const TSharedPtr<FJsonObject>* Subjects = nullptr;
+					if (!Sample.IsValid()
+						|| !Sample->TryGetObjectField(TEXT("subjects"), Subjects)
+						|| Subjects == nullptr)
 					{
-						for (int32 Index = 0; Index < 10; ++Index)
+						continue;
+					}
+					const double Time = Sample->GetNumberField(TEXT("time"));
+					for (const TPair<FString, TSharedPtr<FJsonValue>>& Subject :
+						(*Subjects)->Values)
+					{
+						const TSharedPtr<FJsonObject> SubjectObject = Subject.Value->AsObject();
+						FTransform Root = FTransform::Identity;
+						if (Time == ProbeRelationTime && RootRow(SubjectObject, Root))
 						{
-							Out[Index] = (*Values[Index]).AsNumber();
+							if (Subject.Key == FMtoUMultiSubjectFixtureBuilder::CharacterId())
+							{
+								ProbeCharacterWorld = Root;
+							}
+							else if (Subject.Key == FMtoUMultiSubjectFixtureBuilder::PropId())
+							{
+								ProbePropWorld = Root;
+							}
 						}
-					};
-					double CharacterRow[10];
-					double PropRow[10];
-					Row(*CharacterRootRow, CharacterRow);
-					Row(*PropRootRow, PropRow);
-					const FTransform CharacterWorld(
-						FQuat(CharacterRow[3], CharacterRow[4], CharacterRow[5], CharacterRow[6]),
-						FVector(CharacterRow[0], CharacterRow[1], CharacterRow[2]),
-						FVector(CharacterRow[7], CharacterRow[8], CharacterRow[9]));
-					const FTransform PropWorld(
-						FQuat(PropRow[3], PropRow[4], PropRow[5], PropRow[6]),
-						FVector(PropRow[0], PropRow[1], PropRow[2]),
-						FVector(PropRow[7], PropRow[8], PropRow[9]));
-					ProbeCharacterWorld = CharacterWorld;
-					ProbePropWorld = PropWorld;
-					AddInfo(FString::Printf(
-						TEXT("Maya pair placement: character root (%s), prop root (%s)"),
-						*CharacterWorld.GetTranslation().ToCompactString(),
-						*PropWorld.GetTranslation().ToCompactString()));
+						const TSharedPtr<FJsonObject>* WorldBones = nullptr;
+						if (SubjectObject.IsValid()
+							&& SubjectObject->TryGetObjectField(TEXT("world_bones"), WorldBones)
+							&& WorldBones != nullptr)
+						{
+							for (const TPair<FString, TSharedPtr<FJsonValue>>& Bone :
+								(*WorldBones)->Values)
+							{
+								FTransform BoneWorld = FTransform::Identity;
+								if (Bone.Value.IsValid()
+									&& Bone.Value->Type == EJson::Array
+									&& PoseRow(Bone.Value->AsArray(), BoneWorld))
+								{
+									FLandmarkSample Landmark;
+									Landmark.Time = Time;
+									Landmark.SubjectId = Subject.Key;
+									Landmark.BoneName = Bone.Key;
+									Landmark.MayaWorldCm = BoneWorld.GetTranslation();
+									ProbeLandmarks.Add(Landmark);
+								}
+							}
+						}
+					}
 				}
 			}
+			AddInfo(FString::Printf(
+				TEXT("Maya pair placement: character root (%s), prop root (%s); %d landmark samples"),
+				*ProbeCharacterWorld.GetTranslation().ToCompactString(),
+				*ProbePropWorld.GetTranslation().ToCompactString(),
+				ProbeLandmarks.Num()));
 		}
 	}
 
-	// Both anchors carry one common placement applied to the pose each object
-	// has in the scene: the pair therefore sits in the disposable world the way
-	// the scene shows it (their relative placement is the scene's), and each
-	// target's own rest frame is what the projection cancels at run time. The
-	// character anchor is the chosen common placement, off-origin and rotated.
+	// Both targets share one placement anchor. What the world shows is therefore
+	// exactly the scene's own arrangement: each object's evaluated Maya world
+	// pose travels in the wire pose, the rig's import convention is absorbed by
+	// the bind/frame projection, and the anchor only places the pair in the
+	// disposable world. Import convention, scene motion and common placement
+	// are each applied once, and none of them is re-added as a second anchor.
 	const FVector CharacterLocation(320.0, -180.0, 40.0);
 	const FRotator CharacterRotation(0.0, 25.0, 0.0);
 	const FTransform CommonPlacement(CharacterRotation, CharacterLocation);
-	// One common world translation on both anchors: the rig roots carry the
-	// scene's own import convention, which lands the pair under the level's
-	// floor plane at the chosen placement, and the floor would hide it from an
-	// elevated capture camera. A common translation leaves the pair's relative
-	// transform exactly as it was, so the placement contract above is
-	// unchanged; only the world position of the disposable pair moves.
-	const FTransform WorldLift(FVector(0.0, 0.0, 400.0));
-	const FTransform CharacterAnchorTransform =
-		(CommonPlacement * ProbeCharacterWorld) * WorldLift;
-	const FTransform PropAnchorTransform =
-		(CommonPlacement * ProbePropWorld) * WorldLift;
+	const FTransform CharacterAnchorTransform = CommonPlacement;
+	const FTransform PropAnchorTransform = CommonPlacement;
 	const FTransform SceneRelative = ProbeCharacterWorld.Inverse() * ProbePropWorld;
 
 	AActor* CharacterAnchor = nullptr;
@@ -2941,14 +3076,16 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	// The anchors reproduce the scene's own placement of the two objects, which
-	// is what "the pair keeps the scene's contact" means for a placement anchor.
-	const FTransform AnchorRelative = CharacterAnchorTransform.Inverse() * PropAnchorTransform;
-	AddInfo(FString::Printf(TEXT("scene relation: anchors %s vs Maya %s"),
-		*AnchorRelative.GetTranslation().ToCompactString(),
-		*SceneRelative.GetTranslation().ToCompactString()));
-	TestTrue(TEXT("the disposable scene reproduces the Maya pair's relative placement (contact)"),
-		MtoUSubjectTransformDelta(AnchorRelative, SceneRelative) < 1e-3);
+	// One common placement anchor means the anchors themselves carry no pair
+	// relation at all: the scene's arrangement reaches the world through the
+	// applied pose, which the landmark oracle below measures. Asserting the
+	// anchors' own relative transform here would only re-state that placement
+	// and would pass for a pair that lies sideways.
+	if (!TestTrue(TEXT("both real targets were spawned under one common placement"),
+			CharacterAnchorTransform.Equals(PropAnchorTransform)))
+	{
+		return false;
+	}
 
 	// The real targets' own skeletons, so the run's negotiation can be read
 	// against what the meshes actually need (and a matching Maya rig can be
@@ -3478,6 +3615,72 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// The independent world-space oracle: a landmark's actual Unreal world
+	// position has to equal Maya's own evaluated world position of that bone at
+	// the same source time, placed by the documented common anchor. Neither the
+	// bind/frame projection nor the receiver's root measurement takes part in
+	// the expectation, so an import convention applied twice, a sampled root used
+	// as a second anchor or a wrong axis mapping appears here as a metre-scale
+	// error even though every per-bone residual stays small.
+	const auto CheckWorldLandmarks = [this, &ProbeLandmarks](
+		const FString& Label,
+		double Time,
+		const FString& SubjectId,
+		USkeletalMeshComponent& Component,
+		const FTransform& Anchor)
+	{
+		int32 Compared = 0;
+		double MaxErrorCm = 0.0;
+		double HeadHeight = 0.0;
+		double PelvisHeight = 0.0;
+		for (const FLandmarkSample& Sample : ProbeLandmarks)
+		{
+			if (Sample.SubjectId != SubjectId
+				|| !FMath::IsNearlyEqual(Sample.Time, Time, 1.0e-6))
+			{
+				continue;
+			}
+			const FVector Expected = Anchor.TransformPosition(Sample.MayaWorldCm);
+			const FVector Actual = Component.GetBoneTransform(
+				FName(*Sample.BoneName), RTS_World).GetLocation();
+			const double ErrorCm = (Actual - Expected).Size();
+			MaxErrorCm = FMath::Max(MaxErrorCm, ErrorCm);
+			++Compared;
+			if (Sample.BoneName == TEXT("head"))
+			{
+				HeadHeight = Actual.Z;
+			}
+			else if (Sample.BoneName == TEXT("pelvis"))
+			{
+				PelvisHeight = Actual.Z;
+			}
+			AddInfo(FString::Printf(
+				TEXT("world landmark '%s' %s at t=%.3f: Maya %s -> expected %s, actual %s, error %.6f cm"),
+				*SubjectId, *Sample.BoneName, Time, *Sample.MayaWorldCm.ToCompactString(),
+				*Expected.ToCompactString(), *Actual.ToCompactString(), ErrorCm));
+		}
+		TestTrue(FString::Printf(
+				TEXT("%s: Maya's own landmarks were compared for '%s'"), *Label, *SubjectId),
+			Compared > 0);
+		// A centimetre-scale bound: the measured error is float noise at this
+		// scale, and the defect this oracle exists for is two orders larger.
+		TestTrue(FString::Printf(
+				TEXT("%s: '%s' holds Maya's world placement (max %.6f cm)"),
+				*Label, *SubjectId, MaxErrorCm),
+			MaxErrorCm < 1.0);
+		if (HeadHeight > 0.0 && PelvisHeight > 0.0)
+		{
+			// The landmark positions themselves state the pair is standing up:
+			// the head is above the pelvis by a body's length. A world rotation
+			// put on the pair by an anchor would collapse this from ~60 cm to
+			// almost nothing.
+			TestTrue(FString::Printf(
+					TEXT("%s: '%s' stands upright in the world (head %.1f cm above pelvis %.1f cm)"),
+					*Label, *SubjectId, HeadHeight, PelvisHeight),
+				HeadHeight > PelvisHeight + 50.0);
+		}
+	};
+
 	// A different skeleton's input must not silently drive this target: the
 	// character's own declaration against the prop target is refused, and a
 	// fresh negotiation with the target's own input is accepted.
@@ -3603,6 +3806,19 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 							LocalReceiver.GetSessionId(), 1, FirstFrame.Time,
 							{ { FMtoUMultiSubjectFixtureBuilder::CharacterId(), TEXT("applied") },
 								{ FMtoUMultiSubjectFixtureBuilder::PropId(), TEXT("applied") } });
+						// The world-space oracle at this held frame: each landmark
+						// must stand where Maya's own evaluation of the same time
+						// puts it once the common placement is applied. The bone
+						// residual above only proves the component pose; this
+						// proves the world placement, and a re-added import
+						// convention or a second root application shows up here as
+						// a metre-scale error.
+						CheckWorldLandmarks(TEXT("renegotiated frame"), FirstFrame.Time,
+							FMtoUMultiSubjectFixtureBuilder::CharacterId(), *LocalCharacterComponent,
+							CommonPlacement);
+						CheckWorldLandmarks(TEXT("renegotiated frame"), FirstFrame.Time,
+							FMtoUMultiSubjectFixtureBuilder::PropId(), *LocalPropComponent,
+							CommonPlacement);
 					}
 					// Independent removal on the real pair: only the C02 prop
 					// leaves and returns to its reference pose, while the C01
@@ -3631,6 +3847,13 @@ bool FMtoUMultiSubjectRealAssetTest::RunTest(const FString& Parameters)
 						ExpectApplied(*this, Line, TEXT("real character only"),
 							LocalReceiver.GetSessionId(), 2, CharacterFrame.Time,
 							{ { FMtoUMultiSubjectFixtureBuilder::CharacterId(), TEXT("applied") } });
+						// The other Maya time of the pair: the character's own
+						// landmarks must hold the same world relation, which also
+						// proves the pair is compared at two different source times
+						// instead of one repeated pose.
+						CheckWorldLandmarks(TEXT("character-only frame"), CharacterFrame.Time,
+							FMtoUMultiSubjectFixtureBuilder::CharacterId(), *LocalCharacterComponent,
+							CommonPlacement);
 					}
 					// Per-object numbers for the two lifecycle frames: the wire
 					// rows the real samples carried are what the mesh holds, and
@@ -4165,11 +4388,14 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// The review's counterexample: two same-parent sources, `Joint` and
-	// `Joint1`, both shaped like importer renames of the weighted target bone
-	// `Joint12`. Both see the complete candidate, so the two sources compete
-	// for one target and the negotiation refuses in either order instead of
-	// routing whichever source the declaration listed first to the target.
+	// The review's counterexample, with the product's rename precondition
+	// satisfied: two same-parent sources, `Joint` and `Joint1`, both shaped
+	// like importer renames of the weighted target bone `Joint12`, and each
+	// short name repeated in another declared branch - the distribution a real
+	// rig has, where the same short name exists under several namespaces. Both
+	// see the complete candidate, so the two sources compete for one target and
+	// the negotiation refuses in either order instead of routing whichever
+	// source the declaration listed first to the target.
 	const auto ContestedRefusal = [](
 		FAutomationTestBase& Test,
 		FMtoUMultiSubjectTarget& Target,
@@ -4187,6 +4413,13 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 			Other.Name = FName(Order == 0 ? TEXT("Joint1") : TEXT("Joint"));
 			Contested.Bones.Add(Other);
 			Contested.Bind.Add(Base.Bind[RenamedBoneIndex]);
+			// The repeated names that make each source rename-shaped at all: they
+			// hang below the declared root, where no target bone owns them, so
+			// they stay ignored export branches and only carry the count.
+			Contested.Bones.Add({ FName(TEXT("Joint")), 0 });
+			Contested.Bind.Add(Base.Bind[0]);
+			Contested.Bones.Add({ FName(TEXT("Joint1")), 0 });
+			Contested.Bind.Add(Base.Bind[0]);
 			FMtoUNegotiationMap Map;
 			const FString Refusal = Target.DescribeDeclarationMismatch(Contested, Map);
 			Test.TestFalse(FString::Printf(TEXT("%s: order %d is refused"), Label, Order),
@@ -4196,6 +4429,47 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 				Refusal.Contains(TEXT("ambiguous")) && Refusal.Contains(TargetName)
 					&& Refusal.Contains(TEXT("Joint")));
 		}
+	};
+
+	// A short name the declaration does *not* repeat is a different bone with a
+	// similar name, never an importer rename: the required target stays
+	// uncovered and the refusal explains the rename-shaped declaration instead
+	// of accepting it. The same declaration with the repeated name is accepted,
+	// which is the product's applicability condition.
+	const auto UniqueNameRefusal = [](
+		FAutomationTestBase& Test,
+		FMtoUMultiSubjectTarget& Target,
+		const FMtoUSubjectDeclaration& Base,
+		int32 RenamedBoneIndex,
+		const TCHAR* TargetName,
+		const TCHAR* Label)
+	{
+		FMtoUSubjectDeclaration Unique = Base;
+		Unique.Bones[RenamedBoneIndex].Name = FName(TEXT("Joint"));
+		FMtoUNegotiationMap Map;
+		const FString Refusal = Target.DescribeDeclarationMismatch(Unique, Map);
+		Test.TestFalse(FString::Printf(TEXT("%s: a globally unique short name is refused"),
+			Label), Refusal.IsEmpty());
+		Test.TestTrue(FString::Printf(TEXT("%s: the refusal names the uncovered target"),
+				Label),
+			Refusal.Contains(TargetName) && Refusal.Contains(TEXT("Joint")));
+		Test.TestTrue(FString::Printf(TEXT("%s: no rename was applied"), Label),
+			Map.ImportRenames.IsEmpty());
+		Test.TestTrue(FString::Printf(TEXT("%s: the necessary target stays uncovered"),
+				Label),
+			!Map.bCoversRequiredBones);
+
+		FMtoUSubjectDeclaration Repeated = Unique;
+		Repeated.Bones.Add({ FName(TEXT("Joint")), 0 });
+		Repeated.Bind.Add(Base.Bind[0]);
+		FMtoUNegotiationMap RepeatedMap;
+		Test.TestTrue(
+			FString::Printf(TEXT("%s: the same name repeated in another branch is accepted"),
+				Label),
+			Target.DescribeDeclarationMismatch(Repeated, RepeatedMap).IsEmpty());
+		Test.TestEqual(
+			FString::Printf(TEXT("%s: the repeated name maps through the rename"), Label),
+			RepeatedMap.ImportRenames.Num(), 1);
 	};
 
 	{
@@ -4213,6 +4487,8 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	ContestedRefusal(*this, CharacterTarget, Fixture.CharacterDeclaration, 3,
+		TEXT("Joint12"), TEXT("character"));
+	UniqueNameRefusal(*this, CharacterTarget, Fixture.CharacterDeclaration, 3,
 		TEXT("Joint12"), TEXT("character"));
 
 	// The same contested shape on the second subject target: the dual-subject
@@ -4237,6 +4513,8 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 	}
 	ContestedRefusal(*this, PropTarget, PropContested, 2,
 		TEXT("Joint12"), TEXT("prop"));
+	UniqueNameRefusal(*this, PropTarget, PropContested, 2,
+		TEXT("Joint12"), TEXT("prop"));
 
 	// A uniquely assignable rename resolves the same way in both sibling
 	// orders: `joint1` can only become `joint11`, which leaves `joint2` for
@@ -4255,8 +4533,12 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 	{
 		FReferenceSkeletonModifier Rename(
 			ArmsFixture.ArmsMesh->GetRefSkeleton(), ArmsFixture.ArmsSkeleton);
-		Rename.Rename(FName(TEXT("UpperArm_L")), FName(TEXT("joint11")));
-		Rename.Rename(FName(TEXT("UpperArm_R")), FName(TEXT("joint2")));
+		// The weighted (necessary) arm takes the name only one of the two
+		// rename-shaped sources can address; the other source is settled by the
+		// optional arm, so the unique assignment still spans both and the
+		// necessary relation stays uniquely determined.
+		Rename.Rename(FName(TEXT("UpperArm_L")), FName(TEXT("joint2")));
+		Rename.Rename(FName(TEXT("UpperArm_R")), FName(TEXT("joint11")));
 	}
 	FMtoUMultiSubjectTarget ArmsTarget;
 	if (!TestTrue(TEXT("the arms target passes the anchor preflight"),
@@ -4274,9 +4556,19 @@ bool FMtoUMultiSubjectRenameContractTest::RunTest(const FString& Parameters)
 	Chain.Bones.Add({ FName(TEXT("ArmsRoot")), INDEX_NONE });
 	Chain.Bind.Add(ArmsBase.Bind[0]);
 	Chain.Bones.Add({ FName(TEXT("joint")), 0 });
-	Chain.Bind.Add(ArmsBase.Bind[4]);
-	Chain.Bones.Add({ FName(TEXT("joint1")), 0 });
 	Chain.Bind.Add(ArmsBase.Bind[1]);
+	Chain.Bones.Add({ FName(TEXT("joint1")), 0 });
+	Chain.Bind.Add(ArmsBase.Bind[4]);
+	// The short names are repeated in another declared branch, the distribution
+	// the product's applicability condition requires: a branch below the root
+	// that no target bone belongs to, so it stays an ignored export branch and
+	// only carries the counts that make both sources rename-shaped.
+	Chain.Bones.Add({ FName(TEXT("Spare")), 0 });
+	Chain.Bind.Add(ArmsBase.Bind[0]);
+	Chain.Bones.Add({ FName(TEXT("joint")), 3 });
+	Chain.Bind.Add(ArmsBase.Bind[5]);
+	Chain.Bones.Add({ FName(TEXT("joint1")), 3 });
+	Chain.Bind.Add(ArmsBase.Bind[2]);
 	TArray<FString> Mappings[2];
 	for (int32 Order = 0; Order < 2; ++Order)
 	{
@@ -4401,6 +4693,427 @@ bool FMtoUMultiSubjectNonEssentialBindTest::RunTest(const FString& Parameters)
 	const FString Refusal = PropTarget.DescribeDeclarationMismatch(Essential, EssentialMap);
 	TestTrue(TEXT("the same difference on a necessary bone is refused"),
 		!Refusal.IsEmpty() && Refusal.Contains(TEXT("bind")) && Refusal.Contains(TEXT("PropBody")));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The world-space contract of a pair: both targets share one placement anchor,
+// and the arrangement the world shows is the scene's own - a non-zero offset
+// between the objects, a root that carries an import convention and a moving
+// reference parent all reach the world through the applied pose, never through
+// a second anchor. The expectation is composed from the authored scene rows, so
+// the projection under test takes no part in it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectWorldPlacementTest,
+	"MtoUMultiSubjectPrototype.WorldSpacePlacement",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectWorldPlacementTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	FMtoUMultiSubjectReceiver Receiver;
+	ON_SCOPE_EXIT
+	{
+		Receiver.Stop(TEXT("world placement check finished"));
+		Fixture.Destroy();
+	};
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// One common placement for both targets, off-origin and rotated, so a second
+	// application or a missing one is visible in the world numbers.
+	const FTransform CommonPlacement(FQuat(FRotator(0.0, 30.0, 0.0)), FVector(1200.0, -400.0, 90.0));
+	AActor* CharacterAnchor = nullptr;
+	AActor* PropAnchor = nullptr;
+	USkeletalMeshComponent* CharacterComponent = nullptr;
+	USkeletalMeshComponent* PropComponent = nullptr;
+	if (!TestTrue(TEXT("the world check's character target spawns"),
+			FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*Fixture.World,
+				TEXT("MtoU_WorldCharacterAnchor"), CommonPlacement.GetTranslation(),
+				CommonPlacement.Rotator(), *Fixture.CharacterMesh,
+				CharacterAnchor, CharacterComponent))
+		|| !TestTrue(TEXT("the world check's prop target spawns"),
+			FMtoUMultiSubjectFixtureBuilder::SpawnAssetTarget(*Fixture.World,
+				TEXT("MtoU_WorldPropAnchor"), CommonPlacement.GetTranslation(),
+				CommonPlacement.Rotator(), *Fixture.PropMesh,
+				PropAnchor, PropComponent)))
+	{
+		return false;
+	}
+	FMtoUMultiSubjectSessionConfig Config;
+	Config.Port = ReserveLoopbackPort();
+	Config.Scenario = TEXT("world-space-placement");
+	const TArray<FMtoUTargetRegistration> Registrations = {
+		{ FMtoUMultiSubjectFixtureBuilder::CharacterId(), CharacterAnchor, CharacterComponent },
+		{ FMtoUMultiSubjectFixtureBuilder::PropId(), PropAnchor, PropComponent } };
+	const TArray<FString> SubjectIds = {
+		FMtoUMultiSubjectFixtureBuilder::CharacterId(),
+		FMtoUMultiSubjectFixtureBuilder::PropId() };
+	if (!TestTrue(TEXT("the receiver starts on the world check's targets"),
+			Receiver.Start(*Fixture.World, Registrations, Config, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	Receiver.HandleClientLine(EncodeInit(Fixture.MakeInit(SubjectIds)).TrimEnd());
+	const int64 Session = Receiver.GetSessionId();
+	if (!TestTrue(TEXT("the world check's session is ready"), Session > 0))
+	{
+		return false;
+	}
+
+	// The authored scene of this frame: the two objects are apart, and both
+	// roots carry the motion of an animated reference parent. The prop's root
+	// also carries an import convention (90 degrees about X), so a placement
+	// that re-applies the sampled root - or its convention - cannot produce the
+	// scene's world numbers.
+	const double Step = 3.0;
+	FMtoUFrameMessage Frame = Fixture.MakeFrame(SubjectIds, 1, 1.0 + Step);
+	const FTransform CharacterParent(
+		FQuat(FRotator(0.0, 15.0 * Step, 0.0)), FVector(40.0 * Step, 25.0 * Step, 0.0));
+	const FTransform PropConvention(FQuat(FVector(1.0, 0.0, 0.0), PI / 2.0));
+	const FTransform PropParent(
+		FQuat(FRotator(0.0, 0.0, -20.0 * Step)),
+		PropConvention.TransformVector(FVector(120.0, 0.0, 45.0)));
+	TMap<FString, FTransform> RootWorlds;
+	for (FMtoUFrameSubject& Subject : Frame.Subjects)
+	{
+		const FTransform Parent = Subject.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId()
+			? CharacterParent
+			: PropParent * PropConvention;
+		Subject.Transforms[0] = Parent * Subject.Transforms[0];
+		RootWorlds.Add(Subject.Id, Subject.Transforms[0]);
+	}
+	TestTrue(TEXT("the two authored roots differ in placement and orientation"),
+		!RootWorlds[FMtoUMultiSubjectFixtureBuilder::CharacterId()].Equals(
+			RootWorlds[FMtoUMultiSubjectFixtureBuilder::PropId()]));
+	Receiver.HandleClientLine(EncodeFrame(Frame, Session).TrimEnd());
+	if (!TestTrue(TEXT("the world check's frame was applied"),
+			Receiver.GetAppliedFrameCount() == 1))
+	{
+		return false;
+	}
+
+	// The scene's own semantics, composed from the authored rows: the landmark's
+	// world pose is the root world followed by the parent-relative rows down to
+	// it. The projection under test is not part of this expectation.
+	const auto SceneWorld = [](const FMtoUFrameSubject& Subject,
+		const FMtoUSubjectDeclaration& Declaration, int32 BoneIndex)
+	{
+		// Composed exactly like the driver composes a component pose: a bone's
+		// world is its own row applied inside its parent's, so the chain is built
+		// from the root down with `child * parent`.
+		TArray<int32> Chain;
+		for (int32 Index = BoneIndex; Index != INDEX_NONE; Index = Declaration.Bones[Index].Parent)
+		{
+			Chain.Add(Index);
+		}
+		FTransform World = FTransform::Identity;
+		for (int32 Depth = Chain.Num() - 1; Depth >= 0; --Depth)
+		{
+			World = Subject.Transforms[Chain[Depth]] * World;
+		}
+		World.SetScale3D(FVector::OneVector);
+		return World;
+	};
+	const auto CheckLandmark = [this, &CommonPlacement, &SceneWorld](
+		const TCHAR* Label,
+		USkeletalMeshComponent& Component,
+		const FMtoUFrameSubject& Subject,
+		const FMtoUSubjectDeclaration& Declaration,
+		int32 BoneIndex,
+		FVector& OutWorld,
+		FVector& OutExpectedWorld)
+	{
+		const FTransform Scene = SceneWorld(Subject, Declaration, BoneIndex);
+		// The anchor is applied to the composed scene pose, exactly like the
+		// driver composes a root world from its component pose and the anchor.
+		const FTransform Expected = Scene * CommonPlacement;
+		const FName BoneName = Declaration.Bones[BoneIndex].Name;
+		const FTransform Actual = Component.GetBoneTransform(BoneName, RTS_World);
+		OutWorld = Actual.GetLocation();
+		OutExpectedWorld = Expected.GetLocation();
+		const double TranslationCm = (Actual.GetLocation() - Expected.GetLocation()).Size();
+		const double RotationDegrees = FMath::RadiansToDegrees(
+			Actual.GetRotation().AngularDistance(Expected.GetRotation()));
+		AddInfo(FString::Printf(
+			TEXT("world placement %s (%s): scene %s -> anchor %s, actual %s (%.6f cm, %.6f deg)"),
+			Label, *BoneName.ToString(), *Scene.GetLocation().ToCompactString(),
+			*Expected.GetLocation().ToCompactString(), *Actual.GetLocation().ToCompactString(),
+			TranslationCm, RotationDegrees));
+		TestTrue(FString::Printf(TEXT("%s holds the scene's world placement"), Label),
+			TranslationCm < 0.5);
+		TestTrue(FString::Printf(TEXT("%s holds the scene's world orientation"), Label),
+			RotationDegrees < 0.1);
+	};
+
+	const FMtoUFrameSubject* CharacterSubject = Frame.Subjects.FindByPredicate(
+		[](const FMtoUFrameSubject& Candidate)
+		{
+			return Candidate.Id == FMtoUMultiSubjectFixtureBuilder::CharacterId();
+		});
+	const FMtoUFrameSubject* PropSubject = Frame.Subjects.FindByPredicate(
+		[](const FMtoUFrameSubject& Candidate)
+		{
+			return Candidate.Id == FMtoUMultiSubjectFixtureBuilder::PropId();
+		});
+	if (!TestTrue(TEXT("the authored frame carries both subjects"),
+			CharacterSubject != nullptr && PropSubject != nullptr))
+	{
+		return false;
+	}
+	FVector CharacterWorld = FVector::ZeroVector;
+	FVector PropWorld = FVector::ZeroVector;
+	FVector ExpectedCharacterWorld = FVector::ZeroVector;
+	FVector ExpectedPropWorld = FVector::ZeroVector;
+	const FReferenceSkeleton& CharacterSkeleton = Fixture.CharacterMesh->GetRefSkeleton();
+	const FReferenceSkeleton& PropSkeleton = Fixture.PropMesh->GetRefSkeleton();
+	CheckLandmark(TEXT("character head"), *CharacterComponent, *CharacterSubject,
+		Fixture.CharacterDeclaration,
+		CharacterSkeleton.FindBoneIndex(FName(TEXT("Head"))), CharacterWorld,
+		ExpectedCharacterWorld);
+	CheckLandmark(TEXT("prop tip"), *PropComponent, *PropSubject,
+		Fixture.PropDeclaration,
+		PropSkeleton.FindBoneIndex(
+			FName(TEXT("PropTip_0123456789abcdef0123456789abcdef"))), PropWorld,
+		ExpectedPropWorld);
+
+	// The pair's arrangement in the world is the scene's arrangement, and the
+	// anchors are identical, so the separation can only come from the applied
+	// pose: the prop stands away from the character by the authored offset,
+	// turned by the one common placement.
+	const FVector ActualSeparation = PropWorld - CharacterWorld;
+	const FVector ExpectedSeparation = ExpectedPropWorld - ExpectedCharacterWorld;
+	AddInfo(FString::Printf(
+		TEXT("pair separation: anchored scene %s, world %s, error %.6f cm"),
+		*ExpectedSeparation.ToCompactString(), *ActualSeparation.ToCompactString(),
+		(ActualSeparation - ExpectedSeparation).Size()));
+	TestTrue(TEXT("the pair is separated in the world, not coincident"),
+		ActualSeparation.Size() > 100.0);
+	TestTrue(TEXT("the pair keeps the scene's separation through one anchor"),
+		(ActualSeparation - ExpectedSeparation).Size() < 0.5);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The necessary relation decides acceptance and nothing outside it can veto:
+// a target bone that deforms nothing is resolved after that relation is fixed,
+// so an ambiguity there leaves bones at their reference pose with an explicit
+// report instead of refusing the declaration, an optional candidate never
+// changes which declared bone drives a necessary target, and an ambiguity
+// inside the necessary range is still refused.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMtoUMultiSubjectNecessaryScopeTest,
+	"MtoUMultiSubjectPrototype.NecessaryScopeMapping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMultiSubjectNecessaryScopeTest::RunTest(const FString& Parameters)
+{
+	FMtoUMultiSubjectFixture Fixture;
+	ON_SCOPE_EXIT
+	{
+		Fixture.Destroy();
+	};
+	FString Error;
+	if (!TestTrue(TEXT("the character-prop fixture builds"),
+			FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Fixture, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	FMtoUMultiSubjectTarget PropTarget;
+	if (!TestTrue(TEXT("the prop target passes the anchor preflight"),
+			PropTarget.Initialize(
+				{ FMtoUMultiSubjectFixtureBuilder::PropId(), Fixture.PropAnchor, Fixture.PropComponent },
+				Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const FReferenceSkeleton& PropSkeleton = Fixture.PropMesh->GetRefSkeleton();
+	const int32 WeightedLeaf = PropSkeleton.FindBoneIndex(
+		FName(TEXT("PropTip_0123456789abcdef0123456789abcdef")));
+	const int32 EndBone = PropSkeleton.FindBoneIndex(FName(TEXT("PropTipEnd")));
+	TArray<bool> Required;
+	FString SkinProblem;
+	if (!TestTrue(TEXT("the prop mesh's necessary set is readable"),
+			FMtoUMultiSubjectProtocol::CollectRequiredTargetBones(
+				*Fixture.PropMesh, Required, SkinProblem)))
+	{
+		AddError(SkinProblem);
+		return false;
+	}
+	if (!TestTrue(TEXT("the disputed bones exist"),
+			WeightedLeaf != INDEX_NONE && EndBone != INDEX_NONE
+				&& Required.IsValidIndex(EndBone) && !Required[EndBone]
+				&& Required.IsValidIndex(WeightedLeaf) && Required[WeightedLeaf]))
+	{
+		return false;
+	}
+
+	// The review's counterexample: the weighted chain keeps the same necessary
+	// declaration, while the non-required `PropTipEnd` becomes `End12` and two
+	// declared bones at the same source parent claim it. Both orders must accept
+	// the declaration: the two sources only compete for a target bone that
+	// deforms nothing, which stays at its reference pose and is reported.
+	{
+		FReferenceSkeletonModifier Rename(
+			Fixture.PropMesh->GetRefSkeleton(), Fixture.PropSkeleton);
+		Rename.Rename(FName(TEXT("PropTipEnd")), FName(TEXT("End12")));
+	}
+	FMtoUSubjectDeclaration Optional = Fixture.PropDeclaration;
+	Optional.Bones[3].Name = FName(TEXT("End"));
+	FMtoUBoneDeclaration OtherEnd = Optional.Bones[3];
+	OtherEnd.Name = FName(TEXT("End1"));
+	Optional.Bones.Add(OtherEnd);
+	Optional.Bind.Add(Fixture.PropDeclaration.Bind[3]);
+	// Each disputed short name is repeated in another declared branch, so both
+	// sources really are rename-shaped for the product's applicability
+	// condition; the donors hang below the declared root, where no target bone
+	// owns them, and stay ignored export branches.
+	Optional.Bones.Add({ FName(TEXT("End")), 0 });
+	Optional.Bind.Add(Fixture.PropDeclaration.Bind[0]);
+	Optional.Bones.Add({ FName(TEXT("End1")), 0 });
+	Optional.Bind.Add(Fixture.PropDeclaration.Bind[0]);
+	for (int32 Order = 0; Order < 2; ++Order)
+	{
+		if (Order == 1)
+		{
+			Swap(Optional.Bones[3].Name, Optional.Bones[4].Name);
+		}
+		FMtoUNegotiationMap Map;
+		const FString Refusal = PropTarget.DescribeDeclarationMismatch(Optional, Map);
+		AddInfo(FString::Printf(TEXT("optional order %d: '%s'"), Order, *Refusal));
+		TestTrue(TEXT("an ambiguity outside the necessary set does not veto the declaration"),
+			Refusal.IsEmpty());
+		// The necessary bones are driven exactly as before, and the disputed
+		// optional bone is reported as one that keeps its reference pose.
+		TestTrue(TEXT("every necessary target bone stays driven"),
+			Map.bCoversRequiredBones
+				&& Map.DrivenTargetBones.Contains(WeightedLeaf)
+				&& Map.SourceToTarget[2] == WeightedLeaf);
+		TestTrue(TEXT("the unsettled optional target is reported"),
+			Map.UndrivenTargetBones.Contains(FName(TEXT("End12"))));
+		TestEqual(TEXT("the optional ambiguity is reported once per order"),
+			Map.OptionalAmbiguities.Num(), 1);
+		TestTrue(TEXT("the optional ambiguity names the target and its mapped parent"),
+			Map.OptionalAmbiguities.Num() == 1
+				&& Map.OptionalAmbiguities[0].Contains(TEXT("End12"))
+				&& Map.OptionalAmbiguities[0].Contains(TEXT("PropTip_0123")));
+	}
+
+	// The same declaration without the optional source branches: the necessary
+	// relation is unchanged, so acceptance does not depend on them.
+	{
+		FMtoUSubjectDeclaration NecessaryOnly = Optional;
+		NecessaryOnly.Bones.SetNum(3);
+		NecessaryOnly.Bind.SetNum(3);
+		FMtoUNegotiationMap Map;
+		const FString Refusal = PropTarget.DescribeDeclarationMismatch(NecessaryOnly, Map);
+		TestTrue(TEXT("the same necessary bones are accepted without the optional branches"),
+			Refusal.IsEmpty());
+		TestEqual(TEXT("the necessary assignment is the same assignment"),
+			Map.SourceToTarget[2], WeightedLeaf);
+		TestTrue(TEXT("the optional target is still reported as undriven"),
+			Map.UndrivenTargetBones.Contains(FName(TEXT("End12"))));
+		TestTrue(TEXT("no optional ambiguity remains"), Map.OptionalAmbiguities.IsEmpty());
+	}
+
+	// An optional candidate the same declared bone could also address through the
+	// rename form must not disturb its unique necessary assignment: the source
+	// drives the necessary target, and the optional target stays at its
+	// reference pose because nothing declared owns it. The optional bone is
+	// added to this fixture's target with no skin weight, so it deforms nothing.
+	{
+		FMtoUMultiSubjectFixture Second;
+		ON_SCOPE_EXIT
+		{
+			Second.Destroy();
+		};
+		if (!TestTrue(TEXT("a second character-prop fixture builds"),
+				FMtoUMultiSubjectFixtureBuilder::Build(TEXT("character-prop"), Second, Error)))
+		{
+			AddError(Error);
+			return false;
+		}
+		FMtoUMultiSubjectTarget SecondTarget;
+		if (!TestTrue(TEXT("the second prop target passes the anchor preflight"),
+				SecondTarget.Initialize(
+					{ FMtoUMultiSubjectFixtureBuilder::PropId(), Second.PropAnchor, Second.PropComponent },
+					Error)))
+		{
+			AddError(Error);
+			return false;
+		}
+		{
+			FReferenceSkeletonModifier Target(
+				Second.PropMesh->GetRefSkeleton(), Second.PropSkeleton);
+			Target.Rename(
+				FName(TEXT("PropTip_0123456789abcdef0123456789abcdef")), FName(TEXT("Tip12")));
+			Target.Add(FMeshBoneInfo(FName(TEXT("Tip1")), TEXT("Tip1"), 1), FTransform::Identity);
+		}
+		const FReferenceSkeleton& SecondSkeleton = Second.PropMesh->GetRefSkeleton();
+		const int32 Tip12 = SecondSkeleton.FindBoneIndex(FName(TEXT("Tip12")));
+		const int32 Tip1 = SecondSkeleton.FindBoneIndex(FName(TEXT("Tip1")));
+		FMtoUSubjectDeclaration Contested = Second.PropDeclaration;
+		Contested.Bones[2].Name = FName(TEXT("Tip"));
+		// The repeated short name that makes the rename applicable at all: the
+		// second `Tip` hangs below the declared root, where no target bone owns
+		// it, so it is an ignored export branch carrying only the count.
+		Contested.Bones.Add({ FName(TEXT("Tip")), 0 });
+		Contested.Bind.Add(Second.PropDeclaration.Bind[0]);
+		if (!TestTrue(TEXT("the necessary and optional rename-shaped targets exist"),
+				Tip12 != INDEX_NONE && Tip1 != INDEX_NONE && Tip12 != Tip1))
+		{
+			return false;
+		}
+		FMtoUNegotiationMap ContestedMap;
+		const FString ContestedRefusal =
+			SecondTarget.DescribeDeclarationMismatch(Contested, ContestedMap);
+		AddInfo(TEXT("optional candidate beside a necessary assignment: ") + ContestedRefusal);
+		TestTrue(TEXT("an optional candidate does not change the necessary assignment"),
+			ContestedRefusal.IsEmpty());
+		TestEqual(TEXT("the necessary target takes the rename"), ContestedMap.ImportRenames.Num(), 1);
+		TestTrue(TEXT("the rename is the necessary pairing"),
+			ContestedMap.ImportRenames.Num() == 1
+				&& ContestedMap.ImportRenames[0].Contains(TEXT("Tip -> Tip12")));
+		TestEqual(TEXT("the declared bone drives the necessary target"),
+			ContestedMap.SourceToTarget[2], Tip12);
+		TestEqual(TEXT("the optional rename-shaped target keeps its reference pose"),
+			ContestedMap.UndrivenTargetBones.Num(), 1);
+		TestTrue(TEXT("the undriven target is the optional one"),
+			ContestedMap.UndrivenTargetBones.Contains(FName(TEXT("Tip1"))));
+		TestTrue(TEXT("the optional target is not an ambiguity"),
+			ContestedMap.OptionalAmbiguities.IsEmpty());
+
+		// Inside the necessary range nothing is relaxed: two declared bones
+		// claiming one weighted target still refuse in both orders.
+		FMtoUSubjectDeclaration Necessary = Contested;
+		Necessary.Bones[3].Name = FName(TEXT("Tip"));
+		Necessary.Bones[3].Parent = 1;
+		for (int32 Order = 0; Order < 2; ++Order)
+		{
+			FMtoUSubjectDeclaration Ordered = Necessary;
+			if (Order == 1)
+			{
+				Swap(Ordered.Bones[2].Name, Ordered.Bones[3].Name);
+			}
+			FMtoUNegotiationMap Map;
+			const FString Refusal =
+				SecondTarget.DescribeDeclarationMismatch(Ordered, Map);
+			TestTrue(FString::Printf(
+					TEXT("order %d: two sources for one necessary target are refused"), Order),
+				!Refusal.IsEmpty() && Refusal.Contains(TEXT("ambiguous"))
+					&& Refusal.Contains(TEXT("Tip12")));
+		}
+	}
 	return true;
 }
 
