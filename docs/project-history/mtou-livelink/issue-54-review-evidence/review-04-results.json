@@ -1,0 +1,303 @@
+{
+  "baseline": "b593dad42849705873c4d1b59f633992a966f4e3",
+  "date": "2026-10-13",
+  "provenance": "review-04 executed independently; runtime source unchanged",
+  "environment": {
+    "maya": "2024",
+    "unreal": "5.7.4",
+    "os": "Windows 11"
+  },
+  "python_tests": 23,
+  "maya_host_checks": 104,
+  "maya_host_failures": 0,
+  "repository_tests": {
+    "passed": 37,
+    "skipped": 0
+  },
+  "builds": [
+    "Backups disposable shell: Succeeded (up to date)",
+    "diagnostic host: Succeeded (up to date)"
+  ],
+  "diagnostic_source_match": {
+    "original_files_equal": 18,
+    "review_diagnostics_sha256": "463570df2563e25d7b7751b449807b3887801af1a8fa9cce6b34713a870e15b7"
+  },
+  "runs": {
+    "ue-suite": {
+      "succeeded": 17,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.BindFrameProjection",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "rotated-root projection delta: 0.000000030"
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.CharacterPropStream",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.CommandLineArguments",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.DriverExitOwnership",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.FixtureAndAnchorRules",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NecessaryScopeMapping",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "optional order 0: ''",
+            "optional order 1: ''",
+            "optional candidate beside a necessary assignment: "
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NegotiationRefusals",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NonEssentialBindDifferences",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.OwnershipRenegotiation",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RealAssetPair",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Real-asset check not requested; supply MtoUMultiSubjectMayapy, MtoUMultiSubjectPeer, MtoUMultiSubjectMayaScene, the two mesh flags and MtoUMultiSubjectCharacterRoot."
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RealMayaPeer",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Maya peer: frames=4 max_latency_ms=16.00 log=<scratch>/mtou-issue54/review-20261013/ue-suite/maya-peer-character-prop/mtou-multi-subject-maya.log"
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RenameCandidateContracts",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.SequencerTakeover",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.SessionAndTimeIdentity",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WeightedBoneMotion",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WorldCleanup",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WorldSpacePlacement",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "world placement character head (Head): scene V(X=178.34, Y=170.72, Z=66.64) -> anchor V(X=1269.09, Y=-162.99, Z=156.64), actual V(X=1269.09, Y=-162.99, Z=156.64) (0.000005 cm, 0.000000 deg)",
+            "world placement prop tip (PropTip_0123456789abcdef0123456789abcdef): scene V(X=104.44, Y=-1.81, Z=-54.45) -> anchor V(X=1291.36, Y=-349.35, Z=35.55), actual V(X=1291.36, Y=-349.35, Z=35.55) (0.000002 cm, 0.000002 deg)",
+            "pair separation: anchored scene V(X=22.27, Y=-186.36, Z=-121.10), world V(X=22.27, Y=-186.36, Z=-121.10), error 0.000005 cm"
+          ]
+        }
+      ],
+      "executed": 16,
+      "skipped_inside_success": [
+        "MtoUMultiSubjectPrototype.RealAssetPair (no asset arguments; executed separately)"
+      ]
+    },
+    "ue-arms": {
+      "succeeded": 1,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.RealMayaPeer",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Maya peer: frames=4 max_latency_ms=0.00 log=<scratch>/mtou-issue54/review-20261013/ue-arms/maya-peer-character-arms/mtou-multi-subject-maya.log"
+          ]
+        }
+      ]
+    },
+    "diagnostics": {
+      "succeeded": 2,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "Issue54Review.NonRequiredAmbiguity",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "order=0 optional_target=3 required=false result=",
+            "order=1 optional_target=3 required=false result=",
+            "same necessary declaration without optional branches: "
+          ]
+        },
+        {
+          "test": "Issue54Review.UniqueNameRename",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "unique Joint -> required Joint12: error='target bone 'Joint12' below 'Chest' deforms the mesh but the declaration drives no bone for it; declared 'Joint' (its short name occurs once in this declaration, so it is not an import rename) look like importer renames of it and were not applied', target=-1, rename_count=0"
+          ]
+        }
+      ]
+    },
+    "realpair": {
+      "succeeded": 0,
+      "succeededWithWarnings": 1,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.RealAssetPair",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 174,
+          "observations": [
+            "world oracle landmarks for 'character': head, pelvis",
+            "world oracle landmarks for 'prop': pelvis",
+            "Maya pair placement: character root (V(0)), prop root (V(0)); 9 landmark samples",
+            "character: declared=1399 driven=1399 required=647 source_only=0 undriven=0",
+            "prop: declared=1502 driven=1502 required=187 source_only=0 undriven=0",
+            "real pair deltas: max_bone=0.001510 max_root_world=0.000523",
+            "per-frame pair relation: t=1.000 V(0); t=120.000 V(0); t=60.000 V(0); t=60.000 V(0)",
+            "Morph comparison: 428 curve values, max delta 0.000001236",
+            "world landmark 'character' head at t=120.000: Maya V(X=6.84, Y=3.66, Z=167.40) -> expected V(X=324.66, Y=-173.79, Z=207.40), actual V(X=324.66, Y=-173.79, Z=207.40), error 0.000004 cm",
+            "world landmark 'character' pelvis at t=120.000: Maya V(X=5.92, Y=6.12, Z=106.01) -> expected V(X=322.78, Y=-171.95, Z=146.01), actual V(X=322.78, Y=-171.95, Z=146.01), error 0.000002 cm",
+            "world landmark 'prop' pelvis at t=120.000: Maya V(Y=0.95, Z=106.69) -> expected V(X=319.60, Y=-179.14, Z=146.69), actual V(X=319.60, Y=-179.14, Z=146.69), error 0.000000 cm",
+            "world landmark 'character' head at t=1.000: Maya V(X=7.50, Y=5.81, Z=167.61) -> expected V(X=324.34, Y=-171.56, Z=207.61), actual V(X=324.34, Y=-171.56, Z=207.61), error 0.000006 cm",
+            "world landmark 'character' pelvis at t=1.000: Maya V(X=5.92, Y=5.25, Z=106.05) -> expected V(X=323.15, Y=-172.74, Z=146.05), actual V(X=323.15, Y=-172.74, Z=146.05), error 0.000001 cm",
+            "real lifecycle deltas: max=0.001459 character_pose_change=54.763369",
+            "real lifecycle evidence: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/lifecycle/mtou-multi-subject-c01-c02-renegotiation-unreal.json",
+            "BaseColor framing: center V(X=319.95, Y=-168.86, Z=134.44) radius 129.8 eye V(X=99.22, Y=-389.59, Z=244.80)",
+            "BaseColor screenshot requested: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/basecolor-c01-c02.png",
+            "BaseColor framing (separated pair): center V(X=319.95, Y=-39.58, Z=134.44) radius 202.4 eye V(X=-24.13, Y=-383.65, Z=306.47)",
+            "BaseColor screenshot requested: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/basecolor-c01-c02-separated.png",
+            "Suppressed expected ('Warning') level log message or higher matching 'AnimGraphNode_KawaiiPhysics' 100 times."
+          ]
+        }
+      ],
+      "warning_categories": {
+        "empty_engine_version": 171,
+        "missing_custom_version": 1,
+        "missing_KawaiiPhysics_script_packages": 2
+      },
+      "world_oracle": {
+        "probe_samples": 9,
+        "actual_comparisons": 5,
+        "compared_times": [
+          120,
+          1
+        ],
+        "max_error_cm": 6e-06
+      },
+      "metric_boundary": "bone/root/lifecycle deltas use max(translation component cm, rotation radians, dimensionless scale); they are not pure centimetres or a vertex-deformation measurement.",
+      "visual_boundary": "Common-anchor capture overlaps the pair and contains unresolved checker materials. Separated BaseColor capture shows both upright target meshes completely in frame; C02 is the supplied body/clothes mesh without a head. Separation moves the disposable prop anchor for visibility only; spatial acceptance uses the common-anchor numeric oracle."
+    }
+  },
+  "source_artifact_sha256": {
+    "ue-suite/report/index.json": "7cc1c11bdd799f1a8734e0b9dbdfc3adb453894e0e1bb4e30eb8e639d31b910e",
+    "ue-arms/report/index.json": "1b02cf9596972b8baf56e6377510464dffaa3b854a9c4c534909d04a6a8a70fa",
+    "diagnostics/report/index.json": "f558fd94b78a8c5a63e46015cabfedfdd31ca4c0efe5399761fceab90d37976a",
+    "realpair/report/index.json": "3b6c8a5f4a6d9966fe443ca26ad25f42c718da336a1ee345a23931dfb9e254e1",
+    "host.json": "0a73c15d563e0cd7d7cc677177235965054d02d08b1fe35c1d1563a4bed559d2",
+    "realpair/c01-c02/mtou-multi-subject-maya.json": "2a8d3cde91dd9536d671df01d6a1a36800ed5019c050d9b3b745df968bc12371",
+    "realpair/c01-c02/mtou-multi-subject-c01-c02-unreal.json": "6b7fc40a971b7be4ad3d4d71bea69c6ccca88adbb794cca336a37427a1c83f31",
+    "realpair/c01-c02/mtou-multi-subject-probe.json": "e169fcd5c9e348efe3423ddba4bc830d8dcea4963c9cd87f69b42c7b5b79ad62",
+    "basecolor-c01-c02.png": "055bd376d395082c572a911cccf7a54e5bfb4da9a2774df308df91930963a5be",
+    "basecolor-c01-c02-separated.png": "fb1f6267d9934178f7fbf1bc606e5cf785db420f78d40d88df8e6dc42d003807"
+  },
+  "real_maya_checks": [
+    {
+      "check": "references present for character+prop",
+      "ok": true
+    },
+    {
+      "check": "frames applied for character+prop",
+      "ok": true
+    },
+    {
+      "check": "the planned reverse/re-edit source times were streamed",
+      "ok": true
+    },
+    {
+      "check": "generated rig files unchanged by the session",
+      "ok": true
+    },
+    {
+      "check": "supplied scene unchanged on disk",
+      "ok": true
+    }
+  ]
+}
