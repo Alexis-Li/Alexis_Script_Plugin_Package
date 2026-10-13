@@ -276,7 +276,10 @@
     "realpair/c01-c02/mtou-multi-subject-c01-c02-unreal.json": "6b7fc40a971b7be4ad3d4d71bea69c6ccca88adbb794cca336a37427a1c83f31",
     "realpair/c01-c02/mtou-multi-subject-probe.json": "e169fcd5c9e348efe3423ddba4bc830d8dcea4963c9cd87f69b42c7b5b79ad62",
     "basecolor-c01-c02.png": "055bd376d395082c572a911cccf7a54e5bfb4da9a2774df308df91930963a5be",
-    "basecolor-c01-c02-separated.png": "fb1f6267d9934178f7fbf1bc606e5cf785db420f78d40d88df8e6dc42d003807"
+    "basecolor-c01-c02-separated.png": "fb1f6267d9934178f7fbf1bc606e5cf785db420f78d40d88df8e6dc42d003807",
+    "ue-suite/maya-peer-character-prop/mtou-multi-subject-character-prop-unreal.json": "4a0bfead291ffa265acb0f4cdb053c28d9c0b78cbba5a0730da567f557b1a980",
+    "ue-arms/maya-peer-character-arms/mtou-multi-subject-character-arms-unreal.json": "ca9c82c9b8cac78d73e5a0857d2caab42a413607205d3f09d76788a750f861d0",
+    "realpair/c01-c02/lifecycle/mtou-multi-subject-c01-c02-renegotiation-unreal.json": "7d260ed5de598c0a94d4867dd47ee81823fca73c93f654724fb1f7b533dd0410"
   },
   "real_maya_checks": [
     {
@@ -299,5 +302,504 @@
       "check": "supplied scene unchanged on disk",
       "ok": true
     }
-  ]
+  ],
+  "maya_host_assertions": [
+    {
+      "check": "generated rigs are refused inside tracked source",
+      "ok": true
+    },
+    {
+      "check": "three rigs materialised",
+      "ok": true
+    },
+    {
+      "check": "rig arms file exists",
+      "ok": true
+    },
+    {
+      "check": "rig arms has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "rig character file exists",
+      "ok": true
+    },
+    {
+      "check": "rig character has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "rig prop file exists",
+      "ok": true
+    },
+    {
+      "check": "rig prop has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "two independent references",
+      "ok": true
+    },
+    {
+      "check": "references keep their namespaces",
+      "ok": true
+    },
+    {
+      "check": "scene frame rate is the negotiated one",
+      "ok": true
+    },
+    {
+      "check": "both subjects are joints with explicit long roots",
+      "ok": true
+    },
+    {
+      "check": "duplicate bone names across subjects are isolated",
+      "ok": true
+    },
+    {
+      "check": "Morph alias is shared across subjects",
+      "ok": true
+    },
+    {
+      "check": "each Morph plug belongs to its own namespace",
+      "ok": true
+    },
+    {
+      "check": "init declares exactly the permitted named ids",
+      "ok": true
+    },
+    {
+      "check": "init bind carries one 10-number row per bone",
+      "ok": true
+    },
+    {
+      "check": "character Maya bind equals authored joint-local translations",
+      "ok": true
+    },
+    {
+      "check": "prop Maya bind equals authored joint-local translations",
+      "ok": true
+    },
+    {
+      "check": "character root is the keyed linear pose at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "prop root is the keyed linear pose at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "character Morph at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "prop Morph at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "the two subjects evaluate different Morph values",
+      "ok": true
+    },
+    {
+      "check": "roots move with Maya time",
+      "ok": true
+    },
+    {
+      "check": "non-root bones keep their parent-relative offset",
+      "ok": true
+    },
+    {
+      "check": "a non-root bone row is not the root world pose",
+      "ok": true
+    },
+    {
+      "check": "character pose is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "character Morph is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "prop pose is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "prop Morph is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "missing root is refused",
+      "ok": true
+    },
+    {
+      "check": "ambiguous root pattern is refused",
+      "ok": true
+    },
+    {
+      "check": "non-joint root is refused",
+      "ok": true
+    },
+    {
+      "check": "one root for two subjects is refused",
+      "ok": true
+    },
+    {
+      "check": "swapped role is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong bone list is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong curve list is refused",
+      "ok": true
+    },
+    {
+      "check": "a static ancestor is reported but not animated",
+      "ok": true
+    },
+    {
+      "check": "the animated ancestor socket is reported",
+      "ok": true
+    },
+    {
+      "check": "strict ancestors refuse the animated socket",
+      "ok": true
+    },
+    {
+      "check": "an animated session parent can host the referenced prop root",
+      "ok": true
+    },
+    {
+      "check": "the animated session parent is reported as an ancestor",
+      "ok": true
+    },
+    {
+      "check": "strict ancestors refuse the animated session parent",
+      "ok": true
+    },
+    {
+      "check": "the parented prop root world pose moves with its parent",
+      "ok": true
+    },
+    {
+      "check": "sampled world pose equals the moved DAG matrix at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the parent motion is applied exactly once at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the referenced prop keeps its own local pose at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the character subject is unaffected by the prop parent at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "sampled world pose equals the moved DAG matrix at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the parent motion is applied exactly once at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the referenced prop keeps its own local pose at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the character subject is unaffected by the prop parent at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the stub session exits cleanly",
+      "ok": true
+    },
+    {
+      "check": "every frame was applied",
+      "ok": true
+    },
+    {
+      "check": "frame serials and times are strict",
+      "ok": true
+    },
+    {
+      "check": "both subjects were applied before the remove",
+      "ok": true
+    },
+    {
+      "check": "only the remaining subject streamed after the remove",
+      "ok": true
+    },
+    {
+      "check": "the remove event disabled one subject only",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the same number of frames",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the same serials and times",
+      "ok": true
+    },
+    {
+      "check": "the receiver's frames carry what Maya recorded",
+      "ok": true
+    },
+    {
+      "check": "the receiver verified the declared skeletons",
+      "ok": true
+    },
+    {
+      "check": "one init and one remove reached the receiver",
+      "ok": true
+    },
+    {
+      "check": "the remove names the disabled subject",
+      "ok": true
+    },
+    {
+      "check": "a reverse scrub and a same-frame re-edit are accepted",
+      "ok": true
+    },
+    {
+      "check": "every frame and remove names its negotiated session",
+      "ok": true
+    },
+    {
+      "check": "a frame from a previous session is refused",
+      "ok": true
+    },
+    {
+      "check": "fractional times reach the wire",
+      "ok": true
+    },
+    {
+      "check": "fractional Morph value is the linear sample",
+      "ok": true
+    },
+    {
+      "check": "the mismatched arms init was refused by the receiver",
+      "ok": true
+    },
+    {
+      "check": "the mismatched init declared the arms subject with the full-body skeleton and left the character correct",
+      "ok": true
+    },
+    {
+      "check": "the accepted init declares both real skeletons",
+      "ok": true
+    },
+    {
+      "check": "a fresh negotiation on the same connection succeeded",
+      "ok": true
+    },
+    {
+      "check": "frames applied after the renegotiation",
+      "ok": true
+    },
+    {
+      "check": "the receiver answered with two sessions' worth of state",
+      "ok": true
+    },
+    {
+      "check": "role replacement used two connections and two pairs",
+      "ok": true
+    },
+    {
+      "check": "the replacement pair negotiated again",
+      "ok": true
+    },
+    {
+      "check": "a spec builds its own rigs",
+      "ok": true
+    },
+    {
+      "check": "a spec-driven session applies frames",
+      "ok": true
+    },
+    {
+      "check": "a spec-driven frame keeps its sampled values",
+      "ok": true
+    },
+    {
+      "check": "a spec bone's resting rotation reaches the wire bind",
+      "ok": true
+    },
+    {
+      "check": "a Morph override is applied to the disposable scene and streamed",
+      "ok": true
+    },
+    {
+      "check": "a shared target root is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong session id is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong serial is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong time is refused",
+      "ok": true
+    },
+    {
+      "check": "silent receiver is refused",
+      "ok": true
+    },
+    {
+      "check": "refused init is refused",
+      "ok": true
+    },
+    {
+      "check": "a receiver that closes mid-session is reported",
+      "ok": true
+    },
+    {
+      "check": "--drop-after closes the connection abruptly",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the abrupt disconnect",
+      "ok": true
+    },
+    {
+      "check": "the lifecycle probe receiver starts from zero sessions",
+      "ok": true
+    },
+    {
+      "check": "a second negotiation on the same connection gets a larger session id",
+      "ok": true
+    },
+    {
+      "check": "the re-negotiated pair streams both subjects again",
+      "ok": true
+    },
+    {
+      "check": "the disabled subject's rig is still referenced",
+      "ok": true
+    },
+    {
+      "check": "the session created no animation curves",
+      "ok": true
+    },
+    {
+      "check": "the session created no expressions",
+      "ok": true
+    },
+    {
+      "check": "no script job was left behind by the session",
+      "ok": true
+    },
+    {
+      "check": "the session scene was never saved to a file",
+      "ok": true
+    },
+    {
+      "check": "the session scene is dirty and was left unsaved",
+      "ok": true
+    },
+    {
+      "check": "the session scene closes cleanly",
+      "ok": true
+    },
+    {
+      "check": "a fresh scene has no references",
+      "ok": true
+    },
+    {
+      "check": "rig files are unchanged after the whole run",
+      "ok": true
+    }
+  ],
+  "peer_exit_states": {
+    "character-prop": {
+      "scenario": "character-prop",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 4,
+      "applied_frames": 4,
+      "last_applied_serial": 4,
+      "last_applied_time": 2,
+      "last_time_direction": "hold",
+      "last_error_code": "",
+      "last_error_details": "",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": true,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[MovieSceneSkeletalAnimationTrack_0 (saved_asset=false, muted_now=false)], exit=reference_pose",
+        "prop: component_driver=mode=AnimationSingleNode, anim_class=none, anim_to_play=MtoUPrototype_PropAnim, single_node_playing=true, paused=false, update_in_editor=false, post_process_disabled=false, suppressed_writers=[], restored_writers=[], exit=own_driver_restored"
+      ],
+      "errors": []
+    },
+    "character-arms": {
+      "scenario": "character-arms",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 4,
+      "applied_frames": 4,
+      "last_applied_serial": 4,
+      "last_applied_time": 2,
+      "last_time_direction": "hold",
+      "last_error_code": "skeleton_mismatch",
+      "last_error_details": "subject 'arms': declared root '|arms:Socket|arms:ArmsRoot' (ArmsRoot) is not the first, parentless bone 'Root' of the declaration",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": false,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[MovieSceneSkeletalAnimationTrack_0 (saved_asset=false, muted_now=false)], exit=reference_pose",
+        "arms: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose"
+      ],
+      "errors": [
+        {
+          "code": "skeleton_mismatch",
+          "details": "subject 'arms': declared root '|arms:Socket|arms:ArmsRoot' (ArmsRoot) is not the first, parentless bone 'Root' of the declaration",
+          "at_serial": 0
+        }
+      ]
+    },
+    "c01-c02-lifecycle": {
+      "scenario": "c01-c02-renegotiation",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 2,
+      "applied_frames": 2,
+      "last_applied_serial": 2,
+      "last_applied_time": 1,
+      "last_time_direction": "backward",
+      "last_error_code": "skeleton_mismatch",
+      "last_error_details": "subject 'prop': target bone 'lowerarm_correctiveRoot_r' below 'lowerarm_r' deforms the mesh but the declaration drives no bone for it",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": false,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose",
+        "prop: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose"
+      ],
+      "errors": [
+        {
+          "code": "skeleton_mismatch",
+          "details": "subject 'prop': target bone 'lowerarm_correctiveRoot_r' below 'lowerarm_r' deforms the mesh but the declaration drives no bone for it",
+          "at_serial": 0
+        }
+      ]
+    }
+  },
+  "archive_note": "Closeout extracted existing host assertions and peer exit states; no host tests rerun. Original raw-output hashes retain provenance after disposable output cleanup."
 }

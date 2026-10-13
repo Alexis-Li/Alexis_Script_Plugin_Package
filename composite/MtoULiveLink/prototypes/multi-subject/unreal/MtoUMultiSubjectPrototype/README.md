@@ -343,9 +343,9 @@ skeleton dump, which the test writes to
   production asset with other bindings, spawnables and sections.
 * Restoring the *pose* relies on the restored driver re-evaluating (Sequencer
   re-binding its animation instance, or the single-node animation resuming);
-  the prototype restores animation state and Morph weights explicitly, but a
-  component whose prior state had no driver keeps the last preview pose until
-  something drives it again.
+  the prototype restores animation state and Morph weights explicitly. A
+  component that had no previous animation driver returns to its reference
+  pose on preview exit or removal.
 * Socket-parented targets are refused by construction. Supporting them needs a
   protocol change (send the prop relative to its attachment bone) or an explicit
   per-target "root pose is already relative" flag; neither is in the v1 profile.

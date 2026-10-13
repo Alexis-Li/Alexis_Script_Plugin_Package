@@ -13,10 +13,11 @@ Contract summary (version 1):
 
 * exactly two subjects, each with an explicit `id`, Maya `root` path, parent-first
   `bones`, `curves` (Morph names) and one `bind` row per bone;
-* the receiver accepts neither missing nor extra target IDs, duplicate IDs,
-  shared targets, ambiguous bone/curve names within one subject, nor a declared
-  bone the selected target does not have. Identical names *across* subjects are
-  valid and stay isolated by ID;
+* the receiver refuses missing or extra target IDs, duplicate IDs, shared
+  targets, duplicate curve names and ambiguous mappings of necessary target
+  bones. Source-only bone branches are ignored and reported; repeated bone
+  short names are resolved by parent scope under the rules below. Identical
+  names *across* subjects stay isolated by ID;
 * `ready` returns a positive session id. Every later `frame` and `remove`
   repeats that session; a message naming another session is refused with
   `session_mismatch` and changes nothing;

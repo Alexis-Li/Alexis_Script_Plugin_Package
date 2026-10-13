@@ -1,6 +1,6 @@
 # Issue #54: independent prop and second-character preview
 
-Current acceptance: **2026-10-13, review-04 passes the bounded prototype; no open blockers**.
+Current acceptance: **2026-10-13, review-04 passes the bounded prototype; issue closed, no open acceptance blockers**.
 Latest implementation and reviewed baseline: `b593dad42849705873c4d1b59f633992a966f4e3` (local, not pushed).
 R-001 through R-009 are verified closed. The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955)
 records the issue state; product integration remains with #47.
@@ -54,7 +54,7 @@ The rows follow the issue's existing criteria without adding or rewriting them.
 | R-001/R-002/R-003/R-004/R-006 | Remain verified closed by session/time, command-line, ownership/re-init, restoration and cleanup regressions. |
 
 The old `AnchorConvention` diagnostic hard-codes the removed placement expression;
-it is retained as the original counterexample, not a current implementation test.
+its original counterexample remains in immutable Git history, not as a current implementation test.
 Review-04 executes the current world-placement test and real Maya/UE world oracle.
 The original optional-ambiguity diagnostic alone would now also pass because its
 unique names cannot rename; the duplicated-name `NecessaryScopeMapping` assertions
@@ -95,20 +95,66 @@ the real test confirms target packages are not dirtied.
 
 ## Evidence and reproduction
 
-- [Review-04 results](issue-54-review-evidence/review-04-results.json) retain individual test states, selected observations, warning categories, SHA-256 provenance and metric limits.
-- [Common-anchor BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02.png) records upright but overlapping source placement; materials were still checker placeholders at capture time, so it is not a material-quality reference.
-- [Separated BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02-separated.png) shows both target meshes upright and completely framed with their material colors. The disposable prop anchor is moved only for visibility; numeric spatial acceptance precedes this display offset.
-- [Source-comment archive](issue-54-comment-archive.json) preserves the preceding current handoff and dev-04. This update and review artifacts are local only because pushing was prohibited. Live delivery/review comments are retained, not consolidated or deleted.
-- Existing `ReviewDiagnostics.cpp`, `source_orientation.py`, `source-orientation.json` and `results.json` in the evidence folder document review-03's original failures on `5add03e`; they do not describe the current implementation.
+The current history tree retains one acceptance record, one source-comment archive
+and four evidence files, each with a specific purpose:
 
-Full local run output is `../.tmp/mtou-issue54/review-20261013/`: `host.json`,
-`ue-suite/`, `ue-arms/`, `diagnostics/`, `realpair/`, build and test logs. These are
-retained for audit/reproduction, not presented as remotely published artifacts.
-Use the maintained component READMEs for build/peer flags. The real run supplies
+| Retained file | Purpose |
+| --- | --- |
+| [Source-comment archive](issue-54-comment-archive.json) | Exact pre-closeout live comments, final review-04, older source reports and previous versions. Original IDs, authors, bodies and timestamps allow every conclusion to be traced. |
+| [Review-04 results](issue-54-review-evidence/review-04-results.json) | Individual test states, all 104 Maya host check outcomes, peer exit/ownership states, measured observations, warning categories, raw-artifact hashes and metric limits. Closeout extracts existing evidence; it does not rerun host acceptance. |
+| [Common-anchor BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02.png) | Upright but overlapping source placement; materials were still checker placeholders, so it is not a material-quality reference. |
+| [Separated BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02-separated.png) | Both target meshes upright and completely framed with material colors. The prop anchor moves only for visibility; numeric spatial acceptance precedes this display offset. |
+| [C02 fixture template](issue-54-review-evidence/real-c02-fixture.template.json) | Recreates the exact full-rig reference input without preserving a disposable host or machine-specific paths. Replace both placeholders, save as `fixture.json` in the chosen manifest directory, and pass that directory as `MtoUMultiSubjectPropRigDir`. |
+
+The four superseded review-03 files (`ReviewDiagnostics.cpp`, `results.json`,
+`source_orientation.py`, `source-orientation.json`) are recoverable from
+[published immutable history](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/tree/def59ac959d956422fd680a85b34e90417691679/docs/project-history/mtou-livelink/issue-54-review-evidence).
+Their remote contents were compared against the local originals before removal
+from the current tree. Maintained prototype tests now cover those findings;
+the prior failed expression is not an active acceptance gate.
+
+Use the component READMEs for build and peer flags. The real run supplies
 `MtoUMultiSubjectMayaScene`, `MtoUMultiSubjectCharacterRoot`, the two mesh flags,
-`MtoUMultiSubjectPropRigDir` pointing to a manifest referencing the C02 source above,
-and `MtoUMultiSubjectRealScenario=c01-c02`; evidence/report/log outputs go to scratch.
+`MtoUMultiSubjectPropRigDir` using the template above, and
+`MtoUMultiSubjectRealScenario=c01-c02`, with Frames=4 and Times=1,120,60,60.
+Run against a disposable host that can read the supplied Backups Content and
+load the prototype plugin; keep all report/log/fixture output in scratch.
+Neither the original Maya assets nor the Backups project is an archival output.
 
 Maya 2022, sustained-playback performance, arbitrary saved production sequences,
-product cache and product integration were not tested in this review and are not
-additional prototype closure requirements. No branch, PR or remote push was made.
+product cache and product integration were not tested by review-04 and are not
+additional prototype closure requirements.
+
+## Archival state
+
+Local knowledge consolidation is prepared. Remote archive publication, deletion
+of five superseded agent comments, and final scratch cleanup are **pending**:
+the user's no-push instruction remains in effect. The repository's tracker
+protocol requires remote archive verification and final-summary readback before
+comment deletion, and publication completion before disposal of issue scratch.
+This does not revoke the accepted and closed issue state.
+
+The six live comments comprise four formal reports and two archive pointers;
+there is one current handoff and no human discussion to delete. The consolidated
+archive preserves all six current snapshots and the displaced original reports.
+The local reviewed implementation and review-04 evidence are not yet on the
+remote branch; no new branch or PR is created.
+
+The full ownership inventory inspected both scratch locations and known host
+outputs, without following junctions. Pending publication, the retained paths are:
+
+| Retained temporary path | Reason and next action |
+| --- | --- |
+| `../.tmp/mtou-issue54/` | Earlier fixture/output rounds and disposable hosts; after publication, remove the whole owned tree. This includes `comment-clarification`, `comment-tidy-20261012`, `evidence`, `fix-20261008`, `fix-20261009`, `fix-20261010`, `fix-20261012`, `fixtures`, `multi-subject`, `review-20261009`, `review-20261010`, `review-20261012`, `review-20261013`, `review-directions`, `ue-sample`, and `build.cmd`. |
+| `../.tmp/mtou-issue54-review/` | Empty issue-owned directory; remove with the final cleanup. |
+| `../.tmp/issue-54-body.json`, `../.tmp/issue-54-comments.txt` | Superseded issue snapshots; remove after source preservation is published. |
+| `unreal/Saved/MtoUMultiSubjectTests/` | Earlier prototype-only output identified from the test's default path; remove with the final cleanup. |
+| `../.tmp/mtou-issue54-closeout-20261013/` | This closeout's inventory, publication snapshots, drafts and helpers; remove after publication/deletion/readback and final verification. |
+
+The repository-local `.tmp/` does not exist. No matching prototype output exists
+in the production Backups Saved directory. The two `Content` junctions under the
+issue-owned disposable hosts point to production Backups Content: unlink only
+the junction entries, never traverse or delete their targets. Shared `MtoU_tmp`
+source assets, other issues' scratch, host-wide caches, the production project,
+the current branch and the checkout remain outside cleanup scope. No active
+Maya/mayapy/Unreal process was found during inventory; check again before removal.
