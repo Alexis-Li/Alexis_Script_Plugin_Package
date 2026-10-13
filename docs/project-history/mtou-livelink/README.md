@@ -15,6 +15,14 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 
 ## Timeline
 
+- **2026-10-13:** Completed the Issue #47 parent-spec acceptance over the four
+  delivered workflows and three bounded prototypes. Current product/prototype
+  runtime sources match their accepted baselines; current pure tests and
+  repository checks pass. The [acceptance record](issue-47-preview-workflow-acceptance.md)
+  distinguishes historical host verification from this run. A
+  [joint integration proposal](../../../composite/MtoULiveLink/docs/preview-workflow-integration-plan.md)
+  prepares common space, time, identity and ownership; no integration was executed.
+
 - **2026-07-31:** Defined the one-character local Live Link architecture,
   protocol, Maya sampling contract, Unreal binding workflow, lifecycle, and
   performance gates.
@@ -290,6 +298,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 
 ## Stable Records
 
+- [Issue #47 parent preview-workflow acceptance](issue-47-preview-workflow-acceptance.md)
 - [Architecture](architecture.md)
 - [Stock-engine production acceptance](stock-engine-acceptance.md)
 - [Cached Playback reconnect acceptance](cached-playback-reconnect-acceptance.md)
@@ -321,6 +330,7 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
 
 - [Product documentation](../../../composite/MtoULiveLink/README.md)
 - [Next-stage preview workflow scope](../../../composite/MtoULiveLink/docs/preview-workflow-roadmap.md)
+- [Joint prototype integration proposal (not implemented)](../../../composite/MtoULiveLink/docs/preview-workflow-integration-plan.md)
 - [Repository rules](../../../AGENTS.md)
 - [Composite project rules](../../../composite/AGENTS.md)
 
