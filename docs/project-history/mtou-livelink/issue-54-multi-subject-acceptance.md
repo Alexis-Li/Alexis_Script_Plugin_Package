@@ -127,38 +127,37 @@ additional prototype closure requirements.
 
 ## Archival state
 
-The accepted implementation, review evidence and source archive are published
-on the current branch. The source archive at `5487ded39a969a671eff11187ff01525df78659a`
-was retrieved through GitHub's blob API and matched the committed Git blob
-byte-for-byte (SHA-256 `0fb9702471de23e9e313976e22e5837aaf0e11880ffa273a3b37a2a6a1e5bb23`).
-It contains ten source snapshots; six were live immediately before this
-closeout. Their IDs, bodies, authors and creation/update timestamps match the
-remote comments exactly. The other four source comments had already been
-removed in the earlier consolidation. The five non-current live comments are
-superseded reports or archive pointers; no human discussion or user decision
-was present in that live set.
+The source archive at `02235a6604e7ad4cb9d903897abba9130aab43ce` is published on
+the current branch and was retrieved through GitHub's blob API. Its content
+matched the committed Git blob byte-for-byte (SHA-256
+`8a013318d549721e16fbc703b36c8dfffe4172bee9214c9040d2c7ccdf18b8b8`). It keeps
+ten comment snapshots: six were live before this closeout, and four older source
+comments had already been removed. Each of the six live snapshots matched the
+remote ID, complete body, author and creation/update timestamps before the
+current summary was updated.
 
-Next, update and read back the current summary with archive references to the
-original report IDs, then delete those five comments by exact ID and verify the
-final issue comment count. Scratch cleanup follows publication and comment
-read-back. The issue remains accepted and closed while these archival checks
-finish.
+The current summary (comment ID `5883765955`) cites the archive and original
+review-03, dev-04 and review-04 IDs. The five superseded live reports/archive
+pointers (`6095144149`, `6096911178`, `6116403868`, `6117167023`, `6136464547`)
+were re-read immediately before deletion, matched their archived bodies and
+timestamps, and were removed by exact ID. Final pagination found exactly one
+live comment: the current summary marker. The issue remains `CLOSED`; one current
+agent summary remains, with no superseded live reports or separate human
+discussion comments.
 
-The full ownership inventory inspected both scratch locations and known host
-outputs without following junctions. Until final cleanup, the retained paths are:
+The completed inventory covered both scratch locations and known host outputs.
+Removed issue-owned temporary material:
 
-| Retained temporary path | Reason and next action |
+| Removed path | Purpose |
 | --- | --- |
-| `../.tmp/mtou-issue54/` | Earlier fixture/output rounds and disposable hosts; after publication, remove the whole owned tree. This includes `comment-clarification`, `comment-tidy-20261012`, `evidence`, `fix-20261008`, `fix-20261009`, `fix-20261010`, `fix-20261012`, `fixtures`, `multi-subject`, `review-20261009`, `review-20261010`, `review-20261012`, `review-20261013`, `review-directions`, `ue-sample`, and `build.cmd`. |
-| `../.tmp/mtou-issue54-review/` | Empty issue-owned directory; remove with the final cleanup. |
-| `../.tmp/issue-54-body.json`, `../.tmp/issue-54-comments.txt` | Superseded issue snapshots; remove after source preservation is published. |
-| `unreal/Saved/MtoUMultiSubjectTests/` | Earlier prototype-only output identified from the test's default path; remove with the final cleanup. |
-| `../.tmp/mtou-issue54-closeout-20261013/` | This closeout's inventory, publication snapshots, drafts and helpers; remove after publication/deletion/readback and final verification. |
+| `../.tmp/mtou-issue54/` | About 11 GB of disposable hosts, fixtures, test outputs and logs from all inventoried rounds. The two `Content` junction entries were removed individually after verifying both resolved to the production Backups project's Content directory; the target was not traversed or deleted. |
+| `../.tmp/mtou-issue54-review/` | Empty issue-owned directory. |
+| `../.tmp/issue-54-body.json`, `../.tmp/issue-54-comments.txt` | Superseded issue snapshots. |
+| `unreal/Saved/MtoUMultiSubjectTests/` | One ignored prototype test result JSON. |
+| `../.tmp/mtou-issue54-closeout-20261013/` | This closeout's inventory, helper scripts, snapshots, drafts and API payloads; removed after source evidence was committed and the final API read-back completed. |
 
-The repository-local `.tmp/` does not exist. No matching prototype output exists
-in the production Backups Saved directory. The two `Content` junctions under the
-issue-owned disposable hosts point to production Backups Content: unlink only
-the junction entries, never traverse or delete their targets. Shared `MtoU_tmp`
-source assets, other issues' scratch, host-wide caches, the production project,
-the current branch and the checkout remain outside cleanup scope. No active
-Maya/mayapy/Unreal process was found during inventory; check again before removal.
+The final scan found no retained #54 scratch files or output directories. The
+repository-local `.tmp/` remains absent. Shared `MtoU_tmp/C01`,
+Backups project, other issues' scratch, host-wide caches, the current branch and checkout were preserved. The active
+Maya 2020 UI process had no #54 scratch path in its command line and was left
+untouched; no Maya 2024/mayapy or Unreal host process for this issue was active.
