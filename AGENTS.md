@@ -53,12 +53,8 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - A tool or host may create its own internal temporary files through `TEMP`,
   `TMP`, or equivalent settings. This rule does not redirect those processes;
   set their temporary-directory environment explicitly when a task requires it.
-- Completed-issue closeout includes deleting obsolete issue-owned scratch files
-  and the closeout's own helper scripts, report drafts and API payloads after
-  necessary evidence is durably preserved and publication is verified. Inspect
-  both scratch locations and known issue-specific output paths; preserve files
-  still used by other work. Re-scan after cleanup and report any retained paths
-  and reasons under the issue tracker's closeout completion checks.
+- Clean issue-owned scratch, including closeout helpers and drafts, under the
+  completion checks in `docs/agents/issue-tracker.md`.
 
 ## Documentation
 
@@ -92,9 +88,9 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   Split genuinely needed advanced usage into a linked user guide when it obscures
   the common workflow; do not use an arbitrary line limit or move the same bloat
   into another document.
-- Keep reusable architecture and acceptance conclusions in existing domain or
-  history records; use `docs/project-history/<project-name>/` for substantial
-  completed work. Small fixes do not need new documents. Replace completed plans
+- Use `docs/project-history/README.md` to decide what needs a durable record.
+  Routine delivery and review stay in Issues/PRs; extend an existing topic record
+  for reusable decisions or essential host evidence. Replace completed plans
   with durable conclusions when needed, rather than leaving active-looking plans.
 - Write acceptance records and issue comments as current conclusions, supporting
   evidence, and material limits. Update an incorrect conclusion in place; keep
@@ -126,31 +122,14 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 
 ## Task-specific workflows
 
-- For requested issue/spec tracking, use GitHub Issues through `gh` and read
-  `docs/agents/issue-tracker.md`. Routine implementation does not require a ticket.
-- All agents must use that document's report protocol for issue delivery,
-  review, re-verification, and consolidation. Generate and validate formal
-  reports with `tools/issue_report.py` before publishing. Record the exact
-  scope, implementation/review baseline, evidence provenance, open blockers,
-  and next action; self-tests and partial acceptance do not establish whole-issue
-  acceptance. When work is delegated, the coordinating agent publishes the
-  consolidated result and supplies this protocol to participating agents.
-- Maintain one current handoff per issue. Preserve source reports before
-  replacement, keep referenced current records consistent, and distinguish
-  defects, unverified risks, acceptance gaps, and proposals for later work.
-  When the user requests comment consolidation or completed-issue closeout,
-  archive and verify source reports, then remove superseded agent reports so
-  only the final summary remains; preserve human discussion and decisions.
-  Keep final conclusions and necessary evidence in the current history tree,
-  leaving redundant intermediate runs and drafts in Git history. Unless the
-  user explicitly narrows scope, requests to archive, tidy or close out a
-  completed issue (归档、整理、收尾) include comment consolidation, history
-  consolidation and scratch cleanup, including the cleanup task's own output.
-  This request authorizes that scoped cleanup after preservation checks; do not
-  defer it to a second request or an optional skill's extra confirmation stage.
-  Follow the tracker protocol's publication, deletion, and completion checks.
-  Consolidation must not silently change scope or acceptance. These requirements
-  apply regardless of the skill used to produce the underlying work.
+- For Issue/PR work, read `docs/agents/issue-tracker.md` and use `gh` from this
+  clone. The issue owns scope and acceptance; the delivery owns its exact diff,
+  review and validation evidence. Generate and validate formal issue reports
+  with `tools/issue_report.py` before publishing.
+- Follow that protocol for current handoffs, source preservation, publication
+  and requested closeout. Preserve acceptance scope, human decisions and
+  unresolved findings through consolidation. When delegating, supply the
+  protocol and let one coordinating agent publish the consolidated result.
 - For issue classification, read `docs/agents/triage-labels.md`.
 - For terminology or architecture work, read `docs/agents/domain.md` and relevant
   context/decision records. These workflows do not mandate extra artifacts for

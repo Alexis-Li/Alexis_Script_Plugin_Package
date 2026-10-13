@@ -183,7 +183,11 @@ Driver-only and part-only Morphs. No full 84-test suite, Python suite or package
 gates were rerun in this final phase: the changes being accepted add UE test
 coverage, and no product source was changed here.
 
-Reproduction harness, fixture, logs, report JSON and screenshots are retained
-outside the repository in `../.tmp/issue51-acceptance/`; the accepted rendered
-run is `final/`, `final-report/`, and `final.log`. No new branch, commit, PR or
-push was created. Existing unrelated working-tree changes were preserved.
+The [published final acceptance](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/51#issuecomment-5865635414)
+and this record preserve the reviewed baseline, C01 observations and limits.
+The original `../.tmp/issue51-acceptance/` directory is absent from this
+checkout's adjacent scratch. Its temporary harness, fixture, logs, report JSON
+and BaseColor screenshots are not available here for independent replay of the
+rendered run. The maintained `ComparisonNaturalTick` regression remains a
+reproduction entry point; repeating production visual acceptance requires the
+original assets and a new disposable host run.

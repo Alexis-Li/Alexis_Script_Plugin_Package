@@ -330,27 +330,20 @@ skeleton dump, which the test writes to
   `MorphTargetCurves`. `UPoseableMeshComponent` was not used because it has no
   per-instance Morph Target API.
 
-## Productization risks (input for the integration document)
+## Integration limits
 
-* The takeover suppresses a writer with `UMovieSceneTrack::SetLocalEvalDisabled`,
-  which is not serialized but is also invisible in the Sequencer UI. A user could
-  believe a track is live while a preview owns the object; the product decision
-  (and the UI affordance) is not implemented here. The prototype never calls
-  `Modify()` on the sequence and never touches `SetEvalDisabled`, so no asset
-  edit and no autosave is introduced.
-* A saved Level Sequence in a real project should be verified separately: the
-  bounded fixture proves the mechanism on a transient sequence, not on a
-  production asset with other bindings, spawnables and sections.
-* Restoring the *pose* relies on the restored driver re-evaluating (Sequencer
-  re-binding its animation instance, or the single-node animation resuming);
-  the prototype restores animation state and Morph weights explicitly. A
-  component that had no previous animation driver returns to its reference
-  pose on preview exit or removal.
-* Socket-parented targets are refused by construction. Supporting them needs a
-  protocol change (send the prop relative to its attachment bone) or an explicit
-  per-target "root pose is already relative" flag; neither is in the v1 profile.
-* The Unreal product's single-subject contract would need: a per-session subject
-  list instead of one character snapshot, one target mapping per subject id, a
-  shared frame time across subjects, per-subject curve sets, and a documented
-  takeover/restore rule for Sequencer and single-node animation. None of that is
-  implemented in the product by this prototype.
+The prototype temporarily disables known Sequencer writers without serializing
+the change. That suppression is invisible in Sequencer's UI; inspect the
+ownership/evidence state and exit preview before returning to ordinary editing.
+Acceptance covers the bounded transient Sequence fixture. Production sequences
+with other bindings, spawnables and sections require separate verification.
+
+On exit or subject removal, the original animation state and Morph weights are
+restored. The restored driver must re-evaluate to restore its pose; a target
+with no prior driver returns to its reference pose. Socket-parented targets are
+refused.
+
+The [integration proposal](../../../../docs/preview-workflow-integration-plan.md)
+owns planned product changes. The
+[acceptance record](../../../../../../docs/project-history/mtou-livelink/issue-54-multi-subject-acceptance.md)
+owns the tested scope, real-asset results and remaining limits.

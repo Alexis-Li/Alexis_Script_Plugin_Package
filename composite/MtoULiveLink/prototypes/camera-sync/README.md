@@ -139,32 +139,18 @@ playback ranges on either side, and no client message can move the Unreal time.
 - Product MtoULiveLink pose streaming, continuous editor playback latency and
   drop policy, and full-character same-frame application.
 
-## Transport check
+## Checking a cross-host result
 
-The earlier apparent trailing data came from the Unreal receiver constructing
-an unbounded string from a length-delimited UTF-8 conversion. The receiver now
-uses the converter's explicit length. The real editor/Maya test requires zero
-`client_line_anomalies`, zero `client_trailing_bytes`, every application report
-intact, zero failed sends, and that the final evaluation target converged within
-a bounded wait. A deliberately malformed multibyte suffix is also checked for an
-exact UTF-8 byte count.
+Inspect both peers' reports: applications must be intact, sends must succeed,
+and the target current when following stops must have converged. Nonzero
+`client_line_anomalies` or `client_trailing_bytes` require investigation.
+On exit, check that the listener, socket, callback and borrowed scene state
+were released.
 
-Per pump, Unreal drains the complete client lines it has already buffered before
-reading the socket (at most 64 lines, 256 KiB received) and buffers no more than
-one message plus one read; a message longer than 64 KiB without a complete line
-fails the session closed instead of growing the buffer, and a dropped connection
-discards its partial line. The report evidence queue is capped as well. Both
-bounds keep a slow or flooding client from turning one editor tick into
-unbounded work, and the buffered remainder still drains when the sender has gone
-silent.
-
-Stopping follow closes the listener thread before it closes the sockets that
-thread accepted, so a connection arriving inside the shutdown window cannot
-outlive the session; the host check hammers the port while the session stops and
-requires every connection to be closed and the port to be free afterwards. The
-client receives the `end` line on a half-closed stream, and a client that stops
-accepting a line is dropped instead of holding an editor tick for the send
-deadline.
+Use the [protocol](protocol.md) for framing, identity and resource limits.
+The [acceptance record](../../../../docs/project-history/mtou-livelink/issue-52-camera-sync-acceptance.md)
+owns the historical measurements and the distinction between tested editor
+following and unverified sustained playback.
 
 ## Related records
 

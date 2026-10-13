@@ -1,51 +1,27 @@
-"""Maya importer and verifier for the Issue 53 scene reference handoff.
+"""Import and verify an Unreal level-scope FBX reference in Maya.
 
-The Unreal side exports the static geometry of one level scope into an ASCII FBX
-plus a ``mtou-scene-ref-manifest/1`` measurement record. This module imports that
-file into its own container, keeps the material assignment the file carries while
-showing the geometry in one uniform gray, optionally moves it into the world the
-camera route uses, and compares the measured Maya world matrices and bounding
-boxes against the manifest, so the two hosts are checked against each other
-rather than trusted. The frozen contract is
-``composite/MtoULiveLink/prototypes/scene-reference/transfer.md``; this module
-implements its "Maya report schema", "Media rule", "World", "Object naming" and
-"Commands" sections and never changes the contract.
+Requires an FBX handoff and a mtou-scene-ref-manifest/1 JSON file. The default
+engine world matches the product's animation route; --target-world camera
+explicitly converts to the separate camera prototype's world.
 
-Usage::
+New geometry is staged and measured before taking over the owned container.
+A failed takeover attempts rollback; inspect the report's update and container
+fields for the resulting scene state and any refused cleanup. Keep authored
+nodes outside the owned container hierarchy. The scene is not saved, and
+time, frame rate and playback range are restored after FBX import.
 
-    <mayapy> MtoUSceneRefPrototype.py --fbx <file> --manifest <file>
-        --report <file> [--container MtoU_UE_SceneRef]
-        [--target-world engine|camera] [--shading display|material|keep]
-        [--allow-image-data] [--dry-run] [--json]
+Delivered image files or embedded media are refused unless --allow-image-data
+is given. Material assignments and texture path references are permitted.
+A dry run still stages the import and recovers prior owned leftovers, then
+discards the new reference.
 
-Exit codes: ``0`` when every check passed, ``1`` when a check failed (including a
-handoff that delivers image data without ``--allow-image-data``), ``2`` for usage
-and contract errors (an unreadable or non-FBX handoff, a manifest that is not
-``mtou-scene-ref-manifest/1``, a scene or manifest unit that is not centimetres,
-a manifest world that is not Z up, an unusable container name, an unknown world
-or shading mode).
+Exit codes: 0 verification passed; 1 import, verification or recovery failed;
+2 invalid usage or input contract. The report records problems, warnings,
+measurements and retained resources. See the component README for operation
+and recovery, and the prototype's transfer.md for the handoff/report contract.
 
-Safety contract
----------------
-* The scene is never saved. Playback range, frame rate, current time and every
-  existing key are left exactly as they were; the importer never calls
-  ``save``, ``playbackOptions``, ``currentTime`` or ``setKeyframe``.
-* The handoff is imported into a staging namespace first. Only after the
-  comparison passed is the previous reference deleted and the staged one renamed
-  into the container's name; a run that fails keeps the previous reference
-  exactly as it was, and the staging namespace is deleted again. Nothing outside
-  the container namespace is renamed, reparented, reassigned or deleted, so a
-  production scene keeps its own objects and shading networks.
-* A handoff that delivers image data -- image files in the directory the
-  exporter owns, or media embedded in the FBX -- is refused unless
-  ``--allow-image-data`` was passed; a material assignment and a recorded
-  texture path are not image data and are imported, reported and never treated
-  as a failure.
-* ``main()`` never raises: a failure is written into the report JSON with the
-  phase it happened in and the run exits non-zero.
-
-Maya's API is reached through ``maya.cmds`` only, imported lazily so the module
-can be imported and inspected without a running Maya.
+Maya commands are imported lazily so --help and module inspection work in
+ordinary Python.
 """
 
 import argparse

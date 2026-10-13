@@ -6,8 +6,9 @@ one changelog at the composite project root.
 
 ## Unreleased
 
-- Standardize issue delivery, review, and consolidated handoff reports with
-  baseline/evidence tracking, archive preservation, and local report validation.
+- Define Issue/PR delivery and integration with commit-bound reviews, scoped
+  handoffs and local report validation; organize history by topic and retain
+  durable decisions and essential evidence without duplicating routine reports.
 - Simplify agent rules around outcomes and scoped verification; allow local
   composite component instructions and shelf-script regression test directories
   while preserving product metadata and runtime layout boundaries.

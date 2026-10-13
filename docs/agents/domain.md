@@ -43,9 +43,8 @@ durable.
 first real context rather than as an empty placeholder. Create context files
 and ADR directories lazily; their presence is not required before work begins.
 
-Preserve substantial, reusable architecture, migration, and acceptance
-conclusions in `docs/project-history/<project>/` according to the repository
-rules. Small fixes do not require new history documents.
+Select completed architecture, migration and acceptance records using the
+[history retention rules](../project-history/README.md).
 
 ## Vocabulary
 

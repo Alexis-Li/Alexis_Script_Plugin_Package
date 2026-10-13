@@ -96,14 +96,15 @@ UE asset warnings report existing assets saved without an engine version;
 Maya host tests report the bundled dependency's `imp` deprecation warning.
 Neither caused an acceptance failure in the final runs.
 
-### Reproduction records
+### Evidence provenance and reproduction
 
-Local evidence is retained under the repository-adjacent
-`../.tmp/mtou-issue49-acceptance/`: `suite-report`, `parts-final-report`,
-`parts-final`, `render-report`, `render`, build logs and the C01 fixture.
-`render/cache-*.json` records state, source range/rate, applied frame identity
-and exact Details text; the matching PNG files are Base Color screenshots.
-The scratch plugin differs from HEAD only in the rendered acceptance test,
-which adds the cache sequence to the existing character harness. Product
-sources remain unchanged. The temporary host and harness are retained with
-the evidence for reproducibility and are not repository or release artifacts.
+The [published final acceptance](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/49#issuecomment-5862801938)
+and this record preserve the reviewed baseline, C01 observations and limits.
+The original `../.tmp/mtou-issue49-acceptance/` directory is absent from this
+checkout's adjacent scratch. Its rendered screenshots, report JSON, fixture and
+temporary harness are not available here for independent replay of that run.
+
+Maintained Maya cache regressions and the Unreal `MayaCacheReconnect` and
+`MayaCharacterPartsHost` tests provide reproduction entry points. Repeating
+production visual acceptance requires the original assets and a new disposable
+host run; routine test results cannot replace the missing rendered artifacts.

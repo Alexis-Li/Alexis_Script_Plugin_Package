@@ -8,10 +8,8 @@
 独立使用；仓库同时提供独立 Unreal Engine 插件，以及跨多个宿主软件协作的复合
 产品开发工作区。
 
-Maya 项目优先提供可直接运行的单个 Python 文件。只有功能确实需要时，才增加
-`scripts/`、`plug-ins/`、`icons/` 或其他文件。中小型工具通过将这些文件复制到
-Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应尽量同时兼容 Python
-2 和 Python 3；无法兼容时优先支持 Python 3。
+从下表选择工具，按对应手册确认支持的 Maya／Python 版本、安装方式和使用步骤。
+各工具及宿主组件均可独立安装。
 
 ## 包含的工具
 
@@ -55,5 +53,6 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
    修改单个项目时，只运行该项目自身的测试、静态检查、构建和打包检查。
 
 通用流程见[开发约定](docs/development-conventions.md)，Unreal 项目导航见
-[Unreal 插件指南](docs/unreal-development.md)。通过工单交付、审核或交接时，遵循
-[工单报告流程](docs/agents/issue-tracker.md)，其中包含草稿生成与校验命令。
+[Unreal 插件指南](docs/unreal-development.md)。按
+[Issue／PR 工作流](docs/agents/issue-tracker.md)选择交付方式、跟踪审核与集成；
+新增记录前查阅[历史保留规则](docs/project-history/README.md)。

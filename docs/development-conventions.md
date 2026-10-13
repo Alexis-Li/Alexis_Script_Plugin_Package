@@ -10,12 +10,17 @@ requirements live in the repository and nearest platform `AGENTS.md`; use the
    choosing a directory.
 2. Inspect the owning project, dependency declarations, tests, and packaging
    commands before editing.
-3. Make the smallest coherent change and preserve public entry points unless a
+3. Choose a delivery boundary under the [Issue/PR workflow](agents/issue-tracker.md):
+   task branch and PR for substantial or overlapping work; an explicit commit
+   range for a small isolated change on the current branch.
+4. Make the smallest coherent change and preserve public entry points unless a
    breaking change is explicitly required.
-4. Update the owning user documentation and changelog when behavior changes.
-5. Run the owning project's acceptance checks, broadening for concrete dependency
+5. Update the owning user documentation and changelog when behavior changes.
+6. Run the owning project's acceptance checks, broadening for concrete dependency
    or regression risks as described in the root AGENTS.md.
-6. Inspect `git status` for generated or unrelated files before handoff.
+7. Inspect `git status` for generated or unrelated files before review. Review
+   the recorded diff, verify changes since review before integration, and close
+   the task against its agreed acceptance and integration target.
 
 For changes to repository tooling, templates, shared rules or workflows, root
 metadata, or project layout, also run the repository gates:
@@ -40,10 +45,14 @@ Maya and Unreal runtime code must use the versions shipped by the target host.
 
 | Information | Owner |
 | --- | --- |
+| Requirements, acceptance scope and task decisions | Issue |
+| Delivery, code review and routine checks | PR or direct-branch issue reports |
 | User installation and usage | Project `README.md` and `README_CN.md` |
 | Released and unreleased behavior changes | Owning `CHANGELOG.md` |
 | Normative development constraints | Applicable `AGENTS.md` |
-| Stable completed architecture and acceptance evidence | `docs/project-history/<project>/` |
+| Selected completed decisions and essential host evidence | Existing topic in `docs/project-history/<project>/` |
 | Active domain vocabulary and decisions | Context and ADR locations described in `docs/agents/domain.md` |
 
 Link to the owner instead of copying its full content into another document.
+Use the [history retention rules](project-history/README.md) to select durable
+knowledge before adding a record.

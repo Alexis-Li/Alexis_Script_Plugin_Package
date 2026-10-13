@@ -1,321 +1,246 @@
-# Issue tracker: GitHub
+# Issue and pull request workflow
 
-Issues and specs for this repository live in GitHub Issues. Run `gh` commands
-from the repository clone so the remote is inferred automatically.
+Use `gh` from this clone so GitHub resolves the repository from its remote.
+The issue owns the problem, scope, acceptance criteria and product decisions.
+The delivery owns the implementation diff, review findings and check results.
 
-## Report protocol (v1)
+## From requirement to integration
 
-This is the repository-wide contract for agent-authored issue delivery, review,
-re-verification, and consolidation, including work produced by `to-spec`,
-`code-review`, or other skills. It does not impose a template on human discussion,
-ordinary chat updates, or exploratory questions. Skills still own their research
-or review method; this protocol owns the published result. In particular, keep
-Standards and Spec findings distinguishable inside a review report.
+1. **Define the task.** Read the issue body, its current handoff when present,
+   and relevant later reports. Specify observable acceptance criteria, exclusions
+   and dependencies. Use stable `AC-01` IDs where useful; cite exact wording for
+   older issues. Separate suggested implementation from agreed requirements.
+   Prototype acceptance stays within its agreed prototype scope.
+2. **Choose the delivery boundary.** For a feature, substantial fix or work
+   overlapping other tasks, branch from the intended integration branch and
+   open a PR back to it. Use `codex/<short-task-name>`. A small, isolated change
+   can use the current branch with an explicit commit range. Serial work can
+   reuse a checkout; concurrent writers need isolated checkouts and clear file
+   ownership. Inspect local changes before switching branches.
+3. **Deliver a reviewable change.** Record full starting and ending SHAs, target
+   branch, resulting behavior, tests actually run and remaining gaps. Use the
+   PR description and link it from the issue. For direct-branch work, publish
+   a development report on the issue.
+4. **Review the actual change.** Read requirements and the complete diff at the
+   named commits, inspect affected callers, and check acceptance, compatibility,
+   failure paths and unrelated changes. Verify delivery claims against code and
+   evidence. Review on the PR, or publish an issue review report for a
+   direct-branch delivery.
+5. **Integrate the reviewed result.** Recheck the delivery HEAD and target
+   branch, assess changes since review and run affected checks. Record the
+   integration commit and any pending host acceptance. For direct-branch work,
+   check the same conditions on the branch already containing the delivery.
+6. **Complete the issue.** Close when agreed acceptance is covered, blockers
+   are resolved and code delivery is present on its intended integration branch.
+   Research/prototype tasks close against their own deliverable. Link the final
+   review and integration result. Milestone integration into `main` and
+   [release](../release-process.md) are separate steps.
 
-The issue body owns requirements, scope, acceptance criteria, and dependencies.
-Use stable `AC-01` acceptance IDs where practical; for an older issue, cite the
-exact criterion until IDs can be assigned without rewriting its meaning. A
-formal report must not silently add acceptance requirements or turn a suggestion
-into a product decision. Prototype completion is judged against the prototype's
-scope, not against completion of the eventual product.
+Commit, push, PR creation, merge, tracker updates and closure follow the task's
+authorization. Report the achieved state precisely: implemented, reviewed,
+integrated, host-verified or released.
 
-Use three report types:
+### Review baselines and integration checks
+
+- Approval covers the stated scope and full commit SHA, including the comparison
+  base. Uncommitted work needs a reproducible diff with relevant untracked inputs;
+  it is not a reviewed commit.
+- Later changes affecting that scope need incremental review and relevant tests.
+  Inspect changed paths and dependencies before reusing evidence. Target-branch
+  changes and conflict resolutions can alter behavior even with an unchanged
+  task HEAD. Explain reuse where reviewed code and its assumptions remain valid.
+- With `gh pr merge`, pass `--match-head-commit <reviewed-head>` to guard against
+  PR-head changes. Inspect target drift and the integration result separately.
+  Squash/rebase changes commit identity; retain the reviewed range and resulting
+  integration SHA.
+- Distinguish executed checks, inspected historical results and source-based
+  inference. Current GitHub CI runs repository validation and repository unit
+  tests on pushes and PRs. Owning-project tests and Maya/UE host acceptance need
+  their own evidence.
+- A scoped review may pass while whole-issue acceptance remains pending.
+  Self-tests alone do not establish acceptance. Findings need trigger, impact,
+  evidence and completion condition; severity and blocking are separate judgments.
+
+GitHub does not allow a PR author to approve their own PR. If publication uses
+the author's account, record the review as a comment with baseline, scope,
+conclusion and evidence; it is not a GitHub approval event.
+See [GitHub's review rules](https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/approving-a-pull-request-with-required-reviews).
+
+For PRs targeting a development branch, use `Refs #<issue>` and explicitly
+close after acceptance and integration. PR-description closing keywords apply
+when targeting the default branch, which is `main` here.
+See [GitHub's linking rules](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
+
+## Where to put the result
+
+| Surface | Content |
+| --- | --- |
+| Issue body | Requirements, acceptance criteria, dependencies and approved scope changes |
+| PR description/review | Change range, delivery, code findings, checks and integration result |
+| Issue without a PR | Development and review reports for the named commit range |
+| Current handoff, when needed | Unresolved work and links to delivery/review evidence |
+| Project documentation | Current usage/contracts; version changes in the changelog |
+| Project history | Selected decisions and essential evidence under the [retention rules](../project-history/README.md) |
+
+One delivery followed by one conclusive review needs no duplicate summary.
+Create one `current` handoff when multiple deliveries, review/rework rounds,
+partial acceptance or conflicting reports make the next action hard to find.
+Once present, update it at meaningful boundaries. An issue-body link can point
+to it while keeping requirements in the body.
+
+With a PR, an issue update can be status, PR/review link and remaining acceptance
+gap. Keep detailed findings at their source. A closing update links the final
+result and integration SHA. Progress, questions and link updates use ordinary
+comments.
+
+## Formal issue reports (v1)
+
+Use `tools/issue_report.py template` and `check` for agent-authored development,
+review and consolidated reports published on issues. PR descriptions use the
+repository template; PR reviews retain baseline, scope, conclusion, blockers
+and evidence. Publish at meaningful handoffs, not after every commit or test.
 
 | Kind | Purpose | Allowed status |
 | --- | --- | --- |
-| `development` | Deliver implementation or a fix for review | 待审核 / 部分完成 / 受阻 |
-| `review` | State the result for a specific delivery and review scope | 通过 / 需修改 / 证据不足 |
-| `summary` | Maintain one current, actionable handoff for the whole issue | 进行中 / 待审核 / 修复中 / 待验证 / 受阻 / 可关闭 / 已关闭 |
+| `development` | Deliver implementation/fixes for review | 待审核 / 部分完成 / 受阻 |
+| `review` | Review a specified delivery and scope | 通过 / 需修改 / 证据不足 |
+| `summary` | Current whole-issue handoff | 进行中 / 待审核 / 修复中 / 待验证 / 受阻 / 可关闭 / 已关闭 |
 
-Generate the required structure with `tools/issue_report.py template`. The
-Chinese field names and headings are fixed for these reports; explanatory prose
-may use the issue's language. Keep the generated first-line marker: it identifies
-the protocol, kind, issue, and stable report key. Use keys such as `dev-01`,
-`review-01`, and `review-02`; the one summary always uses `current`. The key
-identifies a report, not its author or the most recently posted comment.
+Keep the generated first-line marker and fixed Chinese headings. Keys such as
+`dev-01` and `review-01` identify reports; the summary key is `current`. A new
+delivery, review baseline or materially different conclusion gets a new key.
+Correct minor errors or add evidence for the same scope in place.
 
 Every report has these non-empty header fields:
 
-| Field | Required meaning |
+| Field | Meaning |
 | --- | --- |
-| 状态 | One status from the kind's list above |
-| 基线 | Full implementation/review commit SHA and whether it is local or remotely accessible. A summary distinguishes latest implementation from latest reviewed baseline. Uncommitted work must be identified as such and accompanied by a reproducible diff/artifact, including relevant untracked inputs; do not label it a reviewed commit. |
-| 范围 | The acceptance items or findings addressed. State partial approval explicitly. A summary states what remains in this issue and why it remains open or can close. |
-| 依据 | Requirement and source delivery/review links, or an accessible archive entry identifying the original report. A date alone is not a source. |
-| 阻塞项 | Open blocker IDs in this report's scope, comma-separated (`R-001, R-002`), or `无`. Summary blockers cover the whole issue. |
-| 本次验证 | 本轮执行 / 历史复核 / 混合 / 未执行. A consolidation that only reorganizes comments uses 未执行; describe any inspection of old reports separately. |
+| 状态 | A status for this report kind |
+| 基线 | Full implementation/review SHA, comparison base and local/remote availability. Summaries distinguish latest implementation, latest reviewed baseline and integration state. |
+| 范围 | Covered acceptance/finding IDs and partial results. Summaries explain what remains or why the issue can close. |
+| 依据 | Requirements and source delivery/review links, or accessible archive entries identifying original reports |
+| 阻塞项 | Open blocker IDs in scope, comma-separated (`R-001, R-002`), or `无`; summaries cover the whole issue |
+| 本次验证 | 本轮执行 / 历史复核 / 混合 / 未执行; comment-only consolidation uses 未执行 |
 | 更新日期 | Actual date in the task's timezone, `YYYY-MM-DD` |
 
-### Development report
+Use the following titles and sections in order. Each section may be concise;
+write `无` for an empty findings/remaining-work section.
 
-After `## 开发交付` and the header, use these sections in order:
+| Kind / title | Sections and content |
+| --- | --- |
+| development / `## 开发交付` | `### 交付结果`: behavior/entry points mapped to AC/finding IDs; `### 验证与证据边界`: checks, environment, results and provenance; `### 剩余事项`: unfinished work, skipped/failed checks and limits; `### 下一步`: concrete next action |
+| review / `## 审核结论` | `### 结论`: scoped result and whether it supports closure; `### 审核问题`: findings and closure conditions; `### 验证与证据边界`: executed checks, historical evidence/applicability, inference and gaps; `### 后续处理`: fixes or closure conditions |
+| summary / `## 当前结论` | `### 未闭环事项`: ID, type, gap, completion condition, blocking and next actor; `### 已验证成果与边界`: accepted capabilities/limits; `### 验证依据`: AC-to-source/result/baseline/environment mapping and what this consolidation did; `### 接手入口`: delivery, essential conditions and next action; `### 记录索引`: commits, PRs/reviews and retained evidence |
 
-1. `### 交付结果`: resulting behavior and delivery entry points, mapped to AC or
-   finding IDs. A claimed fix is **已修复，待复验** until reviewed.
-2. `### 验证与证据边界`: commands/operations, environment, observed results and
-   accessible evidence. Distinguish this run from reused results.
-3. `### 剩余事项`: unfinished implementation, failed/skipped checks, limitations
-   and blockers; write `无` when empty.
-4. `### 下一步`: the concrete review or implementation action needed.
+Allocate `R-001` style IDs across the issue after reading existing findings.
+Carry them through fixes as 未解决, 已修复待复验, 已复验关闭 or
+不采纳（with evidence/authorized decision）. A delivery's claimed fix remains
+**已修复，待复验** until reviewed. Retain IDs when linking PR findings into a
+handoff. Include category, severity, blocking, trigger, impact, criterion/code
+or reproduction, and completion condition; keep Standards and Spec distinct.
 
-Self-tests do not grant whole-issue acceptance. Report what changed and why it
-matters; avoid a chronology of debugging attempts or repeated full logs.
+Classify open work as **已确认缺陷**, **待验证风险**, **验收缺口** or
+**后续候选**. Candidates do not become blockers without agreed scope changes.
+Preserve unresolved dissent and user decisions. Explain metric units, expected
+failures, skipped checks and fixture limits. Summaries are derived views:
+reconcile stronger evidence for the relevant baseline instead of retaining
+stale conclusions. Link maintained instructions rather than copying them.
 
-### Review report
+## Publishing safely
 
-After `## 审核结论` and the header, use these sections in order:
-
-1. `### 结论`: approval/changes/evidence gap for the stated scope, and whether it
-   supports whole-issue acceptance. A static review can pass while host acceptance
-   is still pending; do not present that as whole-issue approval.
-2. `### 审核问题`: stable finding IDs, category, severity, whether each blocks the
-   stated acceptance, and current status. For each finding give trigger, actual
-   behavior, impact, supporting criterion/code/reproduction, and completion or
-   re-verification condition. Write `无` when there are no findings.
-3. `### 验证与证据边界`: checks actually performed, old evidence inspected and why
-   it still applies, and uncovered areas. Preserve Standards/Spec categories and
-   distinguish confirmed behavior from source-based inference.
-4. `### 后续处理`: fixes, evidence needed, or the conditions for closing.
-
-Allocate `R-001` style IDs across the issue; retain them through fixes and
-re-verification. Re-read the current handoff before allocating IDs. Track findings
-as 未解决, 已修复待复验, 已复验关闭, or 不采纳（with evidence/authorized decision）.
-Severity and acceptance blocking are separate decisions. New findings get new IDs;
-do not recycle IDs or use a change in round number to erase an unresolved finding.
-
-### Current handoff / consolidation
-
-After `## 当前结论` and the header, use these sections in order:
-
-1. `### 未闭环事项`: current work first. Use a table with ID, type, problem or
-   gap, completion criterion, blocking status, and owning issue/next actor.
-2. `### 已验证成果与边界`: organize by acceptance items, preserving useful
-   capabilities and their limits. Separate approved contracts from proposals.
-3. `### 验证依据`: map acceptance items to results, source report/artifact,
-   tested baseline/environment and whether the result was executed or only
-   inspected in the original review. State what the consolidation itself did.
-4. `### 接手入口`: delivery location, essential run conditions, reproduction
-   entry points and next actions. Link to maintained instructions rather than
-   duplicating whole parameter tables and command manuals.
-5. `### 记录索引`: implementation commits, acceptance records and source archives.
-
-Classify outstanding work as **已确认缺陷**, **待验证风险**, **验收缺口**, or
-**后续候选**. A candidate belongs to its parent/future specification and does not
-automatically block this issue. Do not mark an unobserved risk as reproduced, a
-fixture as production acceptance, or parameter agreement as image equivalence.
-Explain misleading aggregates such as expected negative tests retained in an
-`errors[]` array, skipped host checks counted in a passing suite, and metrics
-whose units cannot support a broader performance or quality claim.
-
-Keep the summary useful for both a quick status decision and the next developer.
-There is no hard length cap. Retain details necessary to understand a blocker or
-reproduce it; move exhaustive mappings/logs into existing appropriate records.
-Do not require a new history document for each small task.
-
-### Updating and consolidating reports
-
-- Read the issue body, current handoff and relevant later reports before work.
-  The current handoff is a derived view; stronger evidence for the relevant
-  baseline takes precedence over an older conclusion. Conflicts that cannot be
-  resolved remain explicit gaps, not silently averaged conclusions.
-- Publish a report at a meaningful delivery/review boundary. Correct small
-  mistakes or add evidence for the same scope to the same report. A new delivery,
-  review baseline, or materially different conclusion gets a new report key.
-- Maintain at most one current handoff, updating it after formal reports. An
-  initial delivery need not create a second identical comment: create the handoff
-  at the first review/rework boundary or consolidation, then keep it current.
-  An issue-body link may point to it without replacing the requirements.
-- Consolidate when a review/fix cycle completes, current conclusions become
-  difficult to locate, or the user requests it. Merge by AC/finding ID, not by
-  concatenating rounds. Preserve unresolved dissent, user decisions and still
-  applicable evidence. Never turn development assertions into reviewer approval.
-- Preserve original reports before substantive replacement. Corrections to
-  factual errors may be made in place, with source history recoverable. During
-  active development, retain separate delivery/review reports as needed. A user
-  request to consolidate comments or close out a completed issue authorizes
-  removing superseded agent-authored reports after durable archival and
-  verification: keep exactly one final summary among agent reports, including
-  the final review's conclusion, provenance and limits in that summary. Merely
-  marking old reports superseded or hiding them does not complete this request.
-  Preserve human discussion, user decisions and unresolved dissent; do not infer
-  permission to delete these or unrelated comments. Without a consolidation or
-  closeout request, maintain the current handoff without deleting comments.
-- For archives use `github-issue-comment-archive/1`: `issue`, `archived_on`,
-  `purpose`, `current_status_comment`, and `comments` containing each original
-  `id`, `created_at`, `updated_at`, `author`, `original_url`, and full `body`.
-  Preserve timestamps and bodies rather than rewriting history to the new format.
-  Store authorized archives in the project's existing history directory; inspect
-  for secrets/private paths before publishing. A local untracked file or scratch
-  directory is not a completed durable handoff. If remote publication is not
-  authorized, commit the archive locally and explicitly report remote availability
-  as pending; do not claim an inaccessible GitHub link works.
-- Consolidation is complete only when sources are recoverable, IDs/links and
-  baselines are correct, outstanding work has completion criteria and ownership,
-  and referenced documents that claim current status agree. Correct contradicted
-  current conclusions in place; preserve historical facts in the archive. If
-  synchronization is unavailable, list it as unfinished work.
-- Before deleting comments, commit and publish the source archive, verify the
-  remotely accessible content against the captured IDs, bodies and timestamps,
-  and publish/read back the validated final summary. Replace live references to
-  removed reports with archive references identifying the original report ID;
-  historical archived bodies stay intact. Re-read each targeted comment just
-  before deletion and reconcile concurrent changes first. Delete by exact ID,
-  then paginate all comments to verify the final count and sole summary marker.
-  If publication or deletion is unavailable, report closeout as incomplete.
-- Report actual remaining comment counts (agent reports versus preserved human
-  discussion), the retained evidence set and reasons, reference checks, and
-  commit/publication state. For completed-issue closeout, also satisfy the
-  history and scratch completion checks below. A unique current marker,
-  successful archive check or passing tests alone does not establish closeout.
-- Product integration decisions stay in their owning parent issue. Consolidating
-  a child does not authorize integration or raise its agreed acceptance bar.
-
-### Completed-issue archival and closeout
-
-A request to archive, tidy or close out a completed issue (归档、整理、收尾)
-covers comments, project-history records and issue-owned temporary files unless
-the user explicitly limits the scope. A comment-only request remains comment-only.
-Issue acceptance/closure and archival closeout are separate states: a closed
-issue or published archive does not establish that cleanup is complete. The
-request authorizes removal of superseded material after the preservation checks;
-do not require another cleanup request or add an optional skill confirmation gate.
-
-1. **Inventory the whole issue.** Inspect its history records and indexes, both
-   scratch locations resolved from the Git root, and known output paths referenced
-   by its reports/scripts. Include earlier rounds and the current archival task;
-   filename matching alone is insufficient. Establish ownership and ongoing use
-   before deletion; preserve unrelated work, shared inputs and uncertain files.
-2. **Consolidate durable knowledge.** Update the final acceptance record and
-   indexes in place, maintain one source-comment archive, and remove superseded
-   plans, duplicate records and redundant evidence from the current history tree.
-   Retain evidence needed for acceptance, material limits or otherwise
-   unreproducible findings, and reproduction inputs not replaced by maintained
-   tests; state each file's purpose in the existing record or evidence index.
-   Preserve historical versions through accessible immutable Git references.
-   Extract unique conclusions and verify required evidence before removing its
-   scratch source. Do not copy every run, failed iteration or disposal log into
-   history, or add a closeout diary instead of updating existing records.
-3. **Finish publication, then clean scratch.** Complete the authorized commit,
-   publication and comment read-back checks before deleting their working files.
-   Remove obsolete issue-owned logs, generated fixtures/results and temporary
-   scripts from all inventoried rounds. This includes the archival task's own
-   helpers, snapshots, Markdown drafts, API payloads and disposal reports. Do not
-   archive these scaffolding files merely to avoid deleting them. Remove empty
-   owned directories after validating resolved paths remain within the intended
-   cleanup scope. Retain evidence still needed for an unresolved check or handoff.
-4. **Verify the final state.** Re-read comments and history references, then
-   re-scan all inventoried temporary locations after the last publication or
-   helper run. No disposable issue-owned files, including closeout helpers, may
-   remain when reporting full completion. Report remaining comment counts,
-   retained history files and purposes, scratch files removed and remaining,
-   reference/check results, and commit/publication state. List every retained
-   temporary path with its reason and next owner/action. Unresolved ownership,
-   failed deletion or deferred cleanup makes that part incomplete; report it
-   explicitly rather than claiming the whole archival closeout is complete.
-
-### Publishing and verification
-
-Generate drafts in the scratch directory required by `AGENTS.md` (resolve it
-from the Git root first). These commands use an already-resolved `$scratch`:
+Generate drafts in the scratch location resolved under `AGENTS.md`:
 
 ```powershell
 python tools/issue_report.py template development --issue 53 --key dev-03 --output "$scratch/issue-53-dev-03.md"
 python tools/issue_report.py check "$scratch/issue-53-dev-03.md" --json
-python tools/issue_report.py check-archive docs/project-history/mtou-livelink/issue-53-comment-archive.json --json
 ```
 
-Replace every placeholder, then run `check` before writing to GitHub. Templates
-are incomplete by design; output files are created exclusively, never overwritten.
-Exit codes: 0 success, 1 invalid report/archive or file error, 2 CLI usage error.
-The tool has no network writes or new dependencies. It validates structure,
-status vocabulary, declared blockers, dates and source-archive fields; it cannot
-prove evidence truth, link availability, completeness or semantic consistency.
-The publishing agent remains responsible for those checks.
+Replace placeholders before publishing. Templates refuse to overwrite files.
+Exit codes: 0 success, 1 invalid content/file error, 2 CLI usage error. The tool
+checks structure/declarations; the publisher checks evidence truth, link
+availability and semantic consistency.
 
-For a new formal comment, read **all** issue comments (paginate) and look for the
-same kind/issue/key marker before creating it. If a matching report already
-exists, compare it and use its exact numeric comment ID. Never use `--edit-last`:
-agents may share one GitHub account. Multiple matching markers are a conflict to
-resolve, not permission to overwrite an arbitrary comment. Legacy reports can be
-migrated during their next authorized update; first preserve their sources.
+Read all comments with pagination before creating a report. Match kind/issue/key
+and edit an existing match by exact numeric comment ID. Multiple matches need
+reconciliation. Never use `--edit-last` on a shared account.
 
-Use `gh issue comment <number> --body-file <draft.md>` for creation. For editing,
-read `gh api repos/{owner}/{repo}/issues/comments/<id>` and verify its `issue_url`,
-author/ownership, marker, body and `updated_at`. Immediately before writing,
-re-read and compare the body/timestamp to the version being edited. On a change,
-reconcile first. Send the full body through a UTF-8 JSON file and
+Create with `gh issue comment <number> --body-file <draft.md>`. Before editing,
+read `gh api repos/{owner}/{repo}/issues/comments/<id>` and verify `issue_url`,
+ownership, marker, body and `updated_at`. Re-read immediately before writing;
+reconcile concurrent changes. Send the full body through a UTF-8 JSON file with
 `gh api --method PATCH repos/{owner}/{repo}/issues/comments/<id> --input <payload.json>`.
-Read back and compare the saved body and marker after either operation; report
-the actual comment URL. After an ambiguous timeout, read before retrying to avoid
-duplicate creation. File contents are data, never shell-interpolated commands.
+Read back the saved body/marker and return the URL. After ambiguous timeouts,
+read before retrying. Serialize writes per issue; a coordinator publishes
+delegated results. Read-before-write is not an atomic lock.
 
-Serialize publication per issue: one coordinating agent writes and other agents
-return findings to it. Read-before-write is not an atomic concurrency lock; do
-not use concurrent writers on the same handoff. Existing authorization persists;
-these checks do not add an extra approval step or authorize otherwise unrequested
-external writes. A passed report does not itself authorize closing an issue.
+## Closure and requested archival
 
-Close only when the issue's agreed acceptance is covered, blockers are resolved,
-the applicable review/acceptance supports closure, and task authorization permits
-it. Publish the final result and update the handoff before closing; avoid an extra
-duplicate closing comment. Deferred product work belongs in its owning issue.
+Ordinary closure leaves delivery/review evidence at its source; update derived
+handoffs from those records. Select durable knowledge using the
+[history retention rules](../project-history/README.md). Git does not preserve
+remote comments: capture source reports before substantive replacement, and
+verify recoverability of any comment before deleting it.
 
-Repository instructions and the mandatory local check are the current enforcement
-mechanism. They do not prevent a client with GitHub write credentials from
-bypassing the workflow. Other agent clients must load this same contract through
-their own instruction entry point; do not duplicate it into every skill. Server
-monitoring or a credential-controlled publisher is a separate deployment choice,
-not something this repository currently claims to enforce.
+A request to consolidate comments or to archive/tidy/close out a completed
+issue (归档、整理、收尾) includes the following unless explicitly narrowed.
+Acceptance/closure and archival completion remain separate states.
 
-## Operations
+1. **Inventory.** Read the issue, reports, referenced history/evidence, both
+   scratch locations and known issue outputs. Establish ownership and ongoing
+   use; preserve shared inputs and uncertain files.
+2. **Preserve.** Consolidate unique decisions and essential evidence into their
+   existing owner. For source comments to be replaced/deleted, preserve exact
+   IDs, authors, timestamps, URLs and bodies in one archive. Keep human
+   discussion, user decisions and unresolved dissent intact.
+3. **Publish and verify.** Before deleting comments, commit/publish their source
+   archive within authorization, compare remote content against captured sources,
+   then publish/read back the validated final summary. Replace live references
+   to removed comments with archive references identifying original IDs.
+   If publication is unavailable or unauthorized, retain sources and report
+   dependent cleanup as pending.
+4. **Consolidate and clean.** Re-read targeted comments and reconcile edits.
+   Delete superseded agent reports by exact ID, retaining the final summary
+   and preserved human discussion/decisions. Remove redundant local records
+   after extracting unique content and verifying immutable references. Clean
+   obsolete issue-owned scratch, including this closeout's helpers, snapshots,
+   drafts, API payloads and results. Validate resolved paths before deletion
+   and preserve files needed by other work.
+5. **Verify completion.** Paginate comments to confirm final report counts;
+   check history links and re-scan scratch after the last helper run. Report
+   retained evidence/purpose, actual comment counts, publication state and any
+   retained temporary path with reason and next action. Incomplete parts stay
+   explicit; a passing archive check alone is not closeout.
 
-- Create: `gh issue create --title "..." --body "..."`
-- Read: `gh issue view <number> --comments`
-- List: `gh issue list --state open --json number,title,body,labels,comments`
-- Comment: validate the report, then `gh issue comment <number> --body-file <draft.md>`
-- Add or remove labels: `gh issue edit <number> --add-label "..."` or
-  `--remove-label "..."`
-- Close: `gh issue close <number>` after the acceptance and authorization checks above
+Source archives use `github-issue-comment-archive/1`: `issue`, `archived_on`,
+`purpose`, `current_status_comment`, and `comments` containing original `id`,
+`created_at`, `updated_at`, `author`, `original_url` and full `body`. Preserve
+legacy wording. Use the existing project history directory, inspect for secrets
+and private paths, then validate:
 
-For multiline content, use `--body-file` with a temporary Markdown file
-appropriate to the active shell. Run write operations only when the task
-authorizes external changes.
+```powershell
+python tools/issue_report.py check-archive <archive.json> --json
+```
 
-## Pull requests as a triage surface
+Archives preserve provenance. Their existence does not require another
+acceptance document. Integration decisions belong to the owning parent issue;
+consolidation preserves the accepted scope.
 
-**PRs as a request surface: no.**
+## Tracker navigation
 
-If this is changed to `yes`, external pull requests enter the same triage
-workflow as issues. Read them with `gh pr view <number> --comments` and
-`gh pr diff <number>`.
+- Read issues with `gh issue view <number> --comments`; inspect PRs with
+  `gh pr view <number> --comments` and `gh pr diff <number>`.
+- List with `gh issue list --state open`; use [triage labels](triage-labels.md).
+- When a skill says "publish to the issue tracker", create a GitHub issue.
+  Use `--body-file` for multiline issue/PR bodies and comments.
+- Issues and PRs share numbering. Resolve an ambiguous reference with
+  `gh pr view <number>`, then `gh issue view <number>` if needed.
+- A wayfinding map uses `wayfinder:map`; children use `wayfinder:research`,
+  `wayfinder:prototype`, `wayfinder:grilling` or `wayfinder:task`. Use
+  sub-issues/dependencies when available; otherwise use a task list with
+  `Part of #…` and `Blocked by: #…` in child bodies. Link final results from the map.
+- When authorized to work through the tracker, claim with
+  `gh issue edit <number> --add-assignee @me` before other tracker writes.
 
-GitHub shares numbering between issues and pull requests. If a bare reference
-such as `#42` is ambiguous, try `gh pr view 42` and then `gh issue view 42`.
-
-## Skill terminology
-
-When a skill says "publish to the issue tracker," create a GitHub issue.
-
-When a skill says "fetch the relevant ticket," run
-`gh issue view <number> --comments`.
-
-## Wayfinding
-
-A wayfinding map is one issue labelled `wayfinder:map`. Its child tickets use
-one of these labels:
-
-- `wayfinder:research`
-- `wayfinder:prototype`
-- `wayfinder:grilling`
-- `wayfinder:task`
-
-Use GitHub sub-issues where available. Otherwise, maintain a task list in the
-map and begin each child issue with `Part of #<map>`.
-
-Represent blockers with GitHub issue dependencies. If dependencies are
-unavailable, begin the blocked issue with `Blocked by: #<number>`.
-
-When authorized to work through the tracker, claim a ticket with
-`gh issue edit <number> --add-assignee @me` before other tracker writes. Resolve
-it with the formal result and current handoff, add the durable context reference
-to the map, and close only when the conditions above are met.
+Local report checks and repository instructions guide publication. Server
+enforcement depends on GitHub settings; current CI does not validate acceptance
+claims or authorize merges.

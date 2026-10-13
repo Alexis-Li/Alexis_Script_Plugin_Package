@@ -9,12 +9,8 @@ and tools for 3D art production. It also provides a workspace for standalone
 Unreal Engine plug-ins and composite products that cooperate across multiple
 host applications.
 
-Maya projects favor one directly runnable Python file. A project only adds
-`scripts/`, `plug-ins/`, `icons/`, or other files when the feature requires
-them. Small and medium tools install by copying those files to Maya's matching
-directories and do not require a `.mod` file. Maya runtime code should support
-both Python 2 and Python 3 where practical; Python 3 takes priority when one
-implementation cannot support both.
+Choose a tool below and follow its manual for supported Maya/Python versions,
+installation and usage. Each tool or host component can be installed separately.
 
 ## Tools
 
@@ -60,6 +56,6 @@ implementation cannot support both.
 
 See [development conventions](docs/development-conventions.md) for the shared
 workflow and the [Unreal plugin guide](docs/unreal-development.md) for project
-navigation. For issue-based delivery, review and handoff, follow the
-[issue report workflow](docs/agents/issue-tracker.md), which includes draft
-generation and validation commands.
+navigation. Use the [Issue/PR workflow](docs/agents/issue-tracker.md) to choose
+a delivery path and track review and integration. Consult the
+[history retention rules](docs/project-history/README.md) before adding records.
