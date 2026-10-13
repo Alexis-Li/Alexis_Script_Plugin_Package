@@ -41,6 +41,8 @@
 三个原型已经达到统一规划的前置条件。
 [整合方案草案](preview-workflow-integration-plan.md)一起处理空间、时间、对象身份、
 驱动所有权、资源恢复、产品接口与联合验收。2026-10-13 本轮只准备方案，未实施接入。
+后续范围由[方案票 #56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56)承接，
+尚未标记为可执行开发任务。
 
 推荐沿用角色／默认参考的 `(x,z,y)`，将相机适配到同一空间；所有对象共享一个
 明确 Anchor，逆变换用于 Maya 相机和参考。实时、缓存、Sequencer 镜头联动
