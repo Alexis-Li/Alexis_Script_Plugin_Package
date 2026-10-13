@@ -1,7 +1,7 @@
 # Issue #54: independent prop and second-character preview
 
 Current acceptance: **2026-10-13, review-04 passes the bounded prototype; issue closed, no open acceptance blockers**.
-Latest implementation and reviewed baseline: `b593dad42849705873c4d1b59f633992a966f4e3` (local, not pushed).
+Latest implementation and reviewed baseline: `b593dad42849705873c4d1b59f633992a966f4e3` (published on `codex/mtou-preview-workflow`).
 R-001 through R-009 are verified closed. The [current handoff](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955)
 records the issue state; product integration remains with #47.
 
@@ -100,7 +100,7 @@ and four evidence files, each with a specific purpose:
 
 | Retained file | Purpose |
 | --- | --- |
-| [Source-comment archive](issue-54-comment-archive.json) | Exact pre-closeout live comments, final review-04, older source reports and previous versions. Original IDs, authors, bodies and timestamps allow every conclusion to be traced. |
+| [Source-comment archive](issue-54-comment-archive.json) | Ten comment snapshots: the six live before this closeout plus four earlier source comments already removed from the thread. Original IDs, authors, bodies, timestamps and previous versions preserve provenance. |
 | [Review-04 results](issue-54-review-evidence/review-04-results.json) | Individual test states, all 104 Maya host check outcomes, peer exit/ownership states, measured observations, warning categories, raw-artifact hashes and metric limits. Closeout extracts existing evidence; it does not rerun host acceptance. |
 | [Common-anchor BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02.png) | Upright but overlapping source placement; materials were still checker placeholders, so it is not a material-quality reference. |
 | [Separated BaseColor](issue-54-review-evidence/review-04-basecolor-c01-c02-separated.png) | Both target meshes upright and completely framed with material colors. The prop anchor moves only for visibility; numeric spatial acceptance precedes this display offset. |
@@ -127,21 +127,25 @@ additional prototype closure requirements.
 
 ## Archival state
 
-Local knowledge consolidation is prepared. Remote archive publication, deletion
-of five superseded agent comments, and final scratch cleanup are **pending**:
-the user's no-push instruction remains in effect. The repository's tracker
-protocol requires remote archive verification and final-summary readback before
-comment deletion, and publication completion before disposal of issue scratch.
-This does not revoke the accepted and closed issue state.
+The accepted implementation, review evidence and source archive are published
+on the current branch. The source archive at `5487ded39a969a671eff11187ff01525df78659a`
+was retrieved through GitHub's blob API and matched the committed Git blob
+byte-for-byte (SHA-256 `0fb9702471de23e9e313976e22e5837aaf0e11880ffa273a3b37a2a6a1e5bb23`).
+It contains ten source snapshots; six were live immediately before this
+closeout. Their IDs, bodies, authors and creation/update timestamps match the
+remote comments exactly. The other four source comments had already been
+removed in the earlier consolidation. The five non-current live comments are
+superseded reports or archive pointers; no human discussion or user decision
+was present in that live set.
 
-The six live comments comprise four formal reports and two archive pointers;
-there is one current handoff and no human discussion to delete. The consolidated
-archive preserves all six current snapshots and the displaced original reports.
-The local reviewed implementation and review-04 evidence are not yet on the
-remote branch; no new branch or PR is created.
+Next, update and read back the current summary with archive references to the
+original report IDs, then delete those five comments by exact ID and verify the
+final issue comment count. Scratch cleanup follows publication and comment
+read-back. The issue remains accepted and closed while these archival checks
+finish.
 
 The full ownership inventory inspected both scratch locations and known host
-outputs, without following junctions. Pending publication, the retained paths are:
+outputs without following junctions. Until final cleanup, the retained paths are:
 
 | Retained temporary path | Reason and next action |
 | --- | --- |

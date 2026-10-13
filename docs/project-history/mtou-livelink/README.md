@@ -269,6 +269,13 @@ changes are recorded in the [changelog](../../../composite/MtoULiveLink/CHANGELO
   Production-scale and broader object support remain outside acceptance;
   combined product integration belongs to #47.
 
+- **2026-10-13:** Accepted and closed Issue #54 after independent review-04 of
+  `b593dad`. The bounded two-subject prototype passed R-001 through R-009 within
+  the scope and evidence limits in the [acceptance record](issue-54-multi-subject-acceptance.md).
+  The [source-comment archive](issue-54-comment-archive.json) preserves exact
+  report IDs, bodies and timestamps; product integration and cache implementation
+  remain with #47.
+
 - **2026-10-08:** Accepted and closed Issue #52 after independent review-02
   at `25336fa`: R-007–R-009 are verified closed; 145 Maya/Arnold checks, 63
   mapping tests per interpreter and 11 real-peer UE Automation checks pass.

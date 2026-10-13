@@ -2,7 +2,7 @@
   "schema": "github-issue-comment-archive/1",
   "issue": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54",
   "archived_on": "2026-10-13",
-  "purpose": "Consolidated source archive for closed issue 54: all six pre-closeout live comments are preserved with exact IDs, bodies and timestamps; previous_versions retains superseded original reports and handoffs. Older deleted reports remain included. The existing dev-01 user-relative path redaction is retained; its exact original and earlier summary versions remain recoverable at immutable published commit 3d602e7ac0a7582e23176068644016ee354cc131. Remote publication of this revision is pending authorization; do not delete live source comments until the committed archive is remotely verified.",
+  "purpose": "Consolidated source archive for issue 54: preserves the six comments live at the pre-closeout snapshot and four earlier source comments already removed from the thread, with original IDs, creation/update timestamps, authors, URLs and complete bodies; previous_versions keeps superseded text. The existing dev-01 user-relative path redaction is retained; its exact original and earlier summary versions remain recoverable at immutable published commit 3d602e7ac0a7582e23176068644016ee354cc131. Current publication and closeout state are tracked in the acceptance record.",
   "current_status_comment": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/54#issuecomment-5883765955",
   "comments": [
     {
