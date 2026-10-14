@@ -124,6 +124,11 @@ TSharedPtr<FMtoULiveLinkSource> MtoUSetActiveSource(TSharedPtr<FMtoULiveLinkSour
     return Previous;
 }
 
+TWeakPtr<FMtoULiveLinkSource> MtoUGetActiveLinkageSource()
+{
+    return GActiveSource;
+}
+
 FMtoUCachePlaybackView MtoUGetActorCachePlaybackView(const AMtoULiveLinkActor& Actor)
 {
     if (TSharedPtr<FMtoULiveLinkSource> Source = GActiveSource.Pin())
@@ -244,6 +249,12 @@ FMtoULiveLinkSource::FMtoULiveLinkSource(uint16 InPort)
         Reply.Packet = FMtoUProtocol::EncodeCacheProgress(PlayId, AppliedFrames);
         OutgoingReplies.Enqueue(MoveTemp(Reply));
     });
+    // The linkage session answers through the same ordered reply queue the
+    // cache outcomes use, so one connection never interleaves two writers.
+    LinkageSession.SendReply = [this](TArray<uint8>&& Packet, bool bControl)
+    {
+        SendLinkageControlPacketOnGameThread(MoveTemp(Packet), bControl);
+    };
     StartListener();
 }
 
@@ -410,12 +421,41 @@ void FMtoULiveLinkSource::Update()
             SourceBoneIndices.Reset();
             AcceptedCurveIndices.Reset();
             AcceptedCurveNames.Reset();
+            NegotiatedObjectId.Reset();
+            NegotiatedSetRevision = 0;
+            NegotiatedSpaceRevision = 1;
+            // Every borrowed writer is restored per resource and the linkage
+            // state returns to realtime; a new connection negotiates again.
+            LinkageSession.EndSession();
+            {
+                FScopeLock Lock(&PendingMutex);
+                FMtoUPendingHello Hello;
+                while (PendingHellos.Dequeue(Hello))
+                {
+                    QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+                }
+                FMtoUPendingLinkageControl Control;
+                while (PendingLinkageControls.Dequeue(Control))
+                {
+                    QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+                }
+                FMtoUPendingPoseGroup Group;
+                while (PendingPoseGroups.Dequeue(Group))
+                {
+                    QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+                }
+            }
             // The transient cache and its upload/play identity history are
             // scoped to one negotiated streaming session; a newer connection
             // starts its own fresh sequence at 1.
             CacheSession.EndSession();
         }
     }
+
+    // The greeting is answered before any object is negotiated, so the intake
+    // runs ahead of the init handling and the acknowledgement always reaches
+    // the peer before a negotiation reply.
+    DrainLinkageHellosOnGameThread();
 
     TOptional<FMtoUPendingInit> Init;
     {
@@ -443,6 +483,21 @@ void FMtoULiveLinkSource::Update()
         }
     }
     HandleCacheCommandsOnGameThread();
+
+    // Linkage intake and pump: the control messages and the staged pose groups
+    // follow the greeting, and the camera/time pump asks the editor for the
+    // current target on its bounded cadence.
+    DrainLinkageControlsOnGameThread();
+    DrainLinkageGroupsOnGameThread();
+    LinkageSession.Tick(FPlatformTime::Seconds());
+    // The worker reads this mirror to refuse cache work and live frames that
+    // contradict the current time authority.
+    bWorkerLinkageActive.Store(LinkageSession.GetView().Mode == TEXT("linkage"));
+    if (LinkageSession.ConsumeSessionEndRequest())
+    {
+        // A failed restore ended the session rather than hiding the residual.
+        MtoURequestStreamingSessionEnd();
+    }
 
     // While a cache owns this session, ordinary live frames must neither
     // mutate the cache nor overwrite local playback; drop them and their
@@ -546,6 +601,12 @@ int32 FMtoULiveLinkSource::GetQueuedCacheFrameCount() const
     return CacheCommands.GetPendingFrameCount();
 }
 #if WITH_DEV_AUTOMATION_TESTS
+int32 FMtoULiveLinkSource::GetQueuedControlMessageCount() const
+{
+    return QueuedLinkageControls.Load();
+}
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 int32 FMtoULiveLinkSource::GetPendingCacheCommandCount() const
 {
     return CacheCommands.GetPendingCommandCount();
@@ -647,6 +708,12 @@ uint32 FMtoULiveLinkSource::Run()
         WorkerCacheUploadId = 0;
         bWorkerCacheUploadRejected = false;
         WorkerLastSeenClearId = 0;
+        // Undelivered linkage intake belongs to the dead session; the game
+        // thread drains whatever it already took before its own cleanup.
+        PendingHellos.Empty();
+        PendingLinkageControls.Empty();
+        PendingPoseGroups.Empty();
+        QueuedLinkageControls.Store(0);
         if (ActiveSession != 0)
         {
             // Cancel every queued command of the dead session immediately so
@@ -686,6 +753,27 @@ uint32 FMtoULiveLinkSource::Run()
                 bStopRequested);
         }
         MarkDisconnected();
+    };
+
+    // A linkage refusal that keeps the connection open reports the exact code
+    // without the close-after flag an unrecoverable error carries.
+    auto SendLinkageError = [&](const FString& Code, const FString& Message)
+    {
+        if (ClientSocket)
+        {
+            SendPacket(
+                *ClientSocket,
+                FMtoUProtocol::EncodeError(Code, Message),
+                bStopRequested);
+        }
+    };
+
+    // Bounded linkage intake: the frozen control queue is enforced before a
+    // message gains a queue slot, so a peer that never lets the game thread
+    // drain is refused instead of backlogged.
+    auto CanAdmitLinkageControl = [&]() -> bool
+    {
+        return QueuedLinkageControls.Load() < FMtoUProtocol::MaxControlQueue;
     };
 
     // Bounded admission enqueue: the producer never blocks the loop for
@@ -873,6 +961,10 @@ uint32 FMtoULiveLinkSource::Run()
                     continue;
                 }
                 bDidWork = true;
+                if (Reply.bControl)
+                {
+                    QueuedOutgoingControls.Store(FMath::Max(0, QueuedOutgoingControls.Load() - 1));
+                }
                 if (!SendPacket(*ClientSocket, Reply.Packet, bStopRequested))
                 {
                     MarkDisconnected();
@@ -934,6 +1026,36 @@ uint32 FMtoULiveLinkSource::Run()
 
                     if (!bInitReceived)
                     {
+                        // The greeting opens a v10 connection. A mismatched
+                        // version is refused here, before any target is
+                        // discovered, a writer is muted or a handoff is read.
+                        FString FirstType;
+                        FString FirstTypeError;
+                        if (FMtoUProtocol::PeekType(Payload, FirstType, FirstTypeError)
+                            && FirstType == TEXT("hello"))
+                        {
+                            FMtoUHelloMessage Hello;
+                            FString HelloError;
+                            FString HelloErrorCode;
+                            if (!FMtoUProtocol::ParseHello(Payload, Hello, HelloError, &HelloErrorCode))
+                            {
+                                SendErrorAndDisconnect(HelloErrorCode, HelloError);
+                                break;
+                            }
+                            if (!CanAdmitLinkageControl())
+                            {
+                                SendLinkageError(
+                                    TEXT("RESOURCE_LIMIT"),
+                                    TEXT("The linkage control queue is full."));
+                                break;
+                            }
+                            FMtoUPendingHello Pending;
+                            Pending.SessionId = ActiveSession;
+                            Pending.Message = MoveTemp(Hello);
+                            PendingHellos.Enqueue(MoveTemp(Pending));
+                            QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                            continue;
+                        }
                         FMtoUInitMessage Init;
                         FString ErrorCode;
                         if (!FMtoUProtocol::ParseInit(Payload, Init, Error, &ErrorCode))
@@ -964,6 +1086,113 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                     }
 
+                    // Exactly one host owns time in each mode: while linkage
+                    // is active, cache work and live frames contradict the
+                    // authority statement and are refused with their code.
+                    if (bWorkerLinkageActive.Load()
+                        && (MessageType == TEXT("frame")
+                            || MessageType.StartsWith(TEXT("cache_"))))
+                    {
+                        SendLinkageError(
+                            TEXT("MODE_CONFLICT"),
+                            TEXT("Unreal owns the sequence time while linkage is active."));
+                        continue;
+                    }
+
+                    if (MessageType == TEXT("mode")
+                        || MessageType == TEXT("leave_linkage")
+                        || MessageType == TEXT("reference_result")
+                        || MessageType == TEXT("reference_removed")
+                        || MessageType == TEXT("reference_query"))
+                    {
+                        // Linkage control work happens on the game thread
+                        // because it mutates the takeover and the published
+                        // pose; the worker only parses and stages it.
+                        if (!CanAdmitLinkageControl())
+                        {
+                            SendLinkageError(
+                                TEXT("RESOURCE_LIMIT"),
+                                TEXT("The linkage control queue is full."));
+                            break;
+                        }
+                        FMtoUPendingLinkageControl Control;
+                        FString LinkageError;
+                        FString LinkageErrorCode = TEXT("INVALID_MESSAGE");
+                        bool bValid = true;
+                        if (MessageType == TEXT("mode"))
+                        {
+                            Control.Kind = FMtoUPendingLinkageControl::EKind::Mode;
+                            bValid = FMtoUProtocol::ParseMode(
+                                Payload, Control.Mode, LinkageError, &LinkageErrorCode);
+                        }
+                        else if (MessageType == TEXT("leave_linkage"))
+                        {
+                            Control.Kind = FMtoUPendingLinkageControl::EKind::LeaveLinkage;
+                            bValid = FMtoUProtocol::ParseLeaveLinkage(
+                                Payload, Control.LeaveLinkage, LinkageError, &LinkageErrorCode);
+                        }
+                        else if (MessageType == TEXT("reference_result"))
+                        {
+                            Control.Kind = FMtoUPendingLinkageControl::EKind::ReferenceResult;
+                            bValid = FMtoUProtocol::ParseReferenceResult(
+                                Payload, Control.ReferenceResult, LinkageError, &LinkageErrorCode);
+                        }
+                        else if (MessageType == TEXT("reference_removed"))
+                        {
+                            Control.Kind = FMtoUPendingLinkageControl::EKind::ReferenceRemoved;
+                            bValid = FMtoUProtocol::ParseReferenceRemoved(
+                                Payload, Control.ReferenceRemoved, LinkageError, &LinkageErrorCode);
+                        }
+                        else
+                        {
+                            Control.Kind = FMtoUPendingLinkageControl::EKind::ReferenceQuery;
+                            bValid = FMtoUProtocol::ParseReferenceQuery(
+                                Payload, Control.ReferenceQuery, LinkageError, &LinkageErrorCode);
+                        }
+                        if (!bValid)
+                        {
+                            // A malformed linkage message is structurally
+                            // garbage and closes, like any other.
+                            SendErrorAndDisconnect(LinkageErrorCode, LinkageError);
+                            break;
+                        }
+                        PendingLinkageControls.Enqueue(MoveTemp(Control));
+                        QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                        continue;
+                    }
+                    if (MessageType == TEXT("group"))
+                    {
+                        // The group budget meters the whole message, so the
+                        // encoded size is checked before any staging.
+                        if (!CanAdmitLinkageControl())
+                        {
+                            SendLinkageError(
+                                TEXT("RESOURCE_LIMIT"),
+                                TEXT("The linkage control queue is full."));
+                            break;
+                        }
+                        FMtoUPendingPoseGroup Pending;
+                        Pending.SessionId = ActiveSession;
+                        FString GroupError;
+                        FString GroupErrorCode = TEXT("INVALID_MESSAGE");
+                        if (!FMtoUProtocol::ParseGroup(
+                                Payload, Payload.Num(), Pending.Message, GroupError, &GroupErrorCode))
+                        {
+                            // An oversized group is refused with the frozen
+                            // code and keeps the last complete display; a
+                            // malformed one is structurally invalid.
+                            if (GroupErrorCode == TEXT("RESOURCE_LIMIT"))
+                            {
+                                SendLinkageError(TEXT("RESOURCE_LIMIT"), GroupError);
+                                continue;
+                            }
+                            SendErrorAndDisconnect(GroupErrorCode, GroupError);
+                            break;
+                        }
+                        PendingPoseGroups.Enqueue(MoveTemp(Pending));
+                        QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                        continue;
+                    }
                     if (MessageType == TEXT("cache_frame"))
                     {
                         // Admission happens before parsing: a held frame
@@ -1146,6 +1375,21 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 {
     check(IsInGameThread());
     const uint64 SessionId = GameThreadSession;
+    // Explicit pairing is the first gate: an object the user has not paired
+    // is refused before any target is discovered, so an unpaired connection
+    // can never partially take one over.
+    const FMtoULinkagePairing* Pairing = LinkageSession.FindPairing(Message.ObjectId);
+    if (!Pairing)
+    {
+        SetStatus(TEXT("Pairing required"));
+        EnqueueErrorOnGameThread(
+            TEXT("PAIRING_REQUIRED"),
+            TEXT("Pair this actor's Binding with the Maya object before connecting."),
+            FString::Printf(
+                TEXT("Maya object '%s' has no paired MtoU_LiveLink target. Select the Binding actor and pair it in the MtoU_LiveLink Details panel."),
+                *Message.ObjectId));
+        return;
+    }
     TArray<AMtoULiveLinkActor*> Actors;
     // ponytail: one editor-world object scan per connection; add actor registration only if profiling shows this scan matters.
     for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
@@ -1190,6 +1434,23 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     }
 
     AMtoULiveLinkActor* Actor = Actors[0];
+    // The paired target must be the one actor this session would stream into;
+    // a pairing that points anywhere else is not consent for this target.
+    AMtoULiveLinkActor* PairedActor = Pairing->Actor.Get();
+    if (!PairedActor || PairedActor != Actor)
+    {
+        const FString Details = FString::Printf(
+            TEXT("Maya object '%s' is paired with %s, not with the placed Binding actor %s."),
+            *Message.ObjectId,
+            Pairing->BindingPath.IsEmpty() ? TEXT("another target") : *Pairing->BindingPath,
+            *Actor->GetName());
+        Actor->SetConnectionStatus(FString::Printf(TEXT("Error: %s"), *Details));
+        EnqueueErrorOnGameThread(
+            TEXT("PAIRING_REQUIRED"),
+            TEXT("Pair this actor's Binding with the Maya object before connecting."),
+            Details);
+        return;
+    }
     // One user-facing text for every invalid-Binding refusal.
     const TCHAR* const InvalidBindingMessage =
         TEXT("The MtoU_LiveLink binding is invalid.");
@@ -1374,6 +1635,13 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     ExpectedBoneCount = Message.Bones.Num();
     ExpectedCurveCount = Message.Curves.Num();
     NegotiatedRevision = Message.Revision;
+    // The v10 identity of this session: the paired object, its object set and
+    // the common space every later group or mode message must repeat.
+    NegotiatedObjectId = Message.ObjectId;
+    NegotiatedSetRevision = Message.SetRevision;
+    NegotiatedSpaceRevision = Message.SpaceRevision;
+    LinkageSession.NegotiateIdentity(
+        NegotiatedObjectId, NegotiatedSetRevision, NegotiatedSpaceRevision);
     CacheSession.BeginSession({ExpectedBoneCount, ExpectedCurveCount, NegotiatedRevision});
     SourceBoneIndices.Init(INDEX_NONE, Required.GetNum());
     for (int32 MayaIndex = 0; MayaIndex < Outcome.TargetBoneIndices.Num(); ++MayaIndex)
@@ -1432,11 +1700,320 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         Message.Workflow,
         TargetMorphCount,
         bBoneOnlySession ? 0 : Outcome.AcceptedCurveNames.Num(),
-        NegotiatedRevision);
+        NegotiatedRevision,
+        static_cast<int32>(SessionId),
+        NegotiatedObjectId,
+        NegotiatedSetRevision,
+        NegotiatedSpaceRevision);
     Reply.ExpectedBoneCount = ExpectedBoneCount;
     Reply.ExpectedCurveCount = ExpectedCurveCount;
     Reply.bReady = true;
     OutgoingReplies.Enqueue(MoveTemp(Reply));
+}
+
+void FMtoULiveLinkSource::DrainLinkageHellosOnGameThread()
+{
+    check(IsInGameThread());
+    FMtoUPendingHello Hello;
+    while (PendingHellos.Dequeue(Hello))
+    {
+        QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+        if (Hello.SessionId == 0 || !IsSessionActiveOnGameThread(Hello.SessionId))
+        {
+            continue;
+        }
+        if (LinkageSession.GetSessionId() != static_cast<int32>(Hello.SessionId))
+        {
+            LinkageSession.BeginSession(static_cast<int32>(Hello.SessionId));
+        }
+        LinkageSession.NoteHello(Hello.Message);
+    }
+}
+
+void FMtoULiveLinkSource::DrainLinkageControlsOnGameThread()
+{
+    check(IsInGameThread());
+    const double NowSeconds = FPlatformTime::Seconds();
+    FMtoUPendingLinkageControl Control;
+    while (PendingLinkageControls.Dequeue(Control))
+    {
+        QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+        int32 SessionId = INDEX_NONE;
+        switch (Control.Kind)
+        {
+        case FMtoUPendingLinkageControl::EKind::Mode:
+            SessionId = Control.Mode.SessionId;
+            break;
+        case FMtoUPendingLinkageControl::EKind::LeaveLinkage:
+            SessionId = Control.LeaveLinkage.SessionId;
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceResult:
+            SessionId = Control.ReferenceResult.SessionId;
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceRemoved:
+            SessionId = Control.ReferenceRemoved.SessionId;
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceQuery:
+            SessionId = Control.ReferenceQuery.SessionId;
+            break;
+        }
+        if (SessionId == INDEX_NONE || SessionId < 1
+            || !IsSessionActiveOnGameThread(static_cast<uint64>(SessionId)))
+        {
+            continue;
+        }
+        if (LinkageSession.GetSessionId() != SessionId)
+        {
+            LinkageSession.BeginSession(SessionId);
+        }
+        switch (Control.Kind)
+        {
+        case FMtoUPendingLinkageControl::EKind::Mode:
+            LinkageSession.NoteMode(Control.Mode, NowSeconds);
+            break;
+        case FMtoUPendingLinkageControl::EKind::LeaveLinkage:
+            LinkageSession.NoteLeaveLinkage(Control.LeaveLinkage, NowSeconds);
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceResult:
+            LinkageSession.NoteReferenceResult(Control.ReferenceResult);
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceRemoved:
+            LinkageSession.NoteReferenceRemoved(Control.ReferenceRemoved);
+            break;
+        case FMtoUPendingLinkageControl::EKind::ReferenceQuery:
+            LinkageSession.NoteReferenceQuery(Control.ReferenceQuery);
+            break;
+        }
+    }
+}
+
+void FMtoULiveLinkSource::DrainLinkageGroupsOnGameThread()
+{
+    check(IsInGameThread());
+    const double NowSeconds = FPlatformTime::Seconds();
+    FMtoUPendingPoseGroup Pending;
+    while (PendingPoseGroups.Dequeue(Pending))
+    {
+        QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+        if (Pending.SessionId == 0 || !IsSessionActiveOnGameThread(Pending.SessionId))
+        {
+            continue;
+        }
+        if (LinkageSession.GetSessionId() != static_cast<int32>(Pending.SessionId))
+        {
+            LinkageSession.BeginSession(static_cast<int32>(Pending.SessionId));
+        }
+        LinkageSession.StagePoseGroup(Pending.Message, NowSeconds);
+    }
+
+    // One staged group is applied per Update() so a burst of answers can
+    // never starve the editor tick; the evidence follows the application.
+    FMtoUPoseGroupMessage Group;
+    if (!LinkageSession.TakeNextStagedGroup(Group))
+    {
+        return;
+    }
+    TArray<FMtoUAppliedComponent> Components;
+    FString Reason;
+    const bool bApplied = ApplyPoseGroupOnGameThread(Group, Components, Reason);
+    LinkageSession.NoteGroupApplied(
+        Group.EvalId,
+        Group.SampleSerial,
+        bApplied,
+        Group.UeDisplayFrame,
+        Components,
+        Reason,
+        FPlatformTime::Seconds());
+}
+
+bool FMtoULiveLinkSource::ApplyPoseGroupOnGameThread(
+    const FMtoUPoseGroupMessage& Group,
+    TArray<FMtoUAppliedComponent>& OutComponents,
+    FString& OutReason)
+{
+    check(IsInGameThread());
+    OutComponents.Reset();
+    OutReason.Reset();
+    if (ExpectedBoneCount == 0 || SourceBoneIndices.IsEmpty())
+    {
+        OutReason = TEXT("The session has no negotiated skeleton to apply a group to.");
+        return false;
+    }
+    for (const FMtoUPoseGroup& Row : Group.Objects)
+    {
+        if (Row.ObjectId != NegotiatedObjectId)
+        {
+            OutReason = FString::Printf(
+                TEXT("The group names object '%s' instead of the negotiated '%s'."),
+                *Row.ObjectId,
+                *NegotiatedObjectId);
+            return false;
+        }
+    }
+    const FMtoUPoseGroup& Row = Group.Objects[0];
+    if (Row.Transforms.Num() != ExpectedBoneCount || Row.Curves.Num() != ExpectedCurveCount)
+    {
+        OutReason = FString::Printf(
+            TEXT("The group carries %d bones and %d curves; the session negotiated %d and %d."),
+            Row.Transforms.Num(),
+            Row.Curves.Num(),
+            ExpectedBoneCount,
+            ExpectedCurveCount);
+        return false;
+    }
+
+    FMtoUFrameMessage Frame;
+    Frame.Transforms.Reserve(Row.Transforms.Num());
+    for (const FTransform& Transform : Row.Transforms)
+    {
+        Frame.Transforms.Add({
+            Transform.GetTranslation(), Transform.GetRotation(), Transform.GetScale3D()});
+    }
+    Frame.Curves = Row.Curves;
+    // The staged group is published through the same retargeting path as a
+    // live frame, so one complete group is one immutable publication.
+    if (!PublishFrameOnGameThread(Frame))
+    {
+        OutReason = TEXT("The group could not be published through the Live Link subject.");
+        return false;
+    }
+    return ReadBackComponentsOnGameThread(OutComponents, OutReason);
+}
+
+bool FMtoULiveLinkSource::ReadBackComponentsOnGameThread(
+    TArray<FMtoUAppliedComponent>& OutComponents,
+    FString& OutReason)
+{
+    check(IsInGameThread());
+    OutComponents.Reset();
+    OutReason.Reset();
+    if (!Client || !SourceGuid.IsValid())
+    {
+        OutReason = TEXT("The Unreal Live Link client is unavailable.");
+        return false;
+    }
+
+    bool bAnyActor = false;
+    for (const TWeakObjectPtr<AMtoULiveLinkActor>& WeakActor : ParticipatingActors)
+    {
+        AMtoULiveLinkActor* Actor = WeakActor.Get();
+        if (!Actor)
+        {
+            continue;
+        }
+        bAnyActor = true;
+        FMtoUAppliedComponent Component;
+        Component.ObjectId = NegotiatedObjectId;
+        Component.PartCount = Actor->GetCharacterPartComponents().Num();
+
+        TArray<USkeletalMeshComponent*> Displays;
+        if (USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent())
+        {
+            Displays.Add(Primary);
+        }
+        for (const TObjectPtr<UMtoUCharacterPartComponent>& Part :
+            Actor->GetCharacterPartComponents())
+        {
+            if (Part)
+            {
+                Displays.Add(Part);
+            }
+        }
+        for (USkeletalMeshComponent* Display : Displays)
+        {
+            const USkeletalMesh* Mesh = Display ? Display->GetSkeletalMeshAsset() : nullptr;
+            if (!Mesh || !Display->IsRegistered() || Display->GetNumComponentSpaceTransforms() == 0)
+            {
+                continue;
+            }
+            // Read the components the character actually holds: the posed
+            // bone transforms and the Morph values of this mesh.
+            Display->RefreshBoneTransforms();
+            Component.BoneCount += Display->GetComponentSpaceTransforms().Num();
+            for (const FName& CurveName : AcceptedCurveNames)
+            {
+                if (Mesh->FindMorphTarget(CurveName)
+                    && FMath::IsFinite(Display->GetMorphTarget(CurveName)))
+                {
+                    ++Component.MorphCount;
+                }
+            }
+        }
+        OutComponents.Add(MoveTemp(Component));
+    }
+
+    if (!bAnyActor)
+    {
+        OutReason = TEXT("No participating actor owns this session.");
+        return false;
+    }
+    int32 BoneCount = 0;
+    for (const FMtoUAppliedComponent& Component : OutComponents)
+    {
+        BoneCount += Component.BoneCount;
+    }
+    if (BoneCount < ExpectedBoneCount)
+    {
+        OutReason = FString::Printf(
+            TEXT("Only %d of the %d posed bones were read back from the displayed components."),
+            BoneCount,
+            ExpectedBoneCount);
+        return false;
+    }
+    return true;
+}
+
+void FMtoULiveLinkSource::SendLinkageControlPacketOnGameThread(TArray<uint8> Packet, bool bControl)
+{
+    check(IsInGameThread());
+    if (Packet.IsEmpty())
+    {
+        return;
+    }
+    const int32 SessionId = LinkageSession.GetSessionId() != 0
+        ? LinkageSession.GetSessionId()
+        : static_cast<int32>(GameThreadSession);
+    if (bControl && QueuedOutgoingControls.Load() >= FMtoUProtocol::MaxControlQueue)
+    {
+        // Overflow is an error, never an unbounded backlog.
+        SetStatus(TEXT("Linkage control queue overflow."));
+        FMtoUOutgoing Reply;
+        Reply.SessionId = SessionId;
+        Reply.Packet = FMtoUProtocol::EncodeError(
+            TEXT("RESOURCE_LIMIT"),
+            TEXT("The linkage control queue overflowed."),
+            FString::Printf(TEXT("%d undelivered control messages"), FMtoUProtocol::MaxControlQueue));
+        Reply.bCloseAfter = true;
+        Reply.bControl = true;
+        QueuedOutgoingControls.Store(QueuedOutgoingControls.Load() + 1);
+        OutgoingReplies.Enqueue(MoveTemp(Reply));
+        return;
+    }
+    if (bControl)
+    {
+        QueuedOutgoingControls.Store(QueuedOutgoingControls.Load() + 1);
+    }
+    FMtoUOutgoing Reply;
+    Reply.SessionId = SessionId;
+    Reply.Packet = MoveTemp(Packet);
+    Reply.bControl = bControl;
+    OutgoingReplies.Enqueue(MoveTemp(Reply));
+}
+
+bool FMtoULiveLinkSource::IsSessionActiveOnGameThread(uint64 SessionId) const
+{
+    check(IsInGameThread());
+    if (SessionId == 0)
+    {
+        return false;
+    }
+    if (SessionId == GameThreadSession)
+    {
+        return IsSessionPublishableOnGameThread(SessionId);
+    }
+    // The greeting phase precedes negotiation: the worker still owns the
+    // socket and no explicit refresh has ended this session yet.
+    return IsCurrentSession(SessionId);
 }
 
 void FMtoULiveLinkSource::HandleCacheCommandsOnGameThread()

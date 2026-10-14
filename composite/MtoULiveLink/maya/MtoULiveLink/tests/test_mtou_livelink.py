@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import contextlib
 import errno
 import itertools
@@ -20,14 +21,35 @@ if str(SCRIPTS) not in sys.path:
 import MtoULiveLink as MODULE  # noqa: E402
 from mtou_livelink import (  # noqa: E402
     cache as mtou_cache,
+)
+from mtou_livelink import (
     config as mtou_config,
+)
+from mtou_livelink import (
     controller as mtou_controller,
+)
+from mtou_livelink import (
     diagnostics as mtou_diagnostics,
-    protocol as mtou_protocol,
-    scene as mtou_scene,
-    session as mtou_session,
+)
+from mtou_livelink import (
+    linkage as mtou_linkage,
+)
+from mtou_livelink import (
     mayaapi as mtou_mayaapi,
+)
+from mtou_livelink import (
+    protocol as mtou_protocol,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
+from mtou_livelink import (
+    session as mtou_session,
+)
+from mtou_livelink import (
     space as mtou_space,
+)
+from mtou_livelink import (
     timeline as mtou_timeline,
 )
 
@@ -101,8 +123,10 @@ def character_snapshot(revision, root, outfit, bones, curves,
         [BIND_IDENTITY for unused in bones],
         bind_conflict_count,
     )
+
+
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v9.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v10.json")
     .read_text(encoding="utf-8")
 )
 
@@ -570,8 +594,9 @@ class StreamingSessionTests(unittest.TestCase):
         registered = []
 
         class FakeWorker(object):
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 self.init_message = init_message
+                self.hello_message = hello_message
                 self.started = False
                 self.stopped = False
                 self.joined = None
@@ -649,8 +674,9 @@ class StreamingSessionTests(unittest.TestCase):
         class FakeWorker(object):
             instance = None
 
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 del init_message
+                self.hello_message = hello_message
                 self.submitted = []
                 self.__class__.instance = self
 
@@ -779,8 +805,9 @@ class StreamingSessionTests(unittest.TestCase):
         class FakeWorker(object):
             instance = None
 
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 del init_message
+                self.hello_message = hello_message
                 self.stop_count = 0
                 self.join_count = 0
                 self.__class__.instance = self
@@ -860,8 +887,9 @@ class StreamingSessionTests(unittest.TestCase):
         timer_callbacks = []
 
         class FakeWorker(object):
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 del init_message
+                self.hello_message = hello_message
 
             def start(self):
                 pass
@@ -937,8 +965,9 @@ class StreamingSessionTests(unittest.TestCase):
         removed = []
 
         class FakeWorker(object):
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 del init_message
+                self.hello_message = hello_message
 
             def start(self):
                 pass
@@ -1052,8 +1081,9 @@ class StreamingSessionTests(unittest.TestCase):
         timers = []
 
         class DisconnectedWorker(object):
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 del init_message
+                self.hello_message = hello_message
 
             def start(self):
                 pass
@@ -1338,6 +1368,9 @@ class SenderLifecycleTests(unittest.TestCase):
                 def __init__(self):
                     self.reply = mtou_protocol.encode_message({
                         "type": "ready", "revision": 7,
+                        "object_id": init_message["object_id"],
+                        "set_revision": init_message["set_revision"],
+                        "space_revision": init_message["space_revision"],
                         "missing_in_unreal": [],
                         "missing_in_maya": ["Projected"],
                         "bone_name_remaps": [], "workflow": "model",
@@ -1387,6 +1420,95 @@ class SenderLifecycleTests(unittest.TestCase):
         _, _, warning, _ = connect_with(["Smile"])
         self.assertTrue(warning["has_warning"])
         self.assertEqual(["Projected"], warning["missing_in_maya"])
+
+    def test_ready_reply_must_echo_the_negotiated_identity(self):
+        identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+        ready_reply = {
+            "type": "ready", "revision": 7,
+            "object_id": "character", "set_revision": 1, "space_revision": 1,
+            "session_id": 4242,
+            "missing_in_unreal": [], "missing_in_maya": [],
+            "bone_name_remaps": [], "workflow": "model",
+            "target_morph_count": 0, "accepted_morph_count": 0,
+        }
+        greeting = {
+            "type": "hello_ack", "version": mtou_config.PROTOCOL_VERSION,
+            "session_id": 4242,
+            "capabilities": dict(mtou_protocol.DEFAULT_CAPABILITIES),
+            "target": {"object_id": "character", "kind": "skeletal_mesh",
+                       "binding_path": "/Game/Characters/Hero", "generation": "1"},
+            "space": {"space_revision": 1,
+                      "anchor": {"translation": [0, 0, 0],
+                                 "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}},
+        }
+
+        def run_with_ready_reply(reply, greeting=None):
+            init_message = mtou_protocol.make_init_message(
+                [["root", -1, identity]], ["Smile"], 7,
+                mtou_config.WORKFLOW_MODEL, True, "character", 1, 1)
+            worker = mtou_session.SenderWorker(
+                init_message,
+                mtou_protocol.make_hello_message("2024", "cm", 1.0, 24.0))
+            stream = b""
+            if greeting is not None:
+                stream += mtou_protocol.encode_message(greeting)
+            packet = mtou_protocol.encode_message(reply)
+
+            class HandshakeSocket(object):
+                def __init__(self):
+                    self.reply = stream + packet
+
+                def settimeout(self, timeout):
+                    pass
+
+                def recv(self, size):
+                    chunk, self.reply = self.reply[:size], self.reply[size:]
+                    return chunk
+
+                def sendall(self, packet):
+                    pass
+
+                def close(self):
+                    pass
+
+            fake_socket = HandshakeSocket()
+            observed = []
+
+            def selectable(unused_rlist, unused_wlist, unused_xlist, unused_timeout):
+                if not observed:
+                    # The first poll runs after the handshake reply was read.
+                    observed.append(worker.status())
+                worker.stop()
+                return ([], [], [])
+
+            with mock.patch.object(worker, "_connect", return_value=fake_socket), \
+                 mock.patch.object(worker, "_send_initial", return_value=True), \
+                 mock.patch.object(select, "select", side_effect=selectable):
+                worker.run()
+            # A refused handshake never reaches the poll loop, so the status it
+            # left behind is the outcome.
+            return observed[0] if observed else worker.status()
+
+        # The echoed object identity is what makes the answer belong to the
+        # negotiated object set, so a foreign set revision is a refusal.
+        state, _, _, diagnostic = run_with_ready_reply(
+            dict(ready_reply, set_revision=2))
+        self.assertEqual("error", state)
+        self.assertEqual("INVALID_MESSAGE", diagnostic["code"])
+        self.assertIn("set_revision", diagnostic["details"])
+
+        # The session identity is the one the greeting acknowledged.
+        state, _, _, diagnostic = run_with_ready_reply(
+            dict(ready_reply, session_id=4243), greeting)
+        self.assertEqual("error", state)
+        self.assertEqual("INVALID_MESSAGE", diagnostic["code"])
+        self.assertIn("session_id", diagnostic["details"])
+
+        # The matching identity reaches the ready state.
+        state, detail, _, diagnostic = run_with_ready_reply(ready_reply, greeting)
+        self.assertEqual("ready", state)
+        self.assertEqual("Connected", detail)
+        self.assertIsNone(diagnostic)
 
     def test_runtime_structured_error_is_preserved(self):
         worker = mtou_session.SenderWorker({"type": "init", "revision": 7})
@@ -4072,13 +4194,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(mtou_config.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v9_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v10_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
 
-        def worker_factory(init_message):
+        def worker_factory(init_message, hello_message=None):
             captured["init"] = init_message
+            captured["hello"] = hello_message
             return worker
 
         fake_om = type("FakeOpenMaya", (), {
@@ -4111,16 +4234,36 @@ class WorkflowTests(unittest.TestCase):
                                   side_effect=worker_factory):
             session = mtou_session.StreamingSession.start(
                 scene, 24.0, None, workflow=mtou_config.WORKFLOW_MODEL,
-                blendshapes_enabled=False)
+                blendshapes_enabled=False, object_id="hero", set_revision=3,
+                space_revision=2, scene_units=("m", 100.0),
+                maya_version="2025")
             session.stop()
 
         init_message = captured["init"]
-        self.assertEqual(9, init_message["version"])
+        self.assertEqual(mtou_config.PROTOCOL_VERSION, init_message["version"])
         self.assertEqual(mtou_config.WORKFLOW_MODEL, init_message["workflow"])
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
+        # The object identity travels with the negotiation so a reordered scene
+        # can never re-target the wrong object.
+        self.assertEqual("hero", init_message["object_id"])
+        self.assertEqual(3, init_message["set_revision"])
+        self.assertEqual(2, init_message["space_revision"])
         self.assertEqual(mtou_config.WORKFLOW_MODEL, session.workflow)
         self.assertFalse(session.blendshapes_enabled)
+        self.assertEqual("hero", session.object_id)
+        self.assertEqual(3, session.set_revision)
+        self.assertEqual(2, session.space_revision)
+
+        # The greeting precedes the object description so a peer with a
+        # different protocol version refuses before it reads an object.
+        hello_message = captured["hello"]
+        self.assertEqual(mtou_config.PROTOCOL_VERSION, hello_message["version"])
+        self.assertEqual("maya", hello_message["host"])
+        self.assertEqual("2025", hello_message["maya_version"])
+        self.assertEqual("m", hello_message["scene"]["linear_unit"])
+        self.assertEqual(100.0, hello_message["scene"]["unit_scale_cm"])
+        self.assertEqual(24.0, hello_message["scene"]["fps"])
 
     def test_invalid_streaming_workflow_is_rejected_before_worker_start(self):
         scene = mock.Mock()
@@ -4166,6 +4309,39 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("Clothes02", status)
 
 
+class _LinkageHost(object):
+    """The host surface the linkage session captures, applies and restores.
+
+    The state machine and its scheduling are the contract under test, so the
+    Maya calls stay fake and the protocol code stays real.
+    """
+
+    def capture_state(self):
+        return {"time": 0.0, "gate": "full"}
+
+    def restore_state(self, state):
+        return []
+
+    def apply_target(self, time, camera, gate):
+        return dict(time), {"camera": camera, "gate": gate}
+
+    def sample_group(self, object_ids):
+        return [{"object_id": "character",
+                 "transforms": [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]],
+                 "curves": [0.0]}]
+
+
+class _LinkageMessageStream(object):
+    """The streaming session surface linkage queues its ordered messages into."""
+
+    def __init__(self):
+        self.ordered = []
+
+    def submit_linkage(self, message):
+        self.ordered.append(message)
+        return True
+
+
 class ProtocolTests(unittest.TestCase):
     def test_canonical_conformance_cases_for_maya_adapter(self):
         exercised = []
@@ -4188,6 +4364,11 @@ class ProtocolTests(unittest.TestCase):
         # vice versa) fails Maya here and Unreal in the shared corpus test.
         self.assertEqual(
             CORPUS["limits"]["max_message_bytes"], mtou_config.MAX_MESSAGE_BYTES)
+        # The linkage group is metered as one whole message, so the framing
+        # ceiling and the group ceiling are the same frozen budget.
+        self.assertEqual(
+            CORPUS["limits"]["max_linkage_group_bytes"],
+            mtou_config.MAX_LINKAGE_GROUP_BYTES)
 
     def test_maya_cache_limits_match_the_shared_corpus_limits(self):
         self.assertEqual(
@@ -4196,6 +4377,23 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(
             CORPUS["limits"]["max_cache_frame_count"],
             mtou_config.MAX_CACHE_FRAME_COUNT)
+
+    def test_maya_linkage_and_reference_limits_match_the_shared_corpus(self):
+        self.assertEqual(
+            CORPUS["limits"]["max_control_queue"],
+            mtou_config.MAX_CONTROL_QUEUE)
+        self.assertEqual(
+            CORPUS["limits"]["max_reference_bytes"],
+            mtou_config.MAX_REFERENCE_BYTES)
+        self.assertEqual(
+            CORPUS["limits"]["max_reference_objects"],
+            mtou_config.MAX_REFERENCE_OBJECTS)
+        self.assertEqual(
+            CORPUS["limits"]["max_reference_triangles"],
+            mtou_config.MAX_REFERENCE_TRIANGLES)
+        # The scheduler budget is not a corpus limit; one target in flight plus
+        # one replaceable target is the v10 scheduling contract.
+        self.assertEqual(2, mtou_config.MAX_PENDING_LINKAGE_TARGETS)
 
     def _assert_maya_conformance_case(self, case):
         operation = case["operation"]
@@ -4239,7 +4437,9 @@ class ProtocolTests(unittest.TestCase):
             payload = case["payload"]
             actual = mtou_protocol.make_init_message(
                 payload["bones"], payload["curves"], payload["revision"],
-                payload["workflow"], payload["blendshapes_enabled"])
+                payload["workflow"], payload["blendshapes_enabled"],
+                payload["object_id"], payload["set_revision"],
+                payload["space_revision"])
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
@@ -4315,14 +4515,261 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
             return
+        if operation == "hello":
+            self._assert_hello_case(case)
+            return
+        if operation == "hello_ack":
+            payload = case["payload"]
+            if expected["accepted"]:
+                self.assertEqual(payload, mtou_protocol.validate_reply(payload))
+                return
+            with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                mtou_protocol.validate_reply(payload)
+            return
+        if operation == "mode":
+            self._assert_mode_case(case)
+            return
+        if operation == "mode_state":
+            self._assert_mode_state_case(case)
+            return
+        if operation == "leave_linkage":
+            self._assert_leave_linkage_case(case)
+            return
+        if operation in ("camera_time", "applied", "reference_offer"):
+            self._assert_linkage_message_case(case)
+            return
+        if operation == "group":
+            self._assert_group_case(case)
+            return
+        if operation in ("reference_result", "reference_removed", "reference_query"):
+            self._assert_reference_message_case(case)
+            return
+        if operation == "resource_limit":
+            self._assert_resource_limit_case(case)
+            return
         self.fail("Unsupported Maya conformance operation: " + operation)
 
-    def test_protocol_v9_init_and_structured_diagnostics(self):
+    # ------------------------------------------------------------- v10 linkage
+    def _assert_hello_case(self, case):
+        """The greeting names the peer's scene; the common space is centimetres
+        at unit scale 1 and the frame rate must be one the timeline drives."""
+        payload = case["payload"]
+        expected = case["expected"]
+        scene = payload["scene"]
+        if expected["accepted"]:
+            actual = mtou_protocol.make_hello_message(
+                payload["maya_version"], scene["linear_unit"],
+                scene["unit_scale_cm"], scene["fps"])
+            self.assertEqual(payload, actual)
+            self.assertEqual(1.0, mtou_space.centimeters_per_unit(scene["linear_unit"]))
+            self.assertEqual(
+                mtou_space.centimeters_per_unit(scene["linear_unit"]),
+                scene["unit_scale_cm"])
+            self.assertEqual(scene["fps"], mtou_space.validate_frame_rate(scene["fps"]))
+            self.assertTrue(mtou_protocol.encode_message(actual))
+            return
+        if scene["linear_unit"] != "cm":
+            # A peer whose scene is not the common centimetre space is refused
+            # before it discovers a target, borrows a camera or mutes a writer.
+            self.assertNotEqual(
+                1.0, mtou_space.centimeters_per_unit(scene["linear_unit"]))
+            self.assertNotEqual(
+                mtou_space.centimeters_per_unit(scene["linear_unit"]),
+                scene["unit_scale_cm"])
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            mtou_space.validate_frame_rate(scene["fps"])
+
+    def _assert_mode_case(self, case):
+        payload = case["payload"]
+        expected = case["expected"]
+        if expected["accepted"]:
+            actual = mtou_protocol.make_mode_message(
+                payload["session_id"], payload["mode_revision"], payload["mode"],
+                payload["control"], payload["transition"], payload["detail"])
+            self.assertEqual(payload, actual)
+            self.assertTrue(mtou_protocol.encode_message(actual))
+            if payload["mode"] == mtou_config.LINKAGE_MODE:
+                # The linkage session announces the control handover itself, so
+                # the accepted statement is what it really puts on the wire.
+                session, stream = self._linkage_session(case["linkage"])
+                self.assertEqual([payload], stream.ordered)
+                self.assertEqual(payload["mode"], session.mode())
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            mtou_protocol.make_mode_message(
+                payload["session_id"], payload["mode_revision"], payload["mode"],
+                payload["control"], payload["transition"], payload["detail"])
+
+    def _assert_mode_state_case(self, case):
+        payload = case["payload"]
+        expected = case["expected"]
+        session, _ = self._linkage_session(case["linkage"])
+        if expected["accepted"]:
+            self.assertEqual(payload, mtou_protocol.validate_reply(payload))
+            self.assertTrue(session.note_mode_state(payload))
+            return
+        with self.assertRaises((ValueError, mtou_linkage.LinkageError)) as caught:
+            session.note_mode_state(payload)
+        self._assert_stable_refusal(case, caught.exception)
+
+    def _assert_leave_linkage_case(self, case):
+        payload = case["payload"]
+        expected = case["expected"]
+        target, revision = payload["target"], payload["mode_revision"]
+        if expected["accepted"]:
+            actual = mtou_protocol.make_leave_linkage_message(
+                payload["session_id"], revision, target, payload["detail"])
+            self.assertEqual(payload, actual)
+            self.assertTrue(mtou_protocol.encode_message(actual))
+            return
+        if target not in ("realtime", "end"):
+            # The exit target is part of the contract: the builder never emits
+            # anything else, so an unknown target never reaches the wire.
+            with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                mtou_protocol.make_leave_linkage_message(
+                    payload["session_id"], revision, target, payload["detail"])
+            return
+        session, stream = self._linkage_session(case["linkage"])
+        queued = len(stream.ordered)
+        with self.assertRaises(mtou_linkage.LinkageError) as caught:
+            session.leave(target, revision)
+        self._assert_stable_refusal(case, caught.exception)
+        # A refused transition changes no host state and puts nothing on the
+        # wire beyond the control handover that took linkage mode.
+        self.assertEqual(queued, len(stream.ordered))
+
+    def _assert_linkage_message_case(self, case):
+        """Unreal's answer to one linkage target, applied by the real session.
+
+        Every refusal names its stable code, so the case pins the code the
+        adapter reports instead of the wording of a message text.
+        """
+        payload = self._case_payload(case)
+        expected = case["expected"]
+        answer = {
+            "camera_time": lambda session: session.offer_target(payload),
+            "applied": lambda session: session.note_applied(payload),
+            "reference_offer": lambda session: session.note_reference_offer(payload),
+        }[case["operation"]]
+        session, _ = self._linkage_session(case["linkage"])
+        if expected["accepted"]:
+            self.assertEqual(payload, mtou_protocol.validate_reply(payload))
+            self.assertTrue(answer(session))
+            return
+        with self.assertRaises((ValueError, mtou_linkage.LinkageError)) as caught:
+            mtou_protocol.validate_reply(payload)
+            answer(session)
+        self._assert_stable_refusal(case, caught.exception)
+
+    def _assert_group_case(self, case):
+        payload = self._case_payload(case)
+        expected = case["expected"]
+
+        def build():
+            return mtou_protocol.make_group_message(
+                payload["session_id"], payload["set_revision"],
+                payload["mode_revision"], payload["space_revision"],
+                payload["eval_id"], payload["transport_serial"],
+                payload["sample_serial"], payload["objects"], payload["camera"],
+                payload["time"])
+
+        if expected["accepted"]:
+            actual = build()
+            self.assertEqual(payload, actual)
+            # The complete group is metered as one message against the frozen
+            # linkage budget.
+            self.assertLessEqual(
+                mtou_protocol.group_wire_size(actual),
+                mtou_config.MAX_LINKAGE_GROUP_BYTES)
+            self.assertTrue(mtou_protocol.encode_message(actual))
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            build()
+
+    def _assert_reference_message_case(self, case):
+        payload = case["payload"]
+        expected = case["expected"]
+        if case["operation"] == "reference_result":
+            def build():
+                return mtou_protocol.make_reference_result_message(
+                    payload["session_id"], payload["transfer_id"],
+                    payload["accepted"], payload["detail"], payload["counts"],
+                    payload.get("container"))
+        elif case["operation"] == "reference_removed":
+            def build():
+                return mtou_protocol.make_reference_removed_message(
+                    payload["session_id"], payload["detail"])
+        else:
+            def build():
+                return mtou_protocol.make_reference_query_message(
+                    payload["session_id"], payload["transfer_id"],
+                    payload["scope"])
+        if expected["accepted"]:
+            actual = build()
+            self.assertEqual(payload, actual)
+            self.assertTrue(mtou_protocol.encode_message(actual))
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            build()
+
+    def _assert_resource_limit_case(self, case):
+        """An oversized case names its budget and its measured size, so the
+        frozen budget stays comparable without a multi-megabyte payload."""
+        payload = case["payload"]
+        budget = {
+            "max_linkage_group_bytes": mtou_config.MAX_LINKAGE_GROUP_BYTES,
+            "max_control_queue": mtou_config.MAX_CONTROL_QUEUE,
+            "max_reference_bytes": mtou_config.MAX_REFERENCE_BYTES,
+            "max_reference_objects": mtou_config.MAX_REFERENCE_OBJECTS,
+            "max_reference_triangles": mtou_config.MAX_REFERENCE_TRIANGLES,
+        }[payload["budget"]]
+        self.assertEqual(budget, payload["limit"])
+        self.assertGreater(payload["measured"], budget)
+        self.assertEqual("RESOURCE_LIMIT", case["expected"]["error_code"])
+
+    def _case_payload(self, case):
+        if "raw_utf8" in case:
+            # A non-finite number has no JSON literal that survives a strict
+            # encoder, so those cases declare their payload as UTF-8 text.
+            return json.loads(case["raw_utf8"])
+        return case["payload"]
+
+    def _linkage_session(self, state):
+        """Run one linkage case against a real session over fake host surfaces.
+
+        The session is the adapter that applies a linkage message on the Maya
+        side: it answers target offers, records the applied evidence and
+        refuses a message whose identity does not match the negotiated one.
+        """
+        stream = _LinkageMessageStream()
+        session = mtou_linkage.LinkageSession(
+            _LinkageHost(), stream, space_revision=state["space_revision"],
+            set_revision=state["set_revision"])
+        session.set_session_id(state["session_id"])
+        if state["active"]:
+            session.enter(state["mode_revision"])
+        return session, stream
+
+    def _assert_stable_refusal(self, case, error):
+        expected = case["expected"]
+        # A malformed shape has no stable host code of its own: it is refused as
+        # a malformed message before any adapter state is touched.
+        self.assertEqual(
+            expected["error_code"], getattr(error, "code", "INVALID_MESSAGE"))
+        self.assertRegex(str(error), "|".join(expected["keywords"]))
+
+    def test_protocol_v10_init_and_structured_diagnostics(self):
         identity = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
         message = mtou_protocol.make_init_message([["root", -1, identity]], ["Smile"], 7)
-        self.assertEqual(9, message["version"])
+        self.assertEqual(mtou_config.PROTOCOL_VERSION, message["version"])
         self.assertEqual("animation", message["workflow"])
         self.assertTrue(message["blendshapes_enabled"])
+        # The object identity travels with the negotiation so a reordered or
+        # renamed scene can never re-target the wrong object.
+        self.assertEqual("character", message["object_id"])
+        self.assertEqual(1, message["set_revision"])
+        self.assertEqual(1, message["space_revision"])
         model_message = mtou_protocol.make_init_message(
             [["root", -1, identity]], ["Smile"], 7,
             mtou_config.WORKFLOW_MODEL, False)

@@ -1,0 +1,602 @@
+"""Single-object linkage: follow the Unreal camera and time, answer with complete pose groups.
+
+The session owns the exclusive time-control state on the Maya side. It never
+touches Maya directly: the host adapter passed to it applies the time and
+camera, samples the objects and restores the captured state, so the state
+machine and its scheduling stay testable without a host.
+
+Scheduling follows the frozen v10 contract (protocol/v10.md): one target is
+being applied and one newer target may wait; an advancing desired target never
+cancels the work in flight, because Unreal shows that complete result and marks
+it as lagging instead of losing the only sample that was going to arrive.
+"""
+
+import threading
+import time
+
+from .config import (
+    CHARACTER_OBJECT_ID,
+    CONTROL_MAYA,
+    CONTROL_UNREAL,
+    LINKAGE_CONVERGENCE_SECONDS,
+    LINKAGE_MODE,
+    MAX_LINKAGE_GROUP_BYTES,
+    MAX_PENDING_LINKAGE_TARGETS,
+    REALTIME_MODE,
+)
+from .protocol import (
+    exact_int,
+    finite_float,
+    group_wire_size,
+    make_group_message,
+    make_leave_linkage_message,
+    make_mode_message,
+    validate_reply,
+)
+
+
+class LinkageError(RuntimeError):
+    """A refusal with a stable protocol code."""
+
+    def __init__(self, code, message="", details=""):
+        RuntimeError.__init__(self, message or code)
+        self.code = code
+        self.message = message or code
+        self.details = details
+
+
+class LinkageEvent(object):
+    """One state change the panel displays."""
+
+    __slots__ = ("kind", "mode", "control", "mode_revision", "detail", "diagnostic")
+
+    def __init__(self, kind, mode=None, control=None, mode_revision=None,
+                 detail="", diagnostic=None):
+        self.kind = kind
+        self.mode = mode
+        self.control = control
+        self.mode_revision = mode_revision
+        self.detail = detail
+        self.diagnostic = diagnostic
+
+
+class LinkageTarget(object):
+    """One `camera_time` target, validated and ready to apply."""
+
+    __slots__ = ("eval_id", "eval_serial", "transport_serial", "frame_serial",
+                 "time", "camera", "gate", "cut", "received")
+
+    def __init__(self, eval_id, eval_serial, transport_serial, frame_serial,
+                 time_payload, camera, gate, cut, received):
+        self.eval_id = eval_id
+        self.eval_serial = eval_serial
+        self.transport_serial = transport_serial
+        self.frame_serial = frame_serial
+        self.time = time_payload
+        self.camera = camera
+        self.gate = gate
+        self.cut = cut
+        self.received = received
+
+    def display_frame(self):
+        value = finite_float(self.time.get("display_frame"))
+        return value
+
+    def summary(self):
+        return "{0} @ {1}".format(self.eval_id, self.display_frame())
+
+
+def target_from_message(message, received=None):
+    """Validate one `camera_time` message into a LinkageTarget.
+
+    Raises LinkageError with the frozen rejection code so the caller can report
+    the exact reason instead of guessing.
+    """
+    if not isinstance(message, dict):
+        raise LinkageError("INVALID_MESSAGE", "camera_time must be an object")
+    eval_id = message.get("eval_id")
+    if not isinstance(eval_id, str) or not eval_id:
+        raise LinkageError(
+            "INVALID_MESSAGE", "camera_time requires a non-empty eval_id")
+    serials = {}
+    for name in ("eval_serial", "transport_serial", "frame_serial"):
+        value = exact_int(message.get(name))
+        if value is None or value < 0:
+            raise LinkageError(
+                "INVALID_MESSAGE",
+                "camera_time field '{0}' must be a non-negative integer".format(name))
+        serials[name] = value
+    time_payload = message.get("time")
+    if not isinstance(time_payload, dict):
+        raise LinkageError("INVALID_MESSAGE", "camera_time requires a time object")
+    display_frame = finite_float(time_payload.get("display_frame"))
+    if display_frame is None:
+        raise LinkageError(
+            "INVALID_MESSAGE",
+            "camera_time time.display_frame must be a finite number")
+    for rate_name in ("display_rate", "tick_resolution"):
+        rate = time_payload.get(rate_name)
+        if not isinstance(rate, dict):
+            raise LinkageError(
+                "INVALID_MESSAGE",
+                "camera_time time.{0} must be an object".format(rate_name))
+        numerator = exact_int(rate.get("numerator"))
+        denominator = exact_int(rate.get("denominator"))
+        if numerator is None or numerator <= 0 or denominator is None or denominator <= 0:
+            raise LinkageError(
+                "INVALID_MESSAGE",
+                "camera_time time.{0} must be positive integers".format(rate_name))
+    playback_range = time_payload.get("playback_range")
+    if not isinstance(playback_range, dict):
+        raise LinkageError(
+            "INVALID_MESSAGE", "camera_time requires time.playback_range")
+    for name in ("start", "end"):
+        if exact_int(playback_range.get(name)) is None:
+            raise LinkageError(
+                "INVALID_MESSAGE",
+                "camera_time time.playback_range.{0} must be an integer".format(name))
+    camera = message.get("camera")
+    if not isinstance(camera, dict):
+        raise LinkageError("INVALID_MESSAGE", "camera_time requires a camera object")
+    gate = message.get("gate")
+    if not isinstance(gate, dict):
+        raise LinkageError("INVALID_MESSAGE", "camera_time requires a gate object")
+    cut = message.get("cut")
+    if cut is not None and not isinstance(cut, dict):
+        raise LinkageError("INVALID_MESSAGE", "camera_time cut must be an object")
+    return LinkageTarget(
+        eval_id, serials["eval_serial"], serials["transport_serial"],
+        serials["frame_serial"], time_payload, camera, gate, cut,
+        time.monotonic() if received is None else received)
+
+
+class LinkageStatus(object):
+    """Immutable snapshot the panel renders."""
+
+    __slots__ = ("mode", "control", "mode_revision", "set_revision",
+                 "space_revision", "session_id", "target", "target_display_frame",
+                 "issued", "applied_eval_id", "applied_display_frame",
+                 "applied_sample_serial", "applied_age", "lag_seconds",
+                 "pending", "applied_count", "refused_count", "converged",
+                 "recovery", "detail")
+
+    def __init__(self, **values):
+        for name in self.__slots__:
+            setattr(self, name, values.get(name))
+
+
+class LinkageSession(object):
+    """One Maya-side linkage state over an established streaming session."""
+
+    def __init__(self, host, session, on_event=None, object_id=CHARACTER_OBJECT_ID,
+                 space_revision=1, set_revision=1, clock=time.monotonic):
+        self._host = host
+        self._session = session
+        self._on_event = on_event
+        self._object_id = object_id
+        self._space_revision = int(space_revision)
+        self._set_revision = int(set_revision)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._mode = REALTIME_MODE
+        self._control = CONTROL_MAYA
+        self._mode_revision = 0
+        self._session_id = None
+        self._state = None
+        self._pending = None
+        self._issued = None
+        self._sample_serial = 0
+        self._issued_sample_serial = 0
+        self._applied = None
+        self._applied_at = None
+        self._applied_count = 0
+        self._refused_count = 0
+        self._recovery = []
+        self._detail = ""
+        self._closed = False
+
+    # ------------------------------------------------------------------ state
+    @property
+    def is_active(self):
+        with self._lock:
+            return self._mode == LINKAGE_MODE
+
+    def mode(self):
+        with self._lock:
+            return self._mode
+
+    def mode_revision(self):
+        with self._lock:
+            return self._mode_revision
+
+    def space_revision(self):
+        with self._lock:
+            return self._space_revision
+
+    def set_revision(self):
+        with self._lock:
+            return self._set_revision
+
+    def set_session_id(self, session_id):
+        value = exact_int(session_id)
+        if value is None or value < 1:
+            raise LinkageError("INVALID_MESSAGE", "session id must be a positive integer")
+        with self._lock:
+            self._session_id = value
+
+    def status(self):
+        with self._lock:
+            applied = self._applied
+            applied_at = self._applied_at
+            return LinkageStatus(
+                mode=self._mode,
+                control=self._control,
+                mode_revision=self._mode_revision,
+                set_revision=self._set_revision,
+                space_revision=self._space_revision,
+                session_id=self._session_id,
+                target=self._issued.eval_id if self._issued else None,
+                target_display_frame=(
+                    self._issued.display_frame() if self._issued else None),
+                issued=1 if self._issued else 0,
+                applied_eval_id=applied.get("eval_id") if applied else None,
+                applied_display_frame=(
+                    applied.get("applied_display_frame") if applied else None),
+                applied_sample_serial=(
+                    applied.get("sample_serial") if applied else None),
+                applied_age=(
+                    None if applied_at is None else self._clock() - applied_at),
+                lag_seconds=applied.get("lag_seconds") if applied else None,
+                pending=1 if self._pending else 0,
+                applied_count=self._applied_count,
+                refused_count=self._refused_count,
+                converged=self._converged_locked(),
+                recovery=tuple(self._recovery),
+                detail=self._detail,
+            )
+
+    def _converged_locked(self):
+        if self._mode != LINKAGE_MODE:
+            return False
+        if self._issued is not None:
+            return False
+        if self._pending is not None:
+            return False
+        applied = self._applied
+        if applied is None:
+            return False
+        return applied.get("applied") is True
+
+    # ------------------------------------------------------------- transitions
+    def enter(self, mode_revision):
+        """Take linkage control: capture Maya state and announce the new mode."""
+        revision = exact_int(mode_revision)
+        if revision is None or revision < 1:
+            raise LinkageError("INVALID_MESSAGE", "mode revision must be a positive integer")
+        with self._lock:
+            if self._closed:
+                raise LinkageError("INVALID_MESSAGE", "linkage session is closed")
+            if self._mode == LINKAGE_MODE:
+                raise LinkageError(
+                    "MODE_CONFLICT", "linkage is already active")
+            if revision <= self._mode_revision:
+                raise LinkageError(
+                    "MODE_CONFLICT",
+                    "mode revision {0} is not newer than {1}".format(
+                        revision, self._mode_revision))
+        try:
+            state = self._host.capture_state()
+        except Exception as exc:  # host refusal keeps the previous mode
+            # The revision only advances once the host accepted the transition,
+            # so a refused entry cannot make the next attempt look stale.
+            self._record_recovery("capture", exc)
+            self._emit(LinkageEvent(
+                "mode", mode=REALTIME_MODE, control=CONTROL_MAYA,
+                mode_revision=self._mode_revision, detail=str(exc),
+                diagnostic=self._diagnostic("LINKAGE_FAILED", exc)))
+            raise
+        with self._lock:
+            self._mode_revision = revision
+            self._state = state
+            self._mode = LINKAGE_MODE
+            self._control = CONTROL_UNREAL
+            self._pending = None
+            self._issued = None
+            self._applied = None
+            self._applied_at = None
+            self._detail = "镜头联动已开始"
+        self._session.submit_linkage(make_mode_message(
+            self._session_id, revision, LINKAGE_MODE, CONTROL_UNREAL, "ready",
+            "Maya follows the Unreal sequence time"))
+        self._emit(LinkageEvent(
+            "mode", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+            mode_revision=revision, detail="镜头联动已开始"))
+        return self._mode_revision
+
+    def leave(self, target, mode_revision):
+        """Return to realtime (keeping the Unreal takeover) or end the preview."""
+        if target not in ("realtime", "end"):
+            raise LinkageError(
+                "INVALID_MESSAGE", "linkage exit target must be 'realtime' or 'end'")
+        revision = exact_int(mode_revision)
+        if revision is None or revision < 1:
+            raise LinkageError("INVALID_MESSAGE", "mode revision must be a positive integer")
+        with self._lock:
+            if self._mode != LINKAGE_MODE:
+                raise LinkageError("LINKAGE_NOT_ACTIVE", "linkage is not active")
+            if revision <= self._mode_revision:
+                raise LinkageError(
+                    "MODE_CONFLICT",
+                    "mode revision {0} is not newer than {1}".format(
+                        revision, self._mode_revision))
+            self._mode_revision = revision
+            state = self._state
+            self._pending = None
+            self._issued = None
+        residual = self._restore(state)
+        with self._lock:
+            self._state = None
+            self._mode = REALTIME_MODE
+            self._control = CONTROL_MAYA
+            self._detail = (
+                "已返回实时预览（Maya 保持暂停）" if target == "realtime"
+                else "已结束预览并恢复原状态")
+        self._session.submit_linkage(make_leave_linkage_message(
+            self._session_id, revision, target, "; ".join(residual)))
+        self._emit(LinkageEvent(
+            "mode", mode=REALTIME_MODE, control=CONTROL_MAYA,
+            mode_revision=revision, detail=self._detail))
+        return tuple(residual)
+
+    def _restore(self, state):
+        if state is None:
+            return []
+        try:
+            residual = self._host.restore_state(state) or ()
+        except Exception as exc:
+            self._record_recovery("restore", exc)
+            return ["{0}: {1}".format(type(exc).__name__, exc)]
+        for entry in residual:
+            self._record_recovery("residual", entry)
+        return list(residual)
+
+    # ---------------------------------------------------------------- inbound
+    def offer_target(self, message):
+        """Accept one `camera_time` target (worker thread); never blocks on Maya."""
+        with self._lock:
+            if self._closed:
+                raise LinkageError("INVALID_MESSAGE", "linkage session is closed")
+            if self._mode != LINKAGE_MODE:
+                raise LinkageError("LINKAGE_NOT_ACTIVE", "linkage is not active")
+            self._check_identity_locked(message)
+        target = target_from_message(message, self._clock())
+        with self._lock:
+            pending = self._pending
+            if pending is not None and pending.eval_serial > target.eval_serial:
+                raise LinkageError(
+                    "EVAL_STALE",
+                    "target {0} is older than the waiting target {1}".format(
+                        target.eval_id, pending.eval_id))
+            if self._issued is not None and target.eval_serial < self._issued.eval_serial:
+                raise LinkageError(
+                    "EVAL_STALE",
+                    "target {0} is older than the issued target {1}".format(
+                        target.eval_id, self._issued.eval_id))
+            self._pending = target
+            replaced = pending is not None
+        if not replaced:
+            self._emit(LinkageEvent(
+                "target", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+                mode_revision=self._mode_revision, detail=target.summary()))
+        return True
+
+    def note_applied(self, message):
+        """Record Unreal's actual component completion evidence."""
+        validate_reply(message)
+        with self._lock:
+            self._check_identity_locked(message)
+            sample_serial = exact_int(message.get("sample_serial"))
+            if sample_serial is None:
+                raise LinkageError(
+                    "INVALID_MESSAGE", "applied requires an integer sample_serial")
+            self._applied = dict(message)
+            self._applied_at = self._clock()
+            if message.get("applied"):
+                self._applied_count += 1
+                # The issued work is finished once Unreal confirms the actual
+                # components of that sample; a newer waiting target stays.
+                if self._issued is not None \
+                        and self._issued.eval_id == message.get("eval_id") \
+                        and sample_serial == self._issued_sample_serial:
+                    self._issued = None
+            self._detail = (
+                "已应用 {0}".format(message.get("eval_id"))
+                if message.get("applied")
+                else "应用失败：{0}".format(message.get("reason") or ""))
+        self._emit(LinkageEvent(
+            "applied", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+            mode_revision=self._mode_revision, detail=self._detail))
+        return True
+
+    def note_mode_state(self, message):
+        """Record Unreal's authority statement for the current mode."""
+        validate_reply(message)
+        with self._lock:
+            revision = exact_int(message.get("mode_revision"))
+            if revision is None:
+                raise LinkageError(
+                    "INVALID_MESSAGE", "mode_state requires an integer mode_revision")
+            if revision > self._mode_revision:
+                self._mode_revision = revision
+            self._detail = str(message.get("detail") or self._detail)
+        self._emit(LinkageEvent(
+            "mode", mode=message.get("mode"), control=message.get("control"),
+            mode_revision=self._mode_revision, detail=self._detail))
+        return True
+
+    def note_reference_offer(self, message):
+        """Accept the handoff descriptor the panel will offer to the user."""
+        validate_reply(message)
+        with self._lock:
+            self._check_identity_locked(message)
+        self._emit(LinkageEvent(
+            "reference", mode=self._mode, control=self._control,
+            mode_revision=self._mode_revision,
+            detail=str(message.get("transfer_id") or "")))
+        return True
+
+    def _check_identity_locked(self, message):
+        session_id = exact_int(message.get("session_id"))
+        if self._session_id is None:
+            raise LinkageError(
+                "INVALID_MESSAGE", "no session identity is established yet")
+        if session_id != self._session_id:
+            raise LinkageError(
+                "INVALID_MESSAGE",
+                "message session {0!r} does not match {1!r}".format(
+                    session_id, self._session_id))
+        revision = exact_int(message.get("mode_revision"))
+        if revision is not None and revision != self._mode_revision:
+            raise LinkageError(
+                "MODE_CONFLICT",
+                "message mode revision {0} is not the current {1}".format(
+                    revision, self._mode_revision))
+        set_revision = exact_int(message.get("set_revision"))
+        if set_revision is not None and set_revision != self._set_revision:
+            raise LinkageError(
+                "SET_REVISION_STALE",
+                "message set revision {0} is not the current {1}".format(
+                    set_revision, self._set_revision))
+        space_revision = exact_int(message.get("space_revision"))
+        if space_revision is not None and space_revision != self._space_revision:
+            raise LinkageError(
+                "SPACE_REVISION_STALE",
+                "message space revision {0} is not the current {1}".format(
+                    space_revision, self._space_revision))
+
+    # -------------------------------------------------------------------- pump
+    def pump(self):
+        """Apply the waiting target on the Maya main thread and answer it.
+
+        Returns the number of groups submitted. A group is always sent for the
+        target that was actually applied, even when a newer target is already
+        waiting: Unreal shows that complete result and marks it as lagging.
+        """
+        with self._lock:
+            if self._closed or self._mode != LINKAGE_MODE:
+                return 0
+            target = self._pending
+            self._pending = None
+        if target is None:
+            return 0
+        try:
+            applied_time, readback = self._host.apply_target(
+                target.time, target.camera, target.gate)
+        except LinkageError:
+            raise
+        except Exception as exc:
+            self._record_recovery("apply", exc)
+            self._emit(LinkageEvent(
+                "failed", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+                mode_revision=self._mode_revision, detail=str(exc),
+                diagnostic=self._diagnostic("LINKAGE_APPLY_FAILED", exc)))
+            return 0
+        objects = self._host.sample_group([self._object_id])
+        with self._lock:
+            self._sample_serial += 1
+            sample_serial = self._sample_serial
+            self._issued = target
+            self._issued_sample_serial = sample_serial
+            self._detail = "已采样 {0}".format(target.eval_id)
+        message = make_group_message(
+            self._session_id, self._set_revision, self._mode_revision,
+            self._space_revision, target.eval_id, target.transport_serial,
+            sample_serial, objects, readback, applied_time)
+        size = group_wire_size(message)
+        if size > MAX_LINKAGE_GROUP_BYTES:
+            with self._lock:
+                self._issued = None
+                self._detail = "整组姿势超过冻结的消息上限"
+            self._emit(LinkageEvent(
+                "failed", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+                mode_revision=self._mode_revision,
+                detail="group of {0} bytes exceeds {1}".format(
+                    size, MAX_LINKAGE_GROUP_BYTES),
+                diagnostic=self._diagnostic(
+                    "RESOURCE_LIMIT",
+                    "linkage group of {0} bytes exceeds the frozen {1} byte budget".format(
+                        size, MAX_LINKAGE_GROUP_BYTES))))
+            raise LinkageError(
+                "RESOURCE_LIMIT",
+                "linkage group exceeds the frozen message budget",
+                details="group {0} bytes, budget {1} bytes".format(
+                    size, MAX_LINKAGE_GROUP_BYTES))
+        self._session.submit_linkage(message)
+        self._emit(LinkageEvent(
+            "group", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
+            mode_revision=self._mode_revision,
+            detail="{0} sample {1}".format(target.eval_id, sample_serial)))
+        return 1
+
+    def settled(self):
+        """True when nothing is in flight and the last result was applied."""
+        with self._lock:
+            return self._converged_locked()
+
+    def wait_seconds(self):
+        """Seconds the current target has been waiting for an applied result."""
+        with self._lock:
+            if self._issued is None:
+                return 0.0
+            if self._applied is not None \
+                    and self._applied.get("eval_id") == self._issued.eval_id:
+                return 0.0
+            return self._clock() - self._issued.received
+
+    def convergence_overdue(self):
+        return self.wait_seconds() > LINKAGE_CONVERGENCE_SECONDS
+
+    # ------------------------------------------------------------------ close
+    def close(self):
+        """Release linkage resources; safe to call twice."""
+        with self._lock:
+            if self._closed:
+                return ()
+            self._closed = True
+            state = self._state
+            self._state = None
+            self._pending = None
+            self._issued = None
+            self._mode = REALTIME_MODE
+            self._control = CONTROL_MAYA
+        residual = self._restore(state)
+        self._detail = "已断开连接并恢复预览接管"
+        return tuple(residual)
+
+    # ----------------------------------------------------------------- detail
+    def _record_recovery(self, stage, error):
+        with self._lock:
+            self._recovery.append("{0}: {1}".format(stage, error))
+
+    def recovery_records(self):
+        with self._lock:
+            return tuple(self._recovery)
+
+    def _diagnostic(self, code, error):
+        return {"code": code, "message": str(error), "details": str(error)}
+
+    def _emit(self, event):
+        listener = self._on_event
+        if listener is None:
+            return
+        try:
+            listener(event)
+        except Exception:
+            pass
+
+    def pending_count(self):
+        with self._lock:
+            return (1 if self._pending else 0) + (1 if self._issued else 0)
+
+    def max_pending(self):
+        return MAX_PENDING_LINKAGE_TARGETS

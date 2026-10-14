@@ -2,7 +2,6 @@
 
 from .config import WORKFLOW_MODEL
 
-
 DIAGNOSTICS = {
     "PROTOCOL_VERSION_MISMATCH": (
         "Maya 与 UE 插件版本不匹配",
@@ -49,7 +48,8 @@ DIAGNOSTICS = {
         "请检查绑定矩阵是否包含非有限值、不可逆矩阵，或存在无法可靠决胜的冲突。"),
     "INCOMPLETE_SKELETON": (
         "角色骨架存在未能发布的关节分支",
-        "请检查详情中的首个缺失关节路径及原因；只有 joint 与通向关节的 transform 才能发布，中间出现其他类型节点时请整理绑定后重试。"),
+        "请检查详情中的首个缺失关节路径及原因；只有 joint 与通向关节的 transform"
+        "才能发布，中间出现其他类型节点时请整理绑定后重试。"),
     "INTERNAL_ERROR": (
         "MtoU_LiveLink 发生内部错误",
         "请复制诊断详情并重新启动连接。"),
@@ -62,6 +62,60 @@ DIAGNOSTICS = {
     "BONE_NAME_REMAP": (
         "UE 已自动映射重名骨骼",
         "连接可用；建议后续统一 Maya 与 UE 的骨骼名称，并保留本次映射详情。"),
+    "PAIRING_REQUIRED": (
+        "UE 尚未配对镜头联动目标",
+        "请在 UE 详情面板中选择该角色的目标并保存配对，然后重新进入镜头联动。"),
+    "TARGET_UNKNOWN": (
+        "UE 配对目标已不存在",
+        "请确认 Binding Actor 仍在关卡中且未被删除或卸载，然后重新配对。"),
+    "WRITER_NOT_ISOLATABLE": (
+        "UE 目标的写入者无法安全隔离",
+        "请按 UE 详情中的来源处理该轨道或动画后重新进入镜头联动；工具不会暂停整个镜头 Sequence。"),
+    "SHARED_WRITER": (
+        "UE 目标与其他对象共享写入者",
+        "请解除共享轨道或改用独立目标，再重新进入镜头联动。"),
+    "MOVING_SOCKET": (
+        "UE 目标挂在会移动的 socket 上",
+        "请把目标改为世界锚定的 Actor，避免父级运动被应用两次。"),
+    "MODE_CONFLICT": (
+        "镜头联动模式冲突",
+        "请等待当前转换结束，或先返回实时预览后重试。"),
+    "CACHE_NOT_CLEARED": (
+        "缓存播放尚未清除，无法进入镜头联动",
+        "请先返回实时预览并等待缓存清除完成，再进入镜头联动。"),
+    "SET_REVISION_STALE": (
+        "UE 使用了过期的角色集合",
+        "请重新连接以建立当前集合，再进入镜头联动。"),
+    "SPACE_REVISION_STALE": (
+        "UE 使用了过期的共同空间",
+        "请重新建立会话与参考；仅修改版本号不能继续联动。"),
+    "EVAL_STALE": (
+        "UE 已取消该求值目标",
+        "无需处理；工具会丢弃该结果并使用最新目标。"),
+    "RESOURCE_LIMIT": (
+        "镜头联动数据超出冻结的资源上限",
+        "请缩短角色或减少 BlendShape 后重试；预算在测试前固定，不会为通过而放宽。"),
+    "REFERENCE_STALE": (
+        "场景参考属于旧的共同空间",
+        "请在 UE 中重新导出当前范围的参考交接后再导入。"),
+    "REFERENCE_DIGEST_MISMATCH": (
+        "场景参考交接内容与摘要不符",
+        "请确认交接目录未被修改，并在 UE 中重新导出。"),
+    "REFERENCE_IMAGE_DATA": (
+        "场景参考交接包含图片数据",
+        "请在 UE 中关闭贴图烘焙后重新导出；工具不导入图片数据。"),
+    "REFERENCE_OVER_BUDGET": (
+        "场景参考超出冻结的规模上限",
+        "请缩小 UE 参考范围或减少对象后再导出。"),
+    "CONTAINER_NOT_OWNED": (
+        "参考容器名称被场景中的其他节点占用",
+        "请重命名该节点或删除它，然后重试导入；工具只删除自己创建的容器。"),
+    "RECOVERY_REFUSED": (
+        "上一次参考更新的恢复被拒绝",
+        "请按诊断详情中的残留路径处理后重试；旧参考会保留在原地。"),
+    "LINKAGE_NOT_ACTIVE": (
+        "当前不在镜头联动状态",
+        "请先进入镜头联动，再执行该操作。"),
     "CACHED_PLAYBACK_NOT_READY": (
         "缓存播放需要已连接的 Unreal",
         "请先完成角色设置并连接 Unreal，再进入缓存播放。"),

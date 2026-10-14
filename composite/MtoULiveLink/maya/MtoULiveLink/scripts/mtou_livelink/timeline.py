@@ -1,8 +1,7 @@
 """Maya timeline, playback range and playback cap helpers."""
 
-from .mayaapi import cmds
-
 from .config import DEFAULT_PLAYBACK_CAP, PLAYBACK_CAP_CHOICES, PLAYBACK_CAP_OPTION_VAR
+from .mayaapi import cmds
 from .scene import require_maya
 
 

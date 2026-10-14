@@ -3,10 +3,9 @@
 import math
 import re
 
-from .mayaapi import cmds, om, oma
-
 from .config import BIND_MATRIX_TOLERANCE, CURVE_VALUE_TOLERANCE
 from .diagnostics import DIAGNOSTICS, make_diagnostic
+from .mayaapi import cmds, om, oma
 from .protocol import make_frame_message
 from .space import centimeters_per_unit, convert_transform
 

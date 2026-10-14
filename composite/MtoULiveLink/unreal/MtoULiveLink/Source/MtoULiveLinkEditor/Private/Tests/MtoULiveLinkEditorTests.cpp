@@ -7,6 +7,7 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoULinkage.h"
 
 #include "Animation/AnimCurveMetadata.h"
 #include "Animation/MorphTarget.h"
@@ -32,6 +33,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/GarbageCollection.h"
@@ -3594,6 +3596,17 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
         return false;
     }
     Actor->SetBinding(Binding);
+    // v10 negotiation names one explicitly paired object; the runtime refuses an
+    // init for an object the user has not paired.
+    {
+        FString PairError;
+        TestTrue(TEXT("the character target is paired"),
+            MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+        if (!PairError.IsEmpty())
+        {
+            AddError(PairError);
+        }
+    }
     const FReferenceSkeleton* TestSkeleton = &Driver->GetRefSkeleton();
     const FString BonesJson = BonesJsonFor(*TestSkeleton);
     const FMtoUPreviewReadiness DisconnectedFirst = FMtoUPreviewPreparation::RefreshActor(*Actor);
@@ -3772,7 +3785,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -3931,7 +3944,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -4758,6 +4771,17 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         return false;
     }
     Actor->SetBinding(Binding);
+    // v10 negotiation names one explicitly paired object; the runtime refuses an
+    // init for an object the user has not paired.
+    {
+        FString PairError;
+        TestTrue(TEXT("the character target is paired"),
+            MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+        if (!PairError.IsEmpty())
+        {
+            AddError(PairError);
+        }
+    }
     // Nothing has streamed to this actor yet, so it reads as not connected
     // rather than as a link that was lost.
     TestEqual(TEXT("a fresh actor reads as not connected"),
@@ -4894,7 +4918,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":9,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -5669,6 +5693,17 @@ bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
         State->Actor = Actor;
         State->PreviewInput = Fixtures.Preview;
         Actor->SetBinding(Binding);
+        // v10 negotiation names one explicitly paired object; the runtime refuses an
+        // init for an object the user has not paired.
+        {
+            FString PairError;
+            Self->TestTrue(TEXT("the character target is paired"),
+                MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+            if (!PairError.IsEmpty())
+            {
+                Self->AddError(PairError);
+            }
+        }
         Actor->PostRegisterAllComponents();
         State->PartComponent = Actor->GetCharacterPartComponents().IsEmpty()
             ? nullptr
@@ -5767,7 +5802,7 @@ bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
                 *ComparisonTransformJson(State->Skeleton->GetRefBonePose()[Index]));
         }
         const FString Init = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":9,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
+            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
             *BonesJson, ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
             ComparisonPartOnlyMorph);
         const TArray<uint8> InitBytes = ComparisonPacket(Init);
@@ -6110,6 +6145,757 @@ bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
     }));
     return true;
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// Protocol v10 linkage: the editor half of the boundary (writer takeover,
+// camera/time evaluation) and the scene-reference handoff.
+// ---------------------------------------------------------------------------
+
+#include "MtoULinkageEditor.h"
+#include "MtoUSceneRefExport.h"
+
+#include "Camera/CameraComponent.h"
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "LevelSequence.h"
+#include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
+#include "MovieScene.h"
+#include "MovieSceneBinding.h"
+#include "MovieSceneSection.h"
+#include "MovieSceneTrack.h"
+#include "Sections/MovieSceneCameraCutSection.h"
+#include "Tracks/MovieScene3DTransformTrack.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+
+namespace
+{
+/** One disposable editor world, created and destroyed inside one test. */
+UWorld* CreateLinkageWorld(const TCHAR* Name)
+{
+    UPackage* WorldPackage = CreatePackage(*FString::Printf(TEXT("/Temp/MtoULinkage/%s"), Name));
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false,
+        FName(Name), WorldPackage, true);
+    if (World)
+    {
+        World->InitializeActorsForPlay(FURL());
+    }
+    return World;
+}
+
+/** A plain actor anchor with a root component, the way the product hangs its target. */
+AActor* SpawnLinkageAnchor(UWorld& World, const TCHAR* Label)
+{
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    AActor* Anchor = World.SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+    if (!Anchor)
+    {
+        return nullptr;
+    }
+    USceneComponent* Root = NewObject<USceneComponent>(Anchor, TEXT("AnchorRoot"));
+    Anchor->SetRootComponent(Root);
+    Root->RegisterComponent();
+    Anchor->SetActorLabel(Label);
+    return Anchor;
+}
+
+USkeletalMeshComponent* AttachTargetMesh(AActor* Anchor, USkeletalMesh& Mesh,
+    FName SocketName = NAME_None)
+{
+    USkeletalMeshComponent* Component =
+        NewObject<USkeletalMeshComponent>(Anchor, TEXT("SkeletalMeshComponent"));
+    Component->SetupAttachment(Anchor->GetRootComponent(), SocketName);
+    Component->SetSkeletalMeshAsset(&Mesh);
+    Component->RegisterComponent();
+    return Component;
+}
+
+UMovieScene3DTransformTrack* AddTransformTrack(UMovieScene& MovieScene, const FGuid& Binding,
+    int32 StartTick, int32 EndTick)
+{
+    UMovieScene3DTransformTrack* Track = MovieScene.AddTrack<UMovieScene3DTransformTrack>(Binding);
+    if (!Track)
+    {
+        return nullptr;
+    }
+    UMovieSceneSection* Section = Track->CreateNewSection();
+    if (!Section)
+    {
+        return nullptr;
+    }
+    Section->SetRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(EndTick))));
+    Track->AddSection(*Section);
+    return Track;
+}
+
+FGuid PossessAndBind(UMovieScene& MovieScene, ULevelSequence& Sequence, UWorld& World,
+    UObject& Object, const TCHAR* Name)
+{
+    const FGuid Binding = MovieScene.AddPossessable(FString(Name), Object.GetClass());
+    Sequence.BindPossessableObject(Binding, Object, &World);
+    return Binding;
+}
+
+UMovieSceneCameraCutTrack* EnsureCameraCutTrack(UMovieScene& MovieScene)
+{
+    UMovieSceneTrack* Track = MovieScene.GetCameraCutTrack();
+    if (!Track)
+    {
+        Track = MovieScene.AddCameraCutTrack(UMovieSceneCameraCutTrack::StaticClass());
+    }
+    return Cast<UMovieSceneCameraCutTrack>(Track);
+}
+
+void AddCameraCut(ULevelSequence& Sequence, const FGuid& CameraBinding,
+    int32 StartTick, int32 EndTick)
+{
+    UMovieScene* MovieScene = Sequence.GetMovieScene();
+    UMovieSceneCameraCutTrack* Track = EnsureCameraCutTrack(*MovieScene);
+    if (!Track)
+    {
+        return;
+    }
+    UMovieSceneCameraCutSection* Section =
+        Cast<UMovieSceneCameraCutSection>(Track->CreateNewSection());
+    if (!Section)
+    {
+        return;
+    }
+    Section->SetRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Exclusive(FFrameNumber(EndTick))));
+    Section->SetCameraGuid(CameraBinding);
+    Track->AddSection(*Section);
+}
+
+ACineCameraActor* SpawnCineCamera(UWorld& World, const FVector& Location,
+    const FRotator& Rotation, float FocalLengthMm, float Aperture)
+{
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    ACineCameraActor* Camera = World.SpawnActor<ACineCameraActor>(Location, Rotation, Params);
+    if (!Camera)
+    {
+        return nullptr;
+    }
+    UCineCameraComponent* Component = Camera->GetCineCameraComponent();
+    Component->SetCurrentFocalLength(FocalLengthMm);
+    Component->SetCurrentAperture(Aperture);
+    Component->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+    Component->FocusSettings.ManualFocusDistance = 400.0f;
+    return Camera;
+}
+
+ULevelSequence* MakeLinkageSequence(int32 StartTick, int32 EndTick)
+{
+    ULevelSequence* Sequence =
+        NewObject<ULevelSequence>(GetTransientPackage(), NAME_None, RF_Transient);
+    Sequence->Initialize();
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    MovieScene->SetDisplayRate(FFrameRate(30, 1));
+    MovieScene->SetTickResolutionDirectly(FFrameRate(30000, 1));
+    MovieScene->SetPlaybackRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(EndTick))));
+    return Sequence;
+}
+
+ULevelSequencePlayer* StartLinkagePlayer(UWorld& World, ULevelSequence& Sequence,
+    double DisplayFrame)
+{
+    FMovieSceneSequencePlaybackSettings Settings;
+    Settings.bAutoPlay = false;
+    Settings.bDisableCameraCuts = false;
+    Settings.bPauseAtEnd = true;
+    ALevelSequenceActor* SpawnedActor = nullptr;
+    ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(
+        &World, &Sequence, Settings, SpawnedActor);
+    if (!Player)
+    {
+        return nullptr;
+    }
+    if (SpawnedActor)
+    {
+        SpawnedActor->SetFlags(RF_Transient);
+    }
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(DisplayFrame), EUpdatePositionMethod::Jump));
+    return Player;
+}
+}
+
+// The writer inventory, the takeover and the restore of one fixture sequence.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageWriterTakeoverTest,
+    "MtoULiveLinkEditor.LinkageWriterTakeover",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageWriterTakeoverTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageTakeover"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+
+    AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("Character"));
+    USkeletalMeshComponent* TargetMesh = AttachTargetMesh(Anchor, *Mesh);
+    if (!TestTrue(TEXT("target mesh attached"), TargetMesh != nullptr))
+    {
+        return false;
+    }
+    // A writer outside the target: the takeover must never mute it.
+    ACineCameraActor* Camera = SpawnCineCamera(*World,
+        FVector(100.0, 0.0, 200.0), FRotator::ZeroRotator, 35.0f, 2.8f);
+    if (!TestNotNull(TEXT("camera actor"), Camera))
+    {
+        return false;
+    }
+
+    ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid AnchorBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Anchor, TEXT("CharacterActor"));
+    const FGuid MeshBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *TargetMesh, TEXT("CharacterMesh"));
+    const FGuid CameraBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Camera, TEXT("SequenceCamera"));
+    UMovieScene3DTransformTrack* AnchorTrack =
+        AddTransformTrack(*MovieScene, AnchorBinding, 0, 100 * 30000 / 30);
+    UMovieScene3DTransformTrack* MeshTrack =
+        AddTransformTrack(*MovieScene, MeshBinding, 0, 100 * 30000 / 30);
+    UMovieScene3DTransformTrack* CameraTrack =
+        AddTransformTrack(*MovieScene, CameraBinding, 0, 100 * 30000 / 30);
+    if (!TestTrue(TEXT("fixture tracks built"), AnchorTrack && MeshTrack && CameraTrack))
+    {
+        return false;
+    }
+
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+    if (!TestNotNull(TEXT("fixture player"), Source.Player))
+    {
+        return false;
+    }
+
+    FString InventoryError;
+    const TArray<FMtoULinkageEditor::FWriterRecord> Writers =
+        FMtoULinkageEditor::CollectTargetWriters(
+            Source, { TargetMesh }, Anchor, InventoryError);
+    TestTrue(TEXT("the inventory refuses nothing"), InventoryError.IsEmpty());
+    TestEqual(TEXT("the inventory holds the two target writers"), Writers.Num(), 2);
+    bool bHasAnchorWriter = false;
+    bool bHasMeshWriter = false;
+    for (const FMtoULinkageEditor::FWriterRecord& Writer : Writers)
+    {
+        TestEqual(TEXT("a transform writer kind"), Writer.Kind, FString(TEXT("transform")));
+        if (Writer.Track == AnchorTrack)
+        {
+            bHasAnchorWriter = true;
+        }
+        if (Writer.Track == MeshTrack)
+        {
+            bHasMeshWriter = true;
+        }
+        if (Writer.Track == CameraTrack)
+        {
+            AddError(TEXT("a writer of the camera was collected as a target writer"));
+        }
+    }
+    TestTrue(TEXT("the anchor drive is a target writer"), bHasAnchorWriter);
+    TestTrue(TEXT("the mesh writer is a target writer"), bHasMeshWriter);
+
+    FString TakeOverError;
+    FString TakeOverCode;
+    const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+        Source, { TargetMesh }, Anchor, TakeOverError, TakeOverCode);
+    if (!TestTrue(TEXT("the takeover succeeds"), bTakenOver))
+    {
+        AddError(TakeOverError);
+        return false;
+    }
+    TestTrue(TEXT("the anchor drive is editor-locally muted"),
+        AnchorTrack->IsLocalEvalDisabled());
+    TestTrue(TEXT("the mesh writer is editor-locally muted"), MeshTrack->IsLocalEvalDisabled());
+    TestFalse(TEXT("the camera writer keeps driving"), CameraTrack->IsLocalEvalDisabled());
+
+    FString RestoreError;
+    FString RestoreCode;
+    const bool bRestored = FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    if (!TestTrue(TEXT("the restore succeeds"), bRestored))
+    {
+        AddError(RestoreError);
+    }
+    TestFalse(TEXT("the anchor drive is unmuted again"), AnchorTrack->IsLocalEvalDisabled());
+    TestFalse(TEXT("the mesh writer is unmuted again"), MeshTrack->IsLocalEvalDisabled());
+    const bool bSecondRestore =
+        FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    TestTrue(TEXT("a second restore is idempotent"), bSecondRestore);
+
+    // A repeated takeover records the prior state once, so the restore returns
+    // the sequence to exactly the state it had before the first takeover.
+    const bool bTakeOverAgain = FMtoULinkageEditor::TakeOverTarget(
+        Source, { TargetMesh }, Anchor, TakeOverError, TakeOverCode);
+    TestTrue(TEXT("a repeated takeover succeeds"), bTakeOverAgain);
+    TestTrue(TEXT("the repeated takeover keeps the writer muted"),
+        MeshTrack->IsLocalEvalDisabled());
+    FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    TestFalse(TEXT("the writer returns after the repeated takeover"),
+        MeshTrack->IsLocalEvalDisabled());
+
+    FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
+    return true;
+}
+
+// The two refusals of the writer boundary.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageWriterRefusalTest,
+    "MtoULiveLinkEditor.LinkageWriterRefusal",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageWriterRefusalTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+
+    // A writer that drives the target and another object of the same anchor.
+    {
+        UWorld* World = CreateLinkageWorld(TEXT("LinkageShared"));
+        if (!TestNotNull(TEXT("editor world"), World))
+        {
+            return false;
+        }
+        AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("SharedAnchor"));
+        USkeletalMeshComponent* TargetMesh = AttachTargetMesh(Anchor, *Mesh);
+        USceneComponent* Prop = NewObject<USceneComponent>(Anchor, TEXT("PropRoot"));
+        Prop->SetupAttachment(Anchor->GetRootComponent());
+        Prop->RegisterComponent();
+
+        ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        const FGuid RootBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+            *Anchor->GetRootComponent(), TEXT("SharedRoot"));
+        UMovieScene3DTransformTrack* RootTrack =
+            AddTransformTrack(*MovieScene, RootBinding, 0, 100 * 30000 / 30);
+        if (!TestTrue(TEXT("shared fixture track built"), RootTrack != nullptr))
+        {
+            return false;
+        }
+
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = Sequence;
+        Source.World = World;
+        Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+        FString Error;
+        FString Code;
+        const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+            Source, { TargetMesh }, Anchor, Error, Code);
+        TestFalse(TEXT("a shared writer refuses the takeover"), bTakenOver);
+        TestEqual(TEXT("the refusal names SHARED_WRITER"), Code, FString(TEXT("SHARED_WRITER")));
+        TestFalse(TEXT("nothing was muted"), RootTrack->IsLocalEvalDisabled());
+    }
+
+    // A target that hangs from a moving socket.
+    {
+        UWorld* World = CreateLinkageWorld(TEXT("LinkageSocket"));
+        if (!TestNotNull(TEXT("editor world"), World))
+        {
+            return false;
+        }
+        AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("SocketAnchor"));
+        USkeletalMeshComponent* TargetMesh =
+            AttachTargetMesh(Anchor, *Mesh, FName(TEXT("attach_socket")));
+        if (!TestTrue(TEXT("socket target attached"), TargetMesh != nullptr))
+        {
+            return false;
+        }
+
+        ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        const FGuid MeshBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+            *TargetMesh, TEXT("SocketMesh"));
+        UMovieScene3DTransformTrack* MeshTrack =
+            AddTransformTrack(*MovieScene, MeshBinding, 0, 100 * 30000 / 30);
+        if (!TestTrue(TEXT("socket fixture track built"), MeshTrack != nullptr))
+        {
+            return false;
+        }
+
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = Sequence;
+        Source.World = World;
+        Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+        FString Error;
+        FString Code;
+        const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+            Source, { TargetMesh }, Anchor, Error, Code);
+        TestFalse(TEXT("a socket target refuses the takeover"), bTakenOver);
+        TestEqual(TEXT("the refusal names MOVING_SOCKET"), Code, FString(TEXT("MOVING_SOCKET")));
+        TestFalse(TEXT("nothing was muted"), MeshTrack->IsLocalEvalDisabled());
+    }
+    return true;
+}
+
+// The camera/time target of one fixture sequence, across a cut.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageCameraTimeTest,
+    "MtoULiveLinkEditor.LinkageCameraTime",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageCameraTime"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    ACineCameraActor* CameraA = SpawnCineCamera(*World,
+        FVector(0.0, 0.0, 100.0), FRotator::ZeroRotator, 50.0f, 2.0f);
+    ACineCameraActor* CameraB = SpawnCineCamera(*World,
+        FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f);
+    if (!TestTrue(TEXT("fixture cameras"), CameraA && CameraB))
+    {
+        return false;
+    }
+    // The panel and the target name the camera by its actor label.
+    CameraA->SetActorLabel(TEXT("CamA"));
+    CameraB->SetActorLabel(TEXT("CamB"));
+    CameraA->GetCineCameraComponent()->Filmback.SensorWidth = 36.0f;
+    CameraA->GetCineCameraComponent()->Filmback.SensorHeight = 24.0f;
+
+    const int32 StartTick = 0;
+    // Display rate 30 with tick resolution 30000 is 1000 ticks per display frame,
+    // so the two cuts cover display frames 0-50 and 50-100.
+    const int32 EndTick = 100 * 1000;
+    ULevelSequence* Sequence = MakeLinkageSequence(StartTick, EndTick);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid BindingA = PossessAndBind(*MovieScene, *Sequence, *World, *CameraA, TEXT("CamA"));
+    const FGuid BindingB = PossessAndBind(*MovieScene, *Sequence, *World, *CameraB, TEXT("CamB"));
+    AddCameraCut(*Sequence, BindingA, StartTick, 50 * 1000);
+    AddCameraCut(*Sequence, BindingB, 50 * 1000, EndTick);
+
+    ULevelSequencePlayer* Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+    if (!TestNotNull(TEXT("fixture player"), Player))
+    {
+        return false;
+    }
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = Player;
+
+    FMtoUCameraTimeTarget Target;
+    FString Error;
+    if (!TestTrue(TEXT("the target evaluates inside the first cut"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Target, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestNearlyEqual(TEXT("the display frame is the sampled one"), Target.DisplayFrame, 10.0, 1e-4);
+    TestNearlyEqual(TEXT("seconds start at the range start"), Target.Seconds, 10.0 / 30.0, 1e-4);
+    TestEqual(TEXT("the playback range start"), Target.PlaybackRangeStart, 0);
+    // The range lives in ticks; the target reports it in display frames.
+    TestEqual(TEXT("the playback range end"), Target.PlaybackRangeEnd, 100);
+    TestEqual(TEXT("the display rate numerator"), Target.DisplayRateNumerator, 30);
+    TestEqual(TEXT("the display rate denominator"), Target.DisplayRateDenominator, 1);
+    TestEqual(TEXT("the tick resolution numerator"), Target.TickNumerator, 30000);
+    TestEqual(TEXT("the tick resolution denominator"), Target.TickDenominator, 1);
+    TestEqual(TEXT("the cut stage is the root sequence"), Target.CutStage, FString(TEXT("root")));
+    TestEqual(TEXT("the cut names the evaluated camera"), Target.CutName, FString(TEXT("CamA")));
+    if (TestTrue(TEXT("the camera payload exists"), Target.Camera.IsValid()))
+    {
+        double FocalLength = 0.0;
+        TestTrue(TEXT("the camera payload carries the focal length"),
+            Target.Camera->TryGetNumberField(TEXT("focal_length_mm"), FocalLength));
+        TestNearlyEqual(TEXT("the first camera focal length"), FocalLength, 50.0, 1e-3);
+        double SensorWidth = 0.0;
+        TestTrue(TEXT("the camera payload carries the filmback"),
+            Target.Camera->TryGetNumberField(TEXT("sensor_width_mm"), SensorWidth));
+        TestNearlyEqual(TEXT("the first camera sensor width"), SensorWidth, 36.0, 1e-3);
+        double NearClip = 0.0;
+        TestTrue(TEXT("the camera payload carries the near clip"),
+            Target.Camera->TryGetNumberField(TEXT("near_clip_cm"), NearClip));
+        TestTrue(TEXT("the near clip is positive"), NearClip > 0.0);
+        double FocusDistance = 0.0;
+        TestTrue(TEXT("the camera payload carries the focus distance"),
+            Target.Camera->TryGetNumberField(TEXT("focus_distance_cm"), FocusDistance));
+        TestNearlyEqual(TEXT("the first camera focus distance"), FocusDistance, 400.0, 1e-3);
+    }
+    if (TestTrue(TEXT("the gate payload exists"), Target.Gate.IsValid()))
+    {
+        const TSharedPtr<FJsonObject>* Output = nullptr;
+        TestTrue(TEXT("the gate carries the output resolution"),
+            Target.Gate->TryGetObjectField(TEXT("output_resolution"), Output));
+        if (Output && Output->IsValid())
+        {
+            double Width = 0.0;
+            double Height = 0.0;
+            TestTrue(TEXT("the gate output resolution is positive"),
+                (*Output)->TryGetNumberField(TEXT("x"), Width)
+                && (*Output)->TryGetNumberField(TEXT("y"), Height)
+                && Width > 0.0 && Height > 0.0);
+        }
+        double GateWidth = 0.0;
+        TestTrue(TEXT("the gate carries the flat width spelling"),
+            Target.Gate->TryGetNumberField(TEXT("width"), GateWidth));
+        TestTrue(TEXT("the flat gate width is positive"), GateWidth > 0.0);
+    }
+
+    const FString FirstIdentity = Target.EvalId;
+    const int32 FirstSerial = Target.EvalSerial;
+    FMtoUCameraTimeTarget Heartbeat;
+    if (!TestTrue(TEXT("the target repeats at the same time"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Heartbeat, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestEqual(TEXT("an unchanged target keeps its identity"),
+        Heartbeat.EvalId, FirstIdentity);
+    TestEqual(TEXT("an unchanged target keeps its serial"), Heartbeat.EvalSerial, FirstSerial);
+
+    // A cut changes the evaluated camera, so the identity moves with it.
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(60.0), EUpdatePositionMethod::Jump));
+    FMtoUCameraTimeTarget Second;
+    if (!TestTrue(TEXT("the target evaluates inside the second cut"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Second, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestNotEqual(TEXT("a cut is a new evaluation identity"), Second.EvalId, FirstIdentity);
+    TestTrue(TEXT("the identity change raises the serial"), Second.EvalSerial > FirstSerial);
+    TestEqual(TEXT("the second cut names the second camera"),
+        Second.CutName, FString(TEXT("CamB")));
+    TestNearlyEqual(TEXT("the display frame follows the playhead"),
+        Second.DisplayFrame, 60.0, 1e-4);
+    double SecondFocal = 0.0;
+    if (TestTrue(TEXT("the second camera payload exists"), Second.Camera.IsValid())
+        && Second.Camera->TryGetNumberField(TEXT("focal_length_mm"), SecondFocal))
+    {
+        TestNearlyEqual(TEXT("the second camera focal length"), SecondFocal, 85.0, 1e-3);
+    }
+    return true;
+}
+
+// The scene-reference handoff: its scope, its manifest and its image-data check.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoUSceneRefExportTest,
+    "MtoULiveLinkEditor.SceneReferenceExport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // A produced file that carries embedded media is image data.
+    const FString EmbeddedPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(), TEXT("MtoUSceneRefTest"), TEXT("embedded_media.fbx"));
+    {
+        FString Content;
+        Content += TEXT("Texture: \"T_Rock\"\n");
+        Content += TEXT("{\n");
+        Content += TEXT("    Type: \"TextureVideoClip\"\n");
+        Content += TEXT("    FileName: \"t_rock.png\"\n");
+        Content += TEXT("    Content: ,\n");
+        Content += TEXT("     \"iVBORw0KGgoAAAANSUhEUg\"\n");
+        Content += TEXT("}\n");
+        if (!TestTrue(TEXT("the synthetic media fixture is written"),
+                FFileHelper::SaveStringToFile(Content, *EmbeddedPath)))
+        {
+            return false;
+        }
+        FMtoUTextureScan Scan;
+        FMtoUSceneRefExport::ScanFbxTextureReferences(EmbeddedPath, Scan);
+        TestEqual(TEXT("the fixture records one texture"), Scan.TextureRecords, 1);
+        TestEqual(TEXT("the fixture records embedded media"), Scan.EmbeddedMediaRecords, 1);
+        FMtoUSceneRefExportResult MediaResult;
+        MediaResult.TextureScan = Scan;
+        TestTrue(TEXT("embedded media is image data"),
+            FMtoUSceneRefExport::HasImageData(MediaResult));
+    }
+
+    UWorld* World = CreateLinkageWorld(TEXT("SceneReferenceWorld"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    if (!TestNotNull(TEXT("fixture Cube"), Cube))
+    {
+        return false;
+    }
+    AActor* Reference = SpawnLinkageAnchor(*World, TEXT("ReferenceProp"));
+    UStaticMeshComponent* Mesh =
+        NewObject<UStaticMeshComponent>(Reference, TEXT("ReferenceMesh"));
+    Mesh->SetupAttachment(Reference->GetRootComponent());
+    Mesh->SetStaticMesh(Cube);
+    Mesh->RegisterComponent();
+    // A non-geometry component the export must suppress for its own duration.
+    UPointLightComponent* Light = NewObject<UPointLightComponent>(Reference, TEXT("ReferenceLight"));
+    Light->SetupAttachment(Reference->GetRootComponent());
+    Light->RegisterComponent();
+
+    FMtoUSceneRefExportResult Result;
+    const bool bExported = FMtoUSceneRefExport::Run(*World, {}, Result);
+    if (!TestTrue(TEXT("the reference export succeeds"), bExported))
+    {
+        AddError(Result.Error);
+        return false;
+    }
+    TestTrue(TEXT("the scope is the loaded persistent level"),
+        Result.LevelPackage.Contains(TEXT("SceneReferenceWorld")));
+    TestEqual(TEXT("the persistent level is complete"), Result.bScopeComplete, true);
+    TestTrue(TEXT("the scope exports the static mesh"), Result.ExportedObjectCount >= 1);
+    TestTrue(TEXT("the scope counts render triangles"), Result.TriangleCount > 0);
+    TestTrue(TEXT("the light is suppressed"), Result.SuppressedComponentCount >= 1);
+    TestTrue(TEXT("the geometry file is named after the scope"),
+        Result.GeometryFile.EndsWith(TEXT(".fbx")));
+    TestTrue(TEXT("the manifest is named after the scope"),
+        Result.ManifestFile.EndsWith(TEXT(".manifest.json")));
+    TestTrue(TEXT("the handoff carries no image data"), !Result.bImageDataDetected);
+    TestEqual(TEXT("the texture scan finds no embedded media"),
+        Result.TextureScan.EmbeddedMediaRecords, 0);
+    TestTrue(TEXT("the manifest digest is computed"), Result.ManifestDigest.Len() > 0);
+    TestTrue(TEXT("the handoff identity is computed"),
+        Result.TransferId.StartsWith(TEXT("mtou-scene-ref-")));
+
+    // The frozen importer refuses a manifest without an objects list, and each
+    // entry is what the Maya side compares against the imported file.
+    FString ManifestText;
+    const FString ManifestPath = FPaths::Combine(Result.Directory, *Result.ManifestFile);
+    if (!TestTrue(TEXT("the manifest is read back"),
+            FFileHelper::LoadFileToString(ManifestText, *ManifestPath)))
+    {
+        return false;
+    }
+    TSharedPtr<FJsonObject> ManifestJson;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ManifestText);
+    if (!TestTrue(TEXT("the manifest is JSON"), FJsonSerializer::Deserialize(Reader, ManifestJson)
+            && ManifestJson.IsValid()))
+    {
+        return false;
+    }
+    const TArray<TSharedPtr<FJsonValue>>* ManifestObjects = nullptr;
+    if (!TestTrue(TEXT("the manifest carries an objects list"),
+            ManifestJson->TryGetArrayField(TEXT("objects"), ManifestObjects)
+            && ManifestObjects != nullptr))
+    {
+        return false;
+    }
+    TestEqual(TEXT("the manifest records one entry per exported object"),
+        ManifestObjects->Num(), Result.ExportedObjectCount);
+    bool bSawMatrix = false;
+    bool bSawCentroid = false;
+    for (const TSharedPtr<FJsonValue>& Entry : *ManifestObjects)
+    {
+        const TSharedPtr<FJsonObject>* Object = nullptr;
+        if (!TestTrue(TEXT("one manifest object is an object"), Entry.IsValid()
+                && Entry->TryGetObject(Object) && Object != nullptr && (*Object).IsValid()))
+        {
+            return false;
+        }
+        FString NodeName;
+        TestTrue(TEXT("the manifest object names its node"),
+            (*Object)->TryGetStringField(TEXT("node_name"), NodeName) && !NodeName.IsEmpty());
+        bool bManifestExported = false;
+        TestTrue(TEXT("the manifest object claims the export"),
+            (*Object)->TryGetBoolField(TEXT("exported"), bManifestExported) && bManifestExported);
+        const TArray<TSharedPtr<FJsonValue>>* Matrix = nullptr;
+        if (!TestTrue(TEXT("the manifest object carries a world matrix"),
+                (*Object)->TryGetArrayField(TEXT("world_matrix"), Matrix)
+                && Matrix != nullptr && Matrix->Num() == 16))
+        {
+            return false;
+        }
+        bool bMatrixNumeric = true;
+        for (const TSharedPtr<FJsonValue>& Value : *Matrix)
+        {
+            double Ignored = 0.0;
+            if (!Value.IsValid() || !Value->TryGetNumber(Ignored))
+            {
+                bMatrixNumeric = false;
+            }
+        }
+        TestTrue(TEXT("the world matrix is 16 numbers"), bMatrixNumeric);
+        bSawMatrix = true;
+        const TSharedPtr<FJsonObject>* Bounds = nullptr;
+        if (TestTrue(TEXT("the manifest object carries world bounds"),
+                (*Object)->TryGetObjectField(TEXT("world_bounds_cm"), Bounds)
+                && Bounds != nullptr && (*Bounds).IsValid()))
+        {
+            const TSharedPtr<FJsonObject>* Size = nullptr;
+            if (TestTrue(TEXT("the world bounds carry a size"),
+                    (*Bounds)->TryGetObjectField(TEXT("size"), Size)
+                    && Size != nullptr && (*Size).IsValid()))
+            {
+                double SizeX = 0.0;
+                double SizeY = 0.0;
+                double SizeZ = 0.0;
+                TestTrue(TEXT("the size is three numbers"),
+                    (*Size)->TryGetNumberField(TEXT("x"), SizeX)
+                    && (*Size)->TryGetNumberField(TEXT("y"), SizeY)
+                    && (*Size)->TryGetNumberField(TEXT("z"), SizeZ));
+                TestTrue(TEXT("the size is positive for the fixture cube"),
+                    SizeX > 0.0 && SizeY > 0.0 && SizeZ > 0.0);
+            }
+        }
+        if (const TSharedPtr<FJsonObject>* Centroid = nullptr;
+            (*Object)->TryGetObjectField(TEXT("world_surface_centroid_cm"), Centroid)
+            && Centroid != nullptr && (*Centroid).IsValid())
+        {
+            double CentroidX = 0.0;
+            TestTrue(TEXT("the centroid is a number triple"),
+                (*Centroid)->TryGetNumberField(TEXT("x"), CentroidX));
+            bSawCentroid = true;
+        }
+    }
+    TestTrue(TEXT("at least one manifest object carried a matrix"), bSawMatrix);
+    TestTrue(TEXT("the manifest object carries the surface centroid"), bSawCentroid);
+
+    TestTrue(TEXT("the directory holds the produced files"),
+        IFileManager::Get().FileExists(*FPaths::Combine(
+            Result.Directory, *Result.GeometryFile)));
+
+    // An explicitly requested sublevel the world does not stream is reported.
+    FMtoUSceneRefExportResult Excluded;
+    const bool bExcludedRun = FMtoUSceneRefExport::Run(
+        *World, { FString(TEXT("NotStreamedAnywhere")) }, Excluded);
+    TestTrue(TEXT("the run still succeeds"), bExcludedRun);
+    TestEqual(TEXT("the unstreamed sublevel is excluded"),
+        Excluded.ExcludedSublevels.Num(), 1);
+    TestEqual(TEXT("an excluded sublevel makes the scope incomplete"),
+        Excluded.bScopeComplete, false);
+    TestTrue(TEXT("the exclusion is reported"), Excluded.Warnings.Num() > 0);
+    return true;
 }
 
 #endif

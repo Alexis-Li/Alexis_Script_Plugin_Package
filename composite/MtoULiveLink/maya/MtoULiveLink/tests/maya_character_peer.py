@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Opt-in character peer for the Unreal CharacterAcceptance test.
 
 Reads a supplied scene without saving it. Fixture paths and pose edits are
@@ -7,28 +8,29 @@ Maya process only. Uses the production capture/controller/socket lifecycle.
 import argparse
 import importlib.util
 import json
+import pathlib
+import sys
 import time
 import traceback
 from pathlib import Path
 from unittest import mock
-
-import pathlib
-import sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from mtou_livelink import (  # noqa: E402
-    cache as mtou_cache,
     config as mtou_config,
-    controller as mtou_controller,
-    mayaapi as mtou_mayaapi,
-    scene as mtou_scene,
-    session as mtou_session,
-    timeline as mtou_timeline,
 )
-
+from mtou_livelink import (
+    controller as mtou_controller,
+)
+from mtou_livelink import (
+    mayaapi as mtou_mayaapi,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
 
 
 def read_json(path):

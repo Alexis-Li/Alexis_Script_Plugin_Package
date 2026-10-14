@@ -64,12 +64,17 @@ class RepositoryToolTests(unittest.TestCase):
         }
         self.assertEqual(
             [
-                "protocol_version must equal 9",
+                "protocol_version must equal 10",
+                "limits.max_linkage_group_bytes must be a positive integer",
+                "limits.max_control_queue must be a positive integer",
+                "limits.max_reference_bytes must be a positive integer",
+                "limits.max_reference_objects must be a positive integer",
+                "limits.max_reference_triangles must be a positive integer",
                 "case 1 id is duplicated: duplicate",
                 "case 1 operation is unsupported",
                 "case 1 applies_to must contain maya and/or unreal",
                 "case 1 must define exactly one input source",
-                "case 1 rejected case needs a stable parser error_code",
+                "case 1 rejected case needs a stable v10 error_code",
             ],
             module.validate_corpus(invalid),
         )
@@ -149,9 +154,9 @@ class RepositoryToolTests(unittest.TestCase):
         unreal_result = package_unreal_plugin.package(
             "MtoULiveLink", "5.7", ROOT / "releases", apply=False
         )
-        self.assertEqual("releases/MtoULiveLink-0.9.0.zip", maya_result["archive"])
+        self.assertEqual("releases/MtoULiveLink-0.10.0.zip", maya_result["archive"])
         self.assertEqual(
-            "releases/MtoULiveLink-0.9.0-UE5.7.zip",
+            "releases/MtoULiveLink-0.10.0-UE5.7.zip",
             unreal_result["archive"],
         )
         self.assertGreater(maya_result["file_count"], 0)

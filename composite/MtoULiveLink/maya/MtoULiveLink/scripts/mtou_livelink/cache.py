@@ -9,11 +9,36 @@ import tempfile
 import time
 import uuid
 
-from .mayaapi import cmds, om
-
-from .config import CACHE_CONFIRMATION_BYTES, CACHE_FILE_PREFIX, CACHE_FORMAT_VERSION, CACHE_FRAMES_SUFFIX, CACHE_METADATA_SUFFIX, CACHE_OWNER, CACHE_PARTIAL_FRAMES_SUFFIX, CACHE_PARTIAL_METADATA_SUFFIX, CACHE_STALE_SECONDS, MAX_CACHE_FRAME_COUNT, MAX_CACHE_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, UPLOAD_CHUNK_FRAMES, UPLOAD_READY_TIMEOUT_SECONDS
+from .config import (
+    CACHE_CONFIRMATION_BYTES,
+    CACHE_FILE_PREFIX,
+    CACHE_FORMAT_VERSION,
+    CACHE_FRAMES_SUFFIX,
+    CACHE_METADATA_SUFFIX,
+    CACHE_OWNER,
+    CACHE_PARTIAL_FRAMES_SUFFIX,
+    CACHE_PARTIAL_METADATA_SUFFIX,
+    CACHE_STALE_SECONDS,
+    MAX_CACHE_FRAME_COUNT,
+    MAX_CACHE_PAYLOAD_BYTES,
+    MAX_MESSAGE_BYTES,
+    UPLOAD_CHUNK_FRAMES,
+    UPLOAD_READY_TIMEOUT_SECONDS,
+)
 from .diagnostics import DIAGNOSTICS, make_diagnostic
-from .protocol import cache_frame_wire_size, exact_bool, exact_int, finite_float, make_cache_begin_message, make_cache_clear_message, make_cache_end_message, make_cache_enter_message, make_cache_frame_message, make_frame_message
+from .mayaapi import cmds, om
+from .protocol import (
+    cache_frame_wire_size,
+    exact_bool,
+    exact_int,
+    finite_float,
+    make_cache_begin_message,
+    make_cache_clear_message,
+    make_cache_end_message,
+    make_cache_enter_message,
+    make_cache_frame_message,
+    make_frame_message,
+)
 from .scene import CharacterSceneError
 from .session import StreamingSessionError, copy_session_payload
 from .space import validate_frame_rate

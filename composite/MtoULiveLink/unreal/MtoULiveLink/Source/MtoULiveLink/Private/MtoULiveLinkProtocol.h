@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "LiveLinkTypes.h"
 #include "MtoUConnectionNegotiator.h"
+#include "MtoULinkageTypes.h"
 
 struct FMtoUTransform
 {
@@ -21,6 +22,102 @@ struct FMtoUInitMessage
     // Authoritative character snapshot revision established by Maya during
     // connection negotiation; echoed in the ready outcome.
     int32 Revision = 0;
+    // v10 identity: the explicitly paired Maya object, its object-set revision
+    // and the common-space revision both adapters must agree on.
+    FString ObjectId;
+    int32 SetRevision = 0;
+    int32 SpaceRevision = 0;
+};
+
+/** Connection greeting: version, scene units and declared capabilities. */
+struct FMtoUHelloMessage
+{
+    int32 Version = 0;
+    FString Host;
+    FString MayaVersion;
+    FString LinearUnit;
+    double UnitScaleCm = 0.0;
+    double Fps = 0.0;
+    bool bLinkage = false;
+    bool bReference = false;
+    bool bCache = false;
+    bool bModel = false;
+};
+
+/** Maya's authority statement after one time-control transition. */
+struct FMtoUModeMessage
+{
+    int32 SessionId = 0;
+    int32 ModeRevision = 0;
+    FString Mode;
+    FString Control;
+    FString Transition;
+    FString Detail;
+};
+
+/** Maya confirms it restored its own timeline, view and gate. */
+struct FMtoULeaveLinkageMessage
+{
+    int32 SessionId = 0;
+    int32 ModeRevision = 0;
+    FString Target;
+    FString Detail;
+};
+
+/** One complete pose sample answering one `camera_time` target. */
+struct FMtoUPoseGroupMessage
+{
+    int32 SessionId = 0;
+    int32 SetRevision = 0;
+    int32 ModeRevision = 0;
+    int32 SpaceRevision = 0;
+    FString EvalId;
+    int32 TransportSerial = 0;
+    int32 SampleSerial = 0;
+    TArray<FMtoUPoseGroup> Objects;
+    TSharedPtr<FJsonObject> Camera;
+    TSharedPtr<FJsonObject> Time;
+    // One group answers one target, so the time it reports is the group's
+    // applied time rather than a per-object value.
+    double UeDisplayFrame = 0.0;
+    double MayaFrame = 0.0;
+};
+
+/** Outcome of one local handoff import, swap or removal. */
+struct FMtoUReferenceResultMessage
+{
+    int32 SessionId = 0;
+    FString TransferId;
+    bool bAccepted = false;
+    FString Detail;
+    int64 ObjectCount = 0;
+    int64 TriangleCount = 0;
+    int64 ByteCount = 0;
+    FString Container;
+};
+
+/** The user removed the tool-owned reference container. */
+struct FMtoUReferenceRemovedMessage
+{
+    int32 SessionId = 0;
+    FString Detail;
+};
+
+/** Maya asks for the handoff of the scope the user selected in Unreal. */
+struct FMtoUReferenceQueryMessage
+{
+    int32 SessionId = 0;
+    FString TransferId;
+    TSharedPtr<FJsonObject> Scope;
+};
+
+/** One `applied.components` row: actual completion evidence of one object. */
+struct FMtoUAppliedComponent
+{
+    FString ObjectId;
+    int32 BoneCount = 0;
+    int32 MorphCount = 0;
+    int32 PartCount = 0;
 };
 
 struct FMtoUWorkflows
@@ -70,7 +167,7 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 9;
+    static constexpr int32 Version = 10;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
     // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
@@ -88,6 +185,24 @@ public:
     // decoder before any JSON parse or allocation; oversized messages close
     // the connection. Pinned by limits.max_message_bytes in the corpus.
     static constexpr int64 MaxMessageBytes = 32ll * 1024ll * 1024ll;
+    // The linkage group budget is metered over the whole group message, not
+    // per object; it shares the framing ceiling and is enforced before the
+    // group gains any staged ownership.
+    static constexpr int64 MaxLinkageGroupBytes = 32ll * 1024ll * 1024ll;
+    // Undelivered control messages per direction; overflow is an error instead
+    // of an unbounded backlog.
+    static constexpr int32 MaxControlQueue = 16;
+    // At most one linkage target is in flight and one replaceable target
+    // waits; an advancing target never cancels the issued one.
+    static constexpr int32 MaxPendingCameraTargets = 2;
+    // Scene-reference handoff budgets; the Maya importer enforces them before
+    // staging, Unreal reports the offered counts so both sides agree.
+    static constexpr int64 MaxReferenceBytes = 256ll * 1024ll * 1024ll;
+    static constexpr int32 MaxReferenceObjects = 20000;
+    static constexpr int32 MaxReferenceTriangles = 20000000;
+    // After the last desired target an applied group must be observed within
+    // this window before the view reports a non-converged linkage.
+    static constexpr double LinkageConvergenceSeconds = 2.0;
     // Bounded admission budget for parsed cache frames queued between the
     // network worker and the Game Thread. A stalled Game Thread can never
     // grow queued parsed-frame ownership beyond these limits; the producer
@@ -98,6 +213,47 @@ public:
     static bool ParseInit(
         const TArray<uint8>& Payload,
         FMtoUInitMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    // The connection greeting. A differing version is refused with
+    // PROTOCOL_VERSION_MISMATCH before any target, writer or handoff is
+    // touched, because the greeting is the first message of a connection.
+    static bool ParseHello(
+        const TArray<uint8>& Payload,
+        FMtoUHelloMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseMode(
+        const TArray<uint8>& Payload,
+        FMtoUModeMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseLeaveLinkage(
+        const TArray<uint8>& Payload,
+        FMtoULeaveLinkageMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    // EncodedBytes meters the whole group message against the frozen group
+    // budget before the group gains staged ownership on the Game Thread.
+    static bool ParseGroup(
+        const TArray<uint8>& Payload,
+        int64 EncodedBytes,
+        FMtoUPoseGroupMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseReferenceResult(
+        const TArray<uint8>& Payload,
+        FMtoUReferenceResultMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseReferenceRemoved(
+        const TArray<uint8>& Payload,
+        FMtoUReferenceRemovedMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
+    static bool ParseReferenceQuery(
+        const TArray<uint8>& Payload,
+        FMtoUReferenceQueryMessage& OutMessage,
         FString& OutError,
         FString* OutErrorCode = nullptr);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
@@ -136,7 +292,62 @@ public:
         const FString& Workflow,
         int32 TargetMorphCount,
         int32 AcceptedMorphCount,
-        int32 NegotiatedRevision);
+        int32 NegotiatedRevision,
+        int32 SessionId = INDEX_NONE,
+        const FString& ObjectId = FString(),
+        int32 SetRevision = INDEX_NONE,
+        int32 SpaceRevision = INDEX_NONE);
+    // Answer to the greeting: the session identity, the declared capabilities,
+    // the explicitly selected target (empty until the user pairs) and the
+    // common space the group and reference work must match.
+    static TArray<uint8> EncodeHelloAck(
+        int32 SessionId,
+        bool bLinkage,
+        bool bReference,
+        bool bCache,
+        bool bModel,
+        const FString& TargetObjectId,
+        const FString& TargetKind,
+        const FString& TargetBindingPath,
+        const FString& TargetGeneration,
+        int32 SpaceRevision,
+        const TSharedPtr<FJsonObject>& Anchor);
+    /** Unreal's authority statement for the current time-control state. */
+    static TArray<uint8> EncodeModeState(
+        int32 SessionId,
+        int32 ModeRevision,
+        const FString& Mode,
+        const FString& Control,
+        const FString& Detail);
+    /** The current linkage target the editor evaluated from its sequence. */
+    static TArray<uint8> EncodeCameraTime(
+        int32 SessionId,
+        int32 SetRevision,
+        int32 ModeRevision,
+        int32 SpaceRevision,
+        const FMtoUCameraTimeTarget& Target);
+    /** Actual component completion evidence for one applied group. */
+    static TArray<uint8> EncodeApplied(
+        int32 SessionId,
+        int32 ModeRevision,
+        const FString& EvalId,
+        int32 SampleSerial,
+        bool bApplied,
+        double AppliedDisplayFrame,
+        double LagSeconds,
+        const TArray<FMtoUAppliedComponent>& Components,
+        const FString& Reason);
+    /** A finished local handoff the user may import. */
+    static TArray<uint8> EncodeReferenceOffer(
+        int32 SessionId,
+        const FString& TransferId,
+        const FString& Directory,
+        const FString& ManifestDigest,
+        const TSharedPtr<FJsonObject>& Scope,
+        int32 SpaceRevision,
+        int64 ByteCount,
+        int32 ObjectCount,
+        int32 TriangleCount);
     static TArray<uint8> EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount);
     static TArray<uint8> EncodeCachePlaying(int32 UploadId, int32 PlayId, bool bLoopEnabled);
     static TArray<uint8> EncodeCacheProgress(int32 PlayId, int32 AppliedFrames);

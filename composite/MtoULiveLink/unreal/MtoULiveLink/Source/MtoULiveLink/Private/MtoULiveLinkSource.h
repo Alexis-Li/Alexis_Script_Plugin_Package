@@ -5,6 +5,7 @@
 #include "ILiveLinkSource.h"
 #include "MtoUCacheCommandQueue.h"
 #include "MtoUCacheSession.h"
+#include "MtoULinkageSession.h"
 #include "MtoULiveLinkProtocol.h"
 
 class AMtoULiveLinkActor;
@@ -67,6 +68,46 @@ struct FMtoUOutgoing
     int32 ExpectedCurveCount = 0;
     bool bReady = false;
     bool bCloseAfter = false;
+    // Control messages (greeting, mode, camera/time, applied evidence,
+    // reference offers and errors) count against the frozen per-direction
+    // control queue; streamed cache outcomes do not.
+    bool bControl = false;
+};
+
+struct FMtoUPendingHello
+{
+    uint64 SessionId = 0;
+    FMtoUHelloMessage Message;
+};
+
+/**
+ * One queued linkage control message from the network worker. Only the member
+ * named by `Kind` is filled; the small control payloads share one queue so the
+ * frozen control-queue budget is enforced in exactly one place.
+ */
+struct FMtoUPendingLinkageControl
+{
+    enum class EKind : uint8
+    {
+        Mode,
+        LeaveLinkage,
+        ReferenceResult,
+        ReferenceRemoved,
+        ReferenceQuery
+    };
+
+    EKind Kind = EKind::Mode;
+    FMtoUModeMessage Mode;
+    FMtoULeaveLinkageMessage LeaveLinkage;
+    FMtoUReferenceResultMessage ReferenceResult;
+    FMtoUReferenceRemovedMessage ReferenceRemoved;
+    FMtoUReferenceQueryMessage ReferenceQuery;
+};
+
+struct FMtoUPendingPoseGroup
+{
+    uint64 SessionId = 0;
+    FMtoUPoseGroupMessage Message;
 };
 
 struct FMtoUPendingInit
@@ -114,6 +155,18 @@ public:
     // cannot grow queued parsed-cache ownership beyond the frozen budget.
     int32 GetQueuedCacheFrameCount() const;
 
+    /** The one linkage boundary this source owns; Game Thread only. */
+    FMtoULinkageSession& GetLinkageSession() { return LinkageSession; }
+    const FMtoULinkageSession& GetLinkageSession() const { return LinkageSession; }
+
+#if WITH_DEV_AUTOMATION_TESTS
+    // Automation gauges for the linkage state: undelivered control messages
+    // in each direction and the shape of the current view. Production never
+    // reads them; they exist so the behaviour tests need no wider
+    // production-type exports.
+    int32 GetQueuedControlMessageCount() const;
+#endif
+
 #if WITH_DEV_AUTOMATION_TESTS
     // Automation-only gauges for the explicit-refresh critical window
     // (Issue #39): total queued cache commands and the transient cache
@@ -132,6 +185,21 @@ private:
 #endif
     void HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
+    // Linkage intake and pump. The greeting is answered before any object is
+    // negotiated; control messages and staged groups are applied on the game
+    // thread and only then reported back to Maya.
+    void DrainLinkageHellosOnGameThread();
+    void DrainLinkageControlsOnGameThread();
+    void DrainLinkageGroupsOnGameThread();
+    void SendLinkageControlPacketOnGameThread(TArray<uint8> Packet, bool bControl);
+    bool ApplyPoseGroupOnGameThread(
+        const FMtoUPoseGroupMessage& Group,
+        TArray<FMtoUAppliedComponent>& OutComponents,
+        FString& OutReason);
+    bool ReadBackComponentsOnGameThread(
+        TArray<FMtoUAppliedComponent>& OutComponents,
+        FString& OutReason);
+    bool IsSessionActiveOnGameThread(uint64 SessionId) const;
     void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
     bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
     void PublishLatestFrameOnGameThread();
@@ -164,6 +232,21 @@ private:
     TOptional<FMtoUPendingFrame> PendingFrame;
     TQueue<uint64, EQueueMode::Spsc> DisconnectedSessions;
     TQueue<FMtoUOutgoing, EQueueMode::Spsc> OutgoingReplies;
+    // Linkage intake: the greeting, the control messages and the staged pose
+    // groups the worker parsed. The game thread drains every one of them, so
+    // the editor hooks and the published pose stay on one thread.
+    TQueue<FMtoUPendingHello, EQueueMode::Spsc> PendingHellos;
+    TQueue<FMtoUPendingLinkageControl, EQueueMode::Spsc> PendingLinkageControls;
+    TQueue<FMtoUPendingPoseGroup, EQueueMode::Spsc> PendingPoseGroups;
+    // Undelivered linkage control messages in the intake direction; a peer
+    // that never lets the game thread drain is refused instead of backlogged.
+    TAtomic<int32> QueuedLinkageControls{0};
+    // Undelivered control messages in the reply direction, decremented by the
+    // worker as each packet reaches the socket.
+    TAtomic<int32> QueuedOutgoingControls{0};
+    // Game-thread mirror of the linkage mode the worker reads to refuse work
+    // that contradicts the current time authority.
+    TAtomic<bool> bWorkerLinkageActive{false};
     FMtoUCacheCommandQueue CacheCommands;
 
     ILiveLinkClient* Client = nullptr;
@@ -179,6 +262,11 @@ private:
     int32 ExpectedCurveCount = 0;
     // Authoritative character snapshot revision from the accepted init.
     int32 NegotiatedRevision = 0;
+    // v10 identity of the negotiated session: the paired Maya object, its
+    // object-set revision and the common space both adapters must match.
+    FString NegotiatedObjectId;
+    int32 NegotiatedSetRevision = 0;
+    int32 NegotiatedSpaceRevision = 1;
     TArray<FTransform> SourceBindLocalPose;
     TArray<FTransform> TargetRefLocalPose;
     TArray<int32> BoneParents;
@@ -189,4 +277,9 @@ private:
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.
     FMtoUCacheSession CacheSession;
+
+    // Game-thread-only linkage owner: pairing, mode transitions, the
+    // desired/issued/applied target triple and the staged pose groups. The
+    // worker never touches it; it queues parsed messages for Update().
+    FMtoULinkageSession LinkageSession;
 };

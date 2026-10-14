@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Opt-in real Maya peer for MtoULiveLink.Source.MayaInteractivePlayback.
 
 Run with Maya's mayapy; --fixture and --result are supplied by the Unreal
@@ -28,16 +29,15 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from mtou_livelink import (  # noqa: E402
-    cache as mtou_cache,
+from mtou_livelink import (
     config as mtou_config,
-    controller as mtou_controller,
-    mayaapi as mtou_mayaapi,
-    scene as mtou_scene,
-    session as mtou_session,
-    timeline as mtou_timeline,
 )
-
+from mtou_livelink import (
+    controller as mtou_controller,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
 
 
 def main():

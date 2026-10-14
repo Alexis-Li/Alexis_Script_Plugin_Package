@@ -308,7 +308,7 @@ def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
     try:
         spec.loader.exec_module(module)
         errors.extend(module.check_generated(
-            protocol_root / "conformance-v9.json",
+            protocol_root / "conformance-v10.json",
             root / "composite" / "MtoULiveLink" / "unreal" / "MtoULiveLink"
             / "Source" / "MtoULiveLink" / "Private" / "Tests"
             / "MtoUConformanceCorpus.inl",

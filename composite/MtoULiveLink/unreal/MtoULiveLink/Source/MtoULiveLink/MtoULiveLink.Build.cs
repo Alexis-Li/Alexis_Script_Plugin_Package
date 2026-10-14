@@ -5,7 +5,7 @@ public class MtoULiveLink : ModuleRules
     public MtoULiveLink(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine" });
+        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "Json" });
         PrivateDependencyModuleNames.AddRange(new[]
         {
             "Json", "LiveLinkAnimationCore", "LiveLinkInterface", "Sockets"

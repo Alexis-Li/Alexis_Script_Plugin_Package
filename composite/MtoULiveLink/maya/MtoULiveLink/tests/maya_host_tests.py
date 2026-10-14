@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import contextlib
 import importlib.util
 import pathlib
@@ -11,7 +12,6 @@ try:
 except ImportError:
     MAYA_AVAILABLE = False
 
-import pathlib
 import sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
@@ -20,14 +20,25 @@ if str(SCRIPTS) not in sys.path:
 
 from mtou_livelink import (  # noqa: E402
     cache as mtou_cache,
+)
+from mtou_livelink import (
     config as mtou_config,
+)
+from mtou_livelink import (
     controller as mtou_controller,
+)
+from mtou_livelink import (
     mayaapi as mtou_mayaapi,
+)
+from mtou_livelink import (
     scene as mtou_scene,
+)
+from mtou_livelink import (
     session as mtou_session,
+)
+from mtou_livelink import (
     timeline as mtou_timeline,
 )
-
 
 _PACKAGE_MODULES = (mtou_cache, mtou_config, mtou_controller, mtou_mayaapi,
                     mtou_scene, mtou_session, mtou_timeline)
@@ -514,8 +525,9 @@ class MayaHostTests(unittest.TestCase):
         class FakeWorker(object):
             instance = None
 
-            def __init__(self, init_message):
+            def __init__(self, init_message, hello_message=None):
                 self.init_message = init_message
+                self.hello_message = hello_message
                 self.stopped = False
                 self.joined = None
                 self.__class__.instance = self
@@ -544,7 +556,12 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(["stopped"], [event.kind for event in events])
         self.assertTrue(FakeWorker.instance.stopped)
         self.assertEqual(1.0, FakeWorker.instance.joined)
-        self.assertEqual(9, FakeWorker.instance.init_message["version"])
+        self.assertEqual(mtou_config.PROTOCOL_VERSION,
+                         FakeWorker.instance.init_message["version"])
+        self.assertEqual(10, FakeWorker.instance.init_message["version"])
+        self.assertEqual("character", FakeWorker.instance.init_message["object_id"])
+        self.assertEqual(10, FakeWorker.instance.hello_message["version"])
+        self.assertEqual("cm", FakeWorker.instance.hello_message["scene"]["linear_unit"])
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))

@@ -8,11 +8,24 @@ import socket
 import threading
 import time
 
+from . import config
+from .config import CHARACTER_OBJECT_ID, DEFAULT_PLAYBACK_CAP, WORKFLOW_ANIMATION, WORKFLOWS
+from .diagnostics import (
+    DIAGNOSTICS,
+    blendshape_warning_from_reply,
+    filter_bone_driven_differences,
+    make_diagnostic,
+)
 from .mayaapi import cmds, om
-
-from .config import DEFAULT_PLAYBACK_CAP, HOST, PORT, WORKFLOWS, WORKFLOW_ANIMATION
-from .diagnostics import DIAGNOSTICS, blendshape_warning_from_reply, filter_bone_driven_differences, make_diagnostic
-from .protocol import encode_message, exact_int, make_frame_message, make_init_message, recv_message, validate_reply
+from .protocol import (
+    encode_message,
+    exact_int,
+    make_frame_message,
+    make_hello_message,
+    make_init_message,
+    recv_message,
+    validate_reply,
+)
 from .scene import CharacterSceneError
 from .space import validate_frame_rate
 from .timeline import maya_is_playing, normalize_playback_cap, playback_cap_fps
@@ -34,12 +47,23 @@ class LatestFrame(object):
 
 
 class SenderWorker(threading.Thread):
-    def __init__(self, init_message):
+    def __init__(self, init_message, hello_message=None):
         threading.Thread.__init__(self, name="MtoULiveLinkSender")
         self.daemon = True
         self._init_message = init_message
-        self._init_packet = encode_message(init_message)
+        self._hello_message = hello_message
+        # The connection greeting precedes the object description so a peer
+        # with a different protocol version refuses before it reads an object.
+        initial = b""
+        if hello_message is not None:
+            initial += encode_message(hello_message)
+        initial += encode_message(init_message)
+        self._initial_packet = initial
+        self._hello_reply = None
         self._latest = LatestFrame()
+        # Unbounded by design: the cached upload streams hundreds of frames
+        # through the same ordered path. Linkage controls keep their own bound
+        # in the linkage session instead of constraining this queue.
         self._ordered = queue.Queue()
         # Controls queued in ordered mode survive the switch back to Latest
         # mode here, so a mode transition can never strand queued work.
@@ -151,7 +175,9 @@ class SenderWorker(threading.Thread):
         if self._stop_event.is_set():
             return None
         sock.setblocking(False)
-        result = sock.connect_ex((HOST, PORT))
+        # Read the endpoint at call time so a peer or a test can point the
+        # worker at another port without reloading the module.
+        result = sock.connect_ex((config.HOST, config.PORT))
         pending = (errno.EINPROGRESS, errno.EWOULDBLOCK)
         if result not in (0,) + pending:
             raise OSError(result, "connection failed")
@@ -177,7 +203,7 @@ class SenderWorker(threading.Thread):
         return sock
 
     def _send_initial(self, sock):
-        packet = memoryview(self._init_packet)
+        packet = memoryview(self._initial_packet)
         deadline = time.time() + 5.0
         while packet:
             with self._lock:
@@ -200,6 +226,47 @@ class SenderWorker(threading.Thread):
                 packet = packet[sent:]
         return True
 
+    def _read_handshake_reply(self, sock):
+        """Read until ready/error, recording the hello acknowledgement."""
+        deadline = time.time() + 5.0
+        while not self._stop_event.is_set():
+            timeout = deadline - time.time()
+            if timeout <= 0.0:
+                raise socket.timeout("timed out waiting for the Unreal reply")
+            sock.settimeout(timeout)
+            reply = validate_reply(recv_message(sock))
+            reply_type = reply.get("type")
+            if reply_type == "hello_ack":
+                with self._lock:
+                    self._hello_reply = dict(reply)
+                continue
+            if reply_type == "mode_state":
+                continue
+            return reply
+        return None
+
+    def _identity_mismatch(self, reply):
+        """Describe the first identity field the ready reply fails to echo."""
+        checks = (
+            ("session_id", self._hello_reply or {}),
+            ("object_id", self._init_message),
+            ("set_revision", self._init_message),
+            ("space_revision", self._init_message),
+        )
+        for field, source in checks:
+            expected = exact_int(source.get(field))
+            if expected is None:
+                continue
+            actual = exact_int(reply.get(field))
+            if actual != expected:
+                return "{0}: expected {1!r}, ready reported {2!r}".format(
+                    field, expected, reply.get(field))
+        return None
+
+    def hello_reply(self):
+        with self._lock:
+            return dict(self._hello_reply) if self._hello_reply else None
+
     def run(self):
         connected = False
         try:
@@ -209,7 +276,9 @@ class SenderWorker(threading.Thread):
             if not self._send_initial(sock):
                 return
             sock.settimeout(5.0)
-            reply = validate_reply(recv_message(sock))
+            reply = self._read_handshake_reply(sock)
+            if reply is None:
+                return
             if reply.get("type") == "error":
                 diagnostic = make_diagnostic(
                     reply.get("code") or "INTERNAL_ERROR",
@@ -221,6 +290,14 @@ class SenderWorker(threading.Thread):
                 diagnostic = make_diagnostic(
                     "INVALID_MESSAGE",
                     "expected ready, received {0}".format(reply.get("type")))
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return
+            identity_error = self._identity_mismatch(reply)
+            if identity_error is not None:
+                diagnostic = make_diagnostic(
+                    "INVALID_MESSAGE",
+                    "The ready reply does not echo the negotiated identity.",
+                    details=identity_error)
                 self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
                 return
             expected_revision = exact_int(self._init_message.get("revision"))
@@ -382,7 +459,9 @@ class StreamingSession(object):
 
     def __init__(self, scene, fps, on_event, playback_cap=DEFAULT_PLAYBACK_CAP,
                  playback_state=None, workflow=WORKFLOW_ANIMATION,
-                 blendshapes_enabled=True):
+                 blendshapes_enabled=True, object_id=CHARACTER_OBJECT_ID,
+                 set_revision=1, space_revision=1, scene_units=None,
+                 maya_version=None):
         if workflow not in WORKFLOWS:
             raise StreamingSessionError(
                 "INVALID_MESSAGE",
@@ -396,6 +475,11 @@ class StreamingSession(object):
         self._on_event = on_event
         self._workflow = workflow
         self._blendshapes_enabled = bool(blendshapes_enabled)
+        self._object_id = str(object_id)
+        self._set_revision = int(set_revision)
+        self._space_revision = int(space_revision)
+        self._scene_units = tuple(scene_units or ("cm", 1.0))
+        self._maya_version = maya_version
         self._worker = None
         self._worker_started = False
         self._callback_ids = []
@@ -409,7 +493,25 @@ class StreamingSession(object):
         self._cleanup_pending = False
         self._cleaned = False
         self._cleanup_error = None
-        self._paused_for_cached = False
+        self._sampling_paused = False
+
+    @property
+    def object_id(self):
+        return self._object_id
+
+    @property
+    def set_revision(self):
+        return self._set_revision
+
+    @property
+    def space_revision(self):
+        return self._space_revision
+
+    @property
+    def hello_reply(self):
+        if self._worker is None:
+            return None
+        return self._worker.hello_reply()
 
     @property
     def revision(self):
@@ -435,7 +537,9 @@ class StreamingSession(object):
     @classmethod
     def start(cls, scene, fps, on_event=None, playback_cap=DEFAULT_PLAYBACK_CAP,
               playback_state=None, workflow=WORKFLOW_ANIMATION,
-              blendshapes_enabled=True):
+              blendshapes_enabled=True, object_id=CHARACTER_OBJECT_ID,
+              set_revision=1, space_revision=1, scene_units=None,
+              maya_version=None):
         try:
             fps = validate_frame_rate(fps)
             snapshot = scene.snapshot()
@@ -446,7 +550,8 @@ class StreamingSession(object):
             raise StreamingSessionError(
                 "INVALID_FRAME_RATE", str(exc), details=str(exc))
         session = cls(scene, fps, on_event, playback_cap, playback_state,
-                      workflow, blendshapes_enabled)
+                      workflow, blendshapes_enabled, object_id, set_revision,
+                      space_revision, scene_units, maya_version)
         try:
             session._start(snapshot)
         except Exception as exc:
@@ -469,8 +574,14 @@ class StreamingSession(object):
         init_message = make_init_message(
             bones, list(snapshot.curve_names), snapshot.revision,
             workflow=self._workflow,
-            blendshapes_enabled=self._blendshapes_enabled)
-        self._worker = SenderWorker(init_message)
+            blendshapes_enabled=self._blendshapes_enabled,
+            object_id=self._object_id,
+            set_revision=self._set_revision,
+            space_revision=self._space_revision)
+        hello_message = make_hello_message(
+            self._maya_version or "unknown",
+            self._scene_units[0], self._scene_units[1], self._scene_fps)
+        self._worker = SenderWorker(init_message, hello_message)
         self._revision = snapshot.revision
         self._worker.start()
         self._worker_started = True
@@ -525,18 +636,29 @@ class StreamingSession(object):
         return True
 
     def pause_for_cached(self, reply_listener=None):
+        """Suspend live sampling for Cached Playback."""
+        self._pause_sampling(
+            reply_listener, "CACHED_PLAYBACK_NOT_READY",
+            "Cached Playback requires a ready streaming session.")
+
+    def begin_linkage(self, reply_listener=None):
+        """Suspend live sampling so the linkage pump owns the pose instead."""
+        self._pause_sampling(
+            reply_listener, "STREAM_INTERRUPTED",
+            "镜头联动需要已连接的 Unreal 会话。")
+
+    def _pause_sampling(self, reply_listener=None, code="CACHED_PLAYBACK_NOT_READY",
+                        message="Cached Playback requires a ready streaming session."):
         """Suspend live sampling, switch to ordered delivery, and route
         Unreal's post-ready replies to ``reply_listener`` atomically, so no
         submission can precede listener installation."""
         if self._outcome is not None or self._worker is None or not self.is_ready:
-            raise StreamingSessionError(
-                "CACHED_PLAYBACK_NOT_READY",
-                "Cached Playback requires a ready streaming session.")
+            raise StreamingSessionError(code, message)
         if reply_listener is not None:
             self._worker.set_reply_listener(reply_listener)
-        if self._paused_for_cached:
+        if self._sampling_paused:
             return
-        self._paused_for_cached = True
+        self._sampling_paused = True
         self._timer_generation += 1
         timer_id, self._timer_id = self._timer_id, None
         if timer_id is not None:
@@ -570,16 +692,37 @@ class StreamingSession(object):
                 "The streaming session is not ready for cached messages.")
         self._worker.submit_ordered(frame_message)
 
+    def submit_linkage(self, message):
+        """Queue one ordered linkage message; False when the worker is gone."""
+        if not self.is_ready or self._worker is None:
+            raise StreamingSessionError(
+                "STREAM_INTERRUPTED",
+                "镜头联动需要已连接的 Unreal 会话。")
+        self._worker.submit_ordered(message)
+        return True
+
+    def ordered_pending(self):
+        if self._worker is None:
+            return 0
+        return self._worker.ordered_pending()
+
     def end_cached_replay(self, discard_pending=False):
         if self._worker is None:
             return
         self._worker.end_ordered(discard_pending=discard_pending)
 
     def resume_from_cached(self):
-        if not self._paused_for_cached:
+        self._resume_sampling()
+
+    def resume_after_linkage(self):
+        """Return the live sampling path after linkage leaves the mode."""
+        self._resume_sampling()
+
+    def _resume_sampling(self):
+        if not self._sampling_paused:
             return
         self.end_cached_replay()
-        self._paused_for_cached = False
+        self._sampling_paused = False
         if self._outcome is not None or self._worker is None:
             return
         self._timer_id = self._add_timer(self._effective_rate())
@@ -597,14 +740,14 @@ class StreamingSession(object):
                 recapture_scene=False)
             return
         self._scene_fps = fps
-        if not self._paused_for_cached:
+        if not self._sampling_paused:
             self._replace_timer(self._effective_rate())
 
     def change_cap(self, playback_cap):
         if self._outcome is not None:
             return
         self._playback_cap = normalize_playback_cap(playback_cap)
-        if self._paused_for_cached:
+        if self._sampling_paused:
             return
         if not self._replace_timer(self._effective_rate()):
             return
@@ -623,20 +766,20 @@ class StreamingSession(object):
         self.stop()
 
     def _on_timer(self, generation, *unused):
-        if generation != self._timer_generation or self._paused_for_cached:
+        if generation != self._timer_generation or self._sampling_paused:
             return
         self._update_playback_state()
         self._sample_and_submit()
 
     def _on_time_changed(self, *unused):
         del unused
-        if self._paused_for_cached:
+        if self._sampling_paused:
             return
         self._update_playback_state()
         self._sample_and_submit()
 
     def _on_playback_condition_changed(self, *args):
-        if self._paused_for_cached:
+        if self._sampling_paused:
             return
         playing = None
         for value in args:
@@ -748,7 +891,7 @@ class StreamingSession(object):
             return
         self._timer_generation += 1
         self.end_cached_replay(discard_pending=True)
-        self._paused_for_cached = False
+        self._sampling_paused = False
         callback_ids, self._callback_ids = self._callback_ids, []
         timer_id, self._timer_id = self._timer_id, None
         for callback_id in callback_ids:
