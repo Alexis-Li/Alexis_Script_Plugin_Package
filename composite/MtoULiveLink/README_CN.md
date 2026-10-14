@@ -20,11 +20,18 @@ MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 May
 
 以下组件路径均相对于本产品目录。
 
-1. 将 `maya/MtoULiveLink/scripts/MtoULiveLink.py` 复制到 Maya 脚本目录，
-   或直接在 Maya 的 Python 脚本编辑器中执行该文件。
+1. 将整个 `maya/MtoULiveLink/scripts/` 目录（`MtoULiveLink.py` 与其
+   `mtou_livelink/` 包）复制到 Maya 脚本目录，或直接在 Maya 的 Python
+   脚本编辑器中执行 `MtoULiveLink.py`。包必须与入口文件放在一起，
+   只复制单个文件已无法运行。
 2. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
 3. 编译 Unreal 项目。Topia Engine 用户请按下方说明操作。
 4. 启用 **Live Link** 和 **MtoU_LiveLink**，然后重启 Unreal Editor。
+
+Maya 与 Unreal 组件成对升级和回退：两端使用同一协议版本，混用时会在
+触碰场景之前拒绝连接。升级时替换两端组件并重新连接；回退时恢复上一版本的
+`scripts/` 目录（入口文件**与**包）和上一版本插件构建，再重新连接。
+替换文件前请先关闭当前会话或重启 Maya。
 
 ### Topia Engine 5.7.4
 
@@ -129,6 +136,37 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 单次捕获上限为 20,000 帧或 1 GiB，达到上限时请缩短范围。无效范围会在采样前
 报错。采样或上传失败会返回实时预览并显示原因；回放失败时 UE 仍保留完整缓存，
 可再次播放。
+
+## 镜头联动预览
+
+用这条工作流在 UE 的镜头与时间轴下检查 Maya 动画。它是可选的：不进入联动时，
+实时预览、缓存播放和服装比较照常工作。
+
+1. 在 Unreal 选中 Binding Actor，在 **镜头联动** 中配对 Maya 对象，并打开要跟随
+   的 Level Sequence。
+2. 在 Maya 照常连接角色，从主面板打开 **镜头联动** 并点击 **进入联动**。Maya 会
+   停止自身播放，跟随 Sequence 时间与求值相机，并回传角色的完整姿势。
+3. Unreal 显示时间控制方、目标时间、最新完整应用时间和滞后。落后于当前 Sequence
+   时间的完整姿势会显示为滞后，不会被报成已同步。
+4. **返回实时** 会恢复 Maya 的时间轴、视图与门，并保持 Maya 暂停，Unreal 继续
+   保持接管；Maya 播放由用户自行恢复。**结束预览** 另外把原 writer 交还给 Sequence。
+
+联动期间，改动相机、暂停、cut 或明确跳转都会取消旧目标；相机随时间连续运动不会
+取消已经在路上的回传。若目标的 writer 无法安全隔离，Unreal 会在写入前拒绝并说明
+原因，而不是暂停整个 Sequence。进入联动前必须先清除缓存播放；恢复失败会按资源
+逐项报告，不会用“断开成功”掩盖。
+
+## Maya 中的场景参考
+
+Unreal 可以把显式选择的关卡范围导出为静态参考几何，让 Maya 看到同样的环境。
+参考只是显示辅助：任何预览工作流都不需要它，交接也从不包含图片数据。
+
+1. 在 Unreal 的 **场景参考** 中选择关卡与子关卡并执行导出。Unreal 会报告它解析
+   出的范围，包括已加载世界中并不存在的子关卡。
+2. 在 Maya 打开 **场景参考** 并点击 **导入/更新参考**。Maya 会在触碰场景之前校验
+   交接身份、内容摘要、空间修订与规模上限，导入到自己的容器，并报告接受、丢弃或
+   回滚的内容。
+3. **移除参考** 只删除该容器；**恢复上次更新** 会完成或丢弃被中断的更新。
 
 ## 服装模型预览
 

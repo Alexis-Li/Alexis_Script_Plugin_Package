@@ -22,11 +22,20 @@ Install the Maya and Unreal components from the same release.
 
 The component paths below are relative to this product directory.
 
-1. Copy `maya/MtoULiveLink/scripts/MtoULiveLink.py` to a Maya scripts directory,
-   or run the file directly in Maya's Python Script Editor.
+1. Copy the whole `maya/MtoULiveLink/scripts/` directory — `MtoULiveLink.py` and
+   its `mtou_livelink/` package — into a Maya scripts directory, or run
+   `MtoULiveLink.py` directly in Maya's Python Script Editor. The package must
+   stay beside the entry file; copying the single file alone no longer runs.
 2. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
 3. Compile the Unreal project. For Topia Engine, use the instructions below.
 4. Enable **Live Link** and **MtoU_LiveLink**, then restart Unreal Editor.
+
+Maya and Unreal components upgrade and roll back as a pair: both hosts speak
+the same protocol version and refuse a mixed pair before touching a scene. To
+upgrade, replace both components and reconnect; to roll back, restore the
+previous release's `scripts/` directory (entry file **and** package) and the
+previous plugin build, then reconnect. Close the current session or restart
+Maya before replacing files.
 
 ### Topia Engine 5.7.4
 
@@ -158,6 +167,47 @@ A capture is limited to 20,000 frames or 1 GiB; use a shorter range if you reach
 that limit. Invalid ranges fail before sampling. Sampling or upload failures
 return to real-time preview and show the reason. A playback failure retains
 the complete UE cache for another attempt.
+
+## Camera linkage preview
+
+Use this workflow to check Maya animation under the Unreal sequence camera and
+its timeline. It is optional: realtime preview, Cached Playback and garment
+comparison work without it.
+
+1. In Unreal, select the Binding Actor, pair the Maya object under **镜头联动**,
+   and open the Level Sequence you want to follow.
+2. In Maya, connect the character as usual, open **镜头联动** from the main panel,
+   and click **进入联动**. Maya stops its own playback, follows the sequence time
+   and the evaluated camera, and answers with the complete pose of the character.
+3. Unreal shows the time control owner, the target time, the latest complete
+   application time and the lag. A complete pose that is behind the current
+   sequence time is shown as lagging; it is not reported as synchronised.
+4. **返回实时** restores Maya's timeline, view and gate and keeps Maya paused
+   while Unreal keeps its takeover; user playback resumes in Maya. **结束预览**
+   also returns the original writers to the sequence.
+
+While linkage is active, a camera edit, a pause, a cut or an explicit jump
+cancels the old target; a continuously moving camera never cancels the answer
+already on its way. Unreal refuses a target whose writers cannot be isolated
+safely, and names the reason, instead of pausing the whole sequence. Cached
+Playback must be cleared before entering linkage, and a failed restore is
+reported per resource instead of being hidden.
+
+## Scene reference in Maya
+
+Unreal can export an explicit level scope as static reference geometry so Maya
+shows the same surroundings. The reference is a display aid: no preview
+workflow requires it, and the handoff never delivers image data.
+
+1. In Unreal, choose the level and the sublevels to include under **场景参考**
+   and run the export. Unreal reports the scope it resolved, including requested
+   sublevels the loaded world does not hold.
+2. In Maya, open **场景参考** and click **导入/更新参考**. Maya validates the
+   transfer identity, the content digest, the space revision and the size
+   budgets before it touches the scene, imports into its own container, and
+   reports what it accepted, discarded or rolled back.
+3. **移除参考** deletes only that container; **恢复上次更新** finishes or
+   discards an interrupted update.
 
 ## Garment model preview
 

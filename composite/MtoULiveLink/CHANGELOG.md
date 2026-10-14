@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- Add the single-character camera/time linkage workflow (Issue #57, protocol
+  v10). A new 镜头联动 card and window pair the Maya character with the Unreal
+  target, enter linkage, follow the Level Sequence time and evaluated camera,
+  and leave through 返回实时 or 结束预览. Unreal now reports the actual
+  component completion of every pose group, so both hosts show the time control
+  owner, the target time, the latest complete application time and the lag;
+  Maya restores its timeline, view and gate and stays paused on the way back.
+  A camera edit, pause, cut or explicit jump cancels the old target, while a
+  continuously advancing camera never cancels the work already issued. Maya
+  refuses an oversized group, an unknown or shared writer target is refused
+  before any write, and a failed restore is reported per resource instead of
+  being hidden. The workflow is additive: the existing single-character
+  realtime, cached playback and Model comparison paths keep their defaults and
+  do not require any of the new configuration.
+
+- Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
+  scope as static reference geometry and offers the finished handoff; Maya
+  validates the transfer identity, content digest, space revision, file/object/
+  triangle budgets and the image-data rule before it touches the scene, then
+  imports into a tool-owned container with a staged swap, rollback, recovery
+  and an ownership mark, so a failed or interrupted update never loses the
+  previous reference. The reference is a display aid; the single-character
+  realtime and cached workflows still run without it.
+
+- Move to protocol v10 as a paired upgrade (Issue #57). The connection now
+  starts with a version and capability greeting, the object description carries
+  a stable object id plus set and space revisions, and every later message
+  repeats the session, set, space and mode identity. A mixed pair is refused
+  before a target is discovered, a writer is muted or a handoff is read, and
+  the frozen budgets (message and group size, control queue, reference size and
+  counts) are enforced by both adapters against the shared corpus.
+
+- Split the Maya component into a thin `MtoULiveLink.py` entry and the
+  `mtou_livelink` package (Issue #57). Installation copies the whole `scripts`
+  directory instead of a single file; `run()`, `main()` and the installed
+  shelf entry are unchanged, and the package keeps one module per lifecycle
+  (config, diagnostics, protocol, space, scene, timeline, session, cache,
+  linkage, reference, controller and the panel widgets). Behaviour is
+  unchanged: the same tests pass before and after the split.
+
 - Fix the independent Issue #54 two-subject prototype's bone negotiation
   (R-005/R-008) and its real-pair world placement (R-009). Mapping now runs in
   two phases per mapped parent scope: the *necessary* targets - the positive

@@ -4,7 +4,9 @@
 的四个实现任务和三个有界验证均已通过各自验收。母项汇总结论、适用基线和
 证据边界见[母规格验收记录](../../../docs/project-history/mtou-livelink/issue-47-preview-workflow-acceptance.md)。
 
-当前正式组件为 0.9.0、协议 v9，位于 `codex/mtou-preview-workflow`。
+当前正式组件为 0.10.0、协议 v10（I-1 单角色接入实施于
+[#57](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/57)），位于
+`codex/mtou-preview-workflow`；下文 0.9.0／v9 为本文档记录的历史验收基线。
 `composite-mtou-livelink-v0.5.0` 保留为项目负责人接受的历史稳定里程碑；
 本轮验收不创建新发布标签、正式安装包或宿主版本认证。
 

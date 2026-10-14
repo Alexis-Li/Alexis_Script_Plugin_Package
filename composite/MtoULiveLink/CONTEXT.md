@@ -210,3 +210,53 @@ _Avoid_: Protocol fixtures, golden files
 **Conformance case**:
 One input and its expected protocol outcome, including successful messages and rejected messages with their stable category and connection-closing semantics.
 _Avoid_: Test vector, sample payload
+
+**Preview linkage**:
+The third time-control state, beside realtime preview and Cached Playback, in
+which Unreal owns the Level Sequence time and the evaluated camera and Maya
+follows: Maya sets its time, applies the camera, samples the complete object set
+and answers with one pose group per target. It is not a fourth preview workflow
+and it does not replace the realtime pose stream.
+_Avoid_: Camera mode, Sequencer streaming, timeline sync
+
+**Time control authority**:
+The one host that currently drives time. Realtime preview and Cached Playback
+name Maya and the Unreal cache clock; linkage names Unreal. The authority is
+stated by both adapters and refuses work that contradicts it.
+_Avoid_: Time owner, clock owner, master
+
+**Camera/time target**:
+One evaluated request from Unreal: the sequence time, the cut, the evaluated
+camera and the output gate, identified by an evaluation identity that changes
+with time, cut or camera content. Heartbeats repeat an unchanged target.
+_Avoid_: Camera frame, sync packet, keyframe
+
+**Pose group**:
+The complete pose answer to one camera/time target: every object of the current
+set with its full bone and Morph values plus the actual camera and time Maya
+read back. A partial group is never sent.
+_Avoid_: Frame bundle, batch, multi-frame
+
+**Applied evidence**:
+The report that the target's actual components finished displaying a group,
+read back on the Unreal game thread. Publishing several Live Link frames or
+calling the game thread once is not evidence.
+_Avoid_: Acknowledgement, receipt, publish confirmation
+
+**Convergence**:
+The state in which nothing is in flight, no newer target waits, and the last
+group was applied. Lagging but complete groups are shown as lagging and are not
+convergence.
+_Avoid_: Sync, lock, in-step
+
+**Scene reference handoff**:
+One finished Unreal export of an explicitly selected level scope, delivered as
+files beside a manifest with a transfer identity, a content digest and the space
+revision it belongs to. Maya imports it only after validating it.
+_Avoid_: Reference download, level copy, geometry stream
+
+**Reference container**:
+The single tool-owned Maya transform and namespace that holds the imported scene
+reference, marked with its ownership value so an update can replace, roll back
+or remove only what the tool created.
+_Avoid_: Reference group, import root, staging scene
