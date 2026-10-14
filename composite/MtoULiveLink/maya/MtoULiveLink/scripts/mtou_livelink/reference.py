@@ -1953,13 +1953,14 @@ def handoff_digests(directory, manifest=None):
     """The content digests this module can compute for one handoff directory.
 
     A digest covers the directory's own content, so a handoff that changed after
-    it was offered cannot keep the old offer. Two spellings of the field exist in
-    this repository: the product's exporter hashes the manifest text concatenated
-    with the geometry file's MD5 (``FMD5::HashAnsiString(ManifestText +
-    GeometryHash.ToString())``), while the frozen conformance corpus names the
-    same handoff field ``sha256:<hex>``. Both are computed here and either
-    matches, so a changed directory is refused under every spelling and a
-    handoff written by either side imports without a manual digest migration.
+    it was offered cannot keep the old offer. Several spellings of the field
+    exist in this repository: the product exporter hashes the manifest text
+    followed by the geometry file's own bytes (``FMD5::HashBytes(ManifestUtf8 +
+    GeometryBytes)``), an older spelling used the geometry file's MD5 instead of
+    its bytes, and the frozen conformance corpus names the same field
+    ``sha256:<hex>``. All are computed here and any one of them matches, so a
+    changed directory is refused under every spelling and a handoff written by
+    either side imports without a manual digest migration.
     """
     result = {"available": False, "digests": {}, "manifest_bytes": None,
               "geometry_bytes": None, "error": None}
@@ -1976,11 +1977,13 @@ def handoff_digests(directory, manifest=None):
         result["error"] = "the manifest cannot be read: {0}".format(error)
         return result
     geometry_md5 = None
+    geometry_raw = None
     if files["geometry"]:
         try:
             with open(files["geometry"][0], "rb") as handle:
-                geometry_md5 = hashlib.md5(handle.read()).hexdigest()
-                result["geometry_bytes"] = handle.tell()
+                geometry_raw = handle.read()
+                geometry_md5 = hashlib.md5(geometry_raw).hexdigest()
+                result["geometry_bytes"] = len(geometry_raw)
         except OSError as error:
             result["error"] = "the geometry cannot be read: {0}".format(error)
     # A byte order mark is written by some hosts and is not part of the text an
@@ -2004,6 +2007,15 @@ def handoff_digests(directory, manifest=None):
                 payload).hexdigest()
             result["digests"]["manifest+geometry_md5-sha256"] = hashlib.sha256(
                 payload).hexdigest()
+        if geometry_raw is not None:
+            # The product exporter hashes the manifest text followed by the
+            # geometry file's own bytes; this is the spelling a real handoff
+            # carries, so it must be verifiable here.
+            raw_payload = text + geometry_raw
+            result["digests"]["manifest+geometry_bytes-md5"] = hashlib.md5(
+                raw_payload).hexdigest()
+            result["digests"]["manifest+geometry_bytes-sha256"] = hashlib.sha256(
+                raw_payload).hexdigest()
         result["digests"]["manifest-sha256"] = hashlib.sha256(text).hexdigest()
         result["digests"]["manifest-md5"] = hashlib.md5(text).hexdigest()
     result["available"] = True
