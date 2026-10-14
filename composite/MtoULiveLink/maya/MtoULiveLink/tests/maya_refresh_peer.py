@@ -21,6 +21,24 @@ import time
 import traceback
 from pathlib import Path
 
+import pathlib
+import sys
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import (  # noqa: E402
+    cache as mtou_cache,
+    config as mtou_config,
+    controller as mtou_controller,
+    mayaapi as mtou_mayaapi,
+    scene as mtou_scene,
+    session as mtou_session,
+    timeline as mtou_timeline,
+)
+
+
 
 def read_json(path):
     try:
@@ -61,7 +79,7 @@ def main():
         spec = importlib.util.spec_from_file_location("MtoURefreshHost", str(script))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.PORT = fixture["port"]
+        mtou_config.PORT = fixture["port"]
         result["maya_version"] = cmds.about(version=True)
         result["maya_api"] = cmds.about(apiVersion=True)
         result["runtime_sha256"] = hashlib.sha256(script.read_bytes()).hexdigest()
@@ -84,13 +102,13 @@ def main():
         cmds.playbackOptions(minTime=1, maxTime=3)
         cmds.currentTime(1)
 
-        class HeadlessController(module._Controller):
+        class HeadlessController(mtou_controller.Controller):
             # Presentation only: retain the real lifecycle and error transition.
             def _show_error(self, diagnostic):
                 result.setdefault("diagnostics", []).append(diagnostic)
 
         controller = HeadlessController()
-        controller._scene = module._CharacterScene.capture(joints[0], display, "clothes")
+        controller._scene = mtou_scene.CharacterScene.capture(joints[0], display, "clothes")
 
         def pump(timeout, label, predicate=None, sample=True):
             deadline = time.time() + timeout

@@ -12,6 +12,24 @@ import traceback
 from pathlib import Path
 from unittest import mock
 
+import pathlib
+import sys
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import (  # noqa: E402
+    cache as mtou_cache,
+    config as mtou_config,
+    controller as mtou_controller,
+    mayaapi as mtou_mayaapi,
+    scene as mtou_scene,
+    session as mtou_session,
+    timeline as mtou_timeline,
+)
+
+
 
 def read_json(path):
     try:
@@ -87,7 +105,7 @@ def main():
         spec = importlib.util.spec_from_file_location("MtoUCharacterPeer", str(script))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.PORT = fixture["port"]
+        mtou_config.PORT = fixture["port"]
         if fixture.get("synthetic_secondary_bones"):
             _create_secondary_bone_character(cmds, fixture["synthetic_bones"])
         else:
@@ -103,12 +121,12 @@ def main():
                     raise
                 result["scene_load_warning"] = str(exc)[:400]
 
-        class Controller(module._Controller):
+        class Controller(mtou_controller.Controller):
             def _show_error(self, diagnostic):
                 result.setdefault("diagnostics", []).append(diagnostic)
 
         controller = Controller()
-        controller._scene = module._CharacterScene.capture(fixture["root"])
+        controller._scene = mtou_scene.CharacterScene.capture(fixture["root"])
         scene = controller._scene
         snapshot = scene.snapshot()
         result.update(maya_version=cmds.about(version=True),
@@ -154,7 +172,7 @@ def main():
             cached = controller._cached_playback
             # Live sampling belongs to real-time mode; cached mode is driven by
             # the cache callbacks below.
-            if session is not None and controller._mode == module.REALTIME_MODE:
+            if session is not None and controller._mode == mtou_config.REALTIME_MODE:
                 session._sample_and_submit(force=True)
             cached = controller._cached_playback
             if cached is not None:
@@ -177,7 +195,7 @@ def main():
         result.update(phase="loaded", ok=True)
         write_json(args.result, result)
         # Disable only warning-dialog presentation in standalone Maya.
-        with mock.patch.object(module.cmds, "checkBox", return_value=False):
+        with mock.patch.object(mtou_mayaapi.cmds, "checkBox", return_value=False):
             deadline = time.time() + 900
             while time.time() < deadline:
                 command = read_json(fixture["command"])
@@ -227,7 +245,7 @@ def main():
                         # Production path: Maya captures and uploads; UE owns
                         # the subsequent play, stop and replay actions.
                         result.pop("cache_error", None)
-                        controller._on_mode_changed(module.CACHED_MODE)
+                        controller._on_mode_changed(mtou_config.CACHED_MODE)
                         cached = controller._ensure_cached_playback()
                         started = time.time()
                         selected_range = command.get("custom_range")
@@ -249,7 +267,7 @@ def main():
                         result["cache_play_id"] = controller._cached_playback._play_id
                         result["phase"] = "observed"
                     elif action == "cache_live":
-                        controller._on_mode_changed(module.REALTIME_MODE)
+                        controller._on_mode_changed(mtou_config.REALTIME_MODE)
                         until(lambda: controller._cached_playback is None
                               or controller._cached_playback.view.state
                               == controller._cached_playback.REALTIME, "cache live")

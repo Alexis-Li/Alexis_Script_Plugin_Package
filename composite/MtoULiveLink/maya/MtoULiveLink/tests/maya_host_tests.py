@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import pathlib
 import tempfile
@@ -9,6 +10,73 @@ try:
     MAYA_AVAILABLE = True
 except ImportError:
     MAYA_AVAILABLE = False
+
+import pathlib
+import sys
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import (  # noqa: E402
+    cache as mtou_cache,
+    config as mtou_config,
+    controller as mtou_controller,
+    mayaapi as mtou_mayaapi,
+    scene as mtou_scene,
+    session as mtou_session,
+    timeline as mtou_timeline,
+)
+
+
+_PACKAGE_MODULES = (mtou_cache, mtou_config, mtou_controller, mtou_mayaapi,
+                    mtou_scene, mtou_session, mtou_timeline)
+
+
+class _GlobalPatcher(object):
+    # Patch one late-bound global on every package module that binds it.
+
+    def __init__(self, name, value, kwargs):
+        self._name = name
+        self._value = value
+        self._kwargs = kwargs
+        self._stack = None
+        self._mock = None
+
+    def _make_mock(self):
+        if self._value is not mock.DEFAULT:
+            return self._value
+        new_callable = self._kwargs.pop("new_callable", None)
+        if new_callable is not None:
+            return new_callable()
+        return mock.MagicMock(**self._kwargs)
+
+    def start(self):
+        self._mock = self._make_mock()
+        self._stack = contextlib.ExitStack()
+        for module in _PACKAGE_MODULES:
+            if hasattr(module, self._name):
+                self._stack.enter_context(
+                    mock.patch.object(module, self._name, self._mock))
+        return self._mock
+
+    def stop(self):
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+            self._mock = None
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc_info):
+        self.stop()
+        return False
+
+
+def patch_global(name, value=mock.DEFAULT, **kwargs):
+    return _GlobalPatcher(name, value, kwargs)
+
 
 
 @unittest.skipUnless(MAYA_AVAILABLE, "requires Maya mayapy")
@@ -62,7 +130,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.skinCluster(root, hidden, name="hiddenSkin")
         cmds.setAttr(hidden + ".visibility", False)
 
-        scene = module._CharacterScene.capture("|Group|root")
+        scene = mtou_scene.CharacterScene.capture("|Group|root")
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -78,8 +146,8 @@ class MayaHostTests(unittest.TestCase):
         mesh = cmds.polyCube(name="hiddenBody")[0]
         cmds.skinCluster(root, mesh)
         cmds.setAttr(mesh + ".visibility", False)
-        with self.assertRaises(module._CharacterSceneError) as caught:
-            module._CharacterScene.capture(root)
+        with self.assertRaises(mtou_scene.CharacterSceneError) as caught:
+            mtou_scene.CharacterScene.capture(root)
         self.assertEqual("NO_VISIBLE_SKINNED_MESH", caught.exception.code)
 
     def test_duplicate_bone_action_selects_every_conflicting_dag_path(self):
@@ -96,10 +164,10 @@ class MayaHostTests(unittest.TestCase):
         class FakeScene(object):
             @staticmethod
             def snapshot():
-                return module._CharacterSnapshot(
+                return mtou_scene.CharacterSnapshot(
                     1, "|duplicateRoot", "Clothes01", [], [], paths)
 
-        controller = module._Controller()
+        controller = mtou_controller.Controller()
         controller._scene = FakeScene()
         controller.select_duplicate_bones()
 
@@ -121,7 +189,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(blendshape + ".Smile", 0.25)
         cmds.select(root, replace=True)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         frame = scene.sample()
@@ -143,7 +211,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(root + ".rotateZ", 30.0)
         cmds.setAttr(child + ".rotateX", 20.0)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         current = scene.sample()
@@ -172,7 +240,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(hidden + ".visibility", False)
         cmds.setAttr(skirt + ".rotateZ", 45.0)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         current = scene.sample()
@@ -195,7 +263,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(hand + ".rotateZ", 30.0)
         cmds.skinCluster(root, hand, second_mesh, name="secondSkin")
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -220,7 +288,7 @@ class MayaHostTests(unittest.TestCase):
         for pose in cmds.ls(type="dagPose"):
             cmds.delete(pose)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -240,8 +308,8 @@ class MayaHostTests(unittest.TestCase):
         for pose in cmds.ls(type="dagPose"):
             cmds.delete(pose)
 
-        with self.assertRaises(module._CharacterSceneError) as caught:
-            module._CharacterScene.capture(root)
+        with self.assertRaises(mtou_scene.CharacterSceneError) as caught:
+            mtou_scene.CharacterScene.capture(root)
 
         self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
         self.assertIn("equally ranked bind matrices", caught.exception.details)
@@ -253,7 +321,7 @@ class MayaHostTests(unittest.TestCase):
         del group, unused_display
         mesh = cmds.polyCube(name="body")[0]
         cmds.skinCluster(root, mesh, name="bodySkin")
-        original_matrix_attr = module._matrix_attr
+        original_matrix_attr = mtou_scene.matrix_attr
 
         def matrix_attr(plug):
             if ".bindPreMatrix[" in plug:
@@ -261,12 +329,12 @@ class MayaHostTests(unittest.TestCase):
                           0.0, 1.0, 0.0, 0.0,
                           0.0, 0.0, 1.0, 0.0,
                           0.0, 0.0, 0.0, float("inf")]
-                return module.om.MMatrix(values)
+                return mtou_mayaapi.om.MMatrix(values)
             return original_matrix_attr(plug)
 
-        with mock.patch.object(module, "_matrix_attr", side_effect=matrix_attr):
-            with self.assertRaises(module._CharacterSceneError) as caught:
-                module._CharacterScene.capture(root)
+        with patch_global("matrix_attr", side_effect=matrix_attr):
+            with self.assertRaises(mtou_scene.CharacterSceneError) as caught:
+                mtou_scene.CharacterScene.capture(root)
 
         self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
         self.assertIn("non-finite bind matrix", caught.exception.details)
@@ -277,16 +345,16 @@ class MayaHostTests(unittest.TestCase):
         del group, unused_display
         mesh = cmds.polyCube(name="body")[0]
         cmds.skinCluster(root, mesh, name="bodySkin")
-        original_matrix_attr = module._matrix_attr
+        original_matrix_attr = mtou_scene.matrix_attr
 
         def matrix_attr(plug):
             if ".bindPreMatrix[" in plug:
-                return module.om.MMatrix([0.0] * 16)
+                return mtou_mayaapi.om.MMatrix([0.0] * 16)
             return original_matrix_attr(plug)
 
-        with mock.patch.object(module, "_matrix_attr", side_effect=matrix_attr):
-            with self.assertRaises(module._CharacterSceneError) as caught:
-                module._CharacterScene.capture(root)
+        with patch_global("matrix_attr", side_effect=matrix_attr):
+            with self.assertRaises(mtou_scene.CharacterSceneError) as caught:
+                mtou_scene.CharacterScene.capture(root)
 
         self.assertEqual("BIND_POSE_INVALID", caught.exception.code)
         self.assertIn("non-invertible bind matrix", caught.exception.details)
@@ -302,7 +370,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.skinCluster(
             root, second_mesh, name="secondSkin", ignoreBindPose=True)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -320,7 +388,7 @@ class MayaHostTests(unittest.TestCase):
         late = cmds.joint(name="addedAfterBind", position=(0, 5, 0))
         cmds.setAttr(late + ".rotateZ", 20.0)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -344,7 +412,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(spine + ".rotateZ", 30.0)
         cmds.setAttr(late + ".rotateX", 10.0)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
 
@@ -370,7 +438,7 @@ class MayaHostTests(unittest.TestCase):
             cmds.setAttr(blendshape + ".Smile", 0.25)
         cmds.select(root, replace=True)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         frame = scene.sample()
@@ -403,7 +471,7 @@ class MayaHostTests(unittest.TestCase):
         cmds.setAttr(head_blendshape + ".Smile", 0.25)
         cmds.select(root, replace=True)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         frame = scene.sample()
@@ -427,9 +495,9 @@ class MayaHostTests(unittest.TestCase):
             cmds.setAttr(blendshape + ".Smile", value)
         cmds.select(root, replace=True)
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
-        with self.assertRaises(module._CharacterSceneError) as caught:
+        with self.assertRaises(mtou_scene.CharacterSceneError) as caught:
             scene.sample()
         self.assertEqual("SAMPLING_FAILED", caught.exception.code)
         self.assertIn("conflicting values for BlendShape alias Smile", caught.exception.details)
@@ -439,7 +507,7 @@ class MayaHostTests(unittest.TestCase):
         del group, unused_display
         mesh = cmds.polyCube(name="body")[0]
         cmds.skinCluster(root, mesh)
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         events = []
 
@@ -467,8 +535,8 @@ class MayaHostTests(unittest.TestCase):
             def end_ordered(self, discard_pending=True):
                 pass
 
-        with mock.patch.object(module, "_SenderWorker", FakeWorker):
-            session = module._StreamingSession.start(scene, 24.0, events.append)
+        with patch_global("SenderWorker", FakeWorker):
+            session = mtou_session.StreamingSession.start(scene, 24.0, events.append)
             session.change_rate(30.0)
             session.stop()
             session.stop()
@@ -490,13 +558,12 @@ class MayaHostTests(unittest.TestCase):
             if "state" in kwargs:
                 playing["value"] = bool(kwargs["state"])
 
-        with mock.patch.object(
-                module, "_maya_is_playing", side_effect=lambda: playing["value"]), \
-                mock.patch.object(module.cmds, "play", side_effect=play):
-            timeline = module._MayaTimeline()
+        with patch_global("maya_is_playing", side_effect=lambda: playing["value"]), \
+                mock.patch.object(mtou_mayaapi.cmds, "play", side_effect=play):
+            timeline = mtou_timeline.MayaTimeline()
             self.assertTrue(timeline.is_playing())
             original_frame = timeline.current_frame()
-            snapshot = module._CharacterSnapshot(
+            snapshot = mtou_scene.CharacterSnapshot(
                 1, "|root", "Clothes01", [("root", -1)], [],
                 bind_local_transforms=[(0.0,) * 10])
 
@@ -508,7 +575,7 @@ class MayaHostTests(unittest.TestCase):
                 @staticmethod
                 def sample():
                     value = float(cmds.currentTime(query=True))
-                    return module._CharacterFrame(1, [[value] * 10], [])
+                    return mtou_scene.CharacterFrame(1, [[value] * 10], [])
 
             class FakeStream(object):
                 is_ready = True
@@ -560,27 +627,27 @@ class MayaHostTests(unittest.TestCase):
             holder = {}
 
             def on_change(view):
-                if view.state == module._CachedPlayback.CAPTURING and view.current:
+                if view.state == mtou_cache.CachedPlayback.CAPTURING and view.current:
                     progress.append((view.current, view.total))
                     if view.current == 2:
                         holder["cached"].cancel_capture()
 
             with tempfile.TemporaryDirectory() as directory:
-                cached = module._CachedPlayback(
+                cached = mtou_cache.CachedPlayback(
                     FakeScene(), stream, on_change=on_change, timeline=timeline,
                     temp_dir=directory,
                     disk_usage=lambda unused: (1, 1, 1 << 40), timer_api=timer)
                 holder["cached"] = cached
                 cached.enter()
                 cached.capture(24.0, lambda unused_size, unused_frames: True)
-                while cached.view.state == module._CachedPlayback.CAPTURING:
+                while cached.view.state == mtou_cache.CachedPlayback.CAPTURING:
                     timer.fire()
                 self.assertEqual([(1, 3), (2, 3)], progress)
                 self.assertFalse(timeline.is_playing())
                 self.assertEqual(original_frame, timeline.current_frame())
                 self.assertEqual(1, stream.resumed)
                 self.assertIsNone(cached.view.cache_summary)
-                self.assertEqual(module._CachedPlayback.REALTIME, cached.view.state)
+                self.assertEqual(mtou_cache.CachedPlayback.REALTIME, cached.view.state)
                 self.assertEqual([1, 2], sorted(timer.removed))
                 cached.discard()
             self.assertFalse(playing["value"])
@@ -588,8 +655,8 @@ class MayaHostTests(unittest.TestCase):
 
     def test_playback_state_query_uses_maya_host_state_without_editing_scene(self):
         current_time = cmds.currentTime(query=True)
-        with mock.patch.object(module.cmds, "play", return_value=True) as play:
-            self.assertTrue(module._maya_is_playing())
+        with mock.patch.object(mtou_mayaapi.cmds, "play", return_value=True) as play:
+            self.assertTrue(mtou_timeline.maya_is_playing())
         play.assert_called_once_with(query=True, state=True)
         self.assertEqual(current_time, cmds.currentTime(query=True))
 
@@ -611,7 +678,7 @@ class MayaHostTests(unittest.TestCase):
         mesh = cmds.polyCube(name="body")[0]
         cmds.skinCluster(root, tip, mesh, name="bodySkin")
 
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         frame = scene.sample()
@@ -635,8 +702,8 @@ class MayaHostTests(unittest.TestCase):
         unit_scale = scene._subject["unit_scale"]
         correct = worlds[3] * worlds[2].inverse()
         wrong = worlds[3] * worlds[0].inverse()
-        expected = module._sample_matrix(correct, unit_scale)
-        skipped = module._sample_matrix(wrong, unit_scale)
+        expected = mtou_scene.sample_matrix(correct, unit_scale)
+        skipped = mtou_scene.sample_matrix(wrong, unit_scale)
         for actual, wanted in zip(frame.transforms[3], expected):
             self.assertAlmostEqual(wanted, actual, places=4)
         self.assertTrue(
@@ -647,7 +714,7 @@ class MayaHostTests(unittest.TestCase):
         # Independent reconstruction: convert wire UE (X,Z,Y) back to Maya,
         # build S*R*T from the transmitted quaternion, then multiply parents.
         # Do not call _sample_matrix or convert_transform in the oracle.
-        om = module.om
+        om = mtou_mayaapi.om
         def reconstruct(transforms, bones):
             worlds = []
             for values, (_, parent) in zip(transforms, bones):
@@ -677,7 +744,7 @@ class MayaHostTests(unittest.TestCase):
             cmds.setAttr(node + ".scale", *scale)
         mesh = cmds.polyCube()[0]
         cmds.skinCluster(root, tip, mesh)
-        scene = module._CharacterScene.capture(root)
+        scene = mtou_scene.CharacterScene.capture(root)
         self.addCleanup(scene.close)
         snapshot = scene.snapshot()
         paths = [bone["path"] for bone in scene._subject["bones"]]
@@ -721,8 +788,8 @@ class MayaHostTests(unittest.TestCase):
         second_mesh = cmds.polyCube(name="bodyB")[0]
         cmds.skinCluster(second_root, second_tip, second_mesh, name="skinB")
 
-        first = module._capture_subject(first_root)
-        second = module._capture_subject(second_root)
+        first = mtou_scene.capture_subject(first_root)
+        second = mtou_scene.capture_subject(second_root)
 
         self.assertEqual(
             [first_root, first_mid, first_tip],

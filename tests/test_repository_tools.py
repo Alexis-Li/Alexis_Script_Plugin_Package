@@ -259,7 +259,13 @@ class RepositoryToolTests(unittest.TestCase):
             )
 
             with zipfile.ZipFile(output / pathlib.Path(maya_result["archive"]).name) as archive:
-                self.assertEqual(["scripts/MtoULiveLink.py"], archive.namelist())
+                names = archive.namelist()
+            self.assertIn("scripts/MtoULiveLink.py", names)
+            self.assertIn("scripts/mtou_livelink/controller.py", names)
+            self.assertIn("scripts/mtou_livelink/ui/style.py", names)
+            self.assertFalse(
+                [name for name in names if "__pycache__" in name or name.endswith(".pyc")]
+            )
 
             with zipfile.ZipFile(output / pathlib.Path(unreal_result["archive"]).name) as archive:
                 names = archive.namelist()
