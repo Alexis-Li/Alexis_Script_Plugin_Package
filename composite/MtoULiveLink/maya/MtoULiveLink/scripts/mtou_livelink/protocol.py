@@ -203,7 +203,7 @@ def group_wire_size(message):
 
 
 def make_reference_result_message(session_id, transfer_id, accepted, detail,
-                                  counts=None, container=None):
+                                  counts=None, container=None, code=None):
     counts = counts or {}
     message = {
         "type": "reference_result",
@@ -220,6 +220,10 @@ def make_reference_result_message(session_id, transfer_id, accepted, detail,
     }
     if container:
         message["container"] = str(container)
+    if code:
+        # The stable refusal code, so the other host reports the actual reason
+        # instead of guessing one.
+        message["code"] = str(code)
     return message
 
 

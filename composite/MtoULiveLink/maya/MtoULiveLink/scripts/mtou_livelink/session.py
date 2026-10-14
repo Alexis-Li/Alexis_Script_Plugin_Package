@@ -46,6 +46,18 @@ class LatestFrame(object):
             return value
 
 
+# Control statements both hosts may send outside a mode the Maya panel is
+# currently driving; they are recorded instead of ending the connection.
+CONTROL_REPLY_TYPES = (
+    "mode_state",
+    "reference_offer",
+    "reference_result",
+    "reference_removed",
+    "camera_time",
+    "applied",
+)
+
+
 class SenderWorker(threading.Thread):
     def __init__(self, init_message, hello_message=None):
         threading.Thread.__init__(self, name="MtoULiveLinkSender")
@@ -60,6 +72,7 @@ class SenderWorker(threading.Thread):
         initial += encode_message(init_message)
         self._initial_packet = initial
         self._hello_reply = None
+        self._last_control_reply = None
         self._latest = LatestFrame()
         # Unbounded by design: the cached upload streams hundreds of frames
         # through the same ordered path. Linkage controls keep their own bound
@@ -267,6 +280,11 @@ class SenderWorker(threading.Thread):
         with self._lock:
             return dict(self._hello_reply) if self._hello_reply else None
 
+    def last_control_reply(self):
+        """The last control statement received without a registered listener."""
+        with self._lock:
+            return dict(self._last_control_reply) if self._last_control_reply else None
+
     def run(self):
         connected = False
         try:
@@ -362,6 +380,14 @@ class SenderWorker(threading.Thread):
                             self._set_status(
                                 "error", diagnostic["summary"], diagnostic=diagnostic)
                             return
+                        if reply.get("type") in CONTROL_REPLY_TYPES:
+                            # A control statement can cross a mode boundary: the
+                            # leave answer, an unsolicited reference offer or a
+                            # late camera/time target must never end the session
+                            # that the user is still using.
+                            with self._lock:
+                                self._last_control_reply = dict(reply)
+                            continue
                         diagnostic = make_diagnostic(
                             "INVALID_MESSAGE",
                             "unexpected runtime reply: {0}".format(reply.get("type")))

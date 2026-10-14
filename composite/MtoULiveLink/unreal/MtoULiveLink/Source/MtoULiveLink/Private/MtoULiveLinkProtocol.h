@@ -90,6 +90,9 @@ struct FMtoUReferenceResultMessage
     FString TransferId;
     bool bAccepted = false;
     FString Detail;
+    // The stable code the Maya importer refused the handoff with, when it sent
+    // one; empty for an accepted import.
+    FString Code;
     int64 ObjectCount = 0;
     int64 TriangleCount = 0;
     int64 ByteCount = 0;

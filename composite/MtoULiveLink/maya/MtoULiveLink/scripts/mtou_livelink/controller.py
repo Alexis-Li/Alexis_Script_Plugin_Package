@@ -1350,7 +1350,7 @@ class Controller(object):
         if target not in ("realtime", "end"):
             raise ValueError("linkage exit target must be 'realtime' or 'end'")
         linkage = self._linkage
-        if linkage is None or not linkage.is_active:
+        if linkage is None or not (linkage.is_active or target == "end"):
             self._show_error(make_diagnostic(
                 "LINKAGE_NOT_ACTIVE",
                 "当前不在镜头联动状态。",
@@ -1363,7 +1363,9 @@ class Controller(object):
             self._report_linkage_failure(error)
             self._start_linkage_pump()
             return
-        self._release_reply_listener(self._session)
+        # The dispatcher stays installed for the session's lifetime: Unreal
+        # answers a leave with a mode statement, and it may push a reference
+        # offer while Maya is merely streaming realtime.
         session = self._session
         if session is not None:
             try:
@@ -1881,7 +1883,8 @@ class Controller(object):
             session_id, offer.get("transfer_id") or "",
             bool(report.get("accepted")), str(report.get("detail") or ""),
             counts=counts if isinstance(counts, dict) else {},
-            container=container_name)
+            container=container_name,
+            code=report.get("code") if isinstance(report, dict) else None)
         try:
             session.submit_linkage(message)
         except (StreamingSessionError, RuntimeError, TypeError, ValueError) as error:

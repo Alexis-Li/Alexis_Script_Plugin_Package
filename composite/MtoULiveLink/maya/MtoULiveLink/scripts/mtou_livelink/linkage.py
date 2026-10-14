@@ -194,6 +194,9 @@ class LinkageSession(object):
         self._recovery = []
         self._detail = ""
         self._closed = False
+        # True once this session entered linkage; 结束预览 stays available
+        # after 返回实时 because Unreal may still hold the original writers.
+        self._entered = False
 
     # ------------------------------------------------------------------ state
     @property
@@ -299,6 +302,7 @@ class LinkageSession(object):
             self._mode_revision = revision
             self._state = state
             self._mode = LINKAGE_MODE
+            self._entered = True
             self._control = CONTROL_UNREAL
             self._pending = None
             self._issued = None
@@ -323,7 +327,21 @@ class LinkageSession(object):
             raise LinkageError("INVALID_MESSAGE", "mode revision must be a positive integer")
         with self._lock:
             if self._mode != LINKAGE_MODE:
-                raise LinkageError("LINKAGE_NOT_ACTIVE", "linkage is not active")
+                # 结束预览 after 返回实时 has nothing left to restore here, but
+                # Unreal may still hold the original writers: the exit is still
+                # the statement that hands them back, so it is accepted.
+                if target != "end" or not self._entered:
+                    raise LinkageError("LINKAGE_NOT_ACTIVE", "linkage is not active")
+                self._mode_revision = revision
+                self._pending = None
+                self._issued = None
+                self._session.submit_linkage(make_leave_linkage_message(
+                    self._session_id, revision, target, ""))
+                self._emit(LinkageEvent(
+                    "mode", mode=REALTIME_MODE, control=CONTROL_MAYA,
+                    mode_revision=revision,
+                    detail="已结束预览并恢复原状态"))
+                return ()
             if revision <= self._mode_revision:
                 raise LinkageError(
                     "MODE_CONFLICT",

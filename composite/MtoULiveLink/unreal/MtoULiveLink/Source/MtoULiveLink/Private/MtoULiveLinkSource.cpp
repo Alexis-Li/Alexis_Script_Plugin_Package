@@ -1151,10 +1151,14 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                         if (!bValid)
                         {
-                            // A malformed linkage message is structurally
-                            // garbage and closes, like any other.
-                            SendErrorAndDisconnect(LinkageErrorCode, LinkageError);
-                            break;
+                            // A refused linkage control message is a
+                            // per-message rejection: the session answers with
+                            // its stable code and keeps the connection, so an
+                            // operator can correct the action without losing
+                            // the streaming session (protocol/v10.md, mode and
+                            // reference message tables).
+                            SendLinkageError(LinkageErrorCode, LinkageError);
+                            continue;
                         }
                         PendingLinkageControls.Enqueue(MoveTemp(Control));
                         QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);

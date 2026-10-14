@@ -216,7 +216,10 @@ void FMtoULinkageSession::BeginSession(int32 InSessionId)
 
 void FMtoULinkageSession::EndSession()
 {
-    if (Mode == TEXT("linkage"))
+    // The takeover is keyed on what is actually borrowed, not on the mode: a
+    // disconnect while the writers are muted must hand them back even when the
+    // session already returned to realtime.
+    if (bWritersBorrowed)
     {
         FString Residual;
         RestoreBorrowedWriters(Residual);
@@ -386,6 +389,16 @@ void FMtoULinkageSession::NoteLeaveLinkage(
     }
     if (Mode != TEXT("linkage"))
     {
+        if (Message.Target == TEXT("end") && bWritersBorrowed)
+        {
+            FString Residual;
+            RestoreBorrowedWriters(Residual);
+            Error = Residual.IsEmpty() ? FString() : Residual;
+            ErrorCode = Residual.IsEmpty() ? FString() : TEXT("RECOVERY_REFUSED");
+            Detail = TEXT("The preview ended and the original writers were restored.");
+            PublishView();
+            return;
+        }
         SendError(
             TEXT("LINKAGE_NOT_ACTIVE"),
             TEXT("Linkage is not active."),
@@ -661,7 +674,25 @@ bool FMtoULinkageSession::RequestLeave(
     }
     if (Mode != TEXT("linkage"))
     {
-        return Refuse(TEXT("LINKAGE_NOT_ACTIVE"), TEXT("Linkage is not active."));
+        // 结束预览 after 返回实时 still owns the original writers: the exit is
+        // the statement that hands them back, so it stays available while the
+        // takeover is held even though Unreal already follows Maya's time.
+        if (Target != TEXT("end") || !bWritersBorrowed)
+        {
+            return Refuse(TEXT("LINKAGE_NOT_ACTIVE"), TEXT("Linkage is not active."));
+        }
+        FString Residual;
+        RestoreBorrowedWriters(Residual);
+        ModeRevision = InModeRevision;
+        Mode = TEXT("realtime");
+        Control = TEXT("maya");
+        Error = Residual.IsEmpty() ? FString() : Residual;
+        ErrorCode = Residual.IsEmpty() ? FString() : TEXT("RECOVERY_REFUSED");
+        Detail = TEXT("The preview ended and the original writers were restored.");
+        SendControl(FMtoUProtocol::EncodeModeState(
+            SessionId, ModeRevision, Mode, Control, Detail));
+        PublishView();
+        return true;
     }
     if (bTransitioning)
     {
@@ -742,7 +773,9 @@ bool FMtoULinkageSession::OfferReferenceHandoff(
     }
     if (ByteCount < 1)
     {
-        OutError = TEXT("A reference handoff requires a positive byte count.");
+        OutError = TEXT(
+            "A reference handoff requires a positive byte count: the offer's "
+            "'bytes' field must be a positive integer.");
         Error = OutError;
         ErrorCode = TEXT("INVALID_MESSAGE");
         PublishView();
@@ -788,7 +821,7 @@ void FMtoULinkageSession::NoteReferenceResult(const FMtoUReferenceResultMessage&
     }
     if (Message.TransferId.IsEmpty())
     {
-        Error = TEXT("A reference result must name its transfer id.");
+        Error = TEXT("A reference result must name its transfer_id.");
         ErrorCode = TEXT("INVALID_MESSAGE");
         PublishView();
         return;
@@ -798,7 +831,9 @@ void FMtoULinkageSession::NoteReferenceResult(const FMtoUReferenceResultMessage&
         // A result for a transfer this session never offered names work that
         // never started, so it cannot report an outcome.
         Detail = FString::Printf(
-            TEXT("Reference %s was never offered by this session."), *Message.TransferId);
+            TEXT("Reference result names transfer_id '%s', which this session "
+                 "never offered."),
+            *Message.TransferId);
         Error = Detail;
         ErrorCode = TEXT("INVALID_MESSAGE");
         PublishView();
@@ -815,7 +850,9 @@ void FMtoULinkageSession::NoteReferenceResult(const FMtoUReferenceResultMessage&
     if (!Message.bAccepted)
     {
         Error = Message.Detail;
-        ErrorCode = TEXT("REFERENCE_STALE");
+        // The importer names why it refused the handoff; a fixed code would
+        // report every refusal as a stale space revision.
+        ErrorCode = Message.Code.IsEmpty() ? TEXT("REFERENCE_STALE") : Message.Code;
     }
     PublishView();
 }

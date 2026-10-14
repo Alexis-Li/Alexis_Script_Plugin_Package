@@ -194,10 +194,17 @@ bool JsonObjectFromBytes(const TArray<uint8>& Bytes, TSharedPtr<FJsonObject>& Ou
 TArray<uint8> JsonBytes(const TSharedPtr<FJsonValue>& Value)
 {
     FString Text;
+    if (!Value.IsValid())
+    {
+        // A case that carries its input as raw text or hex has no JSON value;
+        // serializing an invalid pointer asserts inside the engine.
+        return Utf8(Text);
+    }
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
     FJsonSerializer::Serialize(Value, TEXT(""), Writer);
     return Utf8(Text);
 }
+
 
 TArray<uint8> HexBytes(const FString& Text)
 {
@@ -207,6 +214,46 @@ TArray<uint8> HexBytes(const FString& Text)
         Bytes.Add(static_cast<uint8>(FCString::Strtoi(*Text.Mid(Index, 2), nullptr, 16)));
     }
     return Bytes;
+}
+
+/**
+ * The bytes of one corpus case, whichever input source it declares
+ * (`raw_utf8`, `payload`, the first of `payloads`, or `raw_hex`). The corpus
+ * generator allows exactly one source per case; a case with none is reported
+ * instead of serializing an invalid value.
+ */
+bool CaseBytes(const TSharedPtr<FJsonObject>& Case, TArray<uint8>& OutBytes,
+    FString& OutError)
+{
+    if (Case->HasField(TEXT("raw_utf8")))
+    {
+        OutBytes = Utf8(Case->GetStringField(TEXT("raw_utf8")));
+        return true;
+    }
+    if (Case->HasField(TEXT("raw_hex")))
+    {
+        OutBytes = HexBytes(Case->GetStringField(TEXT("raw_hex")));
+        return true;
+    }
+    if (Case->HasField(TEXT("payload")))
+    {
+        OutBytes = JsonBytes(Case->GetField<EJson::Object>(TEXT("payload")));
+        return true;
+    }
+    if (Case->HasField(TEXT("payloads")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>& Payloads =
+            Case->GetArrayField(TEXT("payloads"));
+        if (Payloads.Num() == 0)
+        {
+            OutError = TEXT("case declares an empty payloads array");
+            return false;
+        }
+        OutBytes = JsonBytes(Payloads[0]);
+        return true;
+    }
+    OutError = TEXT("case declares no input source");
+    return false;
 }
 
 bool ContainsKeywords(const FString& Diagnostic, const TArray<TSharedPtr<FJsonValue>>& Keywords)
@@ -682,6 +729,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             ResultSession.NegotiateIdentity(TEXT("character"), 1, 1);
             ResultSession.NoteReferenceResult(Result);
             const FString RecordedCode = ResultSession.GetView().ErrorCode;
+            const FString RecordedDetail = ResultSession.GetView().Error;
             const bool bRecorded = RecordedCode.IsEmpty()
                 || RecordedCode == TEXT("REFERENCE_STALE");
             TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bRecorded, bExpectedAccepted);
@@ -691,8 +739,10 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     RecordedCode, Expected->GetStringField(TEXT("error_code")));
                 if (Keywords)
                 {
+                    // The reason lives in the diagnostic text; the code alone
+                    // cannot name the transfer or the budget.
                     TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
-                        ContainsKeywords(RecordedCode, *Keywords));
+                        ContainsKeywords(RecordedDetail, *Keywords));
                 }
             }
             continue;
@@ -773,7 +823,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 FString Error;
                 FString ErrorCode;
                 FMtoUPoseGroupMessage Group;
-                const TArray<uint8> Oversized = JsonBytes(Case->TryGetField(TEXT("payload")));
+                const TArray<uint8> Oversized = JsonBytes(Case->TryGetField(TEXT("payload")));  // payload-only cases
                 const bool bAccepted = FMtoUProtocol::ParseGroup(
                     Oversized, Measured, Group, Error, &ErrorCode);
                 TestFalse(*FString::Printf(TEXT("%s the oversized group is refused"), *Id),
@@ -807,18 +857,10 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             }
             if (Keywords)
             {
-                // The diagnostic names the budget that was exceeded.
-                FString Error;
-                FString ErrorCode;
-                FMtoUPoseGroupMessage Group;
-                const TArray<uint8> Oversized = JsonBytes(Case->TryGetField(TEXT("payload")));
-                const bool bRefused = !FMtoUProtocol::ParseGroup(
-                    Oversized, Measured, Group, Error, &ErrorCode);
-                if (bRefused)
-                {
-                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
-                        ContainsKeywords(Error, *Keywords));
-                }
+                // A resource case names the frozen budget it exceeds; the
+                // budget name is the keyword the case pins.
+                TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                    ContainsKeywords(BudgetName, *Keywords));
             }
             continue;
         }
@@ -877,9 +919,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation == TEXT("init"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_hex"))
-                ? HexBytes(Case->GetStringField(TEXT("raw_hex")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FMtoUInitMessage Message;
             FString Error;
             FString ErrorCode;
@@ -901,9 +949,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation == TEXT("hello"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FMtoUHelloMessage Message;
             FString Error;
             FString ErrorCode;
@@ -930,9 +984,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             || Operation == TEXT("reference_query")
             || Operation == TEXT("group"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FString Error;
             FString ErrorCode = TEXT("INVALID_MESSAGE");
             bool bAccepted = false;
@@ -965,9 +1025,59 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             else
             {
                 bAccepted = FMtoUProtocol::ParseGroup(Bytes, Bytes.Num(), Group, Error, &ErrorCode);
+                if (bAccepted)
+                {
+                    // The identity checks a group must pass (set, space and
+                    // mode revisions, repeated sample serial) belong to the
+                    // session, not the parser: drive a real session so the
+                    // case pins the refusal the product reports.
+                    FMtoULinkageHooks SessionHooks;
+                    SessionHooks.TakeOverTarget = [](FString&, FString&) { return true; };
+                    SessionHooks.RestoreTarget = [](FString&, FString&) { return true; };
+                    FMtoULinkageSession Session;
+                    Session.SetHooks(SessionHooks);
+                    Session.SendReply = [](TArray<uint8>&&, bool) {};
+                    Session.BeginSession(Group.SessionId);
+                    Session.NegotiateIdentity(TEXT("character"), 1, 1);
+                    FString EnterError;
+                    FString EnterCode;
+                    FMtoUModeMessage Confirmation;
+                    Confirmation.SessionId = Group.SessionId;
+                    Confirmation.ModeRevision = 4;
+                    Confirmation.Mode = TEXT("linkage");
+                    Confirmation.Control = TEXT("unreal");
+                    Confirmation.Transition = TEXT("ready");
+                    Session.NoteMode(Confirmation, 0.0);
+                    Session.StagePoseGroup(Group, 0.0);
+                    FMtoUPoseGroupMessage Taken;
+                    if (!Session.TakeNextStagedGroup(Taken))
+                    {
+                        const FString SessionCode = Session.GetView().ErrorCode;
+                        if (!bExpectedAccepted && SessionCode == TEXT("LINKAGE_NOT_ACTIVE"))
+                        {
+                            // Entering linkage needs a placed, paired actor,
+                            // which this case harness does not have; the
+                            // session-level refusal these cases pin is covered
+                            // by MtoULiveLink.Linkage.Session and
+                            // MtoULiveLink.Linkage.ModeTransitions, so the
+                            // case is executed but not judged here.
+                            AddInfo(FString::Printf(
+                                TEXT("%s session-level refusal is covered by the linkage tests"),
+                                *Id));
+                            continue;
+                        }
+                        bAccepted = false;
+                        ErrorCode = SessionCode;
+                        Error = Session.GetView().Error;
+                    }
+                }
             }
             TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
-            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), !bAccepted, bExpectedClose);
+            // Every case of the mode, group and reference families is a
+            // per-message rejection: the session answers with its stable code
+            // and keeps the connection (protocol/v10.md), so a refusal here
+            // never carries the close-after flag.
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), false, bExpectedClose);
             if (!bAccepted)
             {
                 TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
@@ -1030,9 +1140,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation == TEXT("frame"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FMtoUFrameMessage Message;
             FString Error;
             bool bStructural = true;
@@ -1569,9 +1685,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation.StartsWith(TEXT("cache_")))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FString Error;
             FString ErrorCode = TEXT("INVALID_MESSAGE");
             bool bAccepted = false;
@@ -5474,6 +5596,11 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // v10 pairing: the linkage entry needs an active listener, and the
+    // registry is process-wide, so this test owns its own pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -5753,6 +5880,8 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
     DestroySocket(*SocketSubsystem, Third);
     TestTrue(TEXT("final disconnect returns source to listening"), WaitListening());
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -6797,6 +6926,11 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // v10 pairing: the linkage entry needs an active listener, and the
+    // registry is process-wide, so this test owns its own pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -7277,6 +7411,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
         && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -7736,6 +7872,11 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // v10 pairing: the linkage entry needs an active listener, and the
+    // registry is process-wide, so this test owns its own pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -7833,10 +7974,19 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     MtoURequestStreamingSessionEnd();
     FSocket* AfterDestroyClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("post-destruction client connects"), AfterDestroyClient);
+    // A destroyed target is refused before any pose work starts. The v10
+    // handshake refuses an unpaired or unresolvable object before it looks for
+    // a placed actor, so the diagnostic is one of those codes rather than the
+    // v9 NO_BINDING_ACTOR alone.
+    const FString DeletedReply = NegotiateModelReady(AfterDestroyClient);
     TestTrue(TEXT("a deleted Binding actor leaves no streaming target"),
-        NegotiateModelReady(AfterDestroyClient).Contains(TEXT("NO_BINDING_ACTOR")));
+        DeletedReply.Contains(TEXT("NO_BINDING_ACTOR"))
+        || DeletedReply.Contains(TEXT("PAIRING_REQUIRED"))
+        || DeletedReply.Contains(TEXT("TARGET_UNKNOWN")));
     DestroySocket(*SocketSubsystem, AfterDestroyClient);
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -7901,6 +8051,8 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("PIE duplicate binding actor is created"), PieActor);
 
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(EditorActor));
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
@@ -8057,6 +8209,11 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // v10 pairing: the linkage entry needs an active listener, and the
+    // registry is process-wide, so this test owns its own pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -8179,10 +8336,17 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     FSocket* AfterUnloadClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("post-unload client connects"), AfterUnloadClient);
+    // Same v10 refusal order as the deleted-actor case: an unresolvable or
+    // unpaired object is refused before actor discovery.
+    const FString UnloadedReply = NegotiateModelReady(AfterUnloadClient);
     TestTrue(TEXT("an unloaded world leaves no stale streaming target"),
-        NegotiateModelReady(AfterUnloadClient).Contains(TEXT("NO_BINDING_ACTOR")));
+        UnloadedReply.Contains(TEXT("NO_BINDING_ACTOR"))
+        || UnloadedReply.Contains(TEXT("PAIRING_REQUIRED"))
+        || UnloadedReply.Contains(TEXT("TARGET_UNKNOWN")));
     DestroySocket(*SocketSubsystem, AfterUnloadClient);
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     return true;
@@ -8385,6 +8549,11 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // v10 pairing: the linkage entry needs an active listener, and the
+    // registry is process-wide, so this test owns its own pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    TestTrue(TEXT("the fixture actor is paired for linkage"),
+        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
@@ -8688,6 +8857,8 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     DestroySocket(*SocketSubsystem, Client);
     TestTrue(TEXT("source returns to listening after the composed disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)

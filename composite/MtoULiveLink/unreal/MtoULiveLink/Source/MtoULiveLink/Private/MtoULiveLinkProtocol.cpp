@@ -239,6 +239,19 @@ bool ParseFrameBody(
         return false;
     }
 
+    // The frozen contract refuses a message whose version differs before any
+    // state changes, for every message family and not only the greeting and
+    // the object description, so a mixed pair never half-streams.
+    double VersionValue = 0.0;
+    if (Object->TryGetNumberField(TEXT("version"), VersionValue)
+        && static_cast<int32>(VersionValue) != FMtoUProtocol::Version)
+    {
+        OutError = FString::Printf(
+            TEXT("Unsupported protocol version; expected %d."),
+            FMtoUProtocol::Version);
+        return false;
+    }
+
     const TArray<TSharedPtr<FJsonValue>>* TransformValues = nullptr;
     const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
     if (!GetArrayField(Object, TEXT("transforms"), TransformValues, OutError)
@@ -1096,6 +1109,11 @@ bool FMtoUProtocol::ParseReferenceResult(
     {
         return false;
     }
+    if (Object->HasField(TEXT("code"))
+        && !GetStringField(Object, TEXT("code"), OutMessage.Code, OutError))
+    {
+        return false;
+    }
     if (OutMessage.SessionId < 1 || OutMessage.TransferId.IsEmpty())
     {
         OutError = TEXT("Fields 'session_id' must be positive and 'transfer_id' non-empty.");
@@ -1330,6 +1348,17 @@ bool FMtoUProtocol::ParseCacheBegin(
     if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_begin"))
     {
         return Fail(TEXT("INVALID_MESSAGE"), TEXT("Message type must be 'cache_begin'."));
+    }
+
+    // A version that differs is refused with its own code before any upload
+    // state exists, so a mixed pair never starts a cache transfer.
+    double VersionValue = 0.0;
+    if (Object->TryGetNumberField(TEXT("version"), VersionValue)
+        && static_cast<int32>(VersionValue) != FMtoUProtocol::Version)
+    {
+        return Fail(TEXT("PROTOCOL_VERSION_MISMATCH"),
+                    FString::Printf(TEXT("Unsupported protocol version; expected %d."),
+                                    FMtoUProtocol::Version));
     }
 
     // Upload identity is message structure: a mistyped or missing field is

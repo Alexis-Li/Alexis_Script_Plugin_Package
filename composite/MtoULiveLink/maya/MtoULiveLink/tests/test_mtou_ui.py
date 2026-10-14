@@ -166,6 +166,7 @@ class FakeStreamingSession(object):
 
     def begin_linkage(self, reply_listener=None):
         self.begun.append(reply_listener)
+        self.listeners.append(reply_listener)
 
     def submit_linkage(self, message):
         self.messages.append(message)
@@ -568,7 +569,11 @@ class LinkagePanelTests(unittest.TestCase):
         self.assertFalse(linkage.is_active)
         self.assertEqual([{"time": 42.0, "camera": "persp"}], self.host.restored)
         self.assertEqual(1, self.session.resumed)
-        self.assertEqual([None], self.session.listeners)
+        # The dispatcher stays installed for the session's lifetime: Unreal
+        # answers a leave with a mode statement and may push a reference offer
+        # while Maya is merely streaming realtime, and neither may end the
+        # connection the user is still using.
+        self.assertEqual([self.controller._on_runtime_reply], self.session.listeners)
         self.assertEqual(mtou_config.REALTIME_MODE, self.controller._mode)
         self.assertEqual(1, len(self.removed_callbacks))
         left = [message for message in self.session.messages
