@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible Maya or Unreal tool problem
+about: Report a reproducible tool or plug-in problem
 title: "[Project] "
 labels: bug
 ---
@@ -8,7 +8,7 @@ labels: bug
 ## Environment
 
 - Project and version:
-- Maya or Unreal version:
+- Host application and version (Maya, Unreal, Substance 3D Painter, ...):
 - Operating system:
 
 ## Reproduction

@@ -30,8 +30,8 @@ python tools/validate_repository.py
 python -m unittest discover -s tests -v
 ```
 
-Host-dependent Maya and Unreal checks remain project-specific and run in the
-supported host runtime. Scope generic linters and test discovery to the owning
+Host-dependent checks (Maya, Unreal, Substance 3D Painter, ...) remain
+project-specific and run in the supported host runtime. Scope generic linters and test discovery to the owning
 project; sibling projects are not part of its acceptance result.
 
 ## Repository tools
@@ -39,13 +39,15 @@ project; sibling projects are not part of its acceptance result.
 Prefer the standard library for repository Python tools; justify and declare
 necessary dependencies under the applicable dependency rules. Existing write
 commands default to dry-run and require `--apply`; preserve that CLI contract.
-Maya and Unreal runtime code must use the versions shipped by the target host.
+Host runtime code must use the Python, Qt, and engine versions shipped by the
+target host.
 
 ## Documentation ownership
 
 | Information | Owner |
 | --- | --- |
 | Requirements, acceptance scope and task decisions | Issue |
+| Requirement baseline of a product still in design | `docs/proposals/<project>/`, linked from its umbrella issue |
 | Delivery, code review and routine checks | PR or direct-branch issue reports |
 | User installation and usage | Project `README.md` and `README_CN.md` |
 | Released and unreleased behavior changes | Owning `CHANGELOG.md` |

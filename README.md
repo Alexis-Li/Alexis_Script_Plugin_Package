@@ -4,12 +4,12 @@
 
 ## What This Repository Is
 
-This repository is a collection of independently usable Autodesk Maya scripts
-and tools for 3D art production. It also provides a workspace for standalone
-Unreal Engine plug-ins and composite products that cooperate across multiple
-host applications.
+This repository is a collection of independently usable scripts, tools, and
+plug-ins for 3D game-art production. It covers Autodesk Maya, Unreal Engine, and
+Adobe Substance 3D Painter, as well as composite products that cooperate across
+several of these applications.
 
-Choose a tool below and follow its manual for supported Maya/Python versions,
+Choose a tool below and follow its manual for supported application versions,
 installation and usage. Each tool or host component can be installed separately.
 
 ## Tools
@@ -27,15 +27,18 @@ installation and usage. Each tool or host component can be installed separately.
 - [MtoU Live Link](composite/MtoULiveLink/README.md)
 - [NitroPoly](maya/tools/NitroPoly/README.md)
 - [ZiSpread](maya/scripts/ZiSpread/README.md)
+- [Repository map and supported hosts](docs/workspace-spec.md)
 - [Maya project guide](docs/maya-development.md)
 - [Naming conventions](docs/naming-conventions.md)
 - [Release process](docs/release-process.md)
+- [Products in design](docs/proposals/README.md)
 - [Project development history](docs/project-history/README.md)
 
 ## Start Developing
 
 1. Install Python 3.10 or newer for the repository maintenance commands.
-2. Read [`AGENTS.md`](AGENTS.md) and the platform-specific `AGENTS.md` before editing.
+2. Read [`AGENTS.md`](AGENTS.md) and the host rule file (`maya/`, `unreal/`, or
+   `substance-painter/AGENTS.md`) before editing.
 3. Preview a project from a template; add `--apply` only when the preview is correct:
 
    ```powershell

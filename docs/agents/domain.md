@@ -13,6 +13,8 @@ Read applicable decision and history records from:
 - `<project>/docs/adr/` for active project-specific decisions
 - `docs/project-history/<project>/` for stable architecture, migration, and
   acceptance records from completed work
+- `docs/proposals/<project>/` for the requirement baseline of a product that is
+  still in design
 
 If these files do not yet exist, proceed silently. Domain-modeling workflows
 create context files and active ADRs when terminology or decisions become
@@ -25,19 +27,16 @@ durable.
 |-- CONTEXT-MAP.md
 |-- docs/adr/                            # Active repository-wide decisions
 |-- docs/project-history/<project>/      # Completed durable records
-|-- maya/scripts/<ToolName>/
-|   |-- CONTEXT.md
-|   `-- docs/adr/
-|-- maya/tools/<ToolName>/
-|   |-- CONTEXT.md
-|   `-- docs/adr/
-|-- unreal/Plugins/<PluginName>/
+|-- docs/proposals/<project>/            # Products still in design
+|-- <host>/<standalone location>/<Name>/ # e.g. maya/tools/<ToolName>/
 |   |-- CONTEXT.md
 |   `-- docs/adr/
 `-- composite/<ProjectName>/
     |-- CONTEXT.md
     `-- docs/adr/
 ```
+
+Standalone locations per host are listed in the root `AGENTS.md`.
 
 `CONTEXT-MAP.md` indexes contexts and their relationships. Create it with the
 first real context rather than as an empty placeholder. Create context files

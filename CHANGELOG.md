@@ -6,6 +6,13 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Generalize repository rules from Maya and Unreal to a registry of host
+  applications, add Adobe Substance 3D Painter as a host with its own rule file
+  and standalone plug-in location, and document how to add further hosts.
+- Count only registered host directories toward a composite product's two-host
+  requirement and validate Substance 3D Painter projects and components.
+- Add `docs/proposals/` for requirement baselines of products still in design,
+  starting with the SPtoU Texture Sync proposal.
 - Define Issue/PR delivery and integration with commit-bound reviews, scoped
   handoffs and local report validation; organize history by topic and retain
   durable decisions and essential evidence without duplicating routine reports.

@@ -2,6 +2,7 @@
 
 import importlib.util
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -212,6 +213,122 @@ class RepositoryToolTests(unittest.TestCase):
             errors = []
             validate_repository._validate_composite(root, errors)
             self.assertEqual([], errors)
+
+    def _create_painter_plugin(self, project, version="1.0.0"):
+        (project / "plugins" / "sample_sync").mkdir(parents=True)
+        (project / "plugins" / "sample_sync" / "__init__.py").write_text(
+            '__version__ = "{0}"\n\ndef start_plugin(): pass\n\n'
+            "def close_plugin(): pass\n".format(version),
+            encoding="utf-8",
+        )
+        return project
+
+    def test_composite_counts_only_registered_host_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project, _, _ = self._create_composite_fixture(root)
+            for support in ("docs", "protocol"):
+                (project / support).mkdir()
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual([], errors)
+
+            shutil.rmtree(project / "unreal")
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual(
+                [
+                    "Composite project SampleBridge must contain at least two host "
+                    "directories (maya, substance-painter, unreal)"
+                ],
+                errors,
+            )
+
+    def test_composite_rejects_non_kebab_case_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project, _, _ = self._create_composite_fixture(root)
+            (project / "Docs").mkdir()
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual(
+                ["Composite directory must use lowercase kebab-case: SampleBridge/Docs"],
+                errors,
+            )
+
+    def test_composite_validates_substance_painter_components(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project, _, _ = self._create_composite_fixture(root)
+            component = self._create_painter_plugin(
+                project / "substance-painter" / "SampleBridge"
+            )
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertEqual([], errors)
+
+            (component / "README.md").write_text("duplicate", encoding="utf-8")
+            empty_host = project / "substance-painter" / "Empty"
+            empty_host.mkdir()
+            errors = []
+            validate_repository._validate_composite(root, errors)
+            self.assertIn(
+                "Composite component SampleBridge/substance-painter/SampleBridge must not "
+                "contain README.md; metadata belongs at the project root",
+                errors,
+            )
+            self.assertIn("Substance Painter plug-in Empty needs plugins/ or startup/", errors)
+
+    def test_standalone_substance_painter_plugin_requires_metadata_and_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            project = root / "substance-painter" / "plugins" / "SampleSync"
+            project.mkdir(parents=True)
+            errors = []
+            validate_repository._validate_substance_painter(root, errors)
+            for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+                self.assertIn(
+                    "Substance Painter plug-in SampleSync is missing {0}".format(metadata),
+                    errors,
+                )
+            self.assertIn("Substance Painter plug-in SampleSync needs plugins/ or startup/", errors)
+
+            self._create_painter_plugin(project)
+            for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+                (project / metadata).write_text(metadata, encoding="utf-8")
+            errors = []
+            validate_repository._validate_substance_painter(root, errors)
+            self.assertEqual([], errors)
+
+            (project / "plugins" / "helper.py").write_text(
+                '__version__ = "2.0.0"\n', encoding="utf-8"
+            )
+            errors = []
+            validate_repository._validate_substance_painter(root, errors)
+            self.assertEqual(
+                [
+                    "Substance Painter plug-in SampleSync: Substance Painter plug-in must "
+                    "declare one consistent runtime version"
+                ],
+                errors,
+            )
+
+    def test_proposals_require_kebab_case_and_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            proposals = root / "docs" / "proposals"
+            (proposals / "good-idea").mkdir(parents=True)
+            (proposals / "good-idea" / "requirements.md").write_text("# Goal\n", encoding="utf-8")
+            (proposals / "BadIdea").mkdir()
+            errors = []
+            validate_repository._validate_proposals(root, errors)
+            self.assertEqual(
+                [
+                    "proposal directory must use lowercase kebab-case: BadIdea",
+                    "proposal BadIdea is missing requirements.md",
+                ],
+                errors,
+            )
 
     def test_shelf_script_allows_tests_but_rejects_runtime_directories(self):
         with tempfile.TemporaryDirectory() as directory:

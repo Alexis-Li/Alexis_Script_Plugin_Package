@@ -55,8 +55,8 @@ integrated, host-verified or released.
   integration SHA.
 - Distinguish executed checks, inspected historical results and source-based
   inference. Current GitHub CI runs repository validation and repository unit
-  tests on pushes and PRs. Owning-project tests and Maya/UE host acceptance need
-  their own evidence.
+  tests on pushes and PRs. Owning-project tests and host-application acceptance
+  (Maya, Unreal, Substance 3D Painter, ...) need their own evidence.
 - A scoped review may pass while whole-issue acceptance remains pending.
   Self-tests alone do not establish acceptance. Findings need trigger, impact,
   evidence and completion condition; severity and blocking are separate judgments.

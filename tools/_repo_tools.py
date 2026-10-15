@@ -91,15 +91,37 @@ def maya_runtime_files(project: Path) -> list[Path]:
     return sorted(files)
 
 
-def maya_version(project: Path) -> str:
+def python_runtime_version(files: list[Path], label: str) -> str:
     versions = {
         match.group(2)
-        for path in maya_runtime_files(project)
+        for path in files
         for match in MAYA_VERSION_RE.finditer(path.read_text(encoding="utf-8-sig"))
     }
     if len(versions) != 1:
-        raise ValueError("Maya tool must declare one consistent runtime version")
+        raise ValueError("{0} must declare one consistent runtime version".format(label))
     return require_semver(versions.pop())
+
+
+def maya_version(project: Path) -> str:
+    return python_runtime_version(maya_runtime_files(project), "Maya tool")
+
+
+SUBSTANCE_PAINTER_RUNTIME_DIRS = ("plugins", "modules", "startup")
+
+
+def substance_painter_runtime_files(project: Path) -> list[Path]:
+    files = []
+    for name in SUBSTANCE_PAINTER_RUNTIME_DIRS:
+        directory = project / name
+        if directory.is_dir():
+            files.extend(directory.rglob("*.py"))
+    return sorted(files)
+
+
+def substance_painter_version(project: Path) -> str:
+    return python_runtime_version(
+        substance_painter_runtime_files(project), "Substance Painter plug-in"
+    )
 
 
 def pascal_case(kebab_name: str) -> str:

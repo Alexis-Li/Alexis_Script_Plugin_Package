@@ -9,7 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from _repo_tools import ROOT, emit, maya_version
+from _repo_tools import ROOT, emit, maya_version, substance_painter_version
 from issue_report import validate_archive
 
 REQUIRED_PATHS = (
@@ -21,6 +21,7 @@ REQUIRED_PATHS = (
     "docs/unreal-development.md",
     "docs/release-process.md",
     "docs/project-history/README.md",
+    "docs/proposals/README.md",
     "docs/agents/issue-tracker.md",
     "tools/issue_report.py",
     "maya/AGENTS.md",
@@ -32,6 +33,8 @@ REQUIRED_PATHS = (
     "unreal/Content",
     "unreal/Source",
     "unreal/Plugins",
+    "substance-painter/AGENTS.md",
+    "substance-painter/plugins",
     "composite/AGENTS.md",
     "templates/maya-shelf-script",
     "templates/maya-tool",
@@ -91,7 +94,8 @@ TEXT_SUFFIXES = {
     ".yaml",
 }
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
-HOST_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+STANDALONE_METADATA = ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE")
 COMPOSITE_ROOT_METADATA = (
     "README.md",
     "README_CN.md",
@@ -184,7 +188,7 @@ def _validate_maya_project(
     if not PASCAL_RE.fullmatch(project.name):
         errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
     if require_metadata:
-        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+        for required in STANDALONE_METADATA:
             if not (project / required).exists():
                 errors.append("Maya tool {0} is missing {1}".format(project.name, required))
     if (project / "package").exists():
@@ -239,6 +243,49 @@ def _validate_unreal(root: Path, errors: list[str]) -> None:
         _validate_unreal_plugin(plugin, errors, root)
 
 
+def _validate_substance_painter_project(
+    project: Path, errors: list[str], root: Path, require_metadata: bool = True
+) -> None:
+    if not PASCAL_RE.fullmatch(project.name):
+        errors.append(
+            "Substance Painter project directory must use PascalCase: {0}".format(project.name)
+        )
+    if require_metadata:
+        for required in STANDALONE_METADATA:
+            if not (project / required).is_file():
+                errors.append(
+                    "Substance Painter plug-in {0} is missing {1}".format(project.name, required)
+                )
+    if not any((project / name).is_dir() for name in ("plugins", "startup")):
+        errors.append(
+            "Substance Painter plug-in {0} needs plugins/ or startup/".format(project.name)
+        )
+        return
+    try:
+        substance_painter_version(project)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append("Substance Painter plug-in {0}: {1}".format(project.name, exc))
+
+
+def _validate_substance_painter(root: Path, errors: list[str]) -> None:
+    plugins_root = root / "substance-painter" / "plugins"
+    for project in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
+        _validate_substance_painter_project(project, errors, root)
+
+
+def _validate_proposals(root: Path, errors: list[str]) -> None:
+    proposals_root = root / "docs" / "proposals"
+    if not proposals_root.is_dir():
+        return
+    for proposal in sorted(path for path in proposals_root.iterdir() if path.is_dir()):
+        if not KEBAB_RE.fullmatch(proposal.name):
+            errors.append(
+                "proposal directory must use lowercase kebab-case: {0}".format(proposal.name)
+            )
+        if not (proposal / "requirements.md").is_file():
+            errors.append("proposal {0} is missing requirements.md".format(proposal.name))
+
+
 def _validate_composite_component_metadata(
     project: Path, host: Path, component: Path, errors: list[str]
 ) -> None:
@@ -264,35 +311,41 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
         for required in COMPOSITE_ROOT_METADATA:
             if not (project / required).is_file():
                 errors.append("Composite project {0} is missing {1}".format(project.name, required))
-        hosts = sorted(path for path in project.iterdir() if path.is_dir())
+        directories = sorted(path for path in project.iterdir() if path.is_dir())
+        for directory in directories:
+            if not KEBAB_RE.fullmatch(directory.name):
+                errors.append(
+                    "Composite directory must use lowercase kebab-case: {0}/{1}".format(
+                        project.name, directory.name
+                    )
+                )
+        hosts = [path for path in directories if path.name in HOST_COMPONENT_VALIDATORS]
         if len(hosts) < 2:
             errors.append(
-                "Composite project {0} must contain at least two host directories".format(
-                    project.name
+                "Composite project {0} must contain at least two host directories ({1})".format(
+                    project.name, ", ".join(sorted(HOST_COMPONENT_VALIDATORS))
                 )
             )
         for host in hosts:
-            if not HOST_RE.fullmatch(host.name):
-                errors.append(
-                    "Composite host directory must use lowercase kebab-case: {0}/{1}".format(
-                        project.name, host.name
-                    )
-                )
             components = sorted(path for path in host.iterdir() if path.is_dir())
-            if host.name in {"maya", "unreal"} and not components:
+            if not components:
                 errors.append(
                     "Composite host {0}/{1} must contain a component root".format(
                         project.name, host.name
                     )
                 )
-            if host.name == "maya":
-                for component in components:
-                    _validate_composite_component_metadata(project, host, component, errors)
-                    _validate_maya_project(component, errors, root, require_metadata=False)
-            elif host.name == "unreal":
-                for component in components:
-                    _validate_composite_component_metadata(project, host, component, errors)
-                    _validate_unreal_plugin(component, errors, root, require_metadata=False)
+            for component in components:
+                _validate_composite_component_metadata(project, host, component, errors)
+                HOST_COMPONENT_VALIDATORS[host.name](
+                    component, errors, root, require_metadata=False
+                )
+
+
+HOST_COMPONENT_VALIDATORS = {
+    "maya": _validate_maya_project,
+    "unreal": _validate_unreal_plugin,
+    "substance-painter": _validate_substance_painter_project,
+}
 
 
 def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
@@ -376,7 +429,10 @@ def validate(root: Path = ROOT) -> dict:
         _validate_maya_tools(root, errors)
     if (root / "unreal" / "Plugins").is_dir():
         _validate_unreal(root, errors)
+    if (root / "substance-painter" / "plugins").is_dir():
+        _validate_substance_painter(root, errors)
     _validate_composite(root, errors)
+    _validate_proposals(root, errors)
     _validate_mtou_conformance(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}

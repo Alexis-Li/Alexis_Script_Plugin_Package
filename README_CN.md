@@ -4,11 +4,11 @@
 
 ## 这个仓库是什么
 
-这是一个面向 3D 美术生产的 Autodesk Maya 脚本与工具合集，每个项目都可以
-独立使用；仓库同时提供独立 Unreal Engine 插件，以及跨多个宿主软件协作的复合
-产品开发工作区。
+这是一个面向 3D 游戏美术生产的脚本、工具与插件合集，每个项目都可以独立使用。
+仓库覆盖 Autodesk Maya、Unreal Engine 和 Adobe Substance 3D Painter，也包括在
+这些软件之间协作的复合产品。
 
-从下表选择工具，按对应手册确认支持的 Maya／Python 版本、安装方式和使用步骤。
+从下表选择工具，按对应手册确认支持的软件版本、安装方式和使用步骤。
 各工具及宿主组件均可独立安装。
 
 ## 包含的工具
@@ -26,15 +26,18 @@
 - [MtoU Live Link](composite/MtoULiveLink/README_CN.md)
 - [NitroPoly](maya/tools/NitroPoly/README_CN.md)
 - [ZiSpread](maya/scripts/ZiSpread/README_CN.md)
+- [仓库地图与支持的宿主软件](docs/workspace-spec.md)
 - [Maya 项目指南](docs/maya-development.md)
 - [命名规范](docs/naming-conventions.md)
 - [发布流程](docs/release-process.md)
+- [设计中的产品](docs/proposals/README.md)
 - [项目开发历史](docs/project-history/README.md)
 
 ## 开始开发
 
 1. 安装 Python 3.10 或更高版本，用于运行仓库维护命令。
-2. 修改前先阅读 [`AGENTS.md`](AGENTS.md) 和对应平台目录内的 `AGENTS.md`。
+2. 修改前先阅读 [`AGENTS.md`](AGENTS.md) 和对应宿主的规则文件（`maya/`、
+   `unreal/` 或 `substance-painter/AGENTS.md`）。
 3. 先预览项目模板，确认无误后再加 `--apply` 创建文件：
 
    ```powershell

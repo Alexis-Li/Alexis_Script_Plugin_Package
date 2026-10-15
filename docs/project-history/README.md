@@ -9,6 +9,7 @@ cannot be recovered adequately from maintained code, tests or tracker records.
 | Information | Where it belongs |
 | --- | --- |
 | Requirements, scope decisions, unfinished work and task status | Issue |
+| Requirement baseline and research for a product still in design | [Proposal](../proposals/README.md) until the project exists |
 | Delivery, reviewed diff, findings and routine test results | PR, or issue reports for direct-branch work |
 | Current installation, usage, recovery and supported limits | Project README pair or maintained user guide |
 | Version-by-version behavior changes | Project changelog |
