@@ -389,6 +389,24 @@ def _validate_issue_archives(root: Path, errors: list[str]) -> None:
         errors.extend(f"{path.relative_to(root).as_posix()}: {problem}" for problem in problems)
 
 
+def _path_policy_text(relative_path: str, text: str) -> str:
+    """Exclude only preserved source bodies in structurally valid issue archives."""
+    if relative_path.startswith("docs/project-history/") and relative_path.endswith(
+        "comment-archive.json"
+    ):
+        try:
+            archive = json.loads(text)
+        except ValueError:
+            return text
+        if not validate_archive(archive):
+            # Historical comments must remain exact, including old machine paths.
+            # Metadata and all other files still obey the portable-path policy.
+            for comment in archive["comments"]:
+                comment.pop("body")
+            return json.dumps(archive, ensure_ascii=False)
+    return text
+
+
 def validate(root: Path = ROOT) -> dict:
     root = root.resolve()
     errors: list[str] = []
@@ -409,7 +427,7 @@ def validate(root: Path = ROOT) -> dict:
             except UnicodeError:
                 errors.append("text file is not UTF-8: {0}".format(relative_path))
             else:
-                if ABSOLUTE_PATH_RE.search(text):
+                if ABSOLUTE_PATH_RE.search(_path_policy_text(relative_path, text)):
                     errors.append("machine-specific absolute path in {0}".format(relative_path))
 
     for path in _version_control_paths(root):

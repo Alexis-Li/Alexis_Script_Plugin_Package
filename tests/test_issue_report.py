@@ -257,6 +257,39 @@ class IssueArchiveTests(unittest.TestCase):
         validate_repository._validate_issue_archives(ROOT, errors)
         self.assertEqual([], errors)
 
+    def test_repository_path_policy_preserves_only_valid_archive_bodies(self):
+        historical_path = "Z" + ":/old-workspace/evidence"
+        relative = "docs/project-history/sample/issue-53-comment-archive.json"
+        archive = copy.deepcopy(self.archive)
+        archive["comments"][0]["body"] += " Evidence: " + historical_path
+        metadata = copy.deepcopy(archive)
+        metadata["purpose"] = historical_path
+        invalid = copy.deepcopy(archive)
+        invalid["schema"] = "unknown"
+        cases = (
+            (relative, json.dumps(archive), False),
+            (relative, json.dumps(metadata), True),
+            (relative, json.dumps(invalid), True),
+            (relative, "broken JSON " + historical_path, True),
+            ("config/issue-53-comment-archive.json", json.dumps(archive), True),
+            ("docs/project-history/sample/notes.json", json.dumps(archive), True),
+            ("docs/guide.md", historical_path, True),
+        )
+        scratch = ROOT.parent / ".tmp"
+        scratch.mkdir(exist_ok=True)
+        for path_name, content, rejected in cases:
+            with self.subTest(path=path_name, content=content):
+                with tempfile.TemporaryDirectory(prefix="archive-path-", dir=scratch) as directory:
+                    root = pathlib.Path(directory)
+                    path = root / path_name
+                    path.parent.mkdir(parents=True)
+                    path.write_text(content, encoding="utf-8")
+                    errors = validate_repository.validate(root)["errors"]
+                    self.assertEqual(rejected, any(
+                        "machine-specific absolute path" in error for error in errors
+                    ))
+                    self.assertEqual(content, path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

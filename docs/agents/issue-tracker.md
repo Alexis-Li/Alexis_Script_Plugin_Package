@@ -214,8 +214,13 @@ Acceptance/closure and archival completion remain separate states.
 Source archives use `github-issue-comment-archive/1`: `issue`, `archived_on`,
 `purpose`, `current_status_comment`, and `comments` containing original `id`,
 `created_at`, `updated_at`, `author`, `original_url` and full `body`. Preserve
-legacy wording. Use the existing project history directory, inspect for secrets
-and private paths, then validate:
+legacy wording. Use the existing project history directory and inspect for secrets
+and private paths.
+
+Validated source-comment bodies may retain historical machine paths as exact
+provenance, not current configuration. Archive metadata and ordinary project
+files still follow the portable-path rule; this exception does not allow secrets.
+Validate before publishing:
 
 ```powershell
 python tools/issue_report.py check-archive <archive.json> --json
