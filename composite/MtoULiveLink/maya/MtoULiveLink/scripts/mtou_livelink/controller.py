@@ -1431,10 +1431,19 @@ class Controller(object):
                 AttributeError):
             pass
 
-    def _on_remote_mode_state(self, reply):
-        """Follow one Unreal authority statement on Maya's main thread."""
+    def _on_remote_mode_state(self, reply, received_session=None):
+        """Follow one Unreal authority statement on Maya's main thread.
+
+        The statement belongs to the connection that received it: a deferred
+        statement whose connection ended, or that names another session, never
+        acts on the current one.
+        """
         session = self._session
         if session is None:
+            return
+        if received_session is not None and received_session is not session:
+            return
+        if exact_int(reply.get("session_id")) != self._session_id_of(session):
             return
         revision = exact_int(reply.get("mode_revision"))
         if revision is None:
@@ -1634,7 +1643,12 @@ class Controller(object):
             if kind == "mode_state":
                 # Entering and leaving touch Maya, so the statement is
                 # followed on the main thread, in arrival order.
-                self._defer_ui(lambda reply=dict(reply): self._on_remote_mode_state(reply))
+                session = self._session
+                if exact_int(reply.get("session_id")) != self._session_id_of(session):
+                    # A statement for another connection changes nothing.
+                    return True
+                self._defer_ui(lambda reply=dict(reply), session=session:
+                               self._on_remote_mode_state(reply, session))
                 return True
             if kind == "reference_offer":
                 self.offer_reference(reply)

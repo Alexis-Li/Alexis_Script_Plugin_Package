@@ -599,6 +599,35 @@ class LinkagePanelTests(unittest.TestCase):
                 self.controller._update_linkage_controls()
         self.assertFalse(enabled["end"])
 
+    def test_a_statement_for_another_session_starts_nothing(self):
+        stale = self._mode_state(4)
+        stale["session_id"] = 999
+        self._route(stale)
+        self.assertIsNone(self.controller._linkage)
+        self.assertEqual(0, self.host.captured)
+        self.assertEqual([], self.session.messages)
+
+    def test_a_deferred_statement_of_an_ended_connection_is_dropped(self):
+        with self.bindings:
+            self.controller._on_runtime_reply(self._mode_state(1))
+        # The connection ends and a new one (session 8) is ready before the
+        # main thread runs the deferred statement.
+        replacement = FakeStreamingSession(session_id=8)
+        self.controller._session = replacement
+        with self.bindings:
+            self.flush()
+        self.assertIsNone(self.controller._linkage)
+        self.assertEqual(0, self.host.captured)
+        self.assertEqual([], replacement.messages)
+
+    def test_a_stale_exit_does_not_end_the_confirmed_linkage(self):
+        self.enter_linkage()
+        self._route(self._mode_state(1))
+        self._route(self._mode_state(0, mode="realtime", detail="old"))
+        self.assertTrue(self.controller._linkage.is_active)
+        self.assertEqual(mtou_config.LINKAGE_MODE, self.controller._mode)
+        self.assertEqual([], self.host.restored)
+
     def test_dispatcher_leaves_errors_to_the_session_before_linkage(self):
         # Without linkage an Unreal error still ends the realtime connection.
         handled = self._route({"type": "error", "code": "INVALID_MESSAGE",

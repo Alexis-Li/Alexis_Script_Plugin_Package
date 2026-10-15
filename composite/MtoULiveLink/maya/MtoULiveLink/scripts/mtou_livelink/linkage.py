@@ -289,8 +289,9 @@ class LinkageSession(object):
         """Take linkage control: capture Maya state and announce the new mode.
 
         ``remote`` marks a transition Unreal started: Maya's ``mode`` message is
-        then the confirmation Unreal waits for, and a refusal is announced as a
-        failed transition so Unreal hands its borrowed writers back at once.
+        then the answer Unreal waits for (Unreal echoes it with ``mode_state``),
+        and a refusal is announced as a failed transition so Unreal hands its
+        borrowed writers back at once.
         """
         revision = exact_int(mode_revision)
         if revision is None or revision < 1:
@@ -329,7 +330,10 @@ class LinkageSession(object):
             self._issued = None
             self._applied = None
             self._applied_at = None
-            self._awaiting_confirmation = not remote
+            # Either way Unreal answers with mode_state linkage at this
+            # revision; until then a same or older realtime statement is the
+            # refusal or failure of this transition.
+            self._awaiting_confirmation = True
             self._entered_at = self._clock()
             self._detail = "镜头联动已开始"
         self._session.submit_linkage(make_mode_message(
@@ -504,7 +508,17 @@ class LinkageSession(object):
                     # An echo of a linkage this session already left.
                     outcome = "noted"
             elif active:
-                outcome = "left"
+                if revision > current:
+                    # Unreal's own 返回实时, 结束预览 or lost takeover.
+                    outcome = "left"
+                elif self._awaiting_confirmation:
+                    # Unreal refused (older revision) or failed (same revision)
+                    # the transition this session has not seen confirmed.
+                    outcome = "left"
+                else:
+                    # A statement older than the confirmed linkage: it can no
+                    # longer describe the current mode.
+                    outcome = "noted"
             else:
                 if revision > current:
                     self._mode_revision = revision

@@ -12374,6 +12374,16 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     }
     UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
     Binding->SkeletalMesh = Mesh;
+    // One enabled Additional Part whose bones the primary mesh also covers, so
+    // only the part check (not the bone union) notices when it goes missing.
+    if (Mesh)
+    {
+        FMtoUCharacterPart& HatPart = Binding->AdditionalParts.AddDefaulted_GetRef();
+        HatPart.PartId = FGuid::NewGuid();
+        HatPart.PartName = TEXT("Hat");
+        HatPart.SkeletalMesh =
+            DuplicateObject<USkeletalMesh>(Mesh, GetTransientPackage(), TEXT("SessionHat"));
+    }
     AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
     TestNotNull(TEXT("placed binding actor is created"), Actor);
     if (!Actor || !Mesh)
@@ -12593,13 +12603,101 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("a refused group keeps the applied target"),
         AfterStale.AppliedEvalId, SecondEvalId);
 
-    // ---- a group the display does not hold is never confirmed ------------
-    // The character's display loses its mesh, so no component can show the
-    // published pose: the barrier answers applied=false with the reason after
-    // its window instead of confirming a display that did not happen.
-    USkeletalMeshComponent* PrimaryDisplay = Actor->GetSkeletalMeshComponent();
-    PrimaryDisplay->SetSkeletalMeshAsset(nullptr);
+    // ---- a group published, then cancelled before its commit -------------
+    // The subject must never show it and no evidence may confirm it: the
+    // last complete group is queued behind it in the same update.
+    FString BeforeCancel;
+    {
+        FLiveLinkSubjectFrameData SubjectFrame;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
+                ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
+            && SubjectFrame.FrameData.GetBaseData())
+        {
+            BeforeCancel = SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
+                .FindRef(FName(TEXT("MtoU.LinkageGeneration")));
+        }
+    }
+    TestTrue(TEXT("the subject holds the last applied group"),
+        BeforeCancel.Contains(SecondEvalId));
     Hooks.PlannedTargets = 3;
+    TestTrue(TEXT("a target to cancel is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    FString CancelledEvalId;
+    if (JsonObjectFromBytes(Payload, CameraTime))
+    {
+        CancelledEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+    }
+    const TArray<uint8> CancelledGroup = Packet(LinkageGroupJson(
+        CancelledEvalId, 1, 1, 1, 1, 1, 3.0, Pose, 1));
+    TestTrue(TEXT("the group to cancel is sent"),
+        SendBytes(*Client, CancelledGroup.GetData(), CancelledGroup.Num()));
+    // Let the worker queue it, then publish it and cancel it in one update.
+    FPlatformProcess::Sleep(0.2f);
+    Hooks.PlannedTargets = 4;
+    Hooks.bNextDiscontinuous = true;
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    LiveLinkClient.ForceTick();
+    bool bConfirmedCancelled = false;
+    // Longer than the barrier's 2 s window: no evidence may arrive late.
+    for (int32 Tick = 0; Tick < 4; ++Tick)
+    {
+        Pump();
+        TArray<uint8> Reply;
+        while (Reader.Pending.Contains(TEXT("applied"))
+            && Reader.Pending[TEXT("applied")].Num() > 0)
+        {
+            Reply = Reader.Pending[TEXT("applied")][0];
+            Reader.Pending[TEXT("applied")].RemoveAt(0);
+            bConfirmedCancelled |= FromUtf8(Reply).Contains(CancelledEvalId);
+        }
+        TArray<uint8> Fresh;
+        if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump))
+        {
+            bConfirmedCancelled |= FromUtf8(Fresh).Contains(CancelledEvalId);
+        }
+    }
+    TestFalse(TEXT("a cancelled group is never confirmed"), bConfirmedCancelled);
+    bool bRefusedBeforePublish = false;
+    for (const TArray<uint8>& Refusal : Reader.Pending.FindOrAdd(TEXT("error")))
+    {
+        bRefusedBeforePublish |= FromUtf8(Refusal).Contains(CancelledEvalId);
+    }
+    AddInfo(bRefusedBeforePublish
+        ? TEXT("The cancelled group arrived after the cancel and was refused as stale.")
+        : TEXT("The cancelled group was published and rolled back before its commit."));
+    TestTrue(TEXT("the view never records the cancelled group"),
+        MtoUGetLinkageView().AppliedEvalId != CancelledEvalId);
+    {
+        FLiveLinkSubjectFrameData SubjectFrame;
+        FString AfterCancel;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
+                ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
+            && SubjectFrame.FrameData.GetBaseData())
+        {
+            AfterCancel = SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
+                .FindRef(FName(TEXT("MtoU.LinkageGeneration")));
+        }
+        TestFalse(TEXT("the subject does not keep the cancelled group"),
+            AfterCancel.Contains(CancelledEvalId));
+    }
+
+    // ---- a missing part refuses the group before anything is shown -------
+    // The part's display goes away while the primary mesh still covers every
+    // bone: nothing is published, the last complete display stays, and the
+    // refusal names the part.
+    UMtoUCharacterPartComponent* HatDisplay = Actor->GetCharacterPartComponents().Num() > 0
+        ? Actor->GetCharacterPartComponents()[0].Get()
+        : nullptr;
+    TestNotNull(TEXT("the enabled part has a display"), HatDisplay);
+    USkeletalMesh* HatMesh = HatDisplay ? HatDisplay->GetSkeletalMeshAsset() : nullptr;
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(nullptr);
+    }
+    // The discontinuous target that cancelled the previous group is issued.
     TestTrue(TEXT("a third target is issued"),
         Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
     FString ThirdEvalId;
@@ -12608,7 +12706,7 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         ThirdEvalId = CameraTime->GetStringField(TEXT("eval_id"));
     }
     const TArray<uint8> GroupThree = Packet(LinkageGroupJson(
-        ThirdEvalId, 1, 1, 1, 1, 1, 3.0, Pose, 1));
+        ThirdEvalId, 1, 1, 1, 1, 1, 4.0, Pose, 1));
     TestTrue(TEXT("the third group is sent"),
         SendBytes(*Client, GroupThree.GetData(), GroupThree.Num()));
     bool bRefusedEvidence = false;
@@ -12617,21 +12715,27 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     {
         TArray<uint8> Reply;
         if (Reader.Next(*Client, TEXT("applied"), Reply, Pump)
-            && JsonObjectFromBytes(Reply, Missing) && Missing.IsValid())
+            && JsonObjectFromBytes(Reply, Missing) && Missing.IsValid()
+            && Missing->GetStringField(TEXT("eval_id")) == ThirdEvalId)
         {
             bRefusedEvidence = true;
         }
         return bRefusedEvidence;
-    }, FMtoUProtocol::LinkageConvergenceSeconds + 3.0);
-    TestTrue(TEXT("the undisplayed group is answered"), bRefusedEvidence);
+    }, 3.0);
+    TestTrue(TEXT("the group with a missing part is answered"), bRefusedEvidence);
     if (Missing.IsValid())
     {
-        TestFalse(TEXT("the undisplayed group is not confirmed"),
+        TestFalse(TEXT("the group with a missing part is not confirmed"),
             Missing->GetBoolField(TEXT("applied")));
-        TestTrue(TEXT("the refusal names the missing display"),
-            Missing->GetStringField(TEXT("reason")).Contains(TEXT("no display component")));
+        TestTrue(TEXT("the refusal names the missing part"),
+            Missing->GetStringField(TEXT("reason")).Contains(TEXT("part 'Hat'")));
     }
-    PrimaryDisplay->SetSkeletalMeshAsset(Mesh);
+    TestEqual(TEXT("the last complete group stays applied"),
+        MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(HatMesh);
+    }
 
     // ---- leaving for realtime and ending the preview ---------------------
     FString LeaveError;

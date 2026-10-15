@@ -127,9 +127,18 @@ struct FMtoUPendingApplication
     // value per accepted Morph curve: what a display must hold.
     TArray<FTransform> ExpectedTransforms;
     TArray<float> ExpectedCurves;
+    // The published frame itself, kept so a committed group becomes the
+    // display a later failure or cancellation returns to.
+    FLiveLinkFrameDataStruct Frame;
     double PublishedSeconds = 0.0;
-    bool bSubjectReached = false;
-    int32 UpdatesSinceReached = 0;
+};
+
+/** One Additional Part the negotiated character must display. */
+struct FMtoUExpectedDisplayPart
+{
+    FGuid PartId;
+    TWeakObjectPtr<USkeletalMesh> Mesh;
+    FString Name;
 };
 
 struct FMtoUPendingInit
@@ -224,11 +233,19 @@ private:
         bool& bOutApplied,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
+    // Every display the negotiated character needs, ready to show a group;
+    // checked before a group is published so a missing part never shows half.
+    bool CollectLinkageDisplaysOnGameThread(
+        TArray<USkeletalMeshComponent*>& OutDisplays,
+        FString& OutReason) const;
     bool VerifyDisplaysOnGameThread(
         const FMtoUPendingApplication& Pending,
+        const TArray<USkeletalMeshComponent*>& Displays,
         TArray<FMtoUAppliedComponent>& OutComponents,
-        FString& OutMismatch,
-        bool bForceEvaluation);
+        FString& OutMismatch) const;
+    // A published group that will not be confirmed (cancelled, failed, mode
+    // left) gives the display back to the last complete one.
+    void RollBackPendingApplicationOnGameThread();
     bool IsSessionActiveOnGameThread(uint64 SessionId) const;
     void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
     bool PublishFrameOnGameThread(
@@ -312,6 +329,13 @@ private:
     // one generation is in flight at a time.
     TOptional<FMtoUPendingApplication> PendingApplication;
     int32 LinkageGeneration = 0;
+    // The last frame every display showed completely (a confirmed group or the
+    // last live frame) and its accepted Morph values.
+    FLiveLinkFrameDataStruct LastCompleteFrame;
+    TArray<float> LastCompleteCurves;
+    // The displays the negotiated character consists of.
+    TWeakObjectPtr<USkeletalMesh> ExpectedPrimaryMesh;
+    TArray<FMtoUExpectedDisplayPart> ExpectedDisplayParts;
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.
     FMtoUCacheSession CacheSession;

@@ -67,6 +67,12 @@ public:
     const FMtoULinkagePairing* FindPairing(const FString& ObjectId) const;
     bool IsPaired(const FString& ObjectId) const;
 
+    /** True while this eval is the issued target; a cancelled one is not. */
+    bool IsIssued(const FString& EvalId) const
+    {
+        return Issued.IsSet() && Issued->EvalId == EvalId;
+    }
+
     /** Current status snapshot for the panel and the editor pump. */
     FMtoULinkageView GetView() const;
 

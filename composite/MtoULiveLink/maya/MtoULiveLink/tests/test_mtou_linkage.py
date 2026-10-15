@@ -390,8 +390,30 @@ class RemoteTransitionTests(unittest.TestCase):
             [("mode", "linkage", 1, "ready")],
             [(m["type"], m["mode"], m["mode_revision"], m["transition"])
              for m in session.messages])
-        # Unreal waits for this confirmation, so Maya waits for nothing.
-        self.assertFalse(instance.confirmation_overdue())
+        # Unreal echoes Maya's answer; the echo confirms the linkage.
+        self.assertEqual("confirmed", instance.note_mode_state(mode_state(1)))
+        self.assertTrue(instance.is_active)
+
+    def test_unreal_failing_its_own_transition_rolls_maya_back(self):
+        # Unreal timed out before Maya's answer arrived: its realtime statement
+        # at the same revision fails the transition Maya has not seen echoed.
+        instance, host, session, events = build()
+        instance.enter(1, remote=True)
+        self.assertEqual(
+            "left", instance.note_mode_state(mode_state(1, mode=mtou_config.REALTIME_MODE)))
+        self.assertFalse(instance.is_active)
+        self.assertEqual(1, len(host.restored))
+        self.assertFalse(instance.takeover_held())
+
+    def test_a_stale_realtime_statement_keeps_the_confirmed_linkage(self):
+        instance, host, session, events = build()
+        instance.enter(3)
+        self.assertEqual("confirmed", instance.note_mode_state(mode_state(3)))
+        outcome = instance.note_mode_state(mode_state(2, mode=mtou_config.REALTIME_MODE))
+        self.assertEqual("noted", outcome)
+        self.assertTrue(instance.is_active)
+        self.assertEqual(3, instance.mode_revision())
+        self.assertEqual([], host.restored)
 
     def test_unreal_started_linkage_announces_a_capture_refusal(self):
         instance, host, session, events = build()

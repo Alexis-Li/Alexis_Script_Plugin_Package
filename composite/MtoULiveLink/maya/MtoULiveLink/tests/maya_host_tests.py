@@ -887,6 +887,66 @@ class MayaHostTests(unittest.TestCase):
         self.assertTrue(residual and residual[0].startswith("scene:"))
         self._assert_foreign_state_kept()
 
+    def _camera(self, name, focal, x):
+        transform = cmds.createNode("transform", name=name)
+        shape = cmds.createNode("camera", name=name + "Shape", parent=transform)
+        cmds.setAttr(shape + ".focalLength", focal)
+        cmds.setAttr(transform + ".translateX", x)
+        return transform, shape
+
+    def _camera_values(self, transform):
+        shape = cmds.listRelatives(transform, shapes=True, type="camera", fullPath=True)[0]
+        return (round(cmds.getAttr(shape + ".focalLength"), 3),
+                round(cmds.getAttr(transform + ".translateX"), 3))
+
+    def test_borrowed_camera_restore_follows_a_rename(self):
+        from mtou_livelink import camera as mtou_camera
+
+        name = mtou_config.LINK_CAMERA_NAME
+        self._camera(name, 35.0, 0.0)
+        link = mtou_camera.LinkCamera()
+        snapshot = link.capture_state()
+        cmds.rename(name, "BorrowedRenamed")
+        renamed = "BorrowedRenamed"
+        cmds.setAttr(cmds.listRelatives(renamed, shapes=True, fullPath=True)[0]
+                     + ".focalLength", 50.0)
+        cmds.setAttr(renamed + ".translateX", 20.0)
+        # Another camera now carries the old name.
+        self._camera(name, 85.0, 100.0)
+        residual = link.restore_state(snapshot)
+        self.assertEqual([], residual)
+        self.assertEqual((85.0, 100.0), self._camera_values(name))
+        self.assertEqual((35.0, 0.0), self._camera_values(renamed))
+
+    def test_borrowed_camera_with_a_replaced_shape_is_refused(self):
+        from mtou_livelink import camera as mtou_camera
+
+        name = mtou_config.LINK_CAMERA_NAME
+        transform, shape = self._camera(name, 35.0, 0.0)
+        link = mtou_camera.LinkCamera()
+        snapshot = link.capture_state()
+        cmds.delete(shape)
+        replacement = cmds.createNode("camera", name="ReplacementShape", parent=transform)
+        cmds.setAttr(replacement + ".focalLength", 85.0)
+        cmds.setAttr(transform + ".translateX", 100.0)
+        residual = link.restore_state(snapshot)
+        self.assertEqual(1, len(residual))
+        self.assertIn("shape was replaced", residual[0])
+        self.assertEqual((85.0, 100.0), self._camera_values(name))
+
+    def test_apply_writes_the_renamed_camera_in_use(self):
+        from mtou_livelink import camera as mtou_camera
+
+        name = mtou_config.LINK_CAMERA_NAME
+        self._camera(name, 35.0, 0.0)
+        link = mtou_camera.LinkCamera()
+        link._ensure_camera()
+        cmds.rename(name, "BorrowedRenamed")
+        self._camera(name, 85.0, 100.0)
+        transform, unused_shape, unused_created = link._ensure_camera()
+        self.assertEqual(cmds.ls("BorrowedRenamed", long=True)[0],
+                         cmds.ls(transform, long=True)[0])
+
     def test_panel_restores_linkage_before_the_scene_is_replaced(self):
         import maya.api.OpenMaya as om
         from mtou_livelink import linkage

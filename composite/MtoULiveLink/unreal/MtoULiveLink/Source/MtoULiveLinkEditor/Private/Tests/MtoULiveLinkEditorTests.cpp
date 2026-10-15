@@ -6703,6 +6703,62 @@ bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
     {
         TestNearlyEqual(TEXT("the second camera focal length"), SecondFocal, 85.0, 1e-3);
     }
+
+    // ---- the editor names discrete events itself -------------------------
+    const auto Evaluate = [&](const TCHAR* What, FMtoUCameraTimeTarget& Out)
+    {
+        const bool bEvaluated = FMtoULinkageEditor::EvaluateCameraTime(Source, Out, Error);
+        TestTrue(What, bEvaluated);
+        return bEvaluated;
+    };
+    TestTrue(TEXT("a jump while paused is a discrete event"), Second.bDiscontinuous);
+    FMtoUCameraTimeTarget PausedHeartbeat;
+    if (Evaluate(TEXT("a paused heartbeat evaluates"), PausedHeartbeat))
+    {
+        TestFalse(TEXT("a paused heartbeat is not an event"), PausedHeartbeat.bDiscontinuous);
+    }
+    Player->Play();
+    FMtoUCameraTimeTarget PlayStart;
+    if (Evaluate(TEXT("playback start evaluates"), PlayStart))
+    {
+        TestFalse(TEXT("starting playback where it paused is continuous"),
+            PlayStart.bDiscontinuous);
+    }
+    // A step the elapsed playback time cannot explain is a jump, also within
+    // one shot.
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(70.0), EUpdatePositionMethod::Jump));
+    FMtoUCameraTimeTarget PlayingJump;
+    if (Evaluate(TEXT("a jump during playback evaluates"), PlayingJump))
+    {
+        TestTrue(TEXT("a jump during playback is a discrete event"),
+            PlayingJump.bDiscontinuous);
+    }
+    // An edit of the evaluated camera during playback is one too, even
+    // though the time did not move.
+    if (!Player->IsPlaying())
+    {
+        Player->Play();
+        FMtoUCameraTimeTarget Resumed;
+        Evaluate(TEXT("playback resumes"), Resumed);
+    }
+    UCineCameraComponent* EditedCamera = CameraB->GetCineCameraComponent();
+    EditedCamera->CurrentFocalLength = 70.0f;
+    EditedCamera->PostEditChange();
+    FMtoUCameraTimeTarget Edited;
+    if (Evaluate(TEXT("a camera edit evaluates"), Edited))
+    {
+        TestTrue(TEXT("a camera edit during playback is a discrete event"),
+            Edited.bDiscontinuous);
+    }
+    // A pause cancels the work in flight even without a new time.
+    Player->Pause();
+    FMtoUCameraTimeTarget Paused;
+    if (Evaluate(TEXT("the pause evaluates"), Paused))
+    {
+        TestTrue(TEXT("a pause is a discrete event"), Paused.bDiscontinuous);
+    }
+    Player->Stop();
     return true;
 }
 

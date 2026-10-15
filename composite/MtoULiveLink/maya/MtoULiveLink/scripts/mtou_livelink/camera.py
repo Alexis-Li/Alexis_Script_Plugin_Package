@@ -1136,6 +1136,10 @@ class LinkCamera(object):
         # carries the tool name (another scene's camera, a user's node) is
         # never deleted or rewritten as if it were the created one.
         self._created_uuid = None
+        # Identity of the camera in use (created or borrowed). Every later
+        # write resolves the node from it, so a rename never redirects a write
+        # to another node that took the old name.
+        self._camera_uuid = None
         self._reused = False
         self._state = None
         self.last_report = None
@@ -1245,7 +1249,19 @@ class LinkCamera(object):
         inputs are validated, so the adapter never deletes a node it did not
         create; a foreign node under the same name is refused.
         """
-        if self._transform and cmds.objExists(self._transform):
+        if self._camera_uuid is not None:
+            current = _node_by_uuid(self._camera_uuid, None)
+            shapes = _camera_shapes(current) if current else []
+            if shapes:
+                self._transform = current
+                self._shape = shapes[0]
+                return (current, shapes[0], self._created)
+            # The camera in use is gone; whatever carries its name now is
+            # treated like any other node under the tool name below.
+            self._camera_uuid = None
+            self._transform = None
+            self._shape = None
+        elif self._transform and cmds.objExists(self._transform):
             shapes = _camera_shapes(self._transform)
             if shapes:
                 return (self._transform, shapes[0], self._created)
@@ -1259,6 +1275,7 @@ class LinkCamera(object):
             self._transform = self.name
             self._shape = shapes[0]
             _validate_camera_inputs(self._transform, self._shape)
+            self._camera_uuid = _node_uuid(self._transform)
             return (self._transform, self._shape, self._created)
         transform = cmds.createNode("transform", name=self.name)
         shape = cmds.createNode("camera", name=self.name + "Shape", parent=transform)
@@ -1266,6 +1283,7 @@ class LinkCamera(object):
         self._shape = shape
         self._created = True
         self._created_uuid = _node_uuid(transform)
+        self._camera_uuid = self._created_uuid
         return (transform, shape, True)
 
     def _apply_resolution_gate(self, output, pixel_aspect):
@@ -1370,6 +1388,7 @@ class LinkCamera(object):
         self._shape = shapes[0]
         state = {"transform": self._transform, "shape": shapes[0],
                  "uuid": _node_uuid(self._transform),
+                 "shape_uuid": _node_uuid(shapes[0]),
                  "attributes": dict((attribute, cmds.getAttr(
                      "{0}.{1}".format(shapes[0], attribute)))
                      for attribute in MANAGED_ATTRIBUTES),
@@ -1430,6 +1449,7 @@ class LinkCamera(object):
     def _forget_created(self):
         self._created = False
         self._created_uuid = None
+        self._camera_uuid = None
         self._transform = None
         self._shape = None
 
@@ -1445,18 +1465,33 @@ class LinkCamera(object):
         return []
 
     def _restore_camera(self, state):
-        """Write a borrowed camera back, or delete the one this adapter created."""
+        """Write a borrowed camera back, or delete the one this adapter created.
+
+        The borrowed camera is found by the identity recorded at capture, never
+        by its old name: after a rename the snapshot follows the node it was
+        taken from, and a node that now carries the old name is left alone. A
+        camera whose shape changed is refused rather than half restored.
+        """
         borrowed = (state or {}).get("camera")
         if not borrowed:
             return []
-        shape = borrowed.get("shape")
-        transform = borrowed.get("transform")
-        if not shape or not cmds.objExists(shape):
-            return []
-        if borrowed.get("uuid") is not None \
-                and _node_by_uuid(borrowed.get("uuid"), transform) is None:
-            # Another node now carries the borrowed camera's name; the
-            # snapshot describes a different node and is not written to it.
+        transform, shape = borrowed.get("transform"), borrowed.get("shape")
+        uuid = borrowed.get("uuid")
+        if uuid is not None:
+            transform = _node_by_uuid(uuid, None)
+            if transform is None:
+                # The borrowed camera was deleted; there is nothing to restore.
+                return []
+            shape = None
+            for candidate in _camera_shapes(transform):
+                if _node_uuid(candidate) == borrowed.get("shape_uuid"):
+                    shape = candidate
+                    break
+            if shape is None:
+                return ["camera {0}: its camera shape was replaced after linkage "
+                        "borrowed it; the captured values were not written".format(
+                            transform)]
+        elif not shape or not cmds.objExists(shape):
             return []
         residual = []
         try:

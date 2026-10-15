@@ -826,6 +826,13 @@ struct FMtoULinkageEditorState
     bool bHasLastTarget = false;
     bool bLastTargetPlaying = false;
     double LastTargetDisplayFrame = 0.0;
+    double LastTargetSeconds = 0.0;
+    // Set when the user edits the evaluated camera, its actor or the open
+    // sequence; consumed by the next target as a discrete event.
+    bool bPendingDiscontinuity = false;
+    TWeakObjectPtr<const UCameraComponent> LastCamera;
+    FDelegateHandle PropertyChangedHandle;
+    FDelegateHandle ActorMovedHandle;
 
     /**
      * The source the current takeover muted, held weakly: the restore
@@ -981,28 +988,55 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
     const bool bPlaying = Source.Sequencer.IsValid()
         ? Source.Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing
         : Source.Player->IsPlaying();
+    const double PlayRate = Source.Sequencer.IsValid()
+        ? Source.Sequencer->GetPlaybackSpeed()
+        : Source.Player->GetPlayRate();
+    const double NowSeconds = FPlatformTime::Seconds();
+    const bool bIdentityChanged = Identity != State.EvalIdentity;
     bool bDiscontinuous = false;
-    if (Identity != State.EvalIdentity)
+    if (State.bHasLastTarget)
     {
-        if (State.bHasLastTarget)
+        if (State.bPendingDiscontinuity)
         {
-            // Playback that keeps advancing is continuous: the issued answer stays
-            // in flight. Anything else that changes the target while the sequence
-            // is not playing (pause, scrub, same-shot jump, camera edit), a time
-            // that went backwards (loop wrap) or skipped far ahead, is a discrete
-            // event that cancels it.
-            const double Step = DisplayFrame - State.LastTargetDisplayFrame;
-            const double MaxContinuousStep = FMath::Max(2.0, DisplayRate.AsDecimal() * 0.5);
-            bDiscontinuous = !bPlaying || !State.bLastTargetPlaying
-                ? !(bPlaying && Step >= 0.0 && Step <= MaxContinuousStep)
-                : (Step < 0.0 || Step > MaxContinuousStep);
+            // The user edited the camera, its actor or the sequence.
+            bDiscontinuous = true;
         }
+        else if (State.bLastTargetPlaying && !bPlaying)
+        {
+            // A pause cancels the work in flight even when it stops exactly on
+            // the target that was already waiting.
+            bDiscontinuous = true;
+        }
+        else if (bIdentityChanged && !bPlaying)
+        {
+            // Scrub, jump (also within one shot) or a change while paused.
+            bDiscontinuous = true;
+        }
+        else if (bIdentityChanged)
+        {
+            // While playing, the time must advance as playback advances it;
+            // a backward step (loop wrap) or a step the elapsed time does not
+            // explain is a jump.
+            const double Step = DisplayFrame - State.LastTargetDisplayFrame;
+            const double Expected = State.bLastTargetPlaying
+                ? (NowSeconds - State.LastTargetSeconds) * DisplayRate.AsDecimal()
+                    * FMath::Abs(PlayRate)
+                : 0.0;
+            const double Tolerance = FMath::Max(1.5, Expected * 0.5);
+            bDiscontinuous = Step < 0.0 || FMath::Abs(Step - Expected) > Tolerance;
+        }
+    }
+    State.bPendingDiscontinuity = false;
+    if (bIdentityChanged)
+    {
         State.EvalIdentity = Identity;
         ++State.EvalSerial;
     }
     State.bHasLastTarget = true;
     State.bLastTargetPlaying = bPlaying;
     State.LastTargetDisplayFrame = DisplayFrame;
+    State.LastTargetSeconds = NowSeconds;
+    State.LastCamera = Camera;
 
     const FMtoUCutSample Cut = DescribeCut(
         Source.Sequence, DisplayRate, TickResolution, DisplayFrame, Camera);
@@ -1537,6 +1571,38 @@ bool ValidateTakeoverHook(FString& OutReason)
     return FMtoULinkageEditor::ValidateTakeover(OutReason);
 }
 
+/** An edit of the evaluated camera, its actor or the open sequence. */
+void NoteEditedObject(const UObject* Object)
+{
+    FMtoULinkageEditorState& State = GetState();
+    if (!Object || !State.bHasLastTarget)
+    {
+        return;
+    }
+    const UCameraComponent* Camera = State.LastCamera.Get();
+    const AActor* CameraActor = Camera ? Camera->GetOwner() : nullptr;
+    const UObject* Sequence = State.SequenceKey.IsEmpty()
+        ? nullptr
+        : FindObject<UObject>(nullptr, *State.SequenceKey);
+    if ((Camera && (Object == Camera || Object->IsIn(Camera)))
+        || (CameraActor && (Object == CameraActor || Object->IsIn(CameraActor)))
+        || (Sequence && (Object == Sequence || Object->IsIn(Sequence))))
+    {
+        State.bPendingDiscontinuity = true;
+    }
+}
+
+void OnObjectPropertyChangedHook(UObject* Object, FPropertyChangedEvent& Event)
+{
+    (void)Event;
+    NoteEditedObject(Object);
+}
+
+void OnActorMovedHook(AActor* Actor)
+{
+    NoteEditedObject(Actor);
+}
+
 void OnViewChangedHook(const FMtoULinkageView& View)
 {
     FMtoULinkageEditorState& State = GetState();
@@ -1568,6 +1634,12 @@ void FMtoULinkageEditor::InstallHooks()
     Hooks.ValidateTakeover = &ValidateTakeoverHook;
     Hooks.OnViewChanged = &OnViewChangedHook;
     MtoUSetLinkageHooks(Hooks);
+    State.PropertyChangedHandle =
+        FCoreUObjectDelegates::OnObjectPropertyChanged.AddStatic(&OnObjectPropertyChangedHook);
+    if (GEngine)
+    {
+        State.ActorMovedHandle = GEngine->OnActorMoved().AddStatic(&OnActorMovedHook);
+    }
     State.bHooksInstalled = true;
 }
 
@@ -1584,6 +1656,13 @@ void FMtoULinkageEditor::UninstallHooks()
     FString RestoreErrorCode;
     RestoreTarget(RestoreError, RestoreErrorCode);
     MtoUSetLinkageHooks(FMtoULinkageHooks());
+    FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(State.PropertyChangedHandle);
+    State.PropertyChangedHandle.Reset();
+    if (GEngine)
+    {
+        GEngine->OnActorMoved().Remove(State.ActorMovedHandle);
+    }
+    State.ActorMovedHandle.Reset();
     State.bHooksInstalled = false;
 }
 

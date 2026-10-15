@@ -322,9 +322,12 @@ void FMtoULinkageSession::NoteMode(const FMtoUModeMessage& Message, double NowSe
     {
         if (Mode == TEXT("linkage") && ModeRevision == Message.ModeRevision && bTransitioning)
         {
-            // Maya confirmed the transition Unreal started: the pose gate opens.
+            // Maya confirmed the transition Unreal started: the pose gate opens,
+            // and the echo tells Maya its answer arrived in time.
             bTransitioning = false;
             Detail = TEXT("Maya follows the Unreal sequence time.");
+            SendControl(FMtoUProtocol::EncodeModeState(
+                SessionId, ModeRevision, Mode, Control, Detail));
             PublishView();
             return;
         }
@@ -586,15 +589,16 @@ void FMtoULinkageSession::NoteGroupApplied(
     const double LagSeconds = Issued.IsSet()
         ? FMath::Max(0.0, NowSeconds - IssuedSeconds)
         : 0.0;
-    LastAppliedEvalId = EvalId;
-    LastAppliedSampleSerial = SampleSerial;
-    bLastApplied = bApplied;
     LastAppliedReason = Reason;
-    LastAppliedDisplayFrame = AppliedDisplayFrame;
-    LastAppliedLagSeconds = LagSeconds;
-
     if (bApplied)
     {
+        // Only a group every display completed is the latest complete
+        // application; a refused one leaves the previous display reported.
+        LastAppliedEvalId = EvalId;
+        LastAppliedSampleSerial = SampleSerial;
+        bLastApplied = true;
+        LastAppliedDisplayFrame = AppliedDisplayFrame;
+        LastAppliedLagSeconds = LagSeconds;
         Detail = FString::Printf(TEXT("Applied %s (sample %d)."), *EvalId, SampleSerial);
         if (Issued.IsSet() && Issued->EvalId == EvalId)
         {
