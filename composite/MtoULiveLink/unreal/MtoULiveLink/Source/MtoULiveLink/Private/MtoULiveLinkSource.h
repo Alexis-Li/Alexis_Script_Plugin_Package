@@ -110,6 +110,28 @@ struct FMtoUPendingPoseGroup
     FMtoUPoseGroupMessage Message;
 };
 
+/**
+ * One published linkage group whose display is not confirmed yet. The group
+ * is stamped with its generation; `applied` is answered only once the Live
+ * Link subject holds that generation and every display component evaluated
+ * exactly its bones and Morph values.
+ */
+struct FMtoUPendingApplication
+{
+    FString EvalId;
+    int32 SampleSerial = 0;
+    double DisplayFrame = 0.0;
+    int32 ModeRevision = 0;
+    FString Generation;
+    // The published (retargeted) local pose per target bone and the published
+    // value per accepted Morph curve: what a display must hold.
+    TArray<FTransform> ExpectedTransforms;
+    TArray<float> ExpectedCurves;
+    double PublishedSeconds = 0.0;
+    bool bSubjectReached = false;
+    int32 UpdatesSinceReached = 0;
+};
+
 struct FMtoUPendingInit
 {
     uint64 SessionId = 0;
@@ -196,12 +218,22 @@ private:
         const FMtoUPoseGroupMessage& Group,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
-    bool ReadBackComponentsOnGameThread(
+    // The completion barrier of the published group: false while it waits,
+    // true once it decided; OutApplied tells which way.
+    bool ResolvePendingApplicationOnGameThread(
+        bool& bOutApplied,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
+    bool VerifyDisplaysOnGameThread(
+        const FMtoUPendingApplication& Pending,
+        TArray<FMtoUAppliedComponent>& OutComponents,
+        FString& OutMismatch,
+        bool bForceEvaluation);
     bool IsSessionActiveOnGameThread(uint64 SessionId) const;
     void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
-    bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
+    bool PublishFrameOnGameThread(
+        const FMtoUFrameMessage& Frame,
+        FMtoUPendingApplication* OutLinkage = nullptr);
     void PublishLatestFrameOnGameThread();
     void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
     void EnqueueErrorOnGameThread(
@@ -273,7 +305,13 @@ private:
     TArray<int32> SourceBoneIndices;
     TArray<int32> AcceptedCurveIndices;
     TArray<FName> AcceptedCurveNames;
+    // Target bone names in the order of the published transforms.
+    TArray<FName> TargetBoneNames;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
+    // The linkage group published and still awaiting its display evidence;
+    // one generation is in flight at a time.
+    TOptional<FMtoUPendingApplication> PendingApplication;
+    int32 LinkageGeneration = 0;
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.
     FMtoUCacheSession CacheSession;

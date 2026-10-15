@@ -177,21 +177,26 @@ comparison work without it.
 1. In Unreal, select the Binding Actor, pair the Maya object under **镜头联动**,
    and open the Level Sequence you want to follow.
 2. In Maya, connect the character as usual, open **镜头联动** from the main panel,
-   and click **进入联动**. Maya stops its own playback, follows the sequence time
+   and click **进入联动** (or click **进入联动** in the Unreal Details panel; Maya
+   follows either one). Maya stops its own playback, follows the sequence time
    and the evaluated camera, and answers with the complete pose of the character.
 3. Unreal shows the time control owner, the target time, the latest complete
    application time and the lag. A complete pose that is behind the current
    sequence time is shown as lagging; it is not reported as synchronised.
 4. **返回实时** restores Maya's timeline, view and gate and keeps Maya paused
    while Unreal keeps its takeover; user playback resumes in Maya. **结束预览**
-   also returns the original writers to the sequence.
+   also returns the original writers to the sequence and stays available after
+   **返回实时** until it does. Both buttons work from either host.
 
 While linkage is active, a camera edit, a pause, a cut or an explicit jump
 cancels the old target; a continuously moving camera never cancels the answer
 already on its way. Unreal refuses a target whose writers cannot be isolated
 safely, and names the reason, instead of pausing the whole sequence. Cached
 Playback must be cleared before entering linkage, and a failed restore is
-reported per resource instead of being hidden.
+reported per resource instead of being hidden. Closing or switching the Level
+Sequence, closing its level or deleting the paired actor ends linkage: Unreal
+returns the writers and Maya restores itself. Opening or creating another Maya
+scene ends the connection after linkage restored the scene it was started in.
 
 ## Scene reference in Maya
 

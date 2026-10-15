@@ -96,6 +96,9 @@ MAX_PENDING_LINKAGE_TARGETS = 2
 # Candidate stop-convergence budget from the parent issue: after the last
 # desired target, the group must be applied within this many seconds.
 LINKAGE_CONVERGENCE_SECONDS = 2.0
+# Unreal confirms a transition Maya started with its own mode_state; Maya waits
+# the same 2.5x convergence window Unreal allows for Maya's confirmation.
+LINKAGE_MODE_CONFIRMATION_SECONDS = LINKAGE_CONVERGENCE_SECONDS * 2.5
 
 # Scene-reference handoff budgets, enforced by the Maya importer before any
 # staging node is created.

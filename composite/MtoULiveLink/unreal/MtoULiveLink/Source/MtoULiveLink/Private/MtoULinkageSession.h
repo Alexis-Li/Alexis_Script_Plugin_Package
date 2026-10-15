@@ -155,6 +155,10 @@ private:
     bool BeginTakeover(int32 ModeRevision, FString& OutError, FString& OutErrorCode,
         bool bAwaitPeerConfirmation);
     void FailTransition(const FString& Code, const FString& Detail);
+    // The takeover's sequence, world or target went away: every borrowed
+    // writer is restored, the stale synchronisation is dropped and Maya hears
+    // that linkage ended so it restores its own state too.
+    void EndForLostTakeover(const FString& Reason);
     void RestoreBorrowedWriters(FString& OutResidual);
 
     FMtoULinkageHooks Hooks;

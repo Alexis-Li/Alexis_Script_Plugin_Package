@@ -421,6 +421,8 @@ void FMtoULiveLinkSource::Update()
             SourceBoneIndices.Reset();
             AcceptedCurveIndices.Reset();
             AcceptedCurveNames.Reset();
+            TargetBoneNames.Reset();
+            PendingApplication.Reset();
             NegotiatedObjectId.Reset();
             NegotiatedSetRevision = 0;
             NegotiatedSpaceRevision = 1;
@@ -1379,21 +1381,11 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
 {
     check(IsInGameThread());
     const uint64 SessionId = GameThreadSession;
-    // Explicit pairing is the first gate: an object the user has not paired
-    // is refused before any target is discovered, so an unpaired connection
-    // can never partially take one over.
+    // The v9 workflows (realtime, cached playback, Model) stream into the one
+    // placed Binding actor without a linkage pairing; the pairing is the
+    // consent to take over the actor's sequence writers and is required at the
+    // linkage entry instead. An existing pairing still has to name this actor.
     const FMtoULinkagePairing* Pairing = LinkageSession.FindPairing(Message.ObjectId);
-    if (!Pairing)
-    {
-        SetStatus(TEXT("Pairing required"));
-        EnqueueErrorOnGameThread(
-            TEXT("PAIRING_REQUIRED"),
-            TEXT("Pair this actor's Binding with the Maya object before connecting."),
-            FString::Printf(
-                TEXT("Maya object '%s' has no paired MtoU_LiveLink target. Select the Binding actor and pair it in the MtoU_LiveLink Details panel."),
-                *Message.ObjectId));
-        return;
-    }
     TArray<AMtoULiveLinkActor*> Actors;
     // ponytail: one editor-world object scan per connection; add actor registration only if profiling shows this scan matters.
     for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
@@ -1440,7 +1432,7 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     AMtoULiveLinkActor* Actor = Actors[0];
     // The paired target must be the one actor this session would stream into;
     // a pairing that points anywhere else is not consent for this target.
-    AMtoULiveLinkActor* PairedActor = Pairing->Actor.Get();
+    AMtoULiveLinkActor* PairedActor = Pairing ? Pairing->Actor.Get() : Actor;
     if (!PairedActor || PairedActor != Actor)
     {
         const FString Details = FString::Printf(
@@ -1672,6 +1664,12 @@ void FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
         ? TArray<FName>()
         : Outcome.AcceptedCurveNames;
     Message.Bones = Target.Bones;
+    TargetBoneNames.Reset(Target.Bones.Num());
+    for (const FMtoUDescriptionBone& Bone : Target.Bones)
+    {
+        TargetBoneNames.Add(Bone.Name);
+    }
+    PendingApplication.Reset();
     if (bModelWorkflow)
     {
         Actor->ShowGeneratedPreview(bBoneOnlySession);
@@ -1810,8 +1808,43 @@ void FMtoULiveLinkSource::DrainLinkageGroupsOnGameThread()
         LinkageSession.StagePoseGroup(Pending.Message, NowSeconds);
     }
 
-    // One staged group is applied per Update() so a burst of answers can
-    // never starve the editor tick; the evidence follows the application.
+    // The published group answers first: its evidence follows only once the
+    // displays really hold it, and no newer group is published meanwhile, so
+    // a display can never mix two generations.
+    if (PendingApplication.IsSet())
+    {
+        const FMtoULinkageView View = LinkageSession.GetView();
+        if (View.Mode != TEXT("linkage")
+            || View.Identity.ModeRevision != PendingApplication->ModeRevision)
+        {
+            // The mode moved on; the evidence would name a revision Maya left.
+            PendingApplication.Reset();
+        }
+        else
+        {
+            bool bApplied = false;
+            TArray<FMtoUAppliedComponent> Components;
+            FString Reason;
+            if (!ResolvePendingApplicationOnGameThread(bApplied, Components, Reason))
+            {
+                return;
+            }
+            const FMtoUPendingApplication Done = MoveTemp(PendingApplication.GetValue());
+            PendingApplication.Reset();
+            LinkageSession.NoteGroupApplied(
+                Done.EvalId,
+                Done.SampleSerial,
+                bApplied,
+                Done.DisplayFrame,
+                Components,
+                Reason,
+                FPlatformTime::Seconds());
+            return;
+        }
+    }
+
+    // One staged group is published per Update() so a burst of answers can
+    // never starve the editor tick.
     FMtoUPoseGroupMessage Group;
     if (!LinkageSession.TakeNextStagedGroup(Group))
     {
@@ -1819,15 +1852,17 @@ void FMtoULiveLinkSource::DrainLinkageGroupsOnGameThread()
     }
     TArray<FMtoUAppliedComponent> Components;
     FString Reason;
-    const bool bApplied = ApplyPoseGroupOnGameThread(Group, Components, Reason);
-    LinkageSession.NoteGroupApplied(
-        Group.EvalId,
-        Group.SampleSerial,
-        bApplied,
-        Group.UeDisplayFrame,
-        Components,
-        Reason,
-        FPlatformTime::Seconds());
+    if (!ApplyPoseGroupOnGameThread(Group, Components, Reason))
+    {
+        LinkageSession.NoteGroupApplied(
+            Group.EvalId,
+            Group.SampleSerial,
+            false,
+            Group.UeDisplayFrame,
+            Components,
+            Reason,
+            FPlatformTime::Seconds());
+    }
 }
 
 bool FMtoULiveLinkSource::ApplyPoseGroupOnGameThread(
@@ -1875,28 +1910,134 @@ bool FMtoULiveLinkSource::ApplyPoseGroupOnGameThread(
     }
     Frame.Curves = Row.Curves;
     // The staged group is published through the same retargeting path as a
-    // live frame, so one complete group is one immutable publication.
-    if (!PublishFrameOnGameThread(Frame))
+    // live frame, so one complete group is one immutable publication, stamped
+    // with the generation its completion barrier waits for.
+    FMtoUPendingApplication Pending;
+    Pending.EvalId = Group.EvalId;
+    Pending.SampleSerial = Group.SampleSerial;
+    Pending.DisplayFrame = Group.UeDisplayFrame;
+    Pending.ModeRevision = Group.ModeRevision;
+    Pending.Generation = FString::Printf(
+        TEXT("%d:%s#%d"), ++LinkageGeneration, *Group.EvalId, Group.SampleSerial);
+    if (!PublishFrameOnGameThread(Frame, &Pending))
     {
         OutReason = TEXT("The group could not be published through the Live Link subject.");
         return false;
     }
-    return ReadBackComponentsOnGameThread(OutComponents, OutReason);
+    Pending.PublishedSeconds = FPlatformTime::Seconds();
+    PendingApplication = MoveTemp(Pending);
+    return true;
 }
 
-bool FMtoULiveLinkSource::ReadBackComponentsOnGameThread(
+namespace
+{
+// Live Link frame metadata key carrying one linkage publication's generation.
+const FName MtoULinkageGenerationKey(TEXT("MtoU.LinkageGeneration"));
+
+// A display holds a published value when it matches within these tolerances:
+// centimetres for translation, quaternion components for rotation.
+constexpr double MtoUAppliedTransformTolerance = 1.0e-2;
+constexpr double MtoUAppliedMorphTolerance = 1.0e-3;
+
+float DisplayedMorphWeight(const USkeletalMeshComponent& Display, const UMorphTarget& Morph)
+{
+    if (const int32* WeightIndex = Display.ActiveMorphTargets.Find(&Morph))
+    {
+        return Display.MorphTargetWeights.IsValidIndex(*WeightIndex)
+            ? Display.MorphTargetWeights[*WeightIndex]
+            : 0.0f;
+    }
+    return 0.0f;
+}
+}
+
+bool FMtoULiveLinkSource::ResolvePendingApplicationOnGameThread(
+    bool& bOutApplied,
     TArray<FMtoUAppliedComponent>& OutComponents,
     FString& OutReason)
 {
     check(IsInGameThread());
+    check(PendingApplication.IsSet());
+    bOutApplied = false;
     OutComponents.Reset();
     OutReason.Reset();
+    FMtoUPendingApplication& Pending = PendingApplication.GetValue();
+    const bool bTimedOut = FPlatformTime::Seconds() - Pending.PublishedSeconds
+        > FMtoUProtocol::LinkageConvergenceSeconds;
     if (!Client || !SourceGuid.IsValid())
     {
         OutReason = TEXT("The Unreal Live Link client is unavailable.");
-        return false;
+        return true;
     }
 
+    // 1. The Live Link client applies a pushed frame on its own tick, so the
+    //    subject must hold this generation before any display can show it.
+    if (!Pending.bSubjectReached)
+    {
+        FLiveLinkSubjectFrameData SubjectFrame;
+        FString Seen;
+        if (Client->EvaluateFrameFromSource_AnyThread(
+                SubjectKey, ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
+            && SubjectFrame.FrameData.GetBaseData())
+        {
+            Seen = SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
+                .FindRef(MtoULinkageGenerationKey);
+        }
+        if (Seen != Pending.Generation)
+        {
+            if (!bTimedOut)
+            {
+                return false;
+            }
+            OutReason = FString::Printf(
+                TEXT("The Live Link subject never received group %s; it still holds %s."),
+                *Pending.Generation,
+                Seen.IsEmpty() ? TEXT("no linkage group") : *Seen);
+            return true;
+        }
+        Pending.bSubjectReached = true;
+        Pending.UpdatesSinceReached = 0;
+    }
+    else
+    {
+        ++Pending.UpdatesSinceReached;
+    }
+
+    // 2. Every display component must have evaluated exactly this group. The
+    //    editor normally evaluates them on its own tick; a component it did not
+    //    evaluate within one update is evaluated here from the subject that
+    //    already holds the group, and is still verified value by value.
+    FString Mismatch;
+    if (VerifyDisplaysOnGameThread(Pending, OutComponents, Mismatch, false))
+    {
+        bOutApplied = true;
+        return true;
+    }
+    if (Pending.UpdatesSinceReached >= 1
+        && VerifyDisplaysOnGameThread(Pending, OutComponents, Mismatch, true))
+    {
+        bOutApplied = true;
+        return true;
+    }
+    if (!bTimedOut)
+    {
+        return false;
+    }
+    OutReason = FString::Printf(
+        TEXT("Group %s was not displayed completely: %s"), *Pending.Generation, *Mismatch);
+    return true;
+}
+
+bool FMtoULiveLinkSource::VerifyDisplaysOnGameThread(
+    const FMtoUPendingApplication& Pending,
+    TArray<FMtoUAppliedComponent>& OutComponents,
+    FString& OutMismatch,
+    bool bForceEvaluation)
+{
+    check(IsInGameThread());
+    OutComponents.Reset();
+    OutMismatch.Reset();
+    TSet<int32> DisplayedBones;
     bool bAnyActor = false;
     for (const TWeakObjectPtr<AMtoULiveLinkActor>& WeakActor : ParticipatingActors)
     {
@@ -1908,7 +2049,6 @@ bool FMtoULiveLinkSource::ReadBackComponentsOnGameThread(
         bAnyActor = true;
         FMtoUAppliedComponent Component;
         Component.ObjectId = NegotiatedObjectId;
-        Component.PartCount = Actor->GetCharacterPartComponents().Num();
 
         TArray<USkeletalMeshComponent*> Displays;
         if (USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent())
@@ -1926,43 +2066,95 @@ bool FMtoULiveLinkSource::ReadBackComponentsOnGameThread(
         for (USkeletalMeshComponent* Display : Displays)
         {
             const USkeletalMesh* Mesh = Display ? Display->GetSkeletalMeshAsset() : nullptr;
-            if (!Mesh || !Display->IsRegistered() || Display->GetNumComponentSpaceTransforms() == 0)
+            if (!Mesh)
             {
+                // A disabled part or a hidden display shows nothing to verify.
                 continue;
             }
-            // Read the components the character actually holds: the posed
-            // bone transforms and the Morph values of this mesh.
-            Display->RefreshBoneTransforms();
-            Component.BoneCount += Display->GetComponentSpaceTransforms().Num();
-            for (const FName& CurveName : AcceptedCurveNames)
+            const bool bPart = Display != Actor->GetSkeletalMeshComponent();
+            if (!Display->IsRegistered())
             {
-                if (Mesh->FindMorphTarget(CurveName)
-                    && FMath::IsFinite(Display->GetMorphTarget(CurveName)))
+                OutMismatch = FString::Printf(
+                    TEXT("display '%s' is not registered"), *Display->GetName());
+                return false;
+            }
+            if (bForceEvaluation)
+            {
+                Display->TickAnimation(0.0f, false);
+                Display->RefreshBoneTransforms();
+            }
+            const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
+            const TArray<FTransform>& Local = Display->GetBoneSpaceTransforms();
+            if (Local.Num() != Skeleton.GetNum())
+            {
+                OutMismatch = FString::Printf(
+                    TEXT("display '%s' holds no evaluated pose"), *Display->GetName());
+                return false;
+            }
+            for (int32 TargetIndex = 0; TargetIndex < TargetBoneNames.Num(); ++TargetIndex)
+            {
+                const int32 MeshIndex = Skeleton.FindBoneIndex(TargetBoneNames[TargetIndex]);
+                if (MeshIndex == INDEX_NONE
+                    || !Pending.ExpectedTransforms.IsValidIndex(TargetIndex))
                 {
-                    ++Component.MorphCount;
+                    continue;
                 }
+                if (!Local[MeshIndex].Equals(
+                        Pending.ExpectedTransforms[TargetIndex], MtoUAppliedTransformTolerance))
+                {
+                    OutMismatch = FString::Printf(
+                        TEXT("display '%s' still shows another pose at bone '%s'"),
+                        *Display->GetName(), *TargetBoneNames[TargetIndex].ToString());
+                    return false;
+                }
+                ++Component.BoneCount;
+                DisplayedBones.Add(TargetIndex);
+            }
+            for (int32 CurveIndex = 0; CurveIndex < AcceptedCurveNames.Num(); ++CurveIndex)
+            {
+                const UMorphTarget* Morph = Mesh->FindMorphTarget(AcceptedCurveNames[CurveIndex]);
+                if (!Morph || !Pending.ExpectedCurves.IsValidIndex(CurveIndex))
+                {
+                    continue;
+                }
+                const float Expected = Pending.ExpectedCurves[CurveIndex];
+                const float Actual = DisplayedMorphWeight(*Display, *Morph);
+                if (!FMath::IsNearlyEqual(Actual, Expected, MtoUAppliedMorphTolerance))
+                {
+                    OutMismatch = FString::Printf(
+                        TEXT("display '%s' shows Morph '%s' at %.4f instead of %.4f"),
+                        *Display->GetName(), *AcceptedCurveNames[CurveIndex].ToString(),
+                        Actual, Expected);
+                    return false;
+                }
+                ++Component.MorphCount;
+            }
+            if (bPart)
+            {
+                ++Component.PartCount;
             }
         }
         OutComponents.Add(MoveTemp(Component));
     }
-
     if (!bAnyActor)
     {
-        OutReason = TEXT("No participating actor owns this session.");
+        OutMismatch = TEXT("no participating actor owns this session");
         return false;
     }
-    int32 BoneCount = 0;
-    for (const FMtoUAppliedComponent& Component : OutComponents)
+    // The whole negotiated skeleton must be on screen: a target bone that no
+    // display component evaluated is a missing part of the character.
+    if (DisplayedBones.Num() < TargetBoneNames.Num())
     {
-        BoneCount += Component.BoneCount;
-    }
-    if (BoneCount < ExpectedBoneCount)
-    {
-        OutReason = FString::Printf(
-            TEXT("Only %d of the %d posed bones were read back from the displayed components."),
-            BoneCount,
-            ExpectedBoneCount);
-        return false;
+        for (int32 TargetIndex = 0; TargetIndex < TargetBoneNames.Num(); ++TargetIndex)
+        {
+            if (!DisplayedBones.Contains(TargetIndex))
+            {
+                OutMismatch = FString::Printf(
+                    TEXT("bone '%s' is held by no display component"),
+                    *TargetBoneNames[TargetIndex].ToString());
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -2200,7 +2392,9 @@ void FMtoULiveLinkSource::PublishLatestFrameOnGameThread()
     }
     PublishFrameOnGameThread(Frame->Message);
 }
-bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Frame)
+bool FMtoULiveLinkSource::PublishFrameOnGameThread(
+    const FMtoUFrameMessage& Frame,
+    FMtoUPendingApplication* OutLinkage)
 {
     check(IsInGameThread());
     if (!Client || !SourceGuid.IsValid())
@@ -2235,6 +2429,21 @@ bool FMtoULiveLinkSource::PublishFrameOnGameThread(const FMtoUFrameMessage& Fram
             TEXT("A pose transform cannot be inverted; streaming stopped."),
             RetargetError);
         return false;
+    }
+    if (OutLinkage)
+    {
+        // The generation travels with the frame into the subject, so the
+        // completion barrier can tell this publication from the previous one.
+        if (FLiveLinkBaseFrameData* Base = FrameData.GetBaseData())
+        {
+            Base->MetaData.StringMetaData.Add(MtoULinkageGenerationKey, OutLinkage->Generation);
+        }
+        if (const FLiveLinkAnimationFrameData* Animation =
+                FrameData.Cast<FLiveLinkAnimationFrameData>())
+        {
+            OutLinkage->ExpectedTransforms = Animation->Transforms;
+            OutLinkage->ExpectedCurves = Animation->PropertyValues;
+        }
     }
     if (const FLiveLinkAnimationFrameData* Animation =
             FrameData.Cast<FLiveLinkAnimationFrameData>())

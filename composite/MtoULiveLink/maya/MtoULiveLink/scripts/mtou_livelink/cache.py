@@ -1027,6 +1027,10 @@ class CachedPlayback(object):
                 "streaming revision {0}, current revision {1}".format(expected, current))
         return expected if expected is not None else current
 
+    def reply_sink(self):
+        """Where Unreal's replies go while this playback owns the connection."""
+        return self._replies.put
+
     def _pause_streaming(self):
         if self._paused_streaming:
             return

@@ -814,5 +814,111 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(
             [second_root, second_mid, second_tip],
             [bone["path"] for bone in second["bones"]])
+
+    # ------------------------------------------------- linkage scene safety
+    def _linkage_host(self):
+        from mtou_livelink import link_host
+
+        return link_host.MayaLinkageHost(None, ["character"], 24.0)
+
+    def _foreign_scene_file(self):
+        """A saved scene with its own MtoU_LinkCamera, gate and frame."""
+        folder = tempfile.mkdtemp(prefix="mtou-linkage-scene-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        path = str(pathlib.Path(folder) / "foreign.ma")
+        cmds.file(new=True, force=True)
+        self._create_foreign_state()
+        cmds.file(rename=path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        return path
+
+    def _create_foreign_state(self):
+        transform = cmds.createNode("transform", name=mtou_config.LINK_CAMERA_NAME)
+        cmds.createNode("camera", name=mtou_config.LINK_CAMERA_NAME + "Shape",
+                        parent=transform)
+        cmds.setAttr("defaultResolution.width", 2048)
+        cmds.playbackOptions(minTime=1, maxTime=100)
+        cmds.currentTime(48)
+
+    def _assert_foreign_state_kept(self):
+        self.assertTrue(cmds.objExists(mtou_config.LINK_CAMERA_NAME))
+        self.assertEqual(2048, cmds.getAttr("defaultResolution.width"))
+        self.assertEqual(48.0, cmds.currentTime(query=True))
+
+    def _start_linkage_state(self, host):
+        cmds.setAttr("defaultResolution.width", 960)
+        cmds.currentTime(1)
+        state = host.capture_state()
+        # The tool camera exists, as after the first applied target.
+        host._camera_adapter()._ensure_camera()
+        cmds.setAttr("defaultResolution.width", 1280)
+        return state
+
+    def test_linkage_restore_reports_a_locked_camera_it_cannot_delete(self):
+        host = self._linkage_host()
+        state = self._start_linkage_state(host)
+        camera_node = mtou_config.LINK_CAMERA_NAME
+        cmds.lockNode(camera_node, lock=True)
+        self.addCleanup(lambda: cmds.objExists(camera_node)
+                        and cmds.lockNode(camera_node, lock=False))
+        residual = host.restore_state(state)
+        self.assertTrue(any(entry.startswith("camera:") and camera_node in entry
+                            for entry in residual), residual)
+        # The other resources are still restored.
+        self.assertEqual(960, cmds.getAttr("defaultResolution.width"))
+
+    def test_linkage_restore_writes_nothing_into_an_opened_scene(self):
+        path = self._foreign_scene_file()
+        cmds.file(new=True, force=True)
+        host = self._linkage_host()
+        state = self._start_linkage_state(host)
+        cmds.file(path, open=True, force=True)
+        residual = host.restore_state(state)
+        self.assertEqual(1, len(residual))
+        self.assertTrue(residual[0].startswith("scene:"))
+        self._assert_foreign_state_kept()
+
+    def test_linkage_restore_writes_nothing_into_a_new_scene(self):
+        host = self._linkage_host()
+        state = self._start_linkage_state(host)
+        cmds.file(new=True, force=True)
+        self._create_foreign_state()
+        residual = host.restore_state(state)
+        self.assertTrue(residual and residual[0].startswith("scene:"))
+        self._assert_foreign_state_kept()
+
+    def test_panel_restores_linkage_before_the_scene_is_replaced(self):
+        import maya.api.OpenMaya as om
+        from mtou_livelink import linkage
+
+        class Session(object):
+            messages = []
+
+            def submit_linkage(self, message):
+                self.messages.append(message)
+                return True
+
+        path = self._foreign_scene_file()
+        cmds.file(new=True, force=True)
+        host = self._linkage_host()
+        controller = mtou_controller.Controller()
+        session = linkage.LinkageSession(host, Session())
+        session.set_session_id(1)
+        cmds.setAttr("defaultResolution.width", 960)
+        cmds.currentTime(1)
+        session.enter(1)
+        host._camera_adapter()._ensure_camera()
+        controller._linkage = session
+        callback = om.MSceneMessage.addCallback(
+            om.MSceneMessage.kBeforeOpen, controller._on_before_scene_replaced)
+        self.addCleanup(om.MMessage.removeCallback, callback)
+        cmds.file(path, open=True, force=True)
+        # The old scene was restored while it was still open...
+        self.assertIsNone(controller._linkage)
+        self.assertEqual((), session.recovery_records())
+        # ...and the opened scene keeps its own camera, gate and frame.
+        self._assert_foreign_state_kept()
+
+
 if __name__ == "__main__":
     unittest.main()

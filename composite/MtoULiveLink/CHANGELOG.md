@@ -5,17 +5,22 @@
 - Add the single-character camera/time linkage workflow (Issue #57, protocol
   v10). A new 镜头联动 card and window pair the Maya character with the Unreal
   target, enter linkage, follow the Level Sequence time and evaluated camera,
-  and leave through 返回实时 or 结束预览. Unreal now reports the actual
-  component completion of every pose group, so both hosts show the time control
+  and leave through 返回实时 or 结束预览 from either host; 结束预览 stays
+  available after 返回实时 until the writers are back. Unreal confirms a pose
+  group only once the Live Link subject holds it and every display component
+  evaluated its bones and Morph values, so both hosts show the time control
   owner, the target time, the latest complete application time and the lag;
   Maya restores its timeline, view and gate and stays paused on the way back.
-  A camera edit, pause, cut or explicit jump cancels the old target, while a
-  continuously advancing camera never cancels the work already issued. Maya
+  A camera edit, pause, cut or explicit jump (also within one shot) cancels the
+  old target, while a continuously advancing camera never cancels the work
+  already issued. Closing or switching the sequence, closing its level or
+  deleting the paired actor ends linkage on both hosts, and opening another
+  Maya scene restores the scene linkage started in before it is replaced. Maya
   refuses an oversized group, an unknown or shared writer target is refused
   before any write, and a failed restore is reported per resource instead of
-  being hidden. The workflow is additive: the existing single-character
-  realtime, cached playback and Model comparison paths keep their defaults and
-  do not require any of the new configuration.
+  being hidden. The workflow is additive: the pairing is required only to enter
+  linkage, and the existing single-character realtime, cached playback and
+  Model comparison paths keep their defaults and connection steps.
 
 - Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
   scope as static reference geometry and offers the finished handoff; Maya

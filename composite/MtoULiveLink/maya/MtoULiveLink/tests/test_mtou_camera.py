@@ -1020,6 +1020,37 @@ class FakeCmds(object):
         return None
 
 
+class FakeCmdsWithUuid(FakeCmds):
+    """FakeCmds whose nodes carry UUIDs, as Maya 2016+ reports them."""
+
+    def __init__(self, **kwargs):
+        FakeCmds.__init__(self, **kwargs)
+        self.uuids = {}
+        self._uuid_counter = 0
+
+    def uuid_of(self, name):
+        if name not in self.uuids:
+            self._uuid_counter += 1
+            self.uuids[name] = "uuid-{0}".format(self._uuid_counter)
+        return self.uuids[name]
+
+    def replace_node(self, name):
+        """Another scene's node now carries the same name."""
+        self.uuids.pop(name, None)
+        self.uuid_of(name)
+
+    def ls(self, target, uuid=False, long=False):
+        if uuid:
+            return [self.uuid_of(target)] if self.objExists(target) else []
+        return [name for name, value in self.uuids.items()
+                if value == target and self.objExists(name)]
+
+    def createNode(self, node_type, name=None, parent=None, **kwargs):
+        created = FakeCmds.createNode(self, node_type, name, parent, **kwargs)
+        self.replace_node(created)
+        return created
+
+
 class LinkCameraHostTestBase(unittest.TestCase):
     """Patches the module-level ``cmds``/``om`` and builds a fake scene."""
 
@@ -1302,6 +1333,41 @@ class LinkCameraStateTest(LinkCameraHostTestBase):
         # Maya would keep; restore_state deletes them, which is what the caller
         # does on a refused target.
         self.assertEqual([], self.camera.restore_state(self.camera._state))
+
+
+class LinkCameraIdentityTest(LinkCameraHostTestBase):
+    """Restore acts on node identity, never on a name another node now carries."""
+
+    def build_cmds(self, **kwargs):
+        return FakeCmdsWithUuid(**kwargs)
+
+    def test_restore_deletes_the_created_camera_by_identity(self):
+        self.camera.apply(camera_payload(), gate_payload())
+        self.assertEqual([], self.camera.restore_state(None))
+        self.assertNotIn(mtou_camera.LINK_CAMERA_NAME, self.cmds.nodes)
+
+    def test_restore_keeps_a_foreign_camera_that_reuses_the_name(self):
+        self.camera.apply(camera_payload(), gate_payload())
+        # The open scene changed: its own camera carries the tool name.
+        self.cmds.replace_node(mtou_camera.LINK_CAMERA_NAME)
+        residual = self.camera.restore_state(None)
+        self.assertEqual([], residual)
+        self.assertIn(mtou_camera.LINK_CAMERA_NAME, self.cmds.nodes)
+        self.assertNotIn(("delete", mtou_camera.LINK_CAMERA_NAME), self.cmds.writes)
+        self.assertFalse(self.camera._created)
+
+    def test_restore_does_not_write_a_borrowed_snapshot_into_another_node(self):
+        shape = "BorrowedShape"
+        self.cmds.nodes[mtou_camera.LINK_CAMERA_NAME] = None
+        self.cmds.camera_shapes[mtou_camera.LINK_CAMERA_NAME] = shape
+        self.cmds.nodes[shape + ".focalLength"] = 24.0
+        state = self.camera.capture_state()
+        self.cmds.replace_node(mtou_camera.LINK_CAMERA_NAME)
+        self.cmds.nodes[shape + ".focalLength"] = 85.0
+        self.cmds.writes[:] = []
+        self.assertEqual([], self.camera.restore_state(state))
+        self.assertEqual(85.0, self.cmds.nodes[shape + ".focalLength"])
+        self.assertFalse(any(write[0] == "xform" for write in self.cmds.writes))
 
 
 class LinkCameraRefusalTest(LinkCameraHostTestBase):

@@ -39,6 +39,13 @@ struct MTOULIVELINK_API FMtoUCameraTimeTarget
     int32 TickDenominator = 1;
     FString CutStage;
     FString CutName;
+    /**
+     * A discrete event produced this target: a pause, a jump or scrub (also
+     * within one shot), a camera edit, a loop wrap. The scheduler cancels the
+     * issued target instead of keeping it in flight; ordinary playback that
+     * advances the time leaves this false so the in-flight answer survives.
+     */
+    bool bDiscontinuous = false;
     TSharedPtr<class FJsonObject> Camera;
     TSharedPtr<class FJsonObject> Gate;
 };
@@ -89,6 +96,8 @@ struct MTOULIVELINK_API FMtoULinkageView
     double AppliedLagSeconds = 0.0;
     bool bConverged = false;
     bool bTransitioning = false;
+    /** The paired target's writers are still muted (after 返回实时 too). */
+    bool bTakeoverHeld = false;
     FString Detail;
     FString Error;
     FString ErrorCode;
@@ -108,6 +117,12 @@ struct MTOULIVELINK_API FMtoULinkageHooks
     TFunction<bool(FString& OutError, FString& OutErrorCode)> TakeOverTarget;
     /** Restore every borrowed writer; false names what could not be restored. */
     TFunction<bool(FString& OutError, FString& OutErrorCode)> RestoreTarget;
+    /**
+     * While writers are borrowed: false, with the reason, once the takeover's
+     * Level Sequence was closed or switched, its world was closed or the
+     * paired target was destroyed. The runtime then ends the linkage.
+     */
+    TFunction<bool(FString& OutReason)> ValidateTakeover;
     /** Report a new view snapshot for the panel. */
     TFunction<void(const FMtoULinkageView&)> OnViewChanged;
 };

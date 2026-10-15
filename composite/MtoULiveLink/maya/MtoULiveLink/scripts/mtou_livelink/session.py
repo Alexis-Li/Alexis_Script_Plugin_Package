@@ -122,6 +122,22 @@ class SenderWorker(threading.Thread):
     def submit_ordered(self, frame_message):
         self._ordered.put(encode_message(frame_message))
 
+    def submit_control(self, message):
+        """Queue one control message in order, whichever delivery mode is on.
+
+        Latest mode never drains the ordered queue, so a control statement
+        made while live frames stream (结束预览 after 返回实时, a refused
+        entry) travels through the carryover queue that precedes them.
+        """
+        with self._send_lock:
+            with self._lock:
+                ordered_mode = self._ordered_mode
+            packet = encode_message(message)
+            if ordered_mode:
+                self._ordered.put(packet)
+            else:
+                self._carryover.put(packet)
+
     def ordered_pending(self):
         """Approximate count of queued packets not yet sent to Unreal."""
         return self._ordered.unfinished_tasks
@@ -370,39 +386,44 @@ class SenderWorker(threading.Thread):
                         return
                     with self._lock:
                         listener = self._reply_listener
-                    if listener is None:
-                        if reply.get("type") == "error":
-                            diagnostic = make_diagnostic(
-                                reply.get("code") or "STREAM_INTERRUPTED",
-                                reply.get("message") or "Unreal closed the connection",
-                                details=reply.get("details")
-                                or reply.get("message") or "")
-                            self._set_status(
-                                "error", diagnostic["summary"], diagnostic=diagnostic)
-                            return
-                        if reply.get("type") in CONTROL_REPLY_TYPES:
-                            # A control statement can cross a mode boundary: the
-                            # leave answer, an unsolicited reference offer or a
-                            # late camera/time target must never end the session
-                            # that the user is still using.
-                            with self._lock:
-                                self._last_control_reply = dict(reply)
+                    if listener is not None:
+                        try:
+                            # A listener returns False for a reply it leaves
+                            # to the session's own handling below.
+                            handled = listener(reply) is not False
+                        except Exception as exc:
+                            handled = True
+                            if cmds is not None:
+                                try:
+                                    cmds.warning(
+                                        "MtoU_LiveLink cached reply listener failed: {0}".format(
+                                            exc))
+                                except Exception:
+                                    pass
+                        if handled:
                             continue
+                    if reply.get("type") == "error":
                         diagnostic = make_diagnostic(
-                            "INVALID_MESSAGE",
-                            "unexpected runtime reply: {0}".format(reply.get("type")))
-                        self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                            reply.get("code") or "STREAM_INTERRUPTED",
+                            reply.get("message") or "Unreal closed the connection",
+                            details=reply.get("details")
+                            or reply.get("message") or "")
+                        self._set_status(
+                            "error", diagnostic["summary"], diagnostic=diagnostic)
                         return
-                    try:
-                        listener(reply)
-                    except Exception as exc:
-                        if cmds is not None:
-                            try:
-                                cmds.warning(
-                                    "MtoU_LiveLink cached reply listener failed: {0}".format(
-                                        exc))
-                            except Exception:
-                                pass
+                    if reply.get("type") in CONTROL_REPLY_TYPES:
+                        # A control statement can cross a mode boundary: the
+                        # leave answer, an unsolicited reference offer or a
+                        # late camera/time target must never end the session
+                        # that the user is still using.
+                        with self._lock:
+                            self._last_control_reply = dict(reply)
+                        continue
+                    diagnostic = make_diagnostic(
+                        "INVALID_MESSAGE",
+                        "unexpected runtime reply: {0}".format(reply.get("type")))
+                    self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                    return
         except Exception as exc:
             if not self._stop_event.is_set():
                 if isinstance(exc, (ValueError, UnicodeError, json.JSONDecodeError)):
@@ -724,7 +745,7 @@ class StreamingSession(object):
             raise StreamingSessionError(
                 "STREAM_INTERRUPTED",
                 "镜头联动需要已连接的 Unreal 会话。")
-        self._worker.submit_ordered(message)
+        self._worker.submit_control(message)
         return True
 
     def ordered_pending(self):

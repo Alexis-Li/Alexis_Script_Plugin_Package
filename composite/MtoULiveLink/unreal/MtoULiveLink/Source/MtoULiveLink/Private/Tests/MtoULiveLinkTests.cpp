@@ -14,6 +14,7 @@
 #include "MtoULinkageSession.h"
 
 #include "Animation/MorphTarget.h"
+#include "Animation/Skeleton.h"
 #include "Async/Async.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -476,12 +477,6 @@ AMtoULiveLinkActor* AddBoundActor(UWorld& World)
     if (Actor)
     {
         Actor->SetBinding(Binding);
-        // v10 explicit pairing: the user pairs the actor's Binding with the
-        // Maya object before any connection may negotiate it. A second actor
-        // of one test world keeps the pairing of the first, so the multiple
-        // and duplicate-target fixtures still reach their own refusals.
-        FString PairingError;
-        MtoUPairLinkageTarget(*Actor, TEXT("character"), PairingError);
     }
     return Actor;
 }
@@ -5596,11 +5591,8 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
-    // v10 pairing: the linkage entry needs an active listener, and the
-    // registry is process-wide, so this test owns its own pairing.
+    // The v9 workflows negotiate without a linkage pairing.
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -6926,11 +6918,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
-    // v10 pairing: the linkage entry needs an active listener, and the
-    // registry is process-wide, so this test owns its own pairing.
+    // The v9 workflows negotiate without a linkage pairing.
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -7872,11 +7861,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
-    // v10 pairing: the linkage entry needs an active listener, and the
-    // registry is process-wide, so this test owns its own pairing.
+    // The v9 workflows negotiate without a linkage pairing.
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -8051,8 +8037,6 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("PIE duplicate binding actor is created"), PieActor);
 
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(EditorActor));
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
@@ -8209,11 +8193,8 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
-    // v10 pairing: the linkage entry needs an active listener, and the
-    // registry is process-wide, so this test owns its own pairing.
+    // The v9 workflows negotiate without a linkage pairing.
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -8549,11 +8530,8 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
-    // v10 pairing: the linkage entry needs an active listener, and the
-    // registry is process-wide, so this test owns its own pairing.
+    // The v9 workflows negotiate without a linkage pairing.
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
-    TestTrue(TEXT("the fixture actor is paired for linkage"),
-        PairLinkageTarget(Actor));
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
@@ -9964,7 +9942,6 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
     TestTrue(TEXT("source reaches listening state"),
         WaitForStatus(Source, TEXT("Listening on")));
-    TestTrue(TEXT("the fixture actor is paired for linkage"), PairLinkageTarget(Actor));
     const FString Init = FString::Printf(
         TEXT("{\"type\":\"init\",\"revision\":17,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(Primary->GetRefSkeleton()));
@@ -11149,8 +11126,6 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     TestEqual(TEXT("every enabled part has a display component"),
         Actor->GetCharacterPartComponents().Num(), EnabledParts);
-    TestTrue(TEXT("the composed character is paired for linkage"),
-        PairLinkageTarget(Actor));
 
     ILiveLinkClient& LiveLinkClient = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
         ILiveLinkClient::ModularFeatureName);
@@ -11781,6 +11756,12 @@ struct FMtoULinkageTestHooks
     FString TakeOverErrorCode = TEXT("WRITER_NOT_ISOLATABLE");
     int32 ViewChanges = 0;
     FMtoULinkageView LastView;
+    // The next synthetic target comes from a discrete event (pause, jump,
+    // camera edit) instead of advancing playback.
+    bool bNextDiscontinuous = false;
+    // False once the takeover's sequence, world or target went away.
+    bool bTakeoverValid = true;
+    int32 ValidateCalls = 0;
 
     void Install()
     {
@@ -11803,6 +11784,8 @@ struct FMtoULinkageTestHooks
             OutTarget.TickDenominator = 1;
             OutTarget.CutStage = TEXT("root");
             OutTarget.CutName = TEXT("shotA");
+            OutTarget.bDiscontinuous = bNextDiscontinuous;
+            bNextDiscontinuous = false;
             // The synthetic target carries the same fields the editor adapter
             // writes, so the Maya side maps a complete payload instead of
             // reporting a missing filmback or basis.
@@ -11845,6 +11828,16 @@ struct FMtoULinkageTestHooks
             ++RestoreCalls;
             OutError.Reset();
             OutErrorCode.Reset();
+            return true;
+        };
+        Hooks.ValidateTakeover = [this](FString& OutReason) -> bool
+        {
+            ++ValidateCalls;
+            if (!bTakeoverValid)
+            {
+                OutReason = TEXT("the Level Sequence 'Shot' was closed in the editor");
+                return false;
+            }
             return true;
         };
         Hooks.OnViewChanged = [this](const FMtoULinkageView& View)
@@ -12069,10 +12062,11 @@ bool FMtoULinkagePairingTest::RunTest(const FString& Parameters)
             *Bones));
     };
 
-    // An unpaired object is refused before any target is discovered, so the
-    // connection closes without a writer being muted. The public boundary
-    // resolves through this source, so it becomes the active one for the
-    // whole fixture and is restored before the fixture is destroyed.
+    // Pairing is the consent for linkage, not for the v9 workflows: an object
+    // the user never paired negotiates exactly as before, and only the
+    // linkage entry asks for the pairing. The public boundary resolves
+    // through this source, so it becomes the active one for the whole fixture
+    // and is restored before the fixture is destroyed.
     TSharedPtr<FMtoULiveLinkSource> PreviousSource;
     FSocket* Unpaired = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("unpaired client connects"), Unpaired);
@@ -12082,33 +12076,33 @@ bool FMtoULinkagePairingTest::RunTest(const FString& Parameters)
     if (Unpaired)
     {
         const TArray<uint8> Hello = LinkageHelloPacket();
-        // An object the user never paired is refused; the fixture actor is
-        // paired with the character, not with this one.
-        const TArray<uint8> Init = InitPacket(TEXT("unpaired-prop"));
+        const TArray<uint8> Init = InitPacket(TEXT("character"));
         TestTrue(TEXT("unpaired greeting is sent"),
             SendBytes(*Unpaired, Hello.GetData(), Hello.Num()));
         TestTrue(TEXT("unpaired init is sent"),
             SendBytes(*Unpaired, Init.GetData(), Init.Num()));
         TArray<uint8> Payload;
-        // The view the panel reads belongs to this source, so the public
-        // boundary must resolve the pairing of the actor this test owns.
         PreviousSource = MtoUSetActiveSource(Source);
         TestTrue(TEXT("the greeting is answered first"),
             UnpairedReader.Next(*Unpaired, TEXT("hello_ack"), Payload,
                 [&]() { Source->Update(); }));
-        // The fixture actor is paired with the character, so the greeting
-        // answer already describes that target while the init names an object
-        // no pairing covers.
-        TestTrue(TEXT("the greeting answer describes the paired target"),
-            FromUtf8(Payload).Contains(TEXT("\"type\":\"hello_ack\""))
-            && FromUtf8(Payload).Contains(TEXT("\"object_id\":\"character\"")));
+        // No pairing exists yet, so the greeting names no selected target.
+        TestTrue(TEXT("the greeting answer names no target before pairing"),
+            FromUtf8(Payload).Contains(TEXT("\"object_id\":\"\"")));
         Payload.Reset();
-        TestTrue(TEXT("an unpairable object is refused"),
-            UnpairedReader.Next(*Unpaired, TEXT("error"), Payload,
+        TestTrue(TEXT("an unpaired object still negotiates the v9 workflow"),
+            UnpairedReader.Next(*Unpaired, TEXT("ready"), Payload,
                 [&]() { Source->Update(); }));
-        TestTrue(TEXT("the refusal names the frozen code"),
-            FromUtf8(Payload).Contains(TEXT("\"code\":\"PAIRING_REQUIRED\"")));
-        TestTrue(TEXT("the refusal closes the connection"), WaitForClose(*Unpaired));
+        // Linkage takes over a target, so it is where the pairing is required.
+        FString EnterError;
+        TestFalse(TEXT("linkage entry is refused without a pairing"),
+            MtoURequestLinkageEnter(1, EnterError));
+        const FMtoULinkageView UnpairedView = MtoUGetLinkageView();
+        TestEqual(TEXT("the refusal names the frozen code"),
+            UnpairedView.ErrorCode, FString(TEXT("PAIRING_REQUIRED")));
+        TestEqual(TEXT("the refused entry leaves the mode unchanged"),
+            UnpairedView.Mode, FString(TEXT("realtime")));
+        TestFalse(TEXT("the refused entry borrows no writer"), UnpairedView.bTakeoverHeld);
         DestroySocket(*SocketSubsystem, Unpaired);
     }
 
@@ -12119,26 +12113,6 @@ bool FMtoULinkagePairingTest::RunTest(const FString& Parameters)
         PairedView.PairedObjectId, FString(TEXT("character")));
     TestTrue(TEXT("the view reports the pairing"),
         PairedView.bPaired && PairedView.PairedObjectId == TEXT("character"));
-    TestTrue(TEXT("the view reports the pairing"),
-        PairedView.bPaired && PairedView.PairedObjectId == TEXT("character"));
-
-    // A different Maya object is not the paired one, so it is refused too.
-    // Only one client may hold the listener, so this runs before the paired
-    // connection is established.
-    FSocket* OtherObject = ConnectLoopback(*SocketSubsystem, Port);
-    TestNotNull(TEXT("other-object client connects"), OtherObject);
-    if (OtherObject)
-    {
-        const TArray<uint8> OtherInit = InitPacket(TEXT("other"));
-        TestTrue(TEXT("the other object's init is sent"),
-            SendBytes(*OtherObject, OtherInit.GetData(), OtherInit.Num()));
-        TArray<uint8> OtherPayload;
-        TestTrue(TEXT("the other object is refused"), ReceivePacket(
-            *OtherObject, OtherPayload, [&]() { Source->Update(); }));
-        TestTrue(TEXT("the other object's refusal names the frozen code"),
-            FromUtf8(OtherPayload).Contains(TEXT("\"code\":\"PAIRING_REQUIRED\"")));
-        DestroySocket(*SocketSubsystem, OtherObject);
-    }
     TestTrue(TEXT("the listener survives the refusal"),
         WaitForStatus(Source, TEXT("Listening on")));
 
@@ -12382,6 +12356,22 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         : nullptr;
     TestTrue(TEXT("one Morph target is added to the private mesh"),
         Mesh && AddUniformMorph(*Mesh, TEXT("Smile"), FVector3f(0.0f, 1.0f, 0.0f)));
+    // An imported character carries Morph curve metadata, so a streamed value
+    // reaches the evaluated Morph weight the applied barrier verifies. The
+    // private mesh gets it on its own Skeleton duplicate; the engine asset
+    // stays untouched.
+    USkeleton* FixtureSkeleton = Mesh
+        ? DuplicateObject<USkeleton>(Mesh->GetSkeleton(), GetTransientPackage())
+        : nullptr;
+    if (FixtureSkeleton)
+    {
+        Mesh->SetSkeleton(FixtureSkeleton);
+        FixtureSkeleton->AddCurveMetaData(FName(TEXT("Smile")), false);
+        if (FCurveMetaData* MetaData = FixtureSkeleton->GetCurveMetaData(FName(TEXT("Smile"))))
+        {
+            MetaData->Type.bMorphtarget = true;
+        }
+    }
     UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
     Binding->SkeletalMesh = Mesh;
     AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
@@ -12416,7 +12406,9 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         return false;
     }
     FMtoULinkageReplyReader Reader;
-    const auto Pump = [&]() { Source->Update(); };
+    // The editor ticks the Live Link client every frame; the applied barrier
+    // waits for the subject to hold the published group, so the pump ticks it.
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
 
     const TArray<uint8> Hello = LinkageHelloPacket();
     TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
@@ -12601,6 +12593,46 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("a refused group keeps the applied target"),
         AfterStale.AppliedEvalId, SecondEvalId);
 
+    // ---- a group the display does not hold is never confirmed ------------
+    // The character's display loses its mesh, so no component can show the
+    // published pose: the barrier answers applied=false with the reason after
+    // its window instead of confirming a display that did not happen.
+    USkeletalMeshComponent* PrimaryDisplay = Actor->GetSkeletalMeshComponent();
+    PrimaryDisplay->SetSkeletalMeshAsset(nullptr);
+    Hooks.PlannedTargets = 3;
+    TestTrue(TEXT("a third target is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    FString ThirdEvalId;
+    if (JsonObjectFromBytes(Payload, CameraTime))
+    {
+        ThirdEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+    }
+    const TArray<uint8> GroupThree = Packet(LinkageGroupJson(
+        ThirdEvalId, 1, 1, 1, 1, 1, 3.0, Pose, 1));
+    TestTrue(TEXT("the third group is sent"),
+        SendBytes(*Client, GroupThree.GetData(), GroupThree.Num()));
+    bool bRefusedEvidence = false;
+    TSharedPtr<FJsonObject> Missing;
+    PollUntil([&]()
+    {
+        TArray<uint8> Reply;
+        if (Reader.Next(*Client, TEXT("applied"), Reply, Pump)
+            && JsonObjectFromBytes(Reply, Missing) && Missing.IsValid())
+        {
+            bRefusedEvidence = true;
+        }
+        return bRefusedEvidence;
+    }, FMtoUProtocol::LinkageConvergenceSeconds + 3.0);
+    TestTrue(TEXT("the undisplayed group is answered"), bRefusedEvidence);
+    if (Missing.IsValid())
+    {
+        TestFalse(TEXT("the undisplayed group is not confirmed"),
+            Missing->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the missing display"),
+            Missing->GetStringField(TEXT("reason")).Contains(TEXT("no display component")));
+    }
+    PrimaryDisplay->SetSkeletalMeshAsset(Mesh);
+
     // ---- leaving for realtime and ending the preview ---------------------
     FString LeaveError;
     TestTrue(TEXT("leaving for realtime is accepted"),
@@ -12738,7 +12770,9 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
         return false;
     }
     FMtoULinkageReplyReader Reader;
-    const auto Pump = [&]() { Source->Update(); };
+    // The editor ticks the Live Link client every frame; the applied barrier
+    // waits for the subject to hold the published group, so the pump ticks it.
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
 
     const TArray<uint8> Hello = LinkageHelloPacket();
     TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
@@ -12859,6 +12893,122 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("the refusal names the frozen code"),
             GateError->GetStringField(TEXT("code")), FString(TEXT("LINKAGE_NOT_ACTIVE")));
     }
+
+    // ---- an exit that already happened is idempotent ---------------------
+    // Maya's 结束预览 after Unreal already ended the preview is confirmed, not
+    // refused: it hands back nothing more and adopts Maya's newer revision.
+    const TArray<uint8> LateEnd = Packet(
+        TEXT("{\"type\":\"leave_linkage\",\"session_id\":1,\"mode_revision\":5,"
+             "\"target\":\"end\",\"detail\":\"\"}"));
+    TestTrue(TEXT("a repeated end is sent"), SendBytes(*Client, LateEnd.GetData(), LateEnd.Num()));
+    TestTrue(TEXT("a repeated end is confirmed"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> EndState;
+    if (JsonObjectFromBytes(Payload, EndState))
+    {
+        TestEqual(TEXT("the confirmation keeps realtime"),
+            EndState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the confirmation adopts the newer revision"),
+            static_cast<int32>(EndState->GetNumberField(TEXT("mode_revision"))), 5);
+    }
+    TestEqual(TEXT("nothing more was restored"), Hooks.RestoreCalls, 2);
+
+    // ---- a late Maya entry never takes the target over again -------------
+    const int32 TakeOversBeforeStale = Hooks.TakeOverCalls;
+    const TArray<uint8> StaleEntry = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":3,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"late\"}"));
+    TestTrue(TEXT("a stale entry is sent"), SendBytes(*Client, StaleEntry.GetData(), StaleEntry.Num()));
+    TestTrue(TEXT("a stale entry is answered with the current mode"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> StaleState;
+    if (JsonObjectFromBytes(Payload, StaleState))
+    {
+        TestEqual(TEXT("the answer keeps realtime so Maya rolls back"),
+            StaleState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the answer names the current revision"),
+            static_cast<int32>(StaleState->GetNumberField(TEXT("mode_revision"))), 5);
+    }
+    TestEqual(TEXT("the stale entry borrowed no writer"),
+        Hooks.TakeOverCalls, TakeOversBeforeStale);
+
+    // ---- a discrete event cancels the target in flight -------------------
+    TestTrue(TEXT("linkage entry for the scheduling case is accepted"),
+        MtoURequestLinkageEnter(6, Error));
+    const TArray<uint8> ScheduleReady = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":6,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"));
+    TestTrue(TEXT("Maya confirms the scheduling entry"),
+        SendBytes(*Client, ScheduleReady.GetData(), ScheduleReady.Num()));
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("the first target is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> FirstTarget;
+    FString FirstEval;
+    if (JsonObjectFromBytes(Payload, FirstTarget))
+    {
+        FirstEval = FirstTarget->GetStringField(TEXT("eval_id"));
+    }
+    // Ordinary playback only replaces the waiting target: no second issue.
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    for (int32 Tick = 0; Tick < 20 && Hooks.SentTargets < Hooks.PlannedTargets; ++Tick)
+    {
+        Pump();
+        FPlatformProcess::Sleep(0.02f);
+    }
+    TestFalse(TEXT("continuous playback keeps the issued target"),
+        MtoUGetLinkageView().TargetEvalId != FirstEval);
+    // A pause, jump or camera edit cancels it and issues the new target.
+    Hooks.bNextDiscontinuous = true;
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("a discrete event issues its target at once"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> JumpTarget;
+    if (JsonObjectFromBytes(Payload, JumpTarget))
+    {
+        TestNotEqual(TEXT("the discrete target replaces the cancelled one"),
+            JumpTarget->GetStringField(TEXT("eval_id")), FirstEval);
+    }
+    // A late answer to the cancelled target is refused and changes nothing.
+    const TArray<uint8> CancelledAnswer = Packet(LinkageGroupJson(
+        FirstEval, 1, 1, 1, 6, 1, 1.0, Pose, 0));
+    TestTrue(TEXT("the cancelled answer is sent"),
+        SendBytes(*Client, CancelledAnswer.GetData(), CancelledAnswer.Num()));
+    TestTrue(TEXT("the cancelled answer is refused"),
+        Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TSharedPtr<FJsonObject> StaleError;
+    if (JsonObjectFromBytes(Payload, StaleError))
+    {
+        TestEqual(TEXT("the refusal names the frozen code"),
+            StaleError->GetStringField(TEXT("code")), FString(TEXT("EVAL_STALE")));
+    }
+    TestTrue(TEXT("the cancelled answer was never applied"),
+        MtoUGetLinkageView().AppliedEvalId != FirstEval);
+
+    // ---- a closed sequence ends linkage on both hosts --------------------
+    const int32 RestoresBeforeLoss = Hooks.RestoreCalls;
+    Hooks.bTakeoverValid = false;
+    TestTrue(TEXT("losing the takeover is reported to Maya"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> LostState;
+    if (JsonObjectFromBytes(Payload, LostState))
+    {
+        TestEqual(TEXT("Maya hears that linkage ended"),
+            LostState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the exit is a newer revision Maya follows"),
+            static_cast<int32>(LostState->GetNumberField(TEXT("mode_revision"))), 7);
+        TestTrue(TEXT("the statement names what went away"),
+            LostState->GetStringField(TEXT("detail")).Contains(TEXT("closed")));
+    }
+    const FMtoULinkageView LostView = MtoUGetLinkageView();
+    TestEqual(TEXT("Unreal returns to realtime"), LostView.Mode, FString(TEXT("realtime")));
+    TestEqual(TEXT("the loss names the frozen code"),
+        LostView.ErrorCode, FString(TEXT("TARGET_UNKNOWN")));
+    TestFalse(TEXT("no writer stays borrowed"), LostView.bTakeoverHeld);
+    TestEqual(TEXT("the borrowed writers were restored once"),
+        Hooks.RestoreCalls, RestoresBeforeLoss + 1);
+    TestTrue(TEXT("the stale synchronisation is dropped"),
+        LostView.AppliedEvalId.IsEmpty() && !LostView.bConverged);
 
     MtoUSetLinkageHooks(FMtoULinkageHooks());
     MtoUSetActiveSource(PreviousSource);
@@ -13033,8 +13183,10 @@ bool FMtoUMayaLinkageHostTest::RunTest(const FString& Parameters)
     const bool bFinished = PollUntil([&]()
     {
         // The runtime pump runs while the peer works, so the camera/time
-        // targets and the applied evidence keep flowing.
+        // targets and the applied evidence keep flowing; the Live Link client
+        // ticks as the editor ticks it, which the applied barrier waits for.
         Source->Update();
+        LiveLinkClient.ForceTick();
         const TSharedPtr<FJsonObject> Result = ReadResult();
         FString Phase;
         return Result.IsValid() && Result->TryGetStringField(TEXT("phase"), Phase)

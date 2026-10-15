@@ -33,6 +33,10 @@
     {
       "Name": "GeometryScripting",
       "Enabled": true
+    },
+    {
+      "Name": "LevelSequenceEditor",
+      "Enabled": true
     }
   ]
 }

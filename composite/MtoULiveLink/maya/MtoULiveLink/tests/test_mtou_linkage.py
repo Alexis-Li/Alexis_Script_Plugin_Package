@@ -59,6 +59,16 @@ def applied_message(eval_id="seq@10+0/cam#c1", sample_serial=1, applied=True,
     }
 
 
+def mode_state(mode_revision, mode=mtou_config.LINKAGE_MODE, session_id=5, detail=""):
+    return {
+        "type": "mode_state", "session_id": session_id,
+        "mode_revision": mode_revision, "mode": mode,
+        "control": (mtou_config.CONTROL_UNREAL if mode == mtou_config.LINKAGE_MODE
+                    else mtou_config.CONTROL_MAYA),
+        "detail": detail,
+    }
+
+
 class FakeHost(object):
     def __init__(self):
         self.captured = 0
@@ -355,12 +365,119 @@ class LinkageEvidenceTests(unittest.TestCase):
         self.assertAlmostEqual(
             mtou_config.LINKAGE_CONVERGENCE_SECONDS + 0.1, instance.wait_seconds())
 
-    def test_mode_state_updates_the_revision(self):
-        self.instance.note_mode_state({
-            "type": "mode_state", "session_id": 5, "mode_revision": 3,
-            "mode": mtou_config.LINKAGE_MODE, "control": mtou_config.CONTROL_UNREAL,
-            "detail": "Unreal owns time"})
-        self.assertEqual(3, self.instance.mode_revision())
+    def test_mode_state_confirms_the_linkage_maya_started(self):
+        revision = self.instance.mode_revision()
+        outcome = self.instance.note_mode_state(mode_state(revision))
+        self.assertEqual("confirmed", outcome)
+        self.assertEqual(revision, self.instance.mode_revision())
+        self.assertTrue(self.instance.is_active)
+        self.assertFalse(self.instance.confirmation_overdue())
+
+
+class RemoteTransitionTests(unittest.TestCase):
+    """Unreal's mode_state is followed, not merely recorded."""
+
+    def test_unreal_started_linkage_is_entered_and_confirmed(self):
+        instance, host, session, events = build()
+        self.assertEqual("enter", instance.note_mode_state(mode_state(1)))
+        # Nothing changes until the caller prepared the session and entered.
+        self.assertFalse(instance.is_active)
+        self.assertEqual(0, host.captured)
+        instance.enter(1, remote=True)
+        self.assertTrue(instance.is_active)
+        self.assertEqual(1, host.captured)
+        self.assertEqual(
+            [("mode", "linkage", 1, "ready")],
+            [(m["type"], m["mode"], m["mode_revision"], m["transition"])
+             for m in session.messages])
+        # Unreal waits for this confirmation, so Maya waits for nothing.
+        self.assertFalse(instance.confirmation_overdue())
+
+    def test_unreal_started_linkage_announces_a_capture_refusal(self):
+        instance, host, session, events = build()
+        host.capture_state = mock.Mock(side_effect=RuntimeError("panel locked"))
+        with self.assertRaises(RuntimeError):
+            instance.enter(1, remote=True)
+        self.assertFalse(instance.is_active)
+        self.assertEqual(
+            [("mode", "realtime", 1, "failed")],
+            [(m["type"], m["mode"], m["mode_revision"], m["transition"])
+             for m in session.messages])
+        self.assertIn("panel locked", session.messages[0]["detail"])
+
+    def test_a_stale_linkage_statement_is_only_noted(self):
+        instance, host, session, events = build()
+        instance.enter(1)
+        instance.leave("realtime", 2)
+        self.assertEqual("noted", instance.note_mode_state(mode_state(1)))
+        self.assertFalse(instance.is_active)
+        self.assertEqual(1, host.captured)
+
+    def test_unreal_leave_restores_maya_and_keeps_the_takeover_endable(self):
+        instance, host, session, events = build()
+        instance.enter(1)
+        instance.note_mode_state(mode_state(1))
+        session.messages[:] = []
+        outcome = instance.note_mode_state(
+            mode_state(2, mode=mtou_config.REALTIME_MODE, detail="UE returned"))
+        self.assertEqual("left", outcome)
+        self.assertFalse(instance.is_active)
+        self.assertEqual(mtou_config.CONTROL_MAYA, instance.status().control)
+        self.assertEqual(2, instance.mode_revision())
+        self.assertEqual(1, len(host.restored))
+        # Unreal already moved; Maya does not answer with a second exit.
+        self.assertEqual([], session.messages)
+        self.assertTrue(instance.takeover_held())
+        # 结束预览 still hands the writers back and then clears the hold.
+        instance.leave("end", 3)
+        self.assertFalse(instance.takeover_held())
+        self.assertEqual("leave_linkage", session.messages[-1]["type"])
+        self.assertEqual("end", session.messages[-1]["target"])
+
+    def test_unreal_refusing_maya_entry_rolls_maya_back(self):
+        instance, host, session, events = build()
+        instance.enter(1)
+        outcome = instance.note_mode_state(
+            mode_state(0, mode=mtou_config.REALTIME_MODE, detail="PAIRING_REQUIRED"))
+        self.assertEqual("left", outcome)
+        self.assertFalse(instance.is_active)
+        self.assertEqual(1, len(host.restored))
+        # The refused revision is Unreal's, so the next entry is newer again.
+        self.assertEqual(0, instance.mode_revision())
+        self.assertFalse(instance.takeover_held())
+        self.assertIn("PAIRING_REQUIRED", instance.status().detail)
+
+    def test_restore_residual_of_a_remote_exit_is_recorded(self):
+        instance, host, session, events = build()
+        host.restore_residual = ("camera: cannot delete locked node",)
+        instance.enter(1)
+        instance.note_mode_state(mode_state(2, mode=mtou_config.REALTIME_MODE))
+        self.assertIn("residual: camera: cannot delete locked node",
+                      instance.recovery_records())
+        self.assertEqual("RECOVERY_REFUSED", events[-1].diagnostic["code"])
+
+    def test_unconfirmed_entry_rolls_back_and_announces_failure(self):
+        host, session, events = FakeHost(), FakeSession(), []
+        clock = {"now": 0.0}
+        instance = mtou_linkage.LinkageSession(
+            host, session, on_event=events.append, clock=lambda: clock["now"])
+        instance.set_session_id(5)
+        instance.enter(1)
+        self.assertFalse(instance.confirmation_overdue())
+        clock["now"] = mtou_config.LINKAGE_MODE_CONFIRMATION_SECONDS + 0.1
+        self.assertTrue(instance.confirmation_overdue())
+        self.assertEqual((), instance.expire_unconfirmed())
+        self.assertFalse(instance.is_active)
+        self.assertEqual(1, len(host.restored))
+        failed = session.messages[-1]
+        self.assertEqual(("mode", "failed", 1),
+                         (failed["type"], failed["transition"], failed["mode_revision"]))
+        self.assertIsNone(instance.expire_unconfirmed())
+
+    def test_a_later_session_continues_the_connection_revision(self):
+        instance = mtou_linkage.LinkageSession(
+            FakeHost(), FakeSession(), mode_revision=4)
+        self.assertEqual(4, instance.mode_revision())
 
 
 class LinkageLifecycleTests(unittest.TestCase):

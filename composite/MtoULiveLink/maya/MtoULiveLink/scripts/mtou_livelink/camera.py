@@ -1077,6 +1077,34 @@ def _resolution_value(plug):
     return float(cmds.getAttr(plug))
 
 
+def _node_uuid(node):
+    """The node's UUID, or None where Maya cannot report one."""
+    try:
+        values = cmds.ls(node, uuid=True)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    if isinstance(values, (list, tuple)) and values and isinstance(values[0], str):
+        return values[0]
+    return None
+
+
+def _node_by_uuid(uuid, name):
+    """The node path with this UUID, or None when no such node exists.
+
+    Without a recorded UUID the name is the only identity available, which
+    keeps a host that cannot report UUIDs on the previous behaviour.
+    """
+    if uuid is None:
+        return name if name and cmds.objExists(name) else None
+    try:
+        nodes = cmds.ls(uuid, long=True)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    if isinstance(nodes, (list, tuple)) and nodes:
+        return nodes[0]
+    return None
+
+
 def _camera_shapes(name):
     shapes = cmds.listRelatives(name, shapes=True, type="camera") or []
     return [shape for shape in shapes]
@@ -1104,6 +1132,10 @@ class LinkCamera(object):
         self._transform = None
         self._shape = None
         self._created = False
+        # Identity of the camera this adapter created: a node that merely
+        # carries the tool name (another scene's camera, a user's node) is
+        # never deleted or rewritten as if it were the created one.
+        self._created_uuid = None
         self._reused = False
         self._state = None
         self.last_report = None
@@ -1233,6 +1265,7 @@ class LinkCamera(object):
         self._transform = transform
         self._shape = shape
         self._created = True
+        self._created_uuid = _node_uuid(transform)
         return (transform, shape, True)
 
     def _apply_resolution_gate(self, output, pixel_aspect):
@@ -1336,6 +1369,7 @@ class LinkCamera(object):
         self._transform = self._transform or self.name
         self._shape = shapes[0]
         state = {"transform": self._transform, "shape": shapes[0],
+                 "uuid": _node_uuid(self._transform),
                  "attributes": dict((attribute, cmds.getAttr(
                      "{0}.{1}".format(shapes[0], attribute)))
                      for attribute in MANAGED_ATTRIBUTES),
@@ -1378,16 +1412,26 @@ class LinkCamera(object):
             except RuntimeError as error:
                 residual.append("undo state: {0}".format(error))
 
-        if self._created and cmds.objExists(name):
-            try:
-                cmds.delete(name)
-            except RuntimeError as error:
-                residual.append("camera {0}: {1}".format(name, error))
+        if self._created:
+            created = _node_by_uuid(self._created_uuid, name)
+            if created is None:
+                # The created node is gone (or only a foreign node carries the
+                # name): there is nothing of ours left to delete.
+                self._forget_created()
             else:
-                self._created = False
-                self._transform = None
-                self._shape = None
+                try:
+                    cmds.delete(created)
+                except RuntimeError as error:
+                    residual.append("camera {0}: {1}".format(name, error))
+                else:
+                    self._forget_created()
         return residual
+
+    def _forget_created(self):
+        self._created = False
+        self._created_uuid = None
+        self._transform = None
+        self._shape = None
 
     def _restore_panel(self, panel, camera):
         """Put one model panel's look-through camera back, or report why not."""
@@ -1408,6 +1452,11 @@ class LinkCamera(object):
         shape = borrowed.get("shape")
         transform = borrowed.get("transform")
         if not shape or not cmds.objExists(shape):
+            return []
+        if borrowed.get("uuid") is not None \
+                and _node_by_uuid(borrowed.get("uuid"), transform) is None:
+            # Another node now carries the borrowed camera's name; the
+            # snapshot describes a different node and is not written to it.
             return []
         residual = []
         try:

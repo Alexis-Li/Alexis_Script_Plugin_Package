@@ -44,5 +44,25 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(("127.0.0.1", port), sock.getpeername())
 
 
+class ControlDeliveryTests(unittest.TestCase):
+    """A control statement is delivered whichever delivery mode is on."""
+
+    def test_control_in_latest_mode_precedes_live_frames(self):
+        worker = mtou_session.SenderWorker({"type": "init", "revision": 1})
+        worker.submit({"type": "frame", "serial": 1})
+        worker.submit_control({"type": "leave_linkage", "target": "end"})
+        # Latest mode never drains the ordered queue; the carryover does.
+        self.assertEqual(0, worker.ordered_pending())
+        packet = worker._carryover.get_nowait()
+        self.assertIn(b"leave_linkage", packet)
+
+    def test_control_in_ordered_mode_keeps_its_place(self):
+        worker = mtou_session.SenderWorker({"type": "init", "revision": 1})
+        worker.begin_ordered()
+        worker.submit_control({"type": "mode", "transition": "ready"})
+        self.assertEqual(1, worker.ordered_pending())
+        self.assertTrue(worker._carryover.empty())
+
+
 if __name__ == "__main__":
     unittest.main()

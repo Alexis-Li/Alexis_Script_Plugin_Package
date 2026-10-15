@@ -7,8 +7,18 @@ did. Keeping the Maya calls here lets the state machine stay host-free and
 testable, and keeps one place responsible for the restore order.
 """
 
-from .mayaapi import cmds
+from .mayaapi import cmds, om
 from .scene import require_maya
+
+# Scene replacement events after which a captured snapshot no longer describes
+# the open scene: restoring it would write the old values into the new scene.
+# The panel restores linkage before the replacement; these after-events only
+# guard a snapshot that survived it, so their order relative to the panel's own
+# callbacks does not matter.
+SCENE_REPLACE_MESSAGES = ("kAfterNew", "kAfterOpen")
+
+# A per-scene node whose identity changes with every new or opened scene file.
+SCENE_IDENTITY_NODE = "defaultResolution"
 
 
 def camera_module():
@@ -31,6 +41,8 @@ class MayaLinkageHost(object):
         self._fps = float(fps)
         self._camera = camera
         self._link_camera_name = link_camera_name
+        self._scene_replaced = False
+        self._scene_callbacks = []
 
     # ------------------------------------------------------------- capture
     def capture_state(self):
@@ -41,15 +53,30 @@ class MayaLinkageHost(object):
             "playback": self._playback_state(),
             "gate": self._resolution_gate(),
             "camera": self._camera_adapter().capture_state(),
+            "scene": self._scene_identity(),
         }
+        self._watch_scene_replacement()
         return state
 
     def restore_state(self, state):
-        """Restore the captured state; returns the resources it could not."""
+        """Restore the captured state; returns the resources it could not.
+
+        A snapshot belongs to the scene it was captured in. Once Maya opened
+        or created another scene, nothing is written: the old time, gate and
+        camera values would overwrite the new scene's own data.
+        """
+        self._release_scene_callbacks()
+        if self._scene_replaced or not self._same_scene(state):
+            self._scene_replaced = True
+            return ["scene: the scene was replaced before linkage restored it; "
+                    "nothing was written to the new scene"]
         residual = []
         camera = self._camera_adapter()
         try:
-            camera.restore_state(state.get("camera"))
+            # The camera adapter reports a resource it cannot put back in its
+            # returned list instead of raising, so the list is the evidence.
+            for entry in camera.restore_state(state.get("camera")) or ():
+                residual.append("camera: {0}".format(entry))
         except Exception as exc:
             residual.append("camera: {0}".format(exc))
         try:
@@ -95,6 +122,55 @@ class MayaLinkageHost(object):
 
     def set_origin_frame(self, frame):
         self._origin = float(frame)
+
+    def scene_replaced(self):
+        """True once Maya opened or created another scene after the capture."""
+        return self._scene_replaced
+
+    def note_scene_replaced(self):
+        self._scene_replaced = True
+
+    # ------------------------------------------------------- scene identity
+    def _scene_identity(self):
+        try:
+            identity = cmds.ls(SCENE_IDENTITY_NODE, uuid=True)
+        except (AttributeError, RuntimeError, TypeError):
+            return None
+        if isinstance(identity, (list, tuple)) and identity \
+                and isinstance(identity[0], str):
+            return identity[0]
+        return None
+
+    def _same_scene(self, state):
+        captured = (state or {}).get("scene")
+        if captured is None:
+            return True
+        current = self._scene_identity()
+        return current is None or current == captured
+
+    def _watch_scene_replacement(self):
+        """Mark the snapshot stale when Maya is about to replace the scene."""
+        self._release_scene_callbacks()
+        self._scene_replaced = False
+        if om is None:
+            return
+        for name in SCENE_REPLACE_MESSAGES:
+            try:
+                self._scene_callbacks.append(om.MSceneMessage.addCallback(
+                    getattr(om.MSceneMessage, name),
+                    lambda *unused: self.note_scene_replaced()))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
+    def _release_scene_callbacks(self):
+        callbacks, self._scene_callbacks = self._scene_callbacks, []
+        if om is None:
+            return
+        for callback_id in callbacks:
+            try:
+                om.MMessage.removeCallback(callback_id)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
 
     # ------------------------------------------------------------ internals
     def _origin_frame(self):

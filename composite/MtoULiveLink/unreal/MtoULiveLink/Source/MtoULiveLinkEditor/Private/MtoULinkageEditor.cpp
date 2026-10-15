@@ -821,9 +821,23 @@ struct FMtoULinkageEditorState
     int32 EvalSerial = 0;
     bool bTimeEvaluated = false;
     double LastEvaluatedDisplayFrame = -1.0;
+    // The previous target this module produced, so a new one can be told
+    // apart as continuous playback or a discrete event.
+    bool bHasLastTarget = false;
+    bool bLastTargetPlaying = false;
+    double LastTargetDisplayFrame = 0.0;
 
-    /** The source the current takeover muted, so the restore can re-evaluate it. */
-    FMtoULinkageEditor::FEvaluationSource TakeoverSource;
+    /**
+     * The source the current takeover muted, held weakly: the restore
+     * re-evaluates it only while it still exists, and the validation notices
+     * when the sequence, its editor, its world or the target went away.
+     */
+    TWeakObjectPtr<ULevelSequence> TakeoverSequence;
+    TWeakObjectPtr<UWorld> TakeoverWorld;
+    TWeakPtr<ISequencer> TakeoverSequencer;
+    TWeakObjectPtr<ULevelSequencePlayer> TakeoverPlayer;
+    TWeakObjectPtr<const AActor> TakeoverAnchor;
+    bool bTakeoverUsedSequencer = false;
 
     TWeakObjectPtr<AActor> ObservedActor;
     TArray<TWeakPtr<SWidget>> PanelWidgets;
@@ -917,6 +931,7 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
         State.EvalIdentity.Reset();
         State.EvalSerial = 0;
         State.bTimeEvaluated = false;
+        State.bHasLastTarget = false;
     }
     if (Source.Sequencer.IsValid())
     {
@@ -963,11 +978,31 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
     const FString Identity = FString::Printf(TEXT("%s@%lld+%03d/%s#%s"),
         *Source.Sequence->GetName(), Tick, MilliTick,
         Camera->GetPathName().IsEmpty() ? TEXT("-") : *Camera->GetPathName(), *ContentDigest);
+    const bool bPlaying = Source.Sequencer.IsValid()
+        ? Source.Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing
+        : Source.Player->IsPlaying();
+    bool bDiscontinuous = false;
     if (Identity != State.EvalIdentity)
     {
+        if (State.bHasLastTarget)
+        {
+            // Playback that keeps advancing is continuous: the issued answer stays
+            // in flight. Anything else that changes the target while the sequence
+            // is not playing (pause, scrub, same-shot jump, camera edit), a time
+            // that went backwards (loop wrap) or skipped far ahead, is a discrete
+            // event that cancels it.
+            const double Step = DisplayFrame - State.LastTargetDisplayFrame;
+            const double MaxContinuousStep = FMath::Max(2.0, DisplayRate.AsDecimal() * 0.5);
+            bDiscontinuous = !bPlaying || !State.bLastTargetPlaying
+                ? !(bPlaying && Step >= 0.0 && Step <= MaxContinuousStep)
+                : (Step < 0.0 || Step > MaxContinuousStep);
+        }
         State.EvalIdentity = Identity;
         ++State.EvalSerial;
     }
+    State.bHasLastTarget = true;
+    State.bLastTargetPlaying = bPlaying;
+    State.LastTargetDisplayFrame = DisplayFrame;
 
     const FMtoUCutSample Cut = DescribeCut(
         Source.Sequence, DisplayRate, TickResolution, DisplayFrame, Camera);
@@ -990,6 +1025,7 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
     OutTarget.TickDenominator = TickResolution.Denominator;
     OutTarget.CutStage = Cut.Stage;
     OutTarget.CutName = Cut.Name;
+    OutTarget.bDiscontinuous = bDiscontinuous;
     OutTarget.Camera = SerializeCamera(CameraSample);
     OutTarget.Gate = SerializeGate(
         OutputResolution, ApertureRect, ResolutionSource, CameraSample);
@@ -1217,7 +1253,12 @@ bool FMtoULinkageEditor::TakeOverTarget(
         State.Writers.Add(MoveTemp(Muted));
     }
     State.bTakeoverActive = true;
-    State.TakeoverSource = Source;
+    State.TakeoverSequence = Source.Sequence;
+    State.TakeoverWorld = Source.World;
+    State.TakeoverSequencer = Source.Sequencer;
+    State.TakeoverPlayer = Source.Player;
+    State.TakeoverAnchor = TargetAnchor;
+    State.bTakeoverUsedSequencer = Source.Sequencer.IsValid();
 
     // Everything the writers owned is released: one evaluation re-establishes
     // what drives the target now instead of leaving a stale pose behind.
@@ -1269,9 +1310,23 @@ bool FMtoULinkageEditor::RestoreTarget(FString& OutError, FString& OutErrorCode)
     {
         // Every writer is enabled again: one evaluation re-establishes each
         // writer's own pose instead of leaving the preview's last pose behind.
-        ForceSequenceEvaluation(State.TakeoverSource);
-        State.TakeoverSource = FMtoULinkageEditor::FEvaluationSource();
+        // A closed editor or a destroyed player has nothing left to evaluate.
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = State.TakeoverSequence.Get();
+        Source.World = State.TakeoverWorld.Get();
+        Source.Sequencer = State.TakeoverSequencer.Pin();
+        Source.Player = State.TakeoverPlayer.Get();
+        if (Source.Sequence && (Source.Sequencer.IsValid() || Source.Player))
+        {
+            ForceSequenceEvaluation(Source);
+        }
     }
+    State.TakeoverSequence.Reset();
+    State.TakeoverWorld.Reset();
+    State.TakeoverSequencer.Reset();
+    State.TakeoverPlayer.Reset();
+    State.TakeoverAnchor.Reset();
+    State.bTakeoverUsedSequencer = false;
     if (!Residuals.IsEmpty())
     {
         OutError = FString::Join(Residuals, TEXT("; "));
@@ -1280,6 +1335,58 @@ bool FMtoULinkageEditor::RestoreTarget(FString& OutError, FString& OutErrorCode)
     }
     return true;
 }
+bool FMtoULinkageEditor::ValidateTakeover(FString& OutReason)
+{
+    OutReason.Reset();
+    const FMtoULinkageEditorState& State = GetState();
+    if (!State.bTakeoverActive)
+    {
+        return true;
+    }
+    const ULevelSequence* Sequence = State.TakeoverSequence.Get();
+    if (!Sequence)
+    {
+        OutReason = TEXT("the Level Sequence the takeover muted was unloaded");
+        return false;
+    }
+    if (State.bTakeoverUsedSequencer)
+    {
+        const TSharedPtr<ISequencer> Sequencer = State.TakeoverSequencer.Pin();
+        if (!Sequencer.IsValid() || Sequencer->GetRootMovieSceneSequence() != Sequence)
+        {
+            OutReason = FString::Printf(
+                TEXT("the Level Sequence '%s' was closed in the editor"), *Sequence->GetName());
+            return false;
+        }
+        if (ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence() != Sequence)
+        {
+            OutReason = FString::Printf(
+                TEXT("the editor switched from the Level Sequence '%s' to another sequence"),
+                *Sequence->GetName());
+            return false;
+        }
+    }
+    else if (!State.TakeoverPlayer.IsValid())
+    {
+        OutReason = FString::Printf(
+            TEXT("the player of the Level Sequence '%s' was destroyed"), *Sequence->GetName());
+        return false;
+    }
+    const UWorld* World = State.TakeoverWorld.Get();
+    if (!World || World->bIsTearingDown)
+    {
+        OutReason = TEXT("the world of the takeover was closed");
+        return false;
+    }
+    const AActor* Anchor = State.TakeoverAnchor.Get();
+    if (!IsValid(Anchor) || Anchor->GetWorld() != World)
+    {
+        OutReason = TEXT("the paired target was destroyed or left the takeover's world");
+        return false;
+    }
+    return true;
+}
+
 /** The open editor Sequencer of one sequence, when the sequence is open in one. */
 TSharedPtr<ISequencer> FindOpenSequencer(const ULevelSequence* Sequence)
 {
@@ -1425,6 +1532,11 @@ bool RestoreTargetHook(FString& OutError, FString& OutErrorCode)
     return FMtoULinkageEditor::RestoreTarget(OutError, OutErrorCode);
 }
 
+bool ValidateTakeoverHook(FString& OutReason)
+{
+    return FMtoULinkageEditor::ValidateTakeover(OutReason);
+}
+
 void OnViewChangedHook(const FMtoULinkageView& View)
 {
     FMtoULinkageEditorState& State = GetState();
@@ -1453,6 +1565,7 @@ void FMtoULinkageEditor::InstallHooks()
     Hooks.EvaluateCameraTime = &EvaluateCameraTimeHook;
     Hooks.TakeOverTarget = &TakeOverTargetHook;
     Hooks.RestoreTarget = &RestoreTargetHook;
+    Hooks.ValidateTakeover = &ValidateTakeoverHook;
     Hooks.OnViewChanged = &OnViewChangedHook;
     MtoUSetLinkageHooks(Hooks);
     State.bHooksInstalled = true;

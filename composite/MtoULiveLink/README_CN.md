@@ -144,17 +144,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 
 1. 在 Unreal 选中 Binding Actor，在 **镜头联动** 中配对 Maya 对象，并打开要跟随
    的 Level Sequence。
-2. 在 Maya 照常连接角色，从主面板打开 **镜头联动** 并点击 **进入联动**。Maya 会
-   停止自身播放，跟随 Sequence 时间与求值相机，并回传角色的完整姿势。
+2. 在 Maya 照常连接角色，从主面板打开 **镜头联动** 并点击 **进入联动**（也可在
+   Unreal 详情面板点击 **进入联动**，Maya 会跟随任一端）。Maya 会停止自身播放，
+   跟随 Sequence 时间与求值相机，并回传角色的完整姿势。
 3. Unreal 显示时间控制方、目标时间、最新完整应用时间和滞后。落后于当前 Sequence
    时间的完整姿势会显示为滞后，不会被报成已同步。
 4. **返回实时** 会恢复 Maya 的时间轴、视图与门，并保持 Maya 暂停，Unreal 继续
-   保持接管；Maya 播放由用户自行恢复。**结束预览** 另外把原 writer 交还给 Sequence。
+   保持接管；Maya 播放由用户自行恢复。**结束预览** 另外把原 writer 交还给 Sequence，
+   在 **返回实时** 之后仍可使用，直到交还完成。两个按钮在任一端都可操作。
 
 联动期间，改动相机、暂停、cut 或明确跳转都会取消旧目标；相机随时间连续运动不会
 取消已经在路上的回传。若目标的 writer 无法安全隔离，Unreal 会在写入前拒绝并说明
 原因，而不是暂停整个 Sequence。进入联动前必须先清除缓存播放；恢复失败会按资源
-逐项报告，不会用“断开成功”掩盖。
+逐项报告，不会用“断开成功”掩盖。关闭或切换 Level Sequence、关闭其关卡或删除已配对
+的 Actor 都会结束联动：Unreal 交还 writer，Maya 恢复自身状态。在 Maya 打开或新建
+其他场景时，联动会先恢复开始时的场景，再断开连接。
 
 ## Maya 中的场景参考
 

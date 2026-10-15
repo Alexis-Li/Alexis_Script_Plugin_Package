@@ -111,6 +111,15 @@ public:
     static bool RestoreTarget(FString& OutError, FString& OutErrorCode);
 
     /**
+     * True while the current takeover can still be driven: its Level Sequence
+     * is loaded and still the one open in the editor (or its player is alive),
+     * its world is alive and its target still resolves. False names what went
+     * away, so the runtime ends the linkage instead of muting writers of a
+     * sequence nobody evaluates. Without an active takeover it is true.
+     */
+    static bool ValidateTakeover(FString& OutReason);
+
+    /**
      * Remembered pairing the panel established. The hook prefers it and falls
      * back to resolving the runtime view's target path, so a pairing the
      * runtime still holds stays reachable after a panel reload.

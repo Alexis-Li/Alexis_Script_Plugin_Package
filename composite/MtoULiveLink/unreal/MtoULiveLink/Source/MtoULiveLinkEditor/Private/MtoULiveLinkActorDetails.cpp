@@ -556,15 +556,25 @@ FText LinkageRealtimeTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMt
     return LOCTEXT("LinkageRealtimeReady", "返回实时预览：Maya 恢复自己的时间、视图与门并保持暂停，Unreal 保留接管。");
 }
 
+/**
+ * Every Details transition names the next mode revision: the runtime accepts
+ * only a revision newer than the one it holds, so passing the current one would
+ * be refused as MODE_CONFLICT.
+ */
+int32 NextLinkageModeRevision(const FMtoULinkageView& View)
+{
+    return View.Identity.ModeRevision + 1;
+}
+
 FText LinkageEndTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULinkageView& View)
 {
     if (!Actor.IsValid())
     {
         return LOCTEXT("LinkageEndNoActor", "选择绑定 Actor 后结束预览。");
     }
-    if (View.Mode != TEXT("linkage") && !View.bPaired)
+    if (View.Mode != TEXT("linkage") && !View.bTakeoverHeld)
     {
-        return LOCTEXT("LinkageEndNothing", "没有进行中的联动或配对需要结束。");
+        return LOCTEXT("LinkageEndNothing", "没有进行中的联动或预览接管需要结束。");
     }
     return LOCTEXT("LinkageEndReady", "结束预览：每个借用的 writer 逐资源恢复，原始 writer 归位；恢复缺口会被报告而不是隐藏。");
 }
@@ -1290,7 +1300,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     }
                     const FMtoULinkageView View = MtoUGetLinkageView();
                     FString EnterError;
-                    if (!MtoURequestLinkageEnter(View.Identity.ModeRevision, EnterError))
+                    if (!MtoURequestLinkageEnter(NextLinkageModeRevision(View), EnterError))
                     {
                         *LinkageMessage = FText::Format(
                             LOCTEXT("LinkageEnterRefused", "无法进入镜头联动：{0}"),
@@ -1322,7 +1332,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     }
                     const FMtoULinkageView View = MtoUGetLinkageView();
                     FString LeaveError;
-                    if (!MtoURequestLinkageLeave(TEXT("realtime"), View.Identity.ModeRevision, LeaveError))
+                    if (!MtoURequestLinkageLeave(TEXT("realtime"), NextLinkageModeRevision(View), LeaveError))
                     {
                         *LinkageMessage = FText::Format(
                             LOCTEXT("LinkageRealtimeRefused", "无法返回实时：{0}"),
@@ -1345,7 +1355,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                 {
                     const FMtoULinkageView View = MtoUGetLinkageView();
                     return Actor.IsValid()
-                        && (View.Mode == TEXT("linkage") || View.bPaired) && !View.bTransitioning;
+                        && (View.Mode == TEXT("linkage") || View.bTakeoverHeld) && !View.bTransitioning;
                 })
                 .OnClicked_Lambda([Actor, LinkageMessage]()
                 {
@@ -1355,7 +1365,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     }
                     const FMtoULinkageView View = MtoUGetLinkageView();
                     FString EndError;
-                    if (!MtoURequestLinkageLeave(TEXT("end"), View.Identity.ModeRevision, EndError))
+                    if (!MtoURequestLinkageLeave(TEXT("end"), NextLinkageModeRevision(View), EndError))
                     {
                         *LinkageMessage = FText::Format(
                             LOCTEXT("LinkageEndRefused", "无法结束预览：{0}"),

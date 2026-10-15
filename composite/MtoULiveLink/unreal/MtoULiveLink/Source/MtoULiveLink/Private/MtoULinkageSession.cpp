@@ -176,6 +176,7 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
     View.AppliedLagSeconds = LastAppliedLagSeconds;
     View.bConverged = bConverged;
     View.bTransitioning = bTransitioning;
+    View.bTakeoverHeld = bWritersBorrowed;
     View.Detail = Detail;
     View.Error = Error;
     View.ErrorCode = ErrorCode;
@@ -335,6 +336,19 @@ void FMtoULinkageSession::NoteMode(const FMtoUModeMessage& Message, double NowSe
                 FString::Printf(TEXT("current mode revision %d, message %d"), ModeRevision, Message.ModeRevision));
             return;
         }
+        if (Message.ModeRevision <= ModeRevision)
+        {
+            // A Maya transition must be newer than every revision this session
+            // used; an older one is a late confirmation of a transition that
+            // already failed here, and taking over again would leave Unreal
+            // driving a target Maya has stopped answering. The statement tells
+            // Maya to roll back.
+            SendControl(FMtoUProtocol::EncodeModeState(
+                SessionId, ModeRevision, Mode, Control,
+                FString::Printf(TEXT("Mode revision %d is not newer than the current %d."),
+                    Message.ModeRevision, ModeRevision)));
+            return;
+        }
         // Maya started the transition: Unreal performs its own half.
         FString TakeError;
         FString TakeCode;
@@ -389,20 +403,26 @@ void FMtoULinkageSession::NoteLeaveLinkage(
     }
     if (Mode != TEXT("linkage"))
     {
-        if (Message.Target == TEXT("end") && bWritersBorrowed)
+        // Linkage already left (Unreal's own 返回实时 or 结束预览, or a refused
+        // transition): the exit is idempotent. 结束预览 hands back any writer
+        // still borrowed; both targets adopt Maya's newer revision and confirm
+        // the current mode instead of failing an exit that already happened.
+        FString Residual;
+        if (Message.Target == TEXT("end"))
         {
-            FString Residual;
             RestoreBorrowedWriters(Residual);
-            Error = Residual.IsEmpty() ? FString() : Residual;
-            ErrorCode = Residual.IsEmpty() ? FString() : TEXT("RECOVERY_REFUSED");
-            Detail = TEXT("The preview ended and the original writers were restored.");
-            PublishView();
-            return;
         }
-        SendError(
-            TEXT("LINKAGE_NOT_ACTIVE"),
-            TEXT("Linkage is not active."),
-            TEXT("Maya confirmed a leave while Unreal already holds its own time."));
+        ModeRevision = FMath::Max(ModeRevision, Message.ModeRevision);
+        Error = Residual.IsEmpty() ? FString() : Residual;
+        ErrorCode = Residual.IsEmpty() ? FString() : TEXT("RECOVERY_REFUSED");
+        Detail = !Residual.IsEmpty()
+            ? Residual
+            : Message.Target == TEXT("end")
+                ? TEXT("The preview ended and the original writers were restored.")
+                : TEXT("Maya restored its own state; Unreal already follows Maya's time.");
+        SendControl(FMtoUProtocol::EncodeModeState(
+            SessionId, ModeRevision, Mode, Control, Detail));
+        PublishView();
         return;
     }
     if (Message.ModeRevision <= ModeRevision)
@@ -613,6 +633,14 @@ void FMtoULinkageSession::Tick(double NowSeconds)
         // A transition Maya never confirms keeps the previous mode instead of
         // leaving the pose gate closed forever.
         FailTransition(TEXT("MODE_CONFLICT"), TEXT("The time-control transition was not confirmed."));
+    }
+    if (bWritersBorrowed && Hooks.ValidateTakeover)
+    {
+        FString LostReason;
+        if (!Hooks.ValidateTakeover(LostReason))
+        {
+            EndForLostTakeover(LostReason);
+        }
     }
     if (Mode == TEXT("linkage") && !bTransitioning)
     {
@@ -924,10 +952,12 @@ void FMtoULinkageSession::PumpCameraTargets(double NowSeconds)
             // A heartbeat of the work already in flight is not a second one.
             return;
         }
-        if (IsCutChange(Issued.GetValue(), Target))
+        if (IsCutChange(Issued.GetValue(), Target) || Target.bDiscontinuous)
         {
-            // A cut cancels the target in flight; a late answer is EVAL_STALE.
+            // A cut, pause, jump or camera edit cancels the target in flight and
+            // any waiting one; a late answer is EVAL_STALE and changes nothing.
             Issued.Reset();
+            Desired.Reset();
         }
     }
     if (Issued.IsSet())
@@ -970,17 +1000,26 @@ bool FMtoULinkageSession::BeginTakeover(
     int32 InModeRevision, FString& OutError, FString& OutErrorCode, bool bAwaitPeerConfirmation)
 {
     const FMtoULinkagePairing* Pairing = FindPairing(SessionObjectId);
+    const auto Refuse = [&](const TCHAR* Code, const TCHAR* Message)
+    {
+        // The pairing is the consent to take the target over; its absence is
+        // reported on the panel like any other refused transition.
+        OutError = Message;
+        OutErrorCode = Code;
+        Error = OutError;
+        ErrorCode = OutErrorCode;
+        PublishView();
+        return false;
+    };
     if (!Pairing)
     {
-        OutError = TEXT("Pair this actor's Binding with the Maya object before entering linkage.");
-        OutErrorCode = TEXT("PAIRING_REQUIRED");
-        return false;
+        return Refuse(TEXT("PAIRING_REQUIRED"),
+            TEXT("Pair this actor's Binding with the Maya object before entering linkage."));
     }
     if (!Pairing->Actor.IsValid() || !IsEligiblePairingActor(*Pairing->Actor))
     {
-        OutError = TEXT("The paired target no longer resolves in the Editor world.");
-        OutErrorCode = TEXT("TARGET_UNKNOWN");
-        return false;
+        return Refuse(TEXT("TARGET_UNKNOWN"),
+            TEXT("The paired target no longer resolves in the Editor world."));
     }
 
     bTransitioning = true;
@@ -1036,6 +1075,42 @@ void FMtoULinkageSession::FailTransition(const FString& Code, const FString& InD
         : FString::Printf(TEXT("%s; %s"), *InDetail, *Residual);
     ErrorCode = Residual.IsEmpty() ? Code : TEXT("RECOVERY_REFUSED");
     SendControl(FMtoUProtocol::EncodeModeState(SessionId, ModeRevision, Mode, Control, Error));
+    PublishView();
+}
+
+void FMtoULinkageSession::EndForLostTakeover(const FString& Reason)
+{
+    if (Mode == TEXT("linkage"))
+    {
+        // A new revision: Maya follows it as Unreal leaving linkage.
+        ++ModeRevision;
+    }
+    Issued.Reset();
+    Desired.Reset();
+    Staged.Reset();
+    bTransitioning = false;
+    bConverged = false;
+    // The last synchronisation belonged to a sequence that is gone; showing it
+    // as current would claim a display nobody evaluates.
+    LastAppliedEvalId.Reset();
+    LastAppliedSampleSerial = 0;
+    bLastApplied = false;
+    LastAppliedReason.Reset();
+    LastAppliedDisplayFrame = 0.0;
+    LastAppliedLagSeconds = 0.0;
+
+    FString Residual;
+    RestoreBorrowedWriters(Residual);
+    Mode = TEXT("realtime");
+    Control = TEXT("maya");
+    const FString Lost = Reason.IsEmpty()
+        ? FString(TEXT("the takeover's sequence or target went away"))
+        : Reason;
+    Detail = FString::Printf(TEXT("Linkage ended: %s."), *Lost);
+    Error = Residual.IsEmpty() ? Detail : FString::Printf(TEXT("%s %s"), *Detail, *Residual);
+    ErrorCode = Residual.IsEmpty() ? TEXT("TARGET_UNKNOWN") : TEXT("RECOVERY_REFUSED");
+    SendControl(FMtoUProtocol::EncodeModeState(
+        SessionId, ModeRevision, Mode, Control, Error));
     PublishView();
 }
 

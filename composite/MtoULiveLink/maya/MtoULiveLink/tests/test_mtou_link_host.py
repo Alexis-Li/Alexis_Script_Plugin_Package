@@ -152,6 +152,69 @@ class LinkageHostTests(unittest.TestCase):
         self.assertTrue(residual[0].startswith("camera:"))
         self.assertIn("panel is gone", residual[0])
 
+    def test_restore_merges_the_camera_residual_list(self):
+        # LinkCamera reports a node it could not delete in its returned list
+        # instead of raising; the host must not drop that evidence.
+        host, camera, commands, state, patchers = build()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        captured = host.capture_state()
+        camera.restore_state = mock.Mock(return_value=[
+            "camera MtoU_LinkCamera: Cannot delete locked node"])
+        state["width"] = 640
+        residual = host.restore_state(captured)
+        self.assertEqual(
+            ["camera: camera MtoU_LinkCamera: Cannot delete locked node"], residual)
+        # The other resources are still restored.
+        self.assertEqual(1920, state["width"])
+
+    def test_restore_writes_nothing_once_the_scene_was_replaced(self):
+        host, camera, commands, state, patchers = build(time_value=7.0)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        captured = host.capture_state()
+        host.note_scene_replaced()
+        state["time"] = 48.0
+        state["width"] = 2048
+        residual = host.restore_state(captured)
+        self.assertEqual(1, len(residual))
+        self.assertTrue(residual[0].startswith("scene:"))
+        self.assertEqual(48.0, state["time"])
+        self.assertEqual(2048, state["width"])
+        self.assertEqual([], camera.restored)
+
+    def test_restore_writes_nothing_into_a_scene_with_another_identity(self):
+        host, camera, commands, state, patchers = build(time_value=7.0)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        commands.ls.side_effect = lambda *a, **k: ["scene-a"]
+        captured = host.capture_state()
+        self.assertEqual("scene-a", captured["scene"])
+        commands.ls.side_effect = lambda *a, **k: ["scene-b"]
+        state["width"] = 2048
+        residual = host.restore_state(captured)
+        self.assertTrue(residual[0].startswith("scene:"))
+        self.assertEqual(2048, state["width"])
+        self.assertEqual([], camera.restored)
+        self.assertTrue(host.scene_replaced())
+
+    def test_scene_callbacks_are_registered_at_capture_and_released(self):
+        host, camera, commands, state, patchers = build()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        fake_om = mock.MagicMock()
+        fake_om.MSceneMessage.addCallback.side_effect = [11, 12]
+        with mock.patch.object(mtou_link_host, "om", fake_om):
+            captured = host.capture_state()
+            self.assertEqual(2, fake_om.MSceneMessage.addCallback.call_count)
+            host.restore_state(captured)
+        removed = [call[0][0] for call in fake_om.MMessage.removeCallback.call_args_list]
+        self.assertEqual([11, 12], removed)
+
     def test_apply_maps_time_applies_camera_and_reports_readback(self):
         host, camera, commands, state, patchers = build(time_value=3.0)
         for patcher in patchers:

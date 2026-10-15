@@ -493,7 +493,121 @@ class LinkagePanelTests(unittest.TestCase):
             self.controller._on_runtime_reply({
                 "type": "mode_state", "session_id": 7, "mode_revision": 1,
                 "mode": "linkage", "control": "unreal", "detail": "UE 已接管"})
+            # Mode statements are followed on Maya's main thread.
+            self.flush()
         self.assertEqual("UE 已接管", self.controller.linkage_status()["detail"])
+
+    def _mode_state(self, revision, mode="linkage", detail=""):
+        return {"type": "mode_state", "session_id": 7, "mode_revision": revision,
+                "mode": mode, "control": "unreal" if mode == "linkage" else "maya",
+                "detail": detail}
+
+    def _route(self, reply):
+        with self.bindings:
+            handled = self.controller._on_runtime_reply(reply)
+            self.flush()
+        return handled
+
+    def test_unreal_started_linkage_enters_from_realtime(self):
+        self._route(self._mode_state(1))
+
+        linkage = self.controller._linkage
+        self.assertIsNotNone(linkage)
+        self.assertTrue(linkage.is_active)
+        self.assertEqual(mtou_config.LINKAGE_MODE, self.controller._mode)
+        self.assertEqual(1, self.host.captured)
+        self.assertEqual(1, len(self.timers))
+        modes = [(m["mode"], m["mode_revision"], m["transition"])
+                 for m in self.session.messages if m["type"] == "mode"]
+        self.assertEqual([("linkage", 1, "ready")], modes)
+
+    def test_unreal_started_linkage_is_refused_without_a_role(self):
+        self.controller._scene = None
+        self._route(self._mode_state(1))
+
+        self.assertIsNone(self.controller._linkage)
+        self.assertEqual(0, self.host.captured)
+        modes = [(m["mode"], m["mode_revision"], m["transition"])
+                 for m in self.session.messages if m["type"] == "mode"]
+        # Unreal hears the refusal and hands its writers back at once.
+        self.assertEqual([("realtime", 1, "failed")], modes)
+        self.assertEqual("ROLE_SETUP_FAILED", self.show_error.call_args[0][0]["code"])
+
+    def test_unreal_leave_restores_maya_and_resumes_realtime(self):
+        self.enter_linkage()
+        self._route(self._mode_state(1))
+        self._route(self._mode_state(2, mode="realtime", detail="UE 返回实时"))
+
+        linkage = self.controller._linkage
+        self.assertFalse(linkage.is_active)
+        self.assertEqual(mtou_config.REALTIME_MODE, self.controller._mode)
+        self.assertEqual(1, len(self.host.restored))
+        self.assertEqual(1, self.session.resumed)
+        self.assertEqual(2, self.controller._linkage_revision)
+        # The pump no longer drives a linkage that ended.
+        self.assertIn(1, self.removed_callbacks)
+        # A later Maya entry continues the connection's revision.
+        self.enter_linkage()
+        self.assertEqual(3, self.controller._linkage.mode_revision())
+
+    def test_unreal_refusing_maya_entry_rolls_the_panel_back(self):
+        self.enter_linkage()
+        self._route(self._mode_state(0, mode="realtime", detail="PAIRING_REQUIRED"))
+
+        self.assertFalse(self.controller._linkage.is_active)
+        self.assertEqual(mtou_config.REALTIME_MODE, self.controller._mode)
+        self.assertEqual(1, len(self.host.restored))
+        self.assertFalse(self.controller._linkage.takeover_held())
+
+    def test_unconfirmed_entry_rolls_back_on_the_pump(self):
+        self.enter_linkage()
+        linkage = self.controller._linkage
+        linkage._clock = lambda: 1e9
+        self.pump()
+
+        self.assertFalse(linkage.is_active)
+        self.assertEqual(mtou_config.REALTIME_MODE, self.controller._mode)
+        self.assertEqual(1, len(self.host.restored))
+        failed = [m for m in self.session.messages
+                  if m["type"] == "mode" and m["transition"] == "failed"]
+        self.assertEqual(1, len(failed))
+
+    def test_end_preview_stays_available_after_returning_to_realtime(self):
+        self.enter_linkage()
+        with self.bindings:
+            self.controller.leave_linkage("realtime")
+        enabled = {}
+        self.controller._end_linkage_button = "end"
+        self.controller._leave_linkage_button = "leave"
+        with mock.patch.object(
+                self.controller, "_set_enabled",
+                side_effect=lambda control, value: enabled.__setitem__(control, value)):
+            with self.bindings:
+                self.controller._update_linkage_controls()
+        self.assertTrue(enabled["end"])
+        self.assertFalse(enabled["leave"])
+
+        with self.bindings:
+            self.controller.leave_linkage("end")
+        exits = [m["target"] for m in self.session.messages
+                 if m["type"] == "leave_linkage"]
+        self.assertEqual(["realtime", "end"], exits)
+        with mock.patch.object(
+                self.controller, "_set_enabled",
+                side_effect=lambda control, value: enabled.__setitem__(control, value)):
+            with self.bindings:
+                self.controller._update_linkage_controls()
+        self.assertFalse(enabled["end"])
+
+    def test_dispatcher_leaves_errors_to_the_session_before_linkage(self):
+        # Without linkage an Unreal error still ends the realtime connection.
+        handled = self._route({"type": "error", "code": "INVALID_MESSAGE",
+                               "message": "bad frame"})
+        self.assertFalse(handled)
+        self.enter_linkage()
+        handled = self._route({"type": "error", "code": "MODE_CONFLICT",
+                               "message": "stale"})
+        self.assertTrue(handled)
 
     def test_runtime_reply_stores_a_reference_offer_and_refreshes_its_window(self):
         self.enter_linkage()
