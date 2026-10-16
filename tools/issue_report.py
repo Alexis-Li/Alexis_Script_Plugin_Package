@@ -36,6 +36,9 @@ MARKER_RE = re.compile(
     r"issue=([1-9][0-9]*) key=([a-z][a-z0-9-]{0,63}) -->"
 )
 PLACEHOLDER_RE = re.compile(r"\{\{.*?\}\}|^[ \t]*(?:TODO|TBD)[ \t]*$", re.MULTILINE)
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.-])/(?:Users|home|private/tmp|var/folders)/"
+)
 
 
 def template(kind: str, issue: int, key: str) -> str:
@@ -95,6 +98,11 @@ def validate_report(body: str) -> dict:
         errors.append("key 'current' is reserved for the one summary per issue")
     if PLACEHOLDER_RE.search(structure):
         errors.append("replace {{placeholders}} and standalone TODO/TBD draft lines")
+    if ABSOLUTE_PATH_RE.search(body):
+        errors.append(
+            "report contains a machine-specific absolute path; "
+            "use repository-relative paths or placeholders such as <Maya2024> or <scratch>"
+        )
     title, statuses, sections = REPORTS[kind]
     # Only header fields count; a quoted/example field in a later section cannot satisfy it.
     header = structure.split("\n### ", 1)[0]
@@ -167,6 +175,8 @@ def validate_archive(archive: object) -> list[str]:
     for field in ("archived_on", "purpose", "current_status_comment"):
         if not isinstance(archive.get(field), str) or not archive[field].strip():
             errors.append(f"missing archive {field}")
+    if isinstance(archive.get("purpose"), str) and ABSOLUTE_PATH_RE.search(archive["purpose"]):
+        errors.append("archive purpose must not contain machine-specific absolute paths")
     try:
         date.fromisoformat(archive.get("archived_on", ""))
     except (TypeError, ValueError):

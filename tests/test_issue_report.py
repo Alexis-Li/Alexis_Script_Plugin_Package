@@ -112,6 +112,9 @@ class IssueReportTests(unittest.TestCase):
             "empty section": REVIEW.split("### 后续处理")[0] + "### 后续处理\n<!-- note -->\n",
             "missing section": REVIEW.replace("### 审核问题", "### 随意标题"),
             "duplicate section": REVIEW + "\n### 审核问题\n无\n",
+            "windows drive path": REVIEW + "\n验证命令：`" + "E" + ":/UE_5.7/Build.bat`\n",
+            "windows backslash": REVIEW + "\n```powershell\n" + "C" + ":\\Temp\\run.ps1\n```\n",
+            "posix user path": REVIEW + "\n日志位于 /" + "Users/dev/project/out.log\n",
         }
         for name, body in cases.items():
             with self.subTest(name=name):

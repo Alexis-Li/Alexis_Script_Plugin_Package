@@ -145,6 +145,10 @@ Preserve unresolved dissent and user decisions. Explain metric units, expected
 failures, skipped checks and fixture limits. Summaries are derived views:
 reconcile stronger evidence for the relevant baseline instead of retaining
 stale conclusions. Link maintained instructions rather than copying them.
+Issue/PR descriptions, reviews, reports and comments follow the portable-path
+rule: do not write machine-specific absolute paths (drive letters or local user
+directories); use repository-relative paths or placeholders such as
+`<Maya2024>`, `<Project.uproject>`, or `<scratch>`.
 
 ## Publishing safely
 
@@ -157,8 +161,8 @@ python tools/issue_report.py check "$scratch/issue-53-dev-03.md" --json
 
 Replace placeholders before publishing. Templates refuse to overwrite files.
 Exit codes: 0 success, 1 invalid content/file error, 2 CLI usage error. The tool
-checks structure/declarations; the publisher checks evidence truth, link
-availability and semantic consistency.
+checks structure, declarations and portable-path compliance; the publisher
+checks evidence truth, link availability and semantic consistency.
 
 Read all comments with pagination before creating a report. Match kind/issue/key
 and edit an existing match by exact numeric comment ID. Multiple matches need
@@ -217,10 +221,11 @@ Source archives use `github-issue-comment-archive/1`: `issue`, `archived_on`,
 legacy wording. Use the existing project history directory and inspect for secrets
 and private paths.
 
-Validated source-comment bodies may retain historical machine paths as exact
-provenance, not current configuration. Archive metadata and ordinary project
-files still follow the portable-path rule; this exception does not allow secrets.
-Validate before publishing:
+Archived `comments[*].body` entries may retain historical machine paths strictly
+as exact provenance of already-published comments, not as current configuration
+or as permission for new comments. New or edited issue/PR comments, summaries,
+archive metadata and ordinary project files must follow the portable-path rule;
+this archival exception never allows secrets. Validate before publishing:
 
 ```powershell
 python tools/issue_report.py check-archive <archive.json> --json

@@ -47,9 +47,10 @@ exceptions, contracts, and useful commands.
 - Preserve public APIs and supported versions unless the task authorizes a
   breaking migration. Avoid unrelated refactoring and third-party edits;
   task-required changes to either should have a clear reason.
-- Do not check in secrets, machine-specific paths, caches, host/IDE build output,
-  or release archives. Intentional source assets and generated source required
-  by the project are distinct from disposable output.
+- Do not check in or publish in Issue/PR comments secrets, machine-specific
+  paths, caches, host/IDE build output, or release archives. Intentional source
+  assets and generated source required by the project are distinct from
+  disposable output.
 - General directories use lowercase kebab-case; host project names follow their
   host rule file. Python internals use snake_case and classes PascalCase.
   Use Semantic Versioning where practical.
