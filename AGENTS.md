@@ -70,7 +70,8 @@ exceptions, contracts, and useful commands.
 - General directories use lowercase kebab-case; host project names follow their
   host rule file. Python internals use snake_case and classes PascalCase.
   Use Semantic Versioning where practical.
-- Do not create unregistered nested repositories, force-push, or discard unrelated history.
+- Do not create unregistered nested repositories, force-push, or discard
+  unrelated history.
   Keep commits coherent and release tags prefixed as defined in
   `docs/naming-conventions.md`, for example `maya-mesh-normal-tool-v0.2.0` or
   `ue-asset-audit-v1.1.0`.

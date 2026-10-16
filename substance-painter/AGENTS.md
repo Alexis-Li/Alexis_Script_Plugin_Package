@@ -57,5 +57,6 @@ own repository; see the collection's docs/submodules.md for that boundary.
   and record the Painter version used. If Painter is unavailable, report that
   limit and do not claim host verification.
 - Repository packaging, version-update, and project-template commands do not
-  cover collection-owned Painter projects yet. The first such project adds them as part of its delivery,
+  cover collection-owned Painter projects yet. The first such project adds them
+  as part of its delivery,
   using archive name `<PluginName>-<version>-SP.zip`.
