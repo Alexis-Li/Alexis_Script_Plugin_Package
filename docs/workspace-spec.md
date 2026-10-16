@@ -16,8 +16,11 @@ is not a second copy of the repository rules.
 | Reusable project template | `templates/<template-name>/` |
 | Repository tooling and tests | `tools/` and `tests/` |
 
-The repository root is the only Git root. Each project or host component keeps
-the installation boundary defined by its nearest `AGENTS.md`.
+Complete standalone or composite project roots may be registered Git submodules.
+The collection owns their index and pinned commit; each independent repository
+owns its internal layout, rules and installation boundary. Other projects keep
+the installation boundary defined by their nearest collection `AGENTS.md`.
+See [submodule workflow](submodules.md) before changing repository ownership.
 
 ## Rule ownership
 

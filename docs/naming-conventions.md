@@ -22,6 +22,9 @@ platform-specific constraints.
 - Unreal plugins and modules use PascalCase and Unreal C++ types follow Epic's
   naming conventions.
 - Public versions use Semantic Versioning where practical.
+- Registered submodule mount paths follow the project naming above. Independent
+  repositories define their own internal names and release tags; collection tag
+  prefixes below apply to releases owned by this repository.
 
 ## Release tags and archives
 

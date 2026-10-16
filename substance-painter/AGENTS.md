@@ -3,6 +3,8 @@
 These host conventions cover Adobe Substance 3D Painter Python plug-ins,
 including composite components and templates that reference this file.
 Composite roots own their shared metadata.
+Independent project submodules own their host rules and delivery tools in their
+own repository; see the collection's docs/submodules.md for that boundary.
 
 ## Project shape and installation
 
@@ -55,5 +57,5 @@ Composite roots own their shared metadata.
   and record the Painter version used. If Painter is unavailable, report that
   limit and do not claim host verification.
 - Repository packaging, version-update, and project-template commands do not
-  cover Painter yet. The first Painter project adds them as part of its delivery,
+  cover collection-owned Painter projects yet. The first such project adds them as part of its delivery,
   using archive name `<PluginName>-<version>-SP.zip`.

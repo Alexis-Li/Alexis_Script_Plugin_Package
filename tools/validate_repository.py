@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
 from _repo_tools import ROOT, emit, maya_version, substance_painter_version
 from issue_report import validate_archive
+from submodule_registry import registered_submodules
 
 REQUIRED_PATHS = (
     ".github/workflows",
@@ -105,13 +107,17 @@ COMPOSITE_ROOT_METADATA = (
 COMPOSITE_COMPONENT_METADATA = COMPOSITE_ROOT_METADATA
 
 
-def _iter_files(root: Path):
-    for path in root.rglob("*"):
-        if ".git" in path.parts:
-            continue
-        if any(part.lower() in FORBIDDEN_DIRS for part in path.relative_to(root).parts):
-            continue
-        yield path
+def _iter_files(root: Path, excluded: frozenset[Path] = frozenset()):
+    for current, directories, files in os.walk(root):
+        base = Path(current)
+        directories[:] = [name for name in directories
+                          if name not in {".git", ".tmp", ".worktrees"}
+                          and name.lower() not in FORBIDDEN_DIRS
+                          and base / name not in excluded]
+        for name in directories + files:
+            path = base / name
+            if name != ".git" and path not in excluded:
+                yield path
 
 
 def _version_control_paths(root: Path) -> list[Path]:
@@ -146,9 +152,13 @@ def _validate_json(path: Path, errors: list[str], root: Path) -> None:
         errors.append("invalid JSON {0}: {1}".format(path.relative_to(root).as_posix(), exc))
 
 
-def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
+def _validate_shelf_scripts(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     scripts_root = root / "maya" / "scripts"
     for project in sorted(path for path in scripts_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         if not PASCAL_RE.fullmatch(project.name):
             errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
         files = [path for path in project.iterdir() if path.is_file() and path.name != ".gitkeep"]
@@ -210,9 +220,13 @@ def _validate_maya_project(
         errors.append("Maya tool {0}: {1}".format(project.name, exc))
 
 
-def _validate_maya_tools(root: Path, errors: list[str]) -> None:
+def _validate_maya_tools(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     tools_root = root / "maya" / "tools"
     for project in sorted(path for path in tools_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         _validate_maya_project(project, errors, root)
 
 
@@ -234,12 +248,16 @@ def _validate_unreal_plugin(
     _validate_json(descriptors[0], errors, root)
 
 
-def _validate_unreal(root: Path, errors: list[str]) -> None:
+def _validate_unreal(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     project_file = root / "unreal" / "ToolsLab.uproject"
     if project_file.is_file():
         _validate_json(project_file, errors, root)
     plugins_root = root / "unreal" / "Plugins"
     for plugin in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
+        if plugin in excluded:
+            continue
         _validate_unreal_plugin(plugin, errors, root)
 
 
@@ -267,9 +285,13 @@ def _validate_substance_painter_project(
         errors.append("Substance Painter plug-in {0}: {1}".format(project.name, exc))
 
 
-def _validate_substance_painter(root: Path, errors: list[str]) -> None:
+def _validate_substance_painter(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     plugins_root = root / "substance-painter" / "plugins"
     for project in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         _validate_substance_painter_project(project, errors, root)
 
 
@@ -299,11 +321,15 @@ def _validate_composite_component_metadata(
             )
 
 
-def _validate_composite(root: Path, errors: list[str]) -> None:
+def _validate_composite(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     composite_root = root / "composite"
     if not composite_root.is_dir():
         return
     for project in sorted(path for path in composite_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         if not PASCAL_RE.fullmatch(project.name):
             errors.append(
                 "Composite project directory must use PascalCase: {0}".format(project.name)
@@ -370,13 +396,17 @@ def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
         errors.append("invalid MtoU conformance corpus: {0}".format(exc))
 
 
-def _validate_nested_git(root: Path, errors: list[str]) -> None:
-    root_git = root / ".git"
-    for nested_git in root.rglob(".git"):
-        if nested_git != root_git and nested_git.is_dir():
-            errors.append(
-                "nested Git repository: {0}".format(nested_git.relative_to(root).as_posix())
-            )
+def _validate_nested_git(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
+    for current, directories, files in os.walk(root):
+        base = Path(current)
+        if base != root and ".git" in directories + files:
+            errors.append("nested Git repository: {0}".format(
+                (base / ".git").relative_to(root).as_posix()))
+        directories[:] = [name for name in directories
+                          if name not in {".git", ".tmp", ".worktrees"}
+                          and base / name not in excluded]
 
 
 def _validate_issue_archives(root: Path, errors: list[str]) -> None:
@@ -415,7 +445,9 @@ def validate(root: Path = ROOT) -> dict:
         if not (root / relative_path).exists():
             errors.append("missing required path: {0}".format(relative_path))
 
-    for path in _iter_files(root):
+    excluded = registered_submodules(root, errors, warnings)
+
+    for path in _iter_files(root, excluded):
         relative_path = path.relative_to(root).as_posix()
         if (
             path.is_file()
@@ -438,20 +470,21 @@ def validate(root: Path = ROOT) -> dict:
         if path.name.lower().endswith(tuple(FORBIDDEN_SUFFIXES)):
             errors.append("version-control-visible generated file: {0}".format(relative_path))
 
-    _validate_nested_git(root, errors)
+    _validate_nested_git(root, errors, excluded)
     _validate_issue_archives(root, errors)
 
     if (root / "maya" / "scripts").is_dir():
-        _validate_shelf_scripts(root, errors)
+        _validate_shelf_scripts(root, errors, excluded)
     if (root / "maya" / "tools").is_dir():
-        _validate_maya_tools(root, errors)
+        _validate_maya_tools(root, errors, excluded)
     if (root / "unreal" / "Plugins").is_dir():
-        _validate_unreal(root, errors)
+        _validate_unreal(root, errors, excluded)
     if (root / "substance-painter" / "plugins").is_dir():
-        _validate_substance_painter(root, errors)
-    _validate_composite(root, errors)
+        _validate_substance_painter(root, errors, excluded)
+    _validate_composite(root, errors, excluded)
     _validate_proposals(root, errors)
-    _validate_mtou_conformance(root, errors)
+    if root / "composite" / "MtoULiveLink" not in excluded:
+        _validate_mtou_conformance(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}
 
