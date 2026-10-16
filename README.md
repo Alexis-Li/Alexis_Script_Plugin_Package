@@ -11,6 +11,8 @@ several of these applications.
 
 Choose a tool below and follow its manual for supported application versions,
 installation and usage. Each tool or host component can be installed separately.
+The collection contains directly owned projects and independent submodules;
+independent projects own their source, Issues and releases in their own repository.
 
 ## Tools
 
@@ -19,6 +21,7 @@ installation and usage. Each tool or host component can be installed separately.
 | Flatten Mesh To UV | Converts a mesh's UV layout into flat polygon geometry. | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
 | MtoU Live Link | Streams one evaluated Maya character to stock Unreal Live Link through independently installable Maya and Unreal components. | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | Provides polygon selection, topology, pivot, connection, and edge-loop workflows. | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
+| StoUTextureSync | Painter-to-Unreal texture synchronization, in prototyping. | [Independent repository](https://github.com/Alexis-Li/StoUTextureSync) · submodule `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | Evenly distributes selected edge loops through an interactive drag operation. | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
 
 ## Tool Documentation
@@ -33,6 +36,13 @@ installation and usage. Each tool or host component can be installed separately.
 - [Release process](docs/release-process.md)
 - [Products in design](docs/proposals/README.md)
 - [Project development history](docs/project-history/README.md)
+
+## Get Independent Projects
+
+Clone with `git clone --recurse-submodules <repository-URL>`. In an existing
+checkout, preserve local child changes before running
+`git submodule update --init --recursive`. See the [submodule workflow](docs/submodules.md)
+for development, pin updates and migration.
 
 ## Start Developing
 

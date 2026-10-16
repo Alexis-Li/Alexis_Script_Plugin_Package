@@ -36,6 +36,10 @@ project; sibling projects are not part of its acceptance result.
 
 ## Repository tools
 
+For an independent project submodule, run Git, gh and project commands inside
+that repository. Collection checks validate its registration and pin; product
+checks and delivery run in its own CI. See [submodules](submodules.md).
+
 Prefer the standard library for repository Python tools; justify and declare
 necessary dependencies under the applicable dependency rules. Existing write
 commands default to dry-run and require `--apply`; preserve that CLI contract.
@@ -47,6 +51,7 @@ target host.
 | Information | Owner |
 | --- | --- |
 | Requirements, acceptance scope and task decisions | Issue |
+| Independent product requirements, code and delivery | That submodule's repository and tracker |
 | Requirement baseline of a product still in design | `docs/proposals/<project>/`, linked from its umbrella issue |
 | Delivery, code review and routine checks | PR or direct-branch issue reports |
 | User installation and usage | Project `README.md` and `README_CN.md` |

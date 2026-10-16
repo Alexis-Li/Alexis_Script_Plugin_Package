@@ -1,8 +1,8 @@
 # Repository Instructions
 
-This monorepo contains independent scripts, tools, and plug-ins for 3D game-art
-production across several host applications (DCC tools and game engines). The
-repository root is the only Git repository.
+This collection contains scripts, tools, and plug-ins for 3D game-art production
+across DCC tools and game engines. Projects are either owned by this repository
+or registered as independent Git submodules at complete project roots.
 
 ## Hosts
 
@@ -38,6 +38,22 @@ rule files are not inherited automatically. Composite metadata ownership takes
 precedence over standalone layout examples. Keep nested rules focused on local
 exceptions, contracts, and useful commands.
 
+## Independent project repositories
+
+- Register submodules through both .gitmodules and a Git gitlink at a complete
+  standalone or composite project root. Use portable, credential-free HTTPS
+  clone URLs. Other nested repositories are prohibited.
+- The collection owns the registration, project index and pinned commit.
+  The independent repository owns its code, docs, rules, Issues, PRs, tests,
+  packaging, versions and releases. It must work when cloned alone.
+- Parent host layout checks apply to collection-owned projects. Submodules
+  define their internal layout and host contracts in their own AGENTS.md;
+  the collection validates their registration and pin, not their source tree.
+- Publish and verify the child commit before updating the collection pin.
+  Develop on a branch inside the child, not on a detached checkout. Do not
+  update unrelated submodules or switch an active sibling's branch.
+- For clone, update and migration procedures, read docs/submodules.md.
+
 ## Project contracts
 
 - Each structured tool/plugin remains independently installable, testable,
@@ -54,7 +70,8 @@ exceptions, contracts, and useful commands.
 - General directories use lowercase kebab-case; host project names follow their
   host rule file. Python internals use snake_case and classes PascalCase.
   Use Semantic Versioning where practical.
-- Do not create nested repositories, force-push, or discard unrelated history.
+- Do not create unregistered nested repositories, force-push, or discard
+  unrelated history.
   Keep commits coherent and release tags prefixed as defined in
   `docs/naming-conventions.md`, for example `maya-mesh-normal-tool-v0.2.0` or
   `ue-asset-audit-v1.1.0`.
@@ -112,6 +129,8 @@ exceptions, contracts, and useful commands.
   baseline in `docs/proposals/<project-name>/` (see `docs/proposals/README.md`).
   When development creates the owning project, move the surviving content into
   that project and delete the proposal directory.
+  For an independent product, migrate these owners and outstanding Issues to
+  its repository; retain only its index entry and submodule pin here.
 - Use `docs/project-history/README.md` to decide what needs a durable record.
   Routine delivery and review stay in Issues/PRs; extend an existing topic record
   for reusable decisions or essential host evidence. Replace completed plans

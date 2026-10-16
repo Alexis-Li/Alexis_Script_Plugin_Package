@@ -29,5 +29,4 @@ proposals are deleted after their umbrella issue records the outcome.
 
 ## Current proposals
 
-- [SPtoU Texture Sync](sptou-texture-sync/requirements.md): Substance 3D
-  Painter texture changes update existing Unreal Engine Texture assets.
+No active proposals. Independent product requirements belong to their own trackers.

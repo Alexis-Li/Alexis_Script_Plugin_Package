@@ -4,6 +4,10 @@ Use this checklist with the owning project rules and
 [`naming-conventions.md`](naming-conventions.md). A release is not complete
 until the owning project's acceptance checks pass.
 
+Independent project submodules publish from their own repository under its
+release rules. After verifying that delivery, update the collection's pinned
+commit using the [submodule workflow](submodules.md).
+
 1. Update the project's version and changelog.
 2. Run the project's tests, lint, host checks, and packaging checks that apply.
    Run `python tools/validate_repository.py` only when the release changes

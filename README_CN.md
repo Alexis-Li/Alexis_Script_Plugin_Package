@@ -10,6 +10,7 @@
 
 从下表选择工具，按对应手册确认支持的软件版本、安装方式和使用步骤。
 各工具及宿主组件均可独立安装。
+合集同时管理本仓库项目和独立子模块；独立项目的源码、工单与发布由其自己的仓库管理。
 
 ## 包含的工具
 
@@ -18,6 +19,7 @@
 | Flatten Mesh To UV | 将模型的 UV 展开结果转换为平面多边形。 | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
 | MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，将一名已求值 Maya 角色流式发送到官方版 Unreal Live Link。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | 提供选择、拓扑、轴心、连接和循环边等多边形建模功能。 | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
+| StoUTextureSync | Painter 到 Unreal 的贴图同步项目，处于原型阶段。 | [独立仓库](https://github.com/Alexis-Li/StoUTextureSync) · 子模块 `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | 通过交互拖动均匀分布所选环线。 | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
 
 ## 工具文档
@@ -32,6 +34,12 @@
 - [发布流程](docs/release-process.md)
 - [设计中的产品](docs/proposals/README.md)
 - [项目开发历史](docs/project-history/README.md)
+
+## 获取独立项目
+
+首次克隆使用 `git clone --recurse-submodules <仓库地址>`；已有工作区在确认子模块
+没有待保存修改后，运行 `git submodule update --init --recursive`。开发、更新版本引用
+及迁移步骤见[子模块工作流](docs/submodules.md)。
 
 ## 开始开发
 
