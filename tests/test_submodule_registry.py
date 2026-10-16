@@ -143,6 +143,20 @@ class SubmoduleRegistryTests(unittest.TestCase):
         validate_repository._validate_nested_git(self.root, errors)
         self.assertIn("nested Git repository: unregistered/.git", errors)
 
+    def test_linked_worktree_of_this_repository_is_not_nested(self):
+        (self.root / "README.md").write_text("collection\n", encoding="utf-8")
+        self.git(self.root, "add", "README.md")
+        self.git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                 "commit", "-qm", "initial")
+        worktree = self.root / ".claude" / "worktrees" / "task"
+        self.git(self.root, "worktree", "add", "-q", "-b", "task", str(worktree))
+        self.addCleanup(self.git, self.root, "worktree", "remove", "--force", str(worktree))
+        excluded = submodule_registry.linked_worktrees(self.root)
+        self.assertEqual(frozenset({worktree.resolve()}), excluded)
+        errors = []
+        validate_repository._validate_nested_git(self.root, errors, excluded)
+        self.assertEqual([], [e for e in errors if ".claude" in e])
+
     def test_collection_tools_do_not_modify_independent_products(self):
         self.register()
         self.pin()

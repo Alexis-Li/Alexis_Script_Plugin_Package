@@ -20,6 +20,22 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.decode("utf-8")
 
 
+def linked_worktrees(root: Path) -> frozenset[Path]:
+    """Return this repository's other worktrees located inside its checkout."""
+    root = root.resolve()
+    try:
+        listing = _git(root, "worktree", "list", "--porcelain", "-z")
+    except (OSError, subprocess.CalledProcessError, UnicodeError):
+        return frozenset()
+    paths = set()
+    for record in listing.split("\0"):
+        if record.startswith("worktree "):
+            path = Path(record[len("worktree "):]).resolve()
+            if path != root and path.is_relative_to(root):
+                paths.add(path)
+    return frozenset(paths)
+
+
 def registered_submodules(
     root: Path, errors: list[str], warnings: list[str]
 ) -> frozenset[Path]:

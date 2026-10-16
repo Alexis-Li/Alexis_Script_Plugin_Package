@@ -12,7 +12,7 @@ from pathlib import Path
 
 from _repo_tools import ROOT, emit, maya_version, substance_painter_version
 from issue_report import validate_archive
-from submodule_registry import registered_submodules
+from submodule_registry import linked_worktrees, registered_submodules
 
 REQUIRED_PATHS = (
     ".github/workflows",
@@ -445,7 +445,7 @@ def validate(root: Path = ROOT) -> dict:
         if not (root / relative_path).exists():
             errors.append("missing required path: {0}".format(relative_path))
 
-    excluded = registered_submodules(root, errors, warnings)
+    excluded = registered_submodules(root, errors, warnings) | linked_worktrees(root)
 
     for path in _iter_files(root, excluded):
         relative_path = path.relative_to(root).as_posix()
