@@ -72,6 +72,17 @@ public:
     {
         return Issued.IsSet() && Issued->EvalId == EvalId;
     }
+    /**
+     * True while this exact issue of the eval is in flight. A discrete event
+     * that cancels a target and issues the same evaluation again starts a new
+     * issue, so work published for the cancelled one is never confirmed.
+     */
+    bool IsIssued(const FString& EvalId, int32 InIssueSerial) const
+    {
+        return IsIssued(EvalId) && IssueSerial == InIssueSerial;
+    }
+    /** Identity of the latest issue; increases with every issued target. */
+    int32 GetIssueSerial() const { return IssueSerial; }
 
     /** Current status snapshot for the panel and the editor pump. */
     FMtoULinkageView GetView() const;
@@ -118,8 +129,13 @@ public:
         double AppliedDisplayFrame, const TArray<FMtoUAppliedComponent>& Components,
         const FString& Reason, double NowSeconds);
 
-    /** Game-thread pump: current targets, staged groups and the view. */
-    void Tick(double NowSeconds);
+    /**
+     * Game-thread pump: current targets, staged groups and the view. With
+     * bAskEditorNow the editor is asked for the current target regardless of
+     * the pump cadence, so a discrete event is seen before published work is
+     * resolved.
+     */
+    void Tick(double NowSeconds, bool bAskEditorNow = false);
 
     /** Enter the linkage mode; the editor must have taken over first. */
     bool RequestEnter(int32 ModeRevision, FString& OutError, FString& OutErrorCode);
@@ -152,7 +168,7 @@ private:
     void SendError(const FString& Code, const FString& Message, const FString& Details);
     void PublishView();
     void UpdateConvergence(double NowSeconds);
-    void PumpCameraTargets(double NowSeconds);
+    void PumpCameraTargets(double NowSeconds, bool bAskEditorNow);
     void IssueTarget(const FMtoUCameraTimeTarget& Target, double NowSeconds);
     bool IsCutChange(const FMtoUCameraTimeTarget& Left, const FMtoUCameraTimeTarget& Right) const;
     // One shared half of an entering transition: the pairing must still
@@ -186,6 +202,7 @@ private:
     double IssuedSeconds = 0.0;
     int32 TransportSerial = 0;
     int32 FrameSerial = 0;
+    int32 IssueSerial = 0;
     double LastPumpSeconds = 0.0;
     bool bSessionEndRequested = false;
 

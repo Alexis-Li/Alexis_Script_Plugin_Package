@@ -629,7 +629,7 @@ void FMtoULinkageSession::NoteGroupApplied(
     PublishView();
 }
 
-void FMtoULinkageSession::Tick(double NowSeconds)
+void FMtoULinkageSession::Tick(double NowSeconds, bool bAskEditorNow)
 {
     if (bTransitioning
         && NowSeconds - TransitionStartedSeconds > FMtoUProtocol::LinkageConvergenceSeconds * 2.5)
@@ -648,7 +648,7 @@ void FMtoULinkageSession::Tick(double NowSeconds)
     }
     if (Mode == TEXT("linkage") && !bTransitioning)
     {
-        PumpCameraTargets(NowSeconds);
+        PumpCameraTargets(NowSeconds, bAskEditorNow);
     }
     UpdateConvergence(NowSeconds);
     PublishView();
@@ -911,15 +911,16 @@ void FMtoULinkageSession::NoteReferenceQuery(const FMtoUReferenceQueryMessage& M
     PublishView();
 }
 
-void FMtoULinkageSession::PumpCameraTargets(double NowSeconds)
+void FMtoULinkageSession::PumpCameraTargets(double NowSeconds, bool bAskEditorNow)
 {
     if (!Hooks.EvaluateCameraTime)
     {
         return;
     }
     // Bounded cadence: the editor is asked at most once per interval and never
-    // more than one target is in flight.
-    if (NowSeconds - LastPumpSeconds < CameraPumpIntervalSeconds)
+    // more than one target is in flight. Published work waiting for its commit
+    // asks at once, so a discrete event cancels it before it is confirmed.
+    if (!bAskEditorNow && NowSeconds - LastPumpSeconds < CameraPumpIntervalSeconds)
     {
         return;
     }
@@ -951,17 +952,19 @@ void FMtoULinkageSession::PumpCameraTargets(double NowSeconds)
 
     if (Issued.IsSet())
     {
-        if (Issued->EvalId == Target.EvalId)
-        {
-            // A heartbeat of the work already in flight is not a second one.
-            return;
-        }
         if (IsCutChange(Issued.GetValue(), Target) || Target.bDiscontinuous)
         {
             // A cut, pause, jump or camera edit cancels the target in flight and
-            // any waiting one; a late answer is EVAL_STALE and changes nothing.
+            // any waiting one, even when the event names the evaluation already
+            // in flight (a pause exactly on it); a late answer is EVAL_STALE and
+            // changes nothing, and published work for it is never confirmed.
             Issued.Reset();
             Desired.Reset();
+        }
+        else if (Issued->EvalId == Target.EvalId)
+        {
+            // A heartbeat of the work already in flight is not a second one.
+            return;
         }
     }
     if (Issued.IsSet())
@@ -986,6 +989,7 @@ void FMtoULinkageSession::PumpCameraTargets(double NowSeconds)
 
 void FMtoULinkageSession::IssueTarget(const FMtoUCameraTimeTarget& Target, double NowSeconds)
 {
+    ++IssueSerial;
     Issued = Target;
     IssuedSeconds = NowSeconds;
     Detail = FString::Printf(TEXT("Issued target %s at frame %.3f."), *Target.EvalId, Target.DisplayFrame);

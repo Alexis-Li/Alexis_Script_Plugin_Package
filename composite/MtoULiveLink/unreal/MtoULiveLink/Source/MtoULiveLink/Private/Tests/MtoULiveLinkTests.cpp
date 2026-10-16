@@ -11759,6 +11759,9 @@ struct FMtoULinkageTestHooks
     // The next synthetic target comes from a discrete event (pause, jump,
     // camera edit) instead of advancing playback.
     bool bNextDiscontinuous = false;
+    // The next synthetic target repeats the previous evaluation (an event
+    // that keeps the time, such as a pause exactly on it).
+    bool bNextRepeatsPrevious = false;
     // False once the takeover's sequence, world or target went away.
     bool bTakeoverValid = true;
     int32 ValidateCalls = 0;
@@ -11772,10 +11775,13 @@ struct FMtoULinkageTestHooks
                 return false;
             }
             ++SentTargets;
-            OutTarget.EvalId = FString::Printf(TEXT("seq@%d+0"), static_cast<int32>(Frame));
+            const bool bRepeat = bNextRepeatsPrevious;
+            bNextRepeatsPrevious = false;
+            const double TargetFrame = bRepeat ? Frame - 1.0 : Frame;
+            OutTarget.EvalId = FString::Printf(TEXT("seq@%d+0"), static_cast<int32>(TargetFrame));
             OutTarget.EvalSerial = SentTargets;
-            OutTarget.DisplayFrame = Frame;
-            OutTarget.Seconds = Frame / 24.0;
+            OutTarget.DisplayFrame = TargetFrame;
+            OutTarget.Seconds = TargetFrame / 24.0;
             OutTarget.PlaybackRangeStart = 1;
             OutTarget.PlaybackRangeEnd = 240;
             OutTarget.DisplayRateNumerator = 24;
@@ -11808,7 +11814,10 @@ struct FMtoULinkageTestHooks
             OutTarget.Gate = MakeShared<FJsonObject>();
             OutTarget.Gate->SetNumberField(TEXT("output_width"), 1920);
             OutTarget.Gate->SetNumberField(TEXT("output_height"), 1080);
-            Frame += 1.0;
+            if (!bRepeat)
+            {
+                Frame += 1.0;
+            }
             return true;
         };
         Hooks.TakeOverTarget = [this](FString& OutError, FString& OutErrorCode) -> bool
@@ -11858,7 +11867,8 @@ FString LinkageGroupJson(
     int32 SpaceRevision,
     double DisplayFrame,
     const FString& PoseTransforms,
-    int32 CurveCount)
+    int32 CurveCount,
+    double CurveValue = 0.5)
 {
     FString Curves = TEXT("[");
     for (int32 Index = 0; Index < CurveCount; ++Index)
@@ -11867,7 +11877,7 @@ FString LinkageGroupJson(
         {
             Curves += TEXT(",");
         }
-        Curves += TEXT("0.5");
+        Curves += FString::Printf(TEXT("%.3f"), CurveValue);
     }
     Curves += TEXT("]");
     return FString::Printf(
@@ -12603,23 +12613,122 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("a refused group keeps the applied target"),
         AfterStale.AppliedEvalId, SecondEvalId);
 
-    // ---- a group published, then cancelled before its commit -------------
-    // The subject must never show it and no evidence may confirm it: the
-    // last complete group is queued behind it in the same update.
-    FString BeforeCancel;
+    // ---- the failure paths of the whole-group barrier --------------------
+    // Every group so far carried Smile = 0.5; the groups below carry 0.9, so
+    // the displays tell which group they show.
+    const FLiveLinkSubjectKey CharacterKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    const auto SubjectGeneration = [&]() -> FString
     {
         FLiveLinkSubjectFrameData SubjectFrame;
         if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
-                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
-                ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
+                CharacterKey, ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
             && SubjectFrame.FrameData.GetBaseData())
         {
-            BeforeCancel = SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
+            return SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
                 .FindRef(FName(TEXT("MtoU.LinkageGeneration")));
         }
-    }
+        return FString();
+    };
+    const auto ShownSmile = [&](const USkeletalMeshComponent* Display) -> float
+    {
+        // Each display's mesh owns its Morph targets.
+        const UMorphTarget* SmileMorph = Display && Display->GetSkeletalMeshAsset()
+            ? Display->GetSkeletalMeshAsset()->FindMorphTarget(FName(TEXT("Smile")))
+            : nullptr;
+        if (!SmileMorph)
+        {
+            return -1.0f;
+        }
+        if (const int32* WeightIndex = Display->ActiveMorphTargets.Find(SmileMorph))
+        {
+            return Display->MorphTargetWeights.IsValidIndex(*WeightIndex)
+                ? Display->MorphTargetWeights[*WeightIndex]
+                : 0.0f;
+        }
+        return 0.0f;
+    };
+    USkeletalMeshComponent* PrimaryDisplay = Actor->GetSkeletalMeshComponent();
+    UMtoUCharacterPartComponent* HatDisplay = Actor->GetCharacterPartComponents().Num() > 0
+        ? Actor->GetCharacterPartComponents()[0].Get()
+        : nullptr;
+    TestNotNull(TEXT("the enabled part has a display"), HatDisplay);
+    const auto AssertPreviousGroupShown = [&](const TCHAR* What)
+    {
+        TestNearlyEqual(*FString::Printf(TEXT("%s: the primary display keeps the last group"), What),
+            ShownSmile(PrimaryDisplay), 0.5f, 1.0e-3f);
+        TestEqual(*FString::Printf(TEXT("%s: the latest complete application stays"), What),
+            MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
+    };
+    // Collects every `applied` the source sends while it is pumped.
+    const auto CollectApplied = [&](int32 Pumps)
+    {
+        TArray<TSharedPtr<FJsonObject>> Answers;
+        const auto Take = [&](const TArray<uint8>& Bytes)
+        {
+            TSharedPtr<FJsonObject> Object;
+            if (JsonObjectFromBytes(Bytes, Object) && Object.IsValid())
+            {
+                Answers.Add(Object);
+            }
+        };
+        for (int32 Index = 0; Index < Pumps; ++Index)
+        {
+            Pump();
+            TArray<uint8> Fresh;
+            if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump))
+            {
+                Take(Fresh);
+            }
+            if (TArray<TArray<uint8>>* Queued = Reader.Pending.Find(TEXT("applied")))
+            {
+                for (const TArray<uint8>& Bytes : *Queued)
+                {
+                    Take(Bytes);
+                }
+                Queued->Reset();
+            }
+        }
+        return Answers;
+    };
+    const auto AnswerFor = [](const TArray<TSharedPtr<FJsonObject>>& Answers,
+        const FString& EvalId, int32 SampleSerial) -> TSharedPtr<FJsonObject>
+    {
+        for (const TSharedPtr<FJsonObject>& Answer : Answers)
+        {
+            if (Answer->GetStringField(TEXT("eval_id")) == EvalId
+                && static_cast<int32>(Answer->GetNumberField(TEXT("sample_serial"))) == SampleSerial)
+            {
+                return Answer;
+            }
+        }
+        return nullptr;
+    };
+    // Sends one 0.9 group, lets one update publish it and the client's own
+    // tick hand it to the subject; true once the subject holds it while no
+    // display was allowed to evaluate it yet.
+    const auto PublishToSubject = [&](const FString& EvalId, int32 SampleSerial) -> bool
+    {
+        const TArray<uint8> Group = Packet(LinkageGroupJson(
+            EvalId, SampleSerial, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+        if (!SendBytes(*Client, Group.GetData(), Group.Num()))
+        {
+            return false;
+        }
+        const FString Generation = FString::Printf(TEXT("%s#%d"), *EvalId, SampleSerial);
+        return PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return SubjectGeneration().EndsWith(Generation);
+        }, 3.0);
+    };
     TestTrue(TEXT("the subject holds the last applied group"),
-        BeforeCancel.Contains(SecondEvalId));
+        SubjectGeneration().Contains(SecondEvalId));
+    AssertPreviousGroupShown(TEXT("before the failure cases"));
+    TestNearlyEqual(TEXT("before the failure cases: the part shows the last group"),
+        ShownSmile(HatDisplay), 0.5f, 1.0e-3f);
+
+    // 1. Published, then cancelled by a pause in a later, separate update.
     Hooks.PlannedTargets = 3;
     TestTrue(TEXT("a target to cancel is issued"),
         Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
@@ -12628,101 +12737,68 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     {
         CancelledEvalId = CameraTime->GetStringField(TEXT("eval_id"));
     }
-    const TArray<uint8> CancelledGroup = Packet(LinkageGroupJson(
-        CancelledEvalId, 1, 1, 1, 1, 1, 3.0, Pose, 1));
-    TestTrue(TEXT("the group to cancel is sent"),
-        SendBytes(*Client, CancelledGroup.GetData(), CancelledGroup.Num()));
-    // Let the worker queue it, then publish it and cancel it in one update.
-    FPlatformProcess::Sleep(0.2f);
+    TestTrue(TEXT("the group to cancel reaches the subject before the event"),
+        PublishToSubject(CancelledEvalId, 1));
+    // The event happens in the editor only now, after the publication.
     Hooks.PlannedTargets = 4;
     Hooks.bNextDiscontinuous = true;
-    FPlatformProcess::Sleep(0.02f);
     Source->Update();
-    LiveLinkClient.ForceTick();
-    bool bConfirmedCancelled = false;
-    // Longer than the barrier's 2 s window: no evidence may arrive late.
-    for (int32 Tick = 0; Tick < 4; ++Tick)
+    const TArray<TSharedPtr<FJsonObject>> CancelAnswers = CollectApplied(4);
+    TestFalse(TEXT("a group cancelled after its publication is never confirmed"),
+        AnswerFor(CancelAnswers, CancelledEvalId, 1).IsValid());
+    TestFalse(TEXT("the subject does not keep the cancelled group"),
+        SubjectGeneration().EndsWith(CancelledEvalId + TEXT("#1")));
+    AssertPreviousGroupShown(TEXT("after a cancel in a later update"));
+
+    // The event's target is issued; its first answer meets a part that
+    // evaluates another subject, so half of the character would show it.
+    TestTrue(TEXT("the event's target is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    FString EventEvalId;
+    if (JsonObjectFromBytes(Payload, CameraTime))
     {
-        Pump();
-        TArray<uint8> Reply;
-        while (Reader.Pending.Contains(TEXT("applied"))
-            && Reader.Pending[TEXT("applied")].Num() > 0)
-        {
-            Reply = Reader.Pending[TEXT("applied")][0];
-            Reader.Pending[TEXT("applied")].RemoveAt(0);
-            bConfirmedCancelled |= FromUtf8(Reply).Contains(CancelledEvalId);
-        }
-        TArray<uint8> Fresh;
-        if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump))
-        {
-            bConfirmedCancelled |= FromUtf8(Fresh).Contains(CancelledEvalId);
-        }
+        EventEvalId = CameraTime->GetStringField(TEXT("eval_id"));
     }
-    TestFalse(TEXT("a cancelled group is never confirmed"), bConfirmedCancelled);
-    bool bRefusedBeforePublish = false;
-    for (const TArray<uint8>& Refusal : Reader.Pending.FindOrAdd(TEXT("error")))
+    ULiveLinkInstance* HatInstance = HatDisplay
+        ? Cast<ULiveLinkInstance>(HatDisplay->GetAnimInstance())
+        : nullptr;
+    TestNotNull(TEXT("the part evaluates Live Link"), HatInstance);
+
+    // 2. Half the character evaluates the group: nothing is shown.
+    if (HatInstance)
     {
-        bRefusedBeforePublish |= FromUtf8(Refusal).Contains(CancelledEvalId);
+        HatInstance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Elsewhere"))));
     }
-    AddInfo(bRefusedBeforePublish
-        ? TEXT("The cancelled group arrived after the cancel and was refused as stale.")
-        : TEXT("The cancelled group was published and rolled back before its commit."));
-    TestTrue(TEXT("the view never records the cancelled group"),
-        MtoUGetLinkageView().AppliedEvalId != CancelledEvalId);
+    TestTrue(TEXT("the half-evaluated group reaches the subject"),
+        PublishToSubject(EventEvalId, 1));
+    const TArray<TSharedPtr<FJsonObject>> HalfAnswers = CollectApplied(3);
+    const TSharedPtr<FJsonObject> Half = AnswerFor(HalfAnswers, EventEvalId, 1);
+    TestTrue(TEXT("the half-evaluated group is answered"), Half.IsValid());
+    if (Half.IsValid())
     {
-        FLiveLinkSubjectFrameData SubjectFrame;
-        FString AfterCancel;
-        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
-                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
-                ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
-            && SubjectFrame.FrameData.GetBaseData())
-        {
-            AfterCancel = SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
-                .FindRef(FName(TEXT("MtoU.LinkageGeneration")));
-        }
-        TestFalse(TEXT("the subject does not keep the cancelled group"),
-            AfterCancel.Contains(CancelledEvalId));
+        TestFalse(TEXT("the half-evaluated group is not confirmed"),
+            Half->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the display that disagrees"),
+            Half->GetStringField(TEXT("reason")).Contains(HatDisplay->GetName()));
+    }
+    AssertPreviousGroupShown(TEXT("after a half-evaluated group"));
+    if (HatInstance)
+    {
+        HatInstance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
     }
 
-    // ---- a missing part refuses the group before anything is shown -------
-    // The part's display goes away while the primary mesh still covers every
-    // bone: nothing is published, the last complete display stays, and the
-    // refusal names the part.
-    UMtoUCharacterPartComponent* HatDisplay = Actor->GetCharacterPartComponents().Num() > 0
-        ? Actor->GetCharacterPartComponents()[0].Get()
-        : nullptr;
-    TestNotNull(TEXT("the enabled part has a display"), HatDisplay);
+    // 3. A part goes missing after the publication: refused, no crash.
+    TestTrue(TEXT("the group whose part goes missing reaches the subject"),
+        PublishToSubject(EventEvalId, 2));
     USkeletalMesh* HatMesh = HatDisplay ? HatDisplay->GetSkeletalMeshAsset() : nullptr;
     if (HatDisplay)
     {
         HatDisplay->SetSkeletalMeshAsset(nullptr);
     }
-    // The discontinuous target that cancelled the previous group is issued.
-    TestTrue(TEXT("a third target is issued"),
-        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
-    FString ThirdEvalId;
-    if (JsonObjectFromBytes(Payload, CameraTime))
-    {
-        ThirdEvalId = CameraTime->GetStringField(TEXT("eval_id"));
-    }
-    const TArray<uint8> GroupThree = Packet(LinkageGroupJson(
-        ThirdEvalId, 1, 1, 1, 1, 1, 4.0, Pose, 1));
-    TestTrue(TEXT("the third group is sent"),
-        SendBytes(*Client, GroupThree.GetData(), GroupThree.Num()));
-    bool bRefusedEvidence = false;
-    TSharedPtr<FJsonObject> Missing;
-    PollUntil([&]()
-    {
-        TArray<uint8> Reply;
-        if (Reader.Next(*Client, TEXT("applied"), Reply, Pump)
-            && JsonObjectFromBytes(Reply, Missing) && Missing.IsValid()
-            && Missing->GetStringField(TEXT("eval_id")) == ThirdEvalId)
-        {
-            bRefusedEvidence = true;
-        }
-        return bRefusedEvidence;
-    }, 3.0);
-    TestTrue(TEXT("the group with a missing part is answered"), bRefusedEvidence);
+    const TArray<TSharedPtr<FJsonObject>> MissingAnswers = CollectApplied(3);
+    const TSharedPtr<FJsonObject> Missing = AnswerFor(MissingAnswers, EventEvalId, 2);
+    TestTrue(TEXT("the group with a part missing after publication is answered"),
+        Missing.IsValid());
     if (Missing.IsValid())
     {
         TestFalse(TEXT("the group with a missing part is not confirmed"),
@@ -12730,12 +12806,123 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("the refusal names the missing part"),
             Missing->GetStringField(TEXT("reason")).Contains(TEXT("part 'Hat'")));
     }
-    TestEqual(TEXT("the last complete group stays applied"),
+    TestNearlyEqual(TEXT("after a missing part: the primary display keeps the last group"),
+        ShownSmile(PrimaryDisplay), 0.5f, 1.0e-3f);
+    TestEqual(TEXT("after a missing part: the latest complete application stays"),
         MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
     if (HatDisplay)
     {
         HatDisplay->SetSkeletalMeshAsset(HatMesh);
     }
+    // The restored part shows the last complete group once it evaluates.
+    CollectApplied(2);
+    AssertPreviousGroupShown(TEXT("after the part returns"));
+
+    // 4. A part missing before the publication refuses the group at once.
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(nullptr);
+    }
+    const TArray<uint8> Unshown = Packet(LinkageGroupJson(
+        EventEvalId, 3, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+    TestTrue(TEXT("the group meeting a missing part is sent"),
+        SendBytes(*Client, Unshown.GetData(), Unshown.Num()));
+    TSharedPtr<FJsonObject> Refused;
+    PollUntil([&]()
+    {
+        Refused = AnswerFor(CollectApplied(1), EventEvalId, 3);
+        return Refused.IsValid();
+    }, 3.0);
+    TestTrue(TEXT("the group meeting a missing part is answered"), Refused.IsValid());
+    AssertPreviousGroupShown(TEXT("after a part missing before publication"));
+    if (Refused.IsValid())
+    {
+        TestFalse(TEXT("the group meeting a missing part is not confirmed"),
+            Refused->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal before publication names the part"),
+            Refused->GetStringField(TEXT("reason")).Contains(TEXT("part 'Hat'")));
+    }
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(HatMesh);
+    }
+    CollectApplied(2);
+
+    // 5. The subject never receives the group: another frame always takes
+    //    its place before the subject snapshot, so it is refused after the
+    //    window.
+    const auto PushForeign = [&]()
+    {
+        FLiveLinkSubjectFrameData Current;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                CharacterKey, ULiveLinkAnimationRole::StaticClass(), Current))
+        {
+            FLiveLinkFrameDataStruct Foreign;
+            Foreign.InitializeWith(Current.FrameData);
+            if (FLiveLinkBaseFrameData* Base = Foreign.GetBaseData())
+            {
+                Base->WorldTime = FLiveLinkWorldTime();
+                Base->MetaData.StringMetaData.Add(
+                    FName(TEXT("MtoU.LinkageGeneration")), TEXT("foreign"));
+            }
+            LiveLinkClient.PushSubjectFrameData_AnyThread(CharacterKey, MoveTemp(Foreign));
+        }
+    };
+    const auto ForeignPump = [&]()
+    {
+        Source->Update();
+        PushForeign();
+        LiveLinkClient.ForceTick();
+    };
+    const TArray<uint8> LostGroup = Packet(LinkageGroupJson(
+        EventEvalId, 4, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+    TestTrue(TEXT("the group the subject loses is sent"),
+        SendBytes(*Client, LostGroup.GetData(), LostGroup.Num()));
+    TSharedPtr<FJsonObject> Lost;
+    PollUntil([&]()
+    {
+        TArray<uint8> Reply;
+        TSharedPtr<FJsonObject> Object;
+        if (Reader.Next(*Client, TEXT("applied"), Reply, ForeignPump)
+            && JsonObjectFromBytes(Reply, Object) && Object.IsValid()
+            && Object->GetStringField(TEXT("eval_id")) == EventEvalId
+            && static_cast<int32>(Object->GetNumberField(TEXT("sample_serial"))) == 4)
+        {
+            Lost = Object;
+        }
+        return Lost.IsValid();
+    }, FMtoUProtocol::LinkageConvergenceSeconds + 4.0);
+    TestTrue(TEXT("the group the subject lost is answered"), Lost.IsValid());
+    if (Lost.IsValid())
+    {
+        TestFalse(TEXT("the group the subject lost is not confirmed"),
+            Lost->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the lost subject frame"),
+            Lost->GetStringField(TEXT("reason")).Contains(TEXT("never received")));
+    }
+    CollectApplied(2);
+    AssertPreviousGroupShown(TEXT("after the subject lost a group"));
+
+    // 6. A complete group switches every display together.
+    TestTrue(TEXT("a complete group reaches the subject"), PublishToSubject(EventEvalId, 5));
+    const TSharedPtr<FJsonObject> Complete = AnswerFor(CollectApplied(3), EventEvalId, 5);
+    TestTrue(TEXT("the complete group is answered"), Complete.IsValid());
+    if (Complete.IsValid())
+    {
+        TestTrue(TEXT("the complete group is confirmed"), Complete->GetBoolField(TEXT("applied")));
+    }
+    TestNearlyEqual(TEXT("the primary display shows the complete group"),
+        ShownSmile(PrimaryDisplay), 0.9f, 1.0e-3f);
+    TestNearlyEqual(TEXT("the part shows the complete group"),
+        ShownSmile(HatDisplay), 0.9f, 1.0e-3f);
+    TestEqual(TEXT("the complete group is the latest complete application"),
+        MtoUGetLinkageView().AppliedEvalId, EventEvalId);
+    // While linkage owns time a display changes only through the barrier:
+    // its own tick is held, so it never consumes an unverified group.
+    TestFalse(TEXT("linkage holds the primary display's own tick"),
+        PrimaryDisplay->IsComponentTickEnabled());
+    TestFalse(TEXT("linkage holds the part's own tick"),
+        HatDisplay && HatDisplay->IsComponentTickEnabled());
 
     // ---- leaving for realtime and ending the preview ---------------------
     FString LeaveError;
@@ -12779,6 +12966,11 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("ending the preview restores every borrowed writer"), Hooks.RestoreCalls, 1);
     const FMtoULinkageView EndedView = MtoUGetLinkageView();
     TestEqual(TEXT("the ended linkage reports realtime"), EndedView.Mode, FString(TEXT("realtime")));
+    Pump();
+    TestTrue(TEXT("realtime gives the primary display its own tick back"),
+        PrimaryDisplay->IsComponentTickEnabled());
+    TestTrue(TEXT("realtime gives the part its own tick back"),
+        HatDisplay && HatDisplay->IsComponentTickEnabled());
     TestTrue(TEXT("no control message stayed undelivered"),
         Source->GetQueuedControlMessageCount() == 0);
 
@@ -13088,6 +13280,27 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("the cancelled answer was never applied"),
         MtoUGetLinkageView().AppliedEvalId != FirstEval);
+    // An event that names the evaluation already in flight (a pause exactly
+    // on it) is not taken for a heartbeat: the work in flight is cancelled
+    // and issued again as a new issue.
+    const FString InFlightEval = MtoUGetLinkageView().TargetEvalId;
+    const int32 InFlightTransport = JumpTarget.IsValid()
+        ? static_cast<int32>(JumpTarget->GetNumberField(TEXT("transport_serial")))
+        : 0;
+    Hooks.bNextDiscontinuous = true;
+    Hooks.bNextRepeatsPrevious = true;
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("an event on the target in flight issues it again"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> ReissuedTarget;
+    if (JsonObjectFromBytes(Payload, ReissuedTarget))
+    {
+        TestEqual(TEXT("the event names the evaluation in flight"),
+            ReissuedTarget->GetStringField(TEXT("eval_id")), InFlightEval);
+        TestTrue(TEXT("the evaluation is issued as new work"),
+            static_cast<int32>(ReissuedTarget->GetNumberField(TEXT("transport_serial")))
+                > InFlightTransport);
+    }
 
     // ---- a closed sequence ends linkage on both hosts --------------------
     const int32 RestoresBeforeLoss = Hooks.RestoreCalls;

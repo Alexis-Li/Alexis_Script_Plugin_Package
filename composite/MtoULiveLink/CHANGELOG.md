@@ -11,15 +11,19 @@
   evaluated its bones and Morph values, so both hosts show the time control
   owner, the target time, the latest complete application time and the lag;
   Maya restores its timeline, view and gate and stays paused on the way back.
-  The whole character switches to a group in one step and a group with a
-  missing display part is never shown, so the displays never mix two groups.
-  A camera edit, pause, cut or explicit jump (also within one shot) cancels the
-  old target, including a group already on its way to the displays, while a
-  continuously advancing camera never cancels the work already issued. Closing or switching the sequence, closing its level or
+  The whole character is verified against a group before any display shows
+  it and then switches in one step; a group with a missing or disagreeing
+  display part is never shown, so the displays never mix two groups. A camera
+  edit, pause (also exactly on the target in flight), cut or explicit jump
+  (also within one shot) cancels the old target, including a group already on
+  its way to the displays, while a continuously advancing camera never cancels
+  the work already issued. Closing or switching the sequence, closing its level or
   deleting the paired actor ends linkage on both hosts, and opening another
   Maya scene restores the scene linkage started in before it is replaced.
-  Restoring a borrowed Maya camera follows the camera itself when it was
-  renamed and never writes into another camera that took its old name. Maya
+  The Maya camera linkage borrows or creates is followed by identity: a rename
+  keeps every write and the restore on it, and a camera that was deleted or
+  whose shape was replaced is refused instead of writing into another camera
+  that took its name. Maya
   refuses an oversized group, an unknown or shared writer target is refused
   before any write, and a failed restore is reported per resource instead of
   being hidden. The workflow is additive: the pairing is required only to enter

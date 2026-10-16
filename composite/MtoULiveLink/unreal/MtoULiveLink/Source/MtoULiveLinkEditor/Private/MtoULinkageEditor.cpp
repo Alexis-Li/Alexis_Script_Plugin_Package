@@ -819,6 +819,10 @@ struct FMtoULinkageEditorState
     FString SequenceKey;
     FString EvalIdentity;
     int32 EvalSerial = 0;
+    // Counts the discrete events of this sequence. It is part of every
+    // evaluation identity, so an event (a pause exactly on the target in
+    // flight, an edit that keeps the time) always names new work.
+    int32 EventEpoch = 0;
     bool bTimeEvaluated = false;
     double LastEvaluatedDisplayFrame = -1.0;
     // The previous target this module produced, so a new one can be told
@@ -937,6 +941,7 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
         State.SequenceKey = SequenceKey;
         State.EvalIdentity.Reset();
         State.EvalSerial = 0;
+        State.EventEpoch = 0;
         State.bTimeEvaluated = false;
         State.bHasLastTarget = false;
     }
@@ -982,7 +987,7 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
     const int32 MilliTick = FMath::Clamp(
         FMath::RoundToInt(TickTime.GetSubFrame() * 1000.0f), 0, 999);
     const FString ContentDigest = CameraContentDigest(CameraSample);
-    const FString Identity = FString::Printf(TEXT("%s@%lld+%03d/%s#%s"),
+    const FString Sample = FString::Printf(TEXT("%s@%lld+%03d/%s#%s"),
         *Source.Sequence->GetName(), Tick, MilliTick,
         Camera->GetPathName().IsEmpty() ? TEXT("-") : *Camera->GetPathName(), *ContentDigest);
     const bool bPlaying = Source.Sequencer.IsValid()
@@ -992,7 +997,7 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
         ? Source.Sequencer->GetPlaybackSpeed()
         : Source.Player->GetPlayRate();
     const double NowSeconds = FPlatformTime::Seconds();
-    const bool bIdentityChanged = Identity != State.EvalIdentity;
+    const bool bIdentityChanged = Sample != State.EvalIdentity;
     bool bDiscontinuous = false;
     if (State.bHasLastTarget)
     {
@@ -1027,11 +1032,16 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
         }
     }
     State.bPendingDiscontinuity = false;
-    if (bIdentityChanged)
+    if (bDiscontinuous)
     {
-        State.EvalIdentity = Identity;
+        ++State.EventEpoch;
+    }
+    if (bIdentityChanged || bDiscontinuous)
+    {
+        State.EvalIdentity = Sample;
         ++State.EvalSerial;
     }
+    const FString Identity = FString::Printf(TEXT("%s~e%d"), *Sample, State.EventEpoch);
     State.bHasLastTarget = true;
     State.bLastTargetPlaying = bPlaying;
     State.LastTargetDisplayFrame = DisplayFrame;

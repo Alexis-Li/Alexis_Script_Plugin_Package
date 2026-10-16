@@ -6757,6 +6757,20 @@ bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
     if (Evaluate(TEXT("the pause evaluates"), Paused))
     {
         TestTrue(TEXT("a pause is a discrete event"), Paused.bDiscontinuous);
+        // The pause stops on the time already in flight, yet it names new
+        // work, so the runtime cannot take it for a heartbeat of that target.
+        TestNearlyEqual(TEXT("the pause keeps the time"),
+            Paused.DisplayFrame, Edited.DisplayFrame, 1e-4);
+        TestNotEqual(TEXT("a pause on the target in flight is a new evaluation identity"),
+            Paused.EvalId, Edited.EvalId);
+        FMtoUCameraTimeTarget PausedAgain;
+        if (Evaluate(TEXT("a heartbeat after the pause evaluates"), PausedAgain))
+        {
+            TestEqual(TEXT("a heartbeat after the pause keeps its identity"),
+                PausedAgain.EvalId, Paused.EvalId);
+            TestFalse(TEXT("a heartbeat after the pause is not an event"),
+                PausedAgain.bDiscontinuous);
+        }
     }
     Player->Stop();
     return true;

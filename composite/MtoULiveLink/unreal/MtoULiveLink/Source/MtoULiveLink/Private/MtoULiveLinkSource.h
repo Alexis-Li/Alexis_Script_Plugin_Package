@@ -122,6 +122,9 @@ struct FMtoUPendingApplication
     int32 SampleSerial = 0;
     double DisplayFrame = 0.0;
     int32 ModeRevision = 0;
+    // The issue of the target this group answers; a cancelled issue of the
+    // same evaluation never confirms it.
+    int32 IssueSerial = 0;
     FString Generation;
     // The published (retargeted) local pose per target bone and the published
     // value per accepted Morph curve: what a display must hold.
@@ -221,15 +224,20 @@ private:
     // thread and only then reported back to Maya.
     void DrainLinkageHellosOnGameThread();
     void DrainLinkageControlsOnGameThread();
-    void DrainLinkageGroupsOnGameThread();
+    void IntakeLinkageGroupsOnGameThread();
+    // Resolves the published group, finishes a display restore, or publishes
+    // the next staged group; runs after the editor was asked for the target.
+    void CommitLinkageGroupOnGameThread();
     void SendLinkageControlPacketOnGameThread(TArray<uint8> Packet, bool bControl);
     bool ApplyPoseGroupOnGameThread(
         const FMtoUPoseGroupMessage& Group,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
     // The completion barrier of the published group: false while it waits,
-    // true once it decided; OutApplied tells which way.
+    // true once it decided; OutApplied tells which way. The caller owns the
+    // record and releases it once this decided.
     bool ResolvePendingApplicationOnGameThread(
+        const FMtoUPendingApplication& Pending,
         bool& bOutApplied,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
@@ -238,14 +246,40 @@ private:
     bool CollectLinkageDisplaysOnGameThread(
         TArray<USkeletalMeshComponent*>& OutDisplays,
         FString& OutReason) const;
+    // Evaluates every display against the subject without changing what it
+    // shows, and compares the result with the group: the whole group is
+    // verified before any display commits it.
+    bool StageDisplaysOnGameThread(
+        const FMtoUPendingApplication& Pending,
+        const TArray<USkeletalMeshComponent*>& Displays,
+        TArray<FMtoUAppliedComponent>& OutComponents,
+        FString& OutMismatch);
+    // Compares what the committed displays hold with the group.
     bool VerifyDisplaysOnGameThread(
         const FMtoUPendingApplication& Pending,
         const TArray<USkeletalMeshComponent*>& Displays,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutMismatch) const;
+    bool MatchDisplayPose(
+        const FMtoUPendingApplication& Pending,
+        const USkeletalMeshComponent& Display,
+        const TArray<FTransform>& Local,
+        TFunctionRef<float(const UMorphTarget&, FName)> MorphWeight,
+        FMtoUAppliedComponent& InOutComponent,
+        TSet<int32>& InOutDisplayedBones,
+        FString& OutMismatch) const;
+    bool CoversNegotiatedSkeleton(const TSet<int32>& DisplayedBones, FString& OutMismatch) const;
+    // The generation of the frame the Live Link subject holds now.
+    FString SubjectGenerationOnGameThread() const;
     // A published group that will not be confirmed (cancelled, failed, mode
-    // left) gives the display back to the last complete one.
+    // left) gives the subject back the last complete frame; the displays
+    // follow once the subject holds it.
     void RollBackPendingApplicationOnGameThread();
+    // False while the subject has not received the restored frame yet.
+    bool FinishDisplayRestoreOnGameThread();
+    // While linkage owns time, the displays change only through a commit: a
+    // display's own tick never consumes a group nobody verified yet.
+    void HoldLinkageDisplaysOnGameThread(bool bHold);
     bool IsSessionActiveOnGameThread(uint64 SessionId) const;
     void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
     bool PublishFrameOnGameThread(
@@ -333,6 +367,12 @@ private:
     // last live frame) and its accepted Morph values.
     FLiveLinkFrameDataStruct LastCompleteFrame;
     TArray<float> LastCompleteCurves;
+    // The restored frame the subject must hold before the displays are
+    // evaluated again, and when it was pushed.
+    FString RestoreGeneration;
+    double RestoreSeconds = 0.0;
+    // Displays whose own tick linkage holds, given back when linkage ends.
+    TArray<TWeakObjectPtr<USkeletalMeshComponent>> HeldDisplays;
     // The displays the negotiated character consists of.
     TWeakObjectPtr<USkeletalMesh> ExpectedPrimaryMesh;
     TArray<FMtoUExpectedDisplayPart> ExpectedDisplayParts;

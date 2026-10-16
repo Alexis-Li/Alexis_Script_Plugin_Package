@@ -197,6 +197,9 @@ reported per resource instead of being hidden. Closing or switching the Level
 Sequence, closing its level or deleting the paired actor ends linkage: Unreal
 returns the writers and Maya restores itself. Opening or creating another Maya
 scene ends the connection after linkage restored the scene it was started in.
+If the Maya camera linkage drives is deleted or its camera shape replaced while
+linkage runs, Maya refuses the next target and writes no other camera; end the
+preview and start linkage again to use the current camera.
 
 ## Scene reference in Maya
 

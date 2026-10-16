@@ -1008,6 +1008,8 @@ class FakeCmds(object):
             raise AssertionError("no node {0}".format(name))
         for shape in self._shapes_of(name):
             self.nodes.pop(shape, None)
+        # Deleting a transform deletes the shapes it carries.
+        self.camera_shapes.pop(name, None)
         for transform in list(self.camera_shapes):
             shapes = [shape for shape in self.camera_shapes[transform]
                       if shape != name]
@@ -1368,6 +1370,40 @@ class LinkCameraIdentityTest(LinkCameraHostTestBase):
         self.assertEqual([], self.camera.restore_state(state))
         self.assertEqual(85.0, self.cmds.nodes[shape + ".focalLength"])
         self.assertFalse(any(write[0] == "xform" for write in self.cmds.writes))
+
+    def test_apply_after_capture_refuses_a_node_that_took_the_name(self):
+        shape = "BorrowedShape"
+        self.cmds.nodes[mtou_camera.LINK_CAMERA_NAME] = None
+        self.cmds.camera_shapes[mtou_camera.LINK_CAMERA_NAME] = shape
+        self.camera.capture_state()
+        self.camera.apply(camera_payload(), gate_payload())
+        # The borrowed camera was deleted and another one took its name.
+        self.cmds.replace_node(mtou_camera.LINK_CAMERA_NAME)
+        self.cmds.writes[:] = []
+        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
+            self.camera.apply(camera_payload(focal_length_mm=60.0), gate_payload())
+        self.assertEqual(mtou_camera.CATEGORY_CAMERA_REPLACED, caught.exception.category)
+        self.assertEqual([], self.cmds.writes)
+
+    def test_apply_after_capture_refuses_a_replaced_shape(self):
+        shape = "BorrowedShape"
+        self.cmds.nodes[mtou_camera.LINK_CAMERA_NAME] = None
+        self.cmds.camera_shapes[mtou_camera.LINK_CAMERA_NAME] = shape
+        self.camera.capture_state()
+        self.camera.apply(camera_payload(), gate_payload())
+        self.cmds.replace_node(shape)
+        self.cmds.writes[:] = []
+        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
+            self.camera.apply(camera_payload(focal_length_mm=60.0), gate_payload())
+        self.assertEqual(mtou_camera.CATEGORY_CAMERA_REPLACED, caught.exception.category)
+        self.assertEqual([], self.cmds.writes)
+
+    def test_a_deleted_created_camera_is_created_again(self):
+        self.camera.apply(camera_payload(), gate_payload())
+        self.cmds.delete(mtou_camera.LINK_CAMERA_NAME)
+        report, unused_values = self.camera.apply(camera_payload(), gate_payload())
+        self.assertTrue(self.camera._created)
+        self.assertIn(mtou_camera.LINK_CAMERA_NAME, self.cmds.nodes)
 
 
 class LinkCameraRefusalTest(LinkCameraHostTestBase):

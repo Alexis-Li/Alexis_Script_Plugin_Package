@@ -86,6 +86,7 @@ CATEGORY_CAMERA_INPUT_DRIVEN = "CAMERA_INPUT_DRIVEN"
 CATEGORY_CAMERA_NAME_CONFLICT = "CAMERA_NAME_CONFLICT"
 CATEGORY_HOST_STATE_MISMATCH = "HOST_STATE_MISMATCH"
 CATEGORY_NO_CAMERA_YET = "NO_CAMERA_YET"
+CATEGORY_CAMERA_REPLACED = "LINK_CAMERA_REPLACED"
 
 # Attributes this adapter owns on the tool-owned camera shape.
 MANAGED_ATTRIBUTES = (
@@ -1140,6 +1141,9 @@ class LinkCamera(object):
         # write resolves the node from it, so a rename never redirects a write
         # to another node that took the old name.
         self._camera_uuid = None
+        # Identity of that camera's shape: a replaced shape is refused rather
+        # than written through the transform that still holds the identity.
+        self._shape_uuid = None
         self._reused = False
         self._state = None
         self.last_report = None
@@ -1251,16 +1255,24 @@ class LinkCamera(object):
         """
         if self._camera_uuid is not None:
             current = _node_by_uuid(self._camera_uuid, None)
-            shapes = _camera_shapes(current) if current else []
-            if shapes:
+            shape = self._shape_in_use(current) if current else None
+            if shape is not None:
                 self._transform = current
-                self._shape = shapes[0]
-                return (current, shapes[0], self._created)
-            # The camera in use is gone; whatever carries its name now is
-            # treated like any other node under the tool name below.
-            self._camera_uuid = None
-            self._transform = None
-            self._shape = None
+                self._shape = shape
+                return (current, shape, self._created)
+            if current is not None or not self._created or cmds.objExists(self.name):
+                # The camera in use was deleted or its shape replaced. Whatever
+                # carries its name now is another node: writing into it would
+                # change a camera linkage never captured, so the target is
+                # refused instead of claiming that node.
+                raise CameraSyncRefused(
+                    CATEGORY_CAMERA_REPLACED,
+                    "the camera linkage writes to ({0!r}) was deleted or its "
+                    "shape replaced; end linkage and start it again to use the "
+                    "current camera".format(self._transform or self.name))
+            # The camera this adapter created was deleted and its name is free:
+            # create it again under the same ownership.
+            self._forget_created()
         elif self._transform and cmds.objExists(self._transform):
             shapes = _camera_shapes(self._transform)
             if shapes:
@@ -1275,7 +1287,7 @@ class LinkCamera(object):
             self._transform = self.name
             self._shape = shapes[0]
             _validate_camera_inputs(self._transform, self._shape)
-            self._camera_uuid = _node_uuid(self._transform)
+            self._pin_identity()
             return (self._transform, self._shape, self._created)
         transform = cmds.createNode("transform", name=self.name)
         shape = cmds.createNode("camera", name=self.name + "Shape", parent=transform)
@@ -1283,8 +1295,23 @@ class LinkCamera(object):
         self._shape = shape
         self._created = True
         self._created_uuid = _node_uuid(transform)
-        self._camera_uuid = self._created_uuid
+        self._pin_identity()
         return (transform, shape, True)
+
+    def _pin_identity(self):
+        """Fix the camera in use to the current transform and shape nodes."""
+        self._camera_uuid = _node_uuid(self._transform)
+        self._shape_uuid = _node_uuid(self._shape)
+
+    def _shape_in_use(self, transform):
+        """The pinned camera shape under ``transform``, or None when replaced."""
+        shapes = _camera_shapes(transform)
+        if self._shape_uuid is None:
+            return shapes[0] if shapes else None
+        for shape in shapes:
+            if _node_uuid(shape) == self._shape_uuid:
+                return shape
+        return None
 
     def _apply_resolution_gate(self, output, pixel_aspect):
         """Set the rendered pixel extent and the device aspect Maya derives.
@@ -1381,11 +1408,23 @@ class LinkCamera(object):
         this adapter created, and clearing ``_created`` here would strand that
         node in the scene when the adapter later restores.
         """
-        shapes = _camera_shapes(self.name) if cmds.objExists(self.name) else []
-        if not shapes:
-            return None
-        self._transform = self._transform or self.name
-        self._shape = shapes[0]
+        if self._camera_uuid is None:
+            shapes = _camera_shapes(self.name) if cmds.objExists(self.name) else []
+            if not shapes:
+                return None
+            # The camera that carries the tool name now is the one linkage
+            # borrows: its identity is fixed here, so every later apply writes
+            # this node even after it is renamed or another node takes the name.
+            self._transform = self.name
+            self._shape = shapes[0]
+            self._pin_identity()
+        else:
+            transform = _node_by_uuid(self._camera_uuid, None)
+            shape = self._shape_in_use(transform) if transform else None
+            if shape is None:
+                return None
+            self._transform, self._shape = transform, shape
+        shapes = [self._shape]
         state = {"transform": self._transform, "shape": shapes[0],
                  "uuid": _node_uuid(self._transform),
                  "shape_uuid": _node_uuid(shapes[0]),
@@ -1444,12 +1483,17 @@ class LinkCamera(object):
                     residual.append("camera {0}: {1}".format(name, error))
                 else:
                     self._forget_created()
+        else:
+            # A borrowed camera is released: the next linkage borrows whatever
+            # camera carries the tool name when it starts.
+            self._forget_created()
         return residual
 
     def _forget_created(self):
         self._created = False
         self._created_uuid = None
         self._camera_uuid = None
+        self._shape_uuid = None
         self._transform = None
         self._shape = None
 

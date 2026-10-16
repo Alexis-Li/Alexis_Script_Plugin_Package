@@ -934,18 +934,68 @@ class MayaHostTests(unittest.TestCase):
         self.assertIn("shape was replaced", residual[0])
         self.assertEqual((85.0, 100.0), self._camera_values(name))
 
-    def test_apply_writes_the_renamed_camera_in_use(self):
+    def _captured_and_applied_camera(self):
+        """A borrowed tool camera after capture and one real apply."""
+        import test_mtou_camera as payloads
+        from mtou_livelink import camera as mtou_camera
+
+        self._camera(mtou_config.LINK_CAMERA_NAME, 35.0, 0.0)
+        link = mtou_camera.LinkCamera()
+        snapshot = link.capture_state()
+        link.apply(payloads.camera_payload(), payloads.gate_payload())
+        return link, snapshot, payloads
+
+    def test_apply_keeps_writing_the_borrowed_camera_after_a_rename(self):
+        name = mtou_config.LINK_CAMERA_NAME
+        link, snapshot, payloads = self._captured_and_applied_camera()
+        cmds.rename(name, "OriginalRenamed")
+        self._camera(name, 85.0, 1000.0)
+        foreign_matrix = cmds.xform(name, query=True, worldSpace=True, matrix=True)
+        report, unused_values = link.apply(
+            payloads.camera_payload(focal_length_mm=60.0), payloads.gate_payload())
+        self.assertEqual(cmds.ls("OriginalRenamed", long=True)[0],
+                         cmds.ls(report["camera"], long=True)[0])
+        self.assertEqual((60.0, 200.0), self._camera_values("OriginalRenamed"))
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
+        self.assertEqual(foreign_matrix,
+                         cmds.xform(name, query=True, worldSpace=True, matrix=True))
+        self.assertEqual([], link.restore_state(snapshot))
+        self.assertEqual((35.0, 0.0), self._camera_values("OriginalRenamed"))
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
+
+    def test_apply_refuses_a_camera_that_replaced_the_deleted_one(self):
         from mtou_livelink import camera as mtou_camera
 
         name = mtou_config.LINK_CAMERA_NAME
-        self._camera(name, 35.0, 0.0)
-        link = mtou_camera.LinkCamera()
-        link._ensure_camera()
-        cmds.rename(name, "BorrowedRenamed")
-        self._camera(name, 85.0, 100.0)
-        transform, unused_shape, unused_created = link._ensure_camera()
-        self.assertEqual(cmds.ls("BorrowedRenamed", long=True)[0],
-                         cmds.ls(transform, long=True)[0])
+        link, snapshot, payloads = self._captured_and_applied_camera()
+        cmds.delete(name)
+        self._camera(name, 85.0, 1000.0)
+        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
+            link.apply(payloads.camera_payload(focal_length_mm=60.0),
+                       payloads.gate_payload())
+        self.assertEqual(mtou_camera.CATEGORY_CAMERA_REPLACED, caught.exception.category)
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
+        self.assertEqual([], link.restore_state(snapshot))
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
+
+    def test_apply_refuses_a_borrowed_camera_whose_shape_was_replaced(self):
+        from mtou_livelink import camera as mtou_camera
+
+        name = mtou_config.LINK_CAMERA_NAME
+        link, snapshot, payloads = self._captured_and_applied_camera()
+        transform = cmds.ls(name, long=True)[0]
+        cmds.delete(cmds.listRelatives(transform, shapes=True, fullPath=True))
+        replacement = cmds.createNode("camera", name="ReplacementShape", parent=transform)
+        cmds.setAttr(replacement + ".focalLength", 85.0)
+        cmds.setAttr(transform + ".translateX", 1000.0)
+        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
+            link.apply(payloads.camera_payload(focal_length_mm=60.0),
+                       payloads.gate_payload())
+        self.assertEqual(mtou_camera.CATEGORY_CAMERA_REPLACED, caught.exception.category)
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
+        residual = link.restore_state(snapshot)
+        self.assertTrue(residual and "shape was replaced" in residual[0], residual)
+        self.assertEqual((85.0, 1000.0), self._camera_values(name))
 
     def test_panel_restores_linkage_before_the_scene_is_replaced(self):
         import maya.api.OpenMaya as om
