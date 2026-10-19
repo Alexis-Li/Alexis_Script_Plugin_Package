@@ -539,7 +539,7 @@ private:
 };
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterAcceptanceTest,
-    "MtoULiveLink.Editor.Preview.CharacterAcceptance",
+    "MtoUOptIn.Editor.Preview.CharacterAcceptance",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMtoUCharacterAcceptanceTest::RunTest(const FString& Parameters)
 {

@@ -1,5 +1,5 @@
 # ruff: noqa: E402
-"""Real Maya peer for MtoULiveLink.Editor.Preview.MayaRefreshPeer.
+"""Real Maya peer for MtoUOptIn.Editor.Preview.MayaRefreshPeer.
 
 Streams Animation through the real sender transport, observes the Unreal-side
 explicit-refresh disconnect, proves no automatic reconnect happens, then

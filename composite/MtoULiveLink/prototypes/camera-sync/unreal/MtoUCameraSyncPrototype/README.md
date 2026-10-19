@@ -26,7 +26,8 @@ product and ships with nothing.
 The prototype is loaded by the repository's Unreal test project
 (`unreal/ToolsLab.uproject`), which lists
 `composite/MtoULiveLink/prototypes/camera-sync/unreal` in
-`AdditionalPluginDirectories` and enables the plugin:
+`AdditionalPluginDirectories`. The plugin is disabled there by default; set
+its `"Enabled"` entry to `true` before building:
 
 ```
 <Engine>/Engine/Build/BatchFiles/Build.bat UnrealEditor Win64 Development <repo>/unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE

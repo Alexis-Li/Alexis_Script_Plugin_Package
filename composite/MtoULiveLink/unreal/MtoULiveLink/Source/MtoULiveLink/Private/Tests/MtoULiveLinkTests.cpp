@@ -1837,6 +1837,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionTest,
 bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
+    // Expected: the missed-window cases log the stop they cause.
+    AddExpectedMessagePlain(TEXT("Cached playback stopped without dropping frames"),
+        ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     auto MakeSession = [](double& Clock, TArray<float>& Applied, TArray<int32>& ProgressPlays)
     {
         TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
@@ -2414,6 +2421,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheTransitionTest,
 bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
+    // Expected: the missed-window cases log the stop they cause.
+    AddExpectedMessagePlain(TEXT("Cached playback stopped without dropping frames"),
+        ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     using EKind = FMtoUCacheTransition::EKind;
     using ECommand = FMtoUCacheCommand::EKind;
     double Clock = 100.0;
@@ -3918,6 +3932,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceSocketFlowTest,
 bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     // Other socket tests leave destroyed editor worlds pending collection.
     // Start this zero/one/two-actor fixture without their global iterator entries.
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
@@ -4535,6 +4552,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheClearRestoresLivePreviewTest,
 bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -5076,6 +5096,9 @@ void FMtoUCacheClearNaturalRefreshTest::GetTests(
 bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
 #if !WITH_EDITOR
     AddError(TEXT("natural refresh test requires an editor build."));
     return false;
@@ -5550,6 +5573,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionReconnectTest,
 bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -5891,7 +5917,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 // The peer executes real Maya capture, controller reconnect, retained upload,
 // and enabled custom-range recapture. The actor starts every local play.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCacheReconnectTest,
-    "MtoULiveLink.Source.MayaCacheReconnect",
+    "MtoUOptIn.Source.MayaCacheReconnect",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
@@ -6075,7 +6101,7 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaInteractivePlaybackTest,
-    "MtoULiveLink.Source.MayaInteractivePlayback",
+    "MtoUOptIn.Source.MayaInteractivePlayback",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaInteractivePlaybackTest::RunTest(const FString& Parameters)
@@ -7438,6 +7464,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessTest,
 bool FMtoUPreviewReadinessTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
@@ -9671,6 +9700,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartTransactionsTest,
 bool FMtoUCharacterPartTransactionsTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     UPackage* Package = CreatePackage(TEXT("/Temp/MtoUCharacterPartTransactions"));
     UWorld* World = UWorld::CreateWorld(
         EWorldType::EditorPreview, false, TEXT("MtoUCharacterPartTransactions"), Package, true);
@@ -10956,7 +10988,7 @@ void WriteMtoUEvidence(const FString& Path, const TSharedRef<FJsonObject>& Value
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCharacterPartsHostTest,
-    "MtoULiveLink.Source.MayaCharacterPartsHost",
+    "MtoUOptIn.Source.MayaCharacterPartsHost",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
@@ -11940,7 +11972,7 @@ struct FMtoULinkageReplyReader
     TMap<FString, TArray<TArray<uint8>>> Pending;
 
     bool Next(FSocket& Socket, const FString& ExpectedType, TArray<uint8>& OutPayload,
-        TFunctionRef<void()> Pump)
+        TFunctionRef<void()> Pump, double TimeoutSeconds = 1.0)
     {
         // Fresh replies win: a queued reply of the same type can be an older
         // statement (for example a mode_state the test did not read at its own
@@ -11973,7 +12005,7 @@ struct FMtoULinkageReplyReader
                 Pending.FindOrAdd(Type).Add(MoveTemp(Payload));
             }
             return false;
-        });
+        }, TimeoutSeconds);
         if (bFresh)
         {
             return true;
@@ -12659,7 +12691,10 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         TestEqual(*FString::Printf(TEXT("%s: the latest complete application stays"), What),
             MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
     };
-    // Collects every `applied` the source sends while it is pumped.
+    // Collects every `applied` the source sends while it is pumped. Each pump
+    // listens only briefly: the source answers within the update that decides
+    // a group, so a full read timeout per pump only adds idle seconds.
+    constexpr double CollectWindowSeconds = 0.2;
     const auto CollectApplied = [&](int32 Pumps)
     {
         TArray<TSharedPtr<FJsonObject>> Answers;
@@ -12675,7 +12710,7 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         {
             Pump();
             TArray<uint8> Fresh;
-            if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump))
+            if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump, CollectWindowSeconds))
             {
                 Take(Fresh);
             }
@@ -12702,6 +12737,20 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
             }
         }
         return nullptr;
+    };
+    // Pumps until the source answers the named group, returning as soon as it
+    // does; the caller then checks what the answer says.
+    const auto AwaitAnswer = [&](const FString& EvalId, int32 SampleSerial)
+    {
+        TArray<TSharedPtr<FJsonObject>> Answers;
+        TSharedPtr<FJsonObject> Found;
+        PollUntil([&]()
+        {
+            Answers.Append(CollectApplied(1));
+            Found = AnswerFor(Answers, EvalId, SampleSerial);
+            return Found.IsValid();
+        }, 3.0);
+        return Found;
     };
     // Sends one 0.9 group, lets one update publish it and the client's own
     // tick hand it to the subject; true once the subject holds it while no
@@ -12771,8 +12820,9 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("the half-evaluated group reaches the subject"),
         PublishToSubject(EventEvalId, 1));
-    const TArray<TSharedPtr<FJsonObject>> HalfAnswers = CollectApplied(3);
-    const TSharedPtr<FJsonObject> Half = AnswerFor(HalfAnswers, EventEvalId, 1);
+    const TSharedPtr<FJsonObject> Half = AwaitAnswer(EventEvalId, 1);
+    // A refused group's fallback reaches the displays in the following updates.
+    CollectApplied(2);
     TestTrue(TEXT("the half-evaluated group is answered"), Half.IsValid());
     if (Half.IsValid())
     {
@@ -12795,8 +12845,9 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     {
         HatDisplay->SetSkeletalMeshAsset(nullptr);
     }
-    const TArray<TSharedPtr<FJsonObject>> MissingAnswers = CollectApplied(3);
-    const TSharedPtr<FJsonObject> Missing = AnswerFor(MissingAnswers, EventEvalId, 2);
+    const TSharedPtr<FJsonObject> Missing = AwaitAnswer(EventEvalId, 2);
+    // A refused group's fallback reaches the displays in the following updates.
+    CollectApplied(2);
     TestTrue(TEXT("the group with a part missing after publication is answered"),
         Missing.IsValid());
     if (Missing.IsValid())
@@ -12905,7 +12956,7 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
 
     // 6. A complete group switches every display together.
     TestTrue(TEXT("a complete group reaches the subject"), PublishToSubject(EventEvalId, 5));
-    const TSharedPtr<FJsonObject> Complete = AnswerFor(CollectApplied(3), EventEvalId, 5);
+    const TSharedPtr<FJsonObject> Complete = AwaitAnswer(EventEvalId, 5);
     TestTrue(TEXT("the complete group is answered"), Complete.IsValid());
     if (Complete.IsValid())
     {
@@ -13346,7 +13397,7 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
  * Maya's own state.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaLinkageHostTest,
-    "MtoULiveLink.Source.MayaLinkageHost",
+    "MtoUOptIn.Source.MayaLinkageHost",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaLinkageHostTest::RunTest(const FString& Parameters)

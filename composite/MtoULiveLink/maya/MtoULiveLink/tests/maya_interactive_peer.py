@@ -1,5 +1,5 @@
 # ruff: noqa: E402
-"""Opt-in real Maya peer for MtoULiveLink.Source.MayaInteractivePlayback.
+"""Opt-in real Maya peer for MtoUOptIn.Source.MayaInteractivePlayback.
 
 Run with Maya's mayapy; --fixture and --result are supplied by the Unreal
 Automation test. Uses a disposable skinned scene, the real controller, capture,

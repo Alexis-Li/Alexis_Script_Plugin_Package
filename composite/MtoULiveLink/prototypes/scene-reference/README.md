@@ -52,7 +52,9 @@ a level, touches an object outside its container, or saves a scene.
 
 ## Reproduce
 
-1. Build the host project that loads the prototype plugin:
+1. The prototype is disabled in `unreal/ToolsLab.uproject` by default. Set
+   `MtoUSceneRefPrototype` to `"Enabled": true` there, then build the host
+   project that loads it:
 
    ```
    <Engine>/Engine/Build/BatchFiles/Build.bat UnrealEditor Win64 Development <repo>/unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE

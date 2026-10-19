@@ -987,6 +987,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewLifecycleTest,
 bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUPreviewLifecycleWorld"));
@@ -2994,7 +2997,7 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewRefreshBenchmarkTest,
-    "MtoULiveLink.Editor.Preview.RefreshBenchmark",
+    "MtoUOptIn.Editor.Preview.RefreshBenchmark",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUPreviewRefreshBenchmarkTest::RunTest(const FString& Parameters)
@@ -4273,7 +4276,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
 // dual-host half of Issue #39 is observed from Maya itself: transport loss,
 // no automatic reconnect, and streaming resumed only by an explicit connect.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaRefreshPeerTest,
-    "MtoULiveLink.Editor.Preview.MayaRefreshPeer",
+    "MtoUOptIn.Editor.Preview.MayaRefreshPeer",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)

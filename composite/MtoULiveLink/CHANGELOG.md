@@ -166,6 +166,11 @@
   the relation does not settle all reject with `Mapping ambiguities`. Exact-name
   reservation, same-parent duplicate rejection, and unrelated-branch support are
   unchanged.
+- Move the Unreal tests that need a real Maya process, a production fixture
+  or a long measurement, including the Preview refresh benchmark, to the
+  `MtoUOptIn.` prefix so `RunTests MtoULiveLink` runs only self-contained
+  tests. Shorten idle reads in `Linkage.Session`, declare the warnings tests
+  trigger on purpose, and disable the frozen prototypes in ToolsLab.
 
 ## 0.5.0 - 2026-09-22
 

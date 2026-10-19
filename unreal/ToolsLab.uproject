@@ -10,15 +10,15 @@
     },
     {
       "Name": "MtoUCameraSyncPrototype",
-      "Enabled": true
+      "Enabled": false
     },
     {
       "Name": "MtoUSceneRefPrototype",
-      "Enabled": true
+      "Enabled": false
     },
     {
       "Name": "MtoUMultiSubjectPrototype",
-      "Enabled": true
+      "Enabled": false
     }
   ],
   "AdditionalPluginDirectories": [

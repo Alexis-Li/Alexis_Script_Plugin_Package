@@ -15,10 +15,12 @@ animation import/export, or package this prototype as a production plugin.
 
 ## Reproduce
 
-1. In this checkout, build `unreal/ToolsLab.uproject` with the local UE 5.7
+1. Set `MtoUMultiSubjectPrototype` to `"Enabled": true` in
+   `unreal/ToolsLab.uproject`; it is disabled there by default. Then build
+   `unreal/ToolsLab.uproject` with the local UE 5.7
    `Engine/Build/BatchFiles/Build.bat UnrealEditor Win64 Development
    <checkout>/unreal/ToolsLab.uproject -WaitMutex -NoHotReloadFromIDE -NoUBA`.
-   ToolsLab enables the editor-only prototype through its additional plugin
+   ToolsLab finds the editor-only prototype through its additional plugin
    directories. This is separate from the user's production Backups project.
 2. Run the Unreal Editor automation tests `MtoUMultiSubjectPrototype`.
    The opt-in `RealMayaPeer` test requires the host executable and checked-in

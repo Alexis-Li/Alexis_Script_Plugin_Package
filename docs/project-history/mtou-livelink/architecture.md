@@ -529,14 +529,12 @@ bottleneck.
 Standard-library tests cover protocol conformance, hierarchy and transform
 conversion, character-scene capture and revision behavior, streaming-session
 startup rollback and terminal races, frame-rate timer replacement, worker
-shutdown, and dynamically sized messages. Maya 2022 host tests exercise real
+shutdown, and dynamically sized messages. Maya host tests exercise real
 DAG, skinning, BlendShape, callback, and timer behavior through the same
 character-scene and streaming-session interfaces.
 
-Run the pure suite under repository Python with
-`python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p test_mtou_livelink.py -q`,
-and the host suite under Maya 2022 `mayapy` with
-`mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p maya_host_tests.py -q`.
+The commands, the default and opt-in test tiers, and when each build runs are
+kept in [the product rules](../../../composite/MtoULiveLink/AGENTS.md).
 
 ### Unreal Automation tests
 
@@ -569,6 +567,10 @@ Development-only automation tests cover:
   integration, replacing the former `GarmentResolution` and
   `GarmentFaultLines` rule assertions.
 
+Tests that need a real Maya process, a production fixture, or a long
+measurement use the `MtoUOptIn.` prefix, so `RunTests MtoULiveLink` leaves
+them out; the refresh benchmark is one of them.
+
 ### Build and repository verification
 
 Apply these checks to the changed host components. Cross-host behavior changes
@@ -577,11 +579,14 @@ consistency checks. The root repository rules own the current acceptance scope.
 
 - Compile both Unreal modules against stock UE 5.7.4.
 - Compile and load both modules against Topia Engine 5.7.4 with
-  `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
-  the engine and production project.
+  `tools/build_mtou_topia.ps1` when the descriptor, build rules, module
+  dependencies, or engine API usage change, and for release acceptance; keep
+  every writable build intermediate outside the engine and production project.
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
-- Run the plugin's Unreal Automation tests.
-- Run the Maya project tests with Maya 2022 `mayapy`.
+- Run the plugin's default Unreal Automation tests and the opt-in tests the
+  change affects.
+- Run the Maya project tests with Maya 2024 `mayapy`, adding Maya 2022.4 when
+  a change can affect it.
 - Run root repository unit tests and `tools/validate_repository.py` only for
   repository tooling, templates, shared rules/workflows, root metadata, or
   project-layout changes, or when explicitly requested.
