@@ -11,16 +11,19 @@ requirements live in the repository and nearest platform `AGENTS.md`; use the
 2. Inspect the owning project, dependency declarations, tests, and packaging
    commands before editing.
 3. Choose a delivery boundary under the [Issue/PR workflow](agents/issue-tracker.md):
-   task branch and PR for substantial or overlapping work; an explicit commit
-   range for a small isolated change on the current branch.
+   small documentation and rule edits go on the current working branch when
+   they change no code, tests, tools, CI, packaging, version or product decision.
+   Other work uses a `feature/<topic>` or `fix/<topic>` branch and a PR to the
+   intended integration branch. Use a PR when size or impact is uncertain.
 4. Make the smallest coherent change and preserve public entry points unless a
    breaking change is explicitly required.
 5. Update the owning user documentation and changelog when behavior changes.
 6. Run the owning project's acceptance checks, broadening for concrete dependency
    or regression risks as described in the root AGENTS.md.
 7. Inspect `git status` for generated or unrelated files before review. Review
-   the recorded diff, verify changes since review before integration, and close
-   the task against its agreed acceptance and integration target.
+   the recorded diff and publish the review against the latest PR head SHA before
+   every merge. Record the integration SHA on the issue. Close against agreed
+   acceptance and consolidate comments under the linked tracker workflow.
 
 For changes to repository tooling, templates, shared rules or workflows, root
 metadata, or project layout, also run the repository gates:
@@ -53,7 +56,7 @@ target host.
 | Requirements, acceptance scope and task decisions | Issue |
 | Independent product requirements, code and delivery | That submodule's repository and tracker |
 | Requirement baseline of a product still in design | `docs/proposals/<project>/`, linked from its umbrella issue |
-| Delivery, code review and routine checks | PR or direct-branch issue reports |
+| Delivery, code review and routine checks | PR or issue comments |
 | User installation and usage | Project `README.md` and `README_CN.md` |
 | Released and unreleased behavior changes | Owning `CHANGELOG.md` |
 | Normative development constraints | Applicable `AGENTS.md` |

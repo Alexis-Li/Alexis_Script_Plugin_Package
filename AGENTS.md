@@ -138,6 +138,10 @@ exceptions, contracts, and useful commands.
 - Write acceptance records and issue comments as current conclusions, supporting
   evidence, and material limits. Update an incorrect conclusion in place; keep
   superseded debugging and correction narratives out of the final account.
+- Write documents, issues and comments as the current state, without change
+  notes or labels for removed content. When requirements or decisions become
+  outdated, agree the new decision with the user and rewrite it in place in
+  its issue, ADR, document or comment. Replace the old wording.
 
 ## Validation
 
@@ -167,12 +171,20 @@ exceptions, contracts, and useful commands.
 
 - For Issue/PR work, read `docs/agents/issue-tracker.md` and use `gh` from this
   clone. The issue owns scope and acceptance; the delivery owns its exact diff,
-  review and validation evidence. Generate and validate formal issue reports
-  with `tools/issue_report.py` before publishing.
-- Follow that protocol for current handoffs, source preservation, publication
-  and requested closeout. Preserve acceptance scope, human decisions and
-  unresolved findings through consolidation. When delegating, supply the
-  protocol and let one coordinating agent publish the consolidated result.
+  review and validation evidence. New branches use `feature/<topic>` or
+  `fix/<topic>` with a short kebab-case topic. Small documentation and rule
+  edits go directly on the current working branch under that protocol;
+  other work goes through a PR.
+- Every merge requires a published review of the latest PR head SHA; merge
+  authorization does not replace review. Record the integration SHA on the
+  issue. GitHub automatically deletes merged head branches.
+- Progress, review and acceptance use ordinary comments. Edit errors or
+  outdated content in one's own comment in place; new comments carry new facts.
+  On requested tidying or issue closure, consolidate useful content into one
+  status comment or its maintained document and delete the other comments.
+  Generate and validate status comments with `tools/issue_report.py`. Follow
+  the tracker protocol for publication and task-owned scratch cleanup. When
+  delegating, supply the protocol and let one coordinator publish the result.
 - For issue classification, read `docs/agents/triage-labels.md`.
 - For terminology or architecture work, read `docs/agents/domain.md` and relevant
   context/decision records. These workflows do not mandate extra artifacts for

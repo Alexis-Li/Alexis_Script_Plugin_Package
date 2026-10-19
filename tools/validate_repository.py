@@ -8,10 +8,11 @@ import json
 import os
 import re
 import subprocess
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from _repo_tools import ROOT, emit, maya_version, substance_painter_version
-from issue_report import validate_archive
 from submodule_registry import linked_worktrees, registered_submodules
 
 REQUIRED_PATHS = (
@@ -80,7 +81,9 @@ FORBIDDEN_SUFFIXES = {
     ".zip",
     ".7z",
 }
-ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.-])/(?:Users|home|private/tmp|var/folders)/"
+)
 TEXT_SUFFIXES = {
     ".py",
     ".md",
@@ -409,11 +412,79 @@ def _validate_nested_git(
                           and base / name not in excluded]
 
 
+def _issue_archive_errors(archive: object) -> list[str]:
+    """Validate existing historical artifacts, not current issue status."""
+    if not isinstance(archive, dict):
+        return ["archive must be an object"]
+    errors = []
+    if archive.get("schema") != "github-issue-comment-archive/1":
+        errors.append("unsupported archive schema")
+    issue = archive.get("issue", "")
+    parsed = urlparse(issue if isinstance(issue, str) else "")
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or not re.fullmatch(r"/[^/]+/[^/]+/issues/[1-9][0-9]*", parsed.path)
+        or parsed.query
+        or parsed.fragment
+    ):
+        errors.append("issue must be a canonical GitHub issue URL")
+    for field in ("archived_on", "purpose", "current_status_comment"):
+        if not isinstance(archive.get(field), str) or not archive[field].strip():
+            errors.append(f"missing archive {field}")
+    try:
+        date.fromisoformat(archive.get("archived_on", ""))
+    except (TypeError, ValueError):
+        errors.append("archived_on must be an ISO date")
+    current = archive.get("current_status_comment", "")
+    if not isinstance(current, str) or not re.fullmatch(
+        re.escape(str(issue)) + r"#issuecomment-[1-9][0-9]*", current
+    ):
+        errors.append("current_status_comment must refer to this issue")
+    comments = archive.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return errors + ["archive must preserve at least one source comment"]
+    seen = set()
+    for index, comment in enumerate(comments):
+        prefix = f"comment {index + 1}: "
+        if not isinstance(comment, dict):
+            errors.append(prefix + "must be an object")
+            continue
+        comment_id = comment.get("id")
+        if type(comment_id) is not int or comment_id <= 0:
+            errors.append(prefix + "id must be a positive integer")
+        elif comment_id in seen:
+            errors.append(prefix + "duplicate id")
+        else:
+            seen.add(comment_id)
+        for field in ("author", "body", "created_at", "updated_at", "original_url"):
+            if not isinstance(comment.get(field), str) or not comment[field].strip():
+                errors.append(prefix + f"missing {field}")
+        for field in ("created_at", "updated_at"):
+            try:
+                timestamp = datetime.fromisoformat(comment.get(field, "").replace("Z", "+00:00"))
+                if timestamp.utcoffset() is None:
+                    raise ValueError
+            except (AttributeError, TypeError, ValueError):
+                errors.append(prefix + f"{field} must include a timezone")
+        if comment.get("original_url") != f"{issue}#issuecomment-{comment_id}":
+            errors.append(prefix + "original_url does not match issue and comment id")
+    metadata = dict(archive)
+    metadata["comments"] = [
+        {key: value for key, value in comment.items() if key != "body"}
+        if isinstance(comment, dict) else comment
+        for comment in comments
+    ]
+    if ABSOLUTE_PATH_RE.search(json.dumps(metadata, ensure_ascii=False)):
+        errors.append("archive metadata must not contain machine-specific absolute paths")
+    return errors
+
+
 def _validate_issue_archives(root: Path, errors: list[str]) -> None:
     for path in sorted((root / "docs" / "project-history").rglob("*comment-archive.json")):
         try:
             archive = json.loads(path.read_text(encoding="utf-8-sig"))
-            problems = validate_archive(archive)
+            problems = _issue_archive_errors(archive)
         except (OSError, UnicodeError, ValueError) as exc:
             problems = [str(exc)]
         errors.extend(f"{path.relative_to(root).as_posix()}: {problem}" for problem in problems)
@@ -428,7 +499,7 @@ def _path_policy_text(relative_path: str, text: str) -> str:
             archive = json.loads(text)
         except ValueError:
             return text
-        if not validate_archive(archive):
+        if not _issue_archive_errors(archive):
             # Historical comments must remain exact, including old machine paths.
             # Metadata and all other files still obey the portable-path policy.
             for comment in archive["comments"]:
