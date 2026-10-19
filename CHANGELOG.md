@@ -13,9 +13,11 @@ one changelog at the composite project root.
   requirement and validate Substance 3D Painter projects and components.
 - Add `docs/proposals/` for requirement baselines of products still in design,
   starting with the SPtoU Texture Sync proposal.
-- Define Issue/PR delivery and integration with commit-bound reviews, scoped
-  handoffs and local report validation; organize history by topic and retain
-  durable decisions and essential evidence without duplicating routine reports.
+- Use `feature/` and `fix/` branches for PR work, with small documentation and
+  rule edits on the current branch and a published review of the latest head
+  before every merge. Consolidate issue comments on request or closure with
+  `issue_report.py template --issue <number>` and `check`; repository validation
+  owns existing historical archives and their portable-path checks.
 - Simplify agent rules around outcomes and scoped verification; allow local
   composite component instructions and shelf-script regression test directories
   while preserving product metadata and runtime layout boundaries.

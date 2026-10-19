@@ -10,7 +10,7 @@ cannot be recovered adequately from maintained code, tests or tracker records.
 | --- | --- |
 | Requirements, scope decisions, unfinished work and task status | Issue |
 | Requirement baseline and research for a product still in design | [Proposal](../proposals/README.md) until the project exists |
-| Delivery, reviewed diff, findings and routine test results | PR, or issue reports for direct-branch work |
+| Delivery, reviewed diff, findings and routine test results | PR or issue comments |
 | Current installation, usage, recovery and supported limits | Project README pair or maintained user guide |
 | Version-by-version behavior changes | Project changelog |
 | Current terminology and architectural decisions | Existing context/decision documents under [domain guidance](../agents/domain.md) |
@@ -58,13 +58,13 @@ an acceptance document, JSON evidence bundle or comment archive.
 - Before removing redundant committed records, extract unique conclusions,
   update references and verify an accessible immutable Git version. Git does
   not retain remote issue comments or untracked host outputs.
-- Source-comment archives are needed when preserving comments before substantive
-  replacement/deletion. They retain exact provenance and are not current task
-  status. Existing archives stay available for published references.
+- Before tidying or closing an issue, move anything needed for future decisions
+  or regression checks into its maintained repository owner. Existing comment
+  archives stay available as historical source artifacts for published references.
 
 Follow the [tracker protocol](../agents/issue-tracker.md#closure-and-requested-archival)
-for requested comment consolidation and completed-issue closeout, including
-source preservation, publication verification and issue-owned scratch cleanup.
+for comment consolidation on request or closure, publication verification and
+issue-owned scratch cleanup.
 
 ## Projects
 
