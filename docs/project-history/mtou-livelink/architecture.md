@@ -579,9 +579,8 @@ consistency checks. The root repository rules own the current acceptance scope.
 
 - Compile both Unreal modules against stock UE 5.7.4.
 - Compile and load both modules against Topia Engine 5.7.4 with
-  `tools/build_mtou_topia.ps1` when the descriptor, build rules, module
-  dependencies, or engine API usage change, and for release acceptance; keep
-  every writable build intermediate outside the engine and production project.
+  `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
+  the engine and production project.
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
 - Run the plugin's default Unreal Automation tests and the opt-in tests the
   change affects.

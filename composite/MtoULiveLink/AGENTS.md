@@ -16,8 +16,6 @@ shared fixtures, or cross-host behavior changes.
 | Protocol corpus | `python composite/MtoULiveLink/protocol/generate_unreal_corpus.py --check` (when `protocol/` or the corpus changes) |
 | Unreal | Build stock UE 5.7.4, then `UnrealEditor-Cmd <project> -ExecCmds="Automation RunTests MtoULiveLink; Quit" -unattended -nopause -nosplash -NullRHI -ReportExportPath=<scratch>` |
 
-Also build with `tools/build_mtou_topia.ps1` when `.uplugin`, `*.Build.cs`,
-module dependencies, or engine API usage change, and for release acceptance.
 Run the repository gates only when the root rules require them; a change
 confined to this product does not.
 
