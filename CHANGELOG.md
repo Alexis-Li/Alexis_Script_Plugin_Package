@@ -17,7 +17,9 @@ one changelog at the composite project root.
   rule edits on the current branch and a published review of the latest head
   before every merge. Consolidate issue comments on request or closure with
   `issue_report.py template --issue <number>` and `check`; repository validation
-  owns existing historical archives and their portable-path checks.
+  owns existing historical archives and their portable-path checks. Every new
+  issue comment ends with a `当前状态` footer for the whole issue, so the newest
+  comment is the current state between tidies.
 - Simplify agent rules around outcomes and scoped verification; allow local
   composite component instructions and shelf-script regression test directories
   while preserving product metadata and runtime layout boundaries.

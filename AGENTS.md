@@ -179,8 +179,10 @@ exceptions, contracts, and useful commands.
   authorization does not replace review. Record the integration SHA on the
   issue. GitHub automatically deletes merged head branches.
 - Progress, review and acceptance use ordinary comments. Edit errors or
-  outdated content in one's own comment in place; new comments carry new facts.
-  On requested tidying or issue closure, consolidate useful content into one
+  outdated content in one's own comment in place; new comments carry new facts
+  and end with a one- to three-line `**当前状态**：…` footer giving the whole
+  issue's state and next step, so the newest comment is the current state.
+  Do not re-edit older status comments between tidies. On requested tidying or issue closure, consolidate useful content into one
   status comment or its maintained document and delete the other comments.
   Generate and validate status comments with `tools/issue_report.py`. Follow
   the tracker protocol for publication and task-owned scratch cleanup. When

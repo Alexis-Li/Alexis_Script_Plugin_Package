@@ -107,14 +107,21 @@ force until a replacement is agreed.
 
 Progress, review and acceptance each use ordinary comments as work proceeds.
 Edit incorrect or outdated content in one's own comment in place; a new comment
-carries new facts only. An open issue accumulates comments until the user asks
-to tidy it or it closes.
+carries new facts only. Readers start from the newest comment, so every new
+comment ends with a footer of one to three lines, `**当前状态**：…`, giving the
+state of the whole issue (not only that comment's topic) and the next step with
+who takes it. Between tidies the last comment is therefore the current state;
+earlier comments and an earlier status comment are not edited just to keep them
+current. An open issue accumulates comments until the user asks to tidy it or
+it closes.
 
 ## Status comments
 
 Tidying on the user's request or closing an issue produces one status comment.
-Use `tools/issue_report.py template` and `check` for that comment. Ordinary
-progress, review and acceptance comments use the content appropriate to them.
+Use `tools/issue_report.py template` and `check` for that comment; its status
+and next-step sections serve as its footer. Ordinary progress, review and
+acceptance comments use the content appropriate to them plus the `当前状态`
+footer.
 PR descriptions use the repository template.
 
 ```markdown
