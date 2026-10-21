@@ -1132,6 +1132,49 @@ class DetailWindowTests(unittest.TestCase):
         self.assertEqual(1, len(self.created_windows(
             mtou_link_window.LINK_WINDOW_NAME)))
 
+    def test_linkage_window_labels_keep_a_fixed_width(self):
+        # Maya keeps a label at its creation width unless one is given, which
+        # clipped every value that grew after the window opened.
+        with self.bindings:
+            self.controller.open_link_window()
+
+        created = [call for call in self.fake_cmds.text.call_args_list
+                   if not call[1].get("edit") and call[1].get("label")]
+        self.assertEqual(14, len(created))
+        # A label wider than its card body widens the window past its default.
+        self.assertLessEqual(3 * mtou_link_window.STATUS_COLUMN,
+                             mtou_link_window.CARD_BODY)
+        for call in created:
+            self.assertLessEqual(call[1].get("width", 0),
+                                 mtou_link_window.CARD_BODY, call)
+            self.assertGreaterEqual(call[1].get("width", 0),
+                                    mtou_link_window.STATUS_LABEL, call)
+
+    def test_linkage_window_elides_long_eval_ids_and_keeps_them_in_the_tooltip(self):
+        eval_id = "Main@1200000+000//Game/Level/Cam.CameraComponent#" + \
+            ";".join("field_{0}={0}.000000".format(index) for index in range(80)) + ";~e2"
+        status = {"applied_eval_id": eval_id, "detail": "已应用 " + eval_id,
+                  "recovery_records": ["camera: persp is locked"], "labels": {}}
+        with self.bindings, mock.patch.object(
+                self.controller, "linkage_status", return_value=status):
+            self.controller.open_link_window()
+
+        labels = {call[1]["label"]: call[1]["annotation"]
+                  for call in self.fake_cmds.text.call_args_list
+                  if call[1].get("edit") and call[1]["label"]}
+        applied = [label for label in labels if label.startswith("已应用求值：")]
+        self.assertEqual(1, len(applied))
+        self.assertIn("…", applied[0])
+        self.assertTrue(applied[0].startswith("已应用求值：Main@1200000+000"))
+        self.assertTrue(applied[0].endswith(";~e2"))
+        self.assertLessEqual(len(applied[0]), len("已应用求值：")
+                             + mtou_link_window.TOKEN_LIMIT)
+        self.assertEqual("已应用求值：" + eval_id, labels[applied[0]])
+        detail = [label for label in labels if label.startswith("已应用 Main")]
+        self.assertEqual(["已应用 " + mtou_link_window.compact(eval_id)], detail)
+        self.assertEqual("camera: persp is locked",
+                         labels["camera: persp is locked"])
+
     def test_repeated_open_reuses_one_reference_window(self):
         with self.bindings:
             first = self.controller.open_reference_window()

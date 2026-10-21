@@ -52,11 +52,12 @@ def control_exists(control):
         return False
 
 
-def set_text(control, text):
-    """Render one label; the annotation mirrors it for hover feedback."""
+def set_text(control, text, tooltip=None):
+    """Render one label; the annotation mirrors it unless ``tooltip`` is given."""
     cmds = mayaapi.cmds
     if control and control_exists(control):
-        cmds.text(control, edit=True, label=text, annotation=text)
+        cmds.text(control, edit=True, label=text,
+                  annotation=text if tooltip is None else tooltip)
 
 
 def set_tooltip(control, tooltip):
@@ -87,11 +88,13 @@ def set_visible(control, visible):
             pass
 
 
-def apply_panel_theme(window_name, cards, roles):
+def apply_panel_theme(window_name, cards, roles, divider_card=None):
     """Style only this Maya window's Qt widgets; keep cmds as state owner.
 
-    Returns the card decorations and the styled controls so the caller keeps
-    them alive for the window's lifetime.
+    Every card with a visible label gets the header overlay; only
+    ``divider_card`` gets the two-column divider. Returns the card decorations
+    and the styled controls so the caller keeps them alive for the window's
+    lifetime.
     """
     omui = mayaapi.omui
     cmds = mayaapi.cmds
@@ -120,14 +123,14 @@ def apply_panel_theme(window_name, cards, roles):
             return False
 
     decorations = []
-    for index, card in enumerate(cards):
+    for card in cards:
         ptr = omui.MQtUtil.findLayout(card)
         widget = wrapInstance(int(ptr), QtWidgets.QWidget)
         children = [child for child in widget.children()
                     if isinstance(child, QtWidgets.QWidget)]
         body = children[-1]
         title = None
-        if index:
+        if cmds.frameLayout(card, query=True, labelVisible=True):
             # Maya paints its frame header after the Qt style, so the header
             # surface comes from an inert overlay label.
             title = QtWidgets.QLabel(
@@ -148,7 +151,7 @@ def apply_panel_theme(window_name, cards, roles):
         outline.show()
         outline.raise_()
         decorations.append(_CardDecoration(widget, outline, title))
-        if index == 2:
+        if card == divider_card:
             divider = QtWidgets.QFrame(body)
             divider.setGeometry(CARD_MARGIN + CARD_HALF + CARD_GAP // 2,
                                 CARD_MARGIN + 4, 1, 58)

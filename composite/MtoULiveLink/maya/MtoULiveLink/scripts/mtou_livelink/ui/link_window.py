@@ -18,7 +18,31 @@ WINDOW_WIDTH = 520
 
 WINDOW_CONTENT = WINDOW_WIDTH - 2 * CARD_MARGIN
 
-STATUS_COLUMN = (WINDOW_CONTENT - 2 * GRID_GAP) // 3
+# A card's body sits inside its margins and Maya's one-pixel frame; a wider
+# label widens the whole window past WINDOW_WIDTH.
+CARD_BODY = WINDOW_CONTENT - 2 * (CARD_MARGIN + 1)
+
+STATUS_COLUMN = CARD_BODY // 3
+
+# Maya offsets each column's label by one pixel, so a label as wide as its
+# column pushes the row past the card; the grid gap keeps it inside.
+STATUS_LABEL = STATUS_COLUMN - GRID_GAP
+
+# Longest unbroken run of characters one line shows. Unreal's eval_id carries
+# the whole camera description and runs to kilobytes; the label keeps both ends
+# and the tooltip keeps the full value.
+TOKEN_LIMIT = 52
+
+
+def compact(text):
+    """Middle-elide every space-free run longer than TOKEN_LIMIT, per line."""
+    def elide(token):
+        if len(token) <= TOKEN_LIMIT:
+            return token
+        tail = TOKEN_LIMIT // 4
+        return token[:TOKEN_LIMIT - tail - 1] + "…" + token[-tail:]
+    return "\n".join(" ".join(elide(token) for token in line.split(" "))
+                     for line in text.split("\n"))
 
 
 class LinkWindow(object):
@@ -64,21 +88,28 @@ class LinkWindow(object):
             columnWidth3=(STATUS_COLUMN, STATUS_COLUMN, STATUS_COLUMN),
             columnAttach3=("left", "left", "left"))
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._control_text = cmds.text(label="控制方：—", align="left")
-        self._mode_text = cmds.text(label="模式：—", align="left")
+        self._control_text = cmds.text(label="控制方：—", align="left",
+                                       width=STATUS_LABEL)
+        self._mode_text = cmds.text(label="模式：—", align="left",
+                                    width=STATUS_LABEL)
         cmds.setParent("..")
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._target_text = cmds.text(label="目标时间：—", align="left")
-        self._applied_text = cmds.text(label="最新完整应用：—", align="left")
+        self._target_text = cmds.text(label="目标时间：—", align="left",
+                                      width=STATUS_LABEL)
+        self._applied_text = cmds.text(label="最新完整应用：—", align="left",
+                                       width=STATUS_LABEL)
         cmds.setParent("..")
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._lag_text = cmds.text(label="滞后：—", align="left")
-        self._recovery_text = cmds.text(label="恢复结果：无", align="left")
+        self._lag_text = cmds.text(label="滞后：—", align="left",
+                                   width=STATUS_LABEL)
+        self._recovery_text = cmds.text(label="恢复结果：无", align="left",
+                                        width=STATUS_LABEL)
         cmds.setParent("..")
         cmds.setParent("..")
-        cmds.rowLayout(numberOfColumns=1, columnWidth1=WINDOW_CONTENT)
+        cmds.rowLayout(numberOfColumns=1, columnWidth1=CARD_BODY)
         self._detail_text = cmds.text(label="未进入镜头联动。", align="left",
-                                      wordWrap=True, height=32)
+                                      wordWrap=True, height=32,
+                                      width=CARD_BODY)
         cmds.setParent("..")
         cmds.setParent("..")
 
@@ -86,21 +117,28 @@ class LinkWindow(object):
             label="读回值", collapsable=False,
             marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._target_eval_text = cmds.text(label="目标求值：—", align="left")
-        self._applied_eval_text = cmds.text(label="已应用求值：—", align="left")
-        self._sample_text = cmds.text(label="样本序号：—", align="left")
-        self._age_text = cmds.text(label="应用年龄：—", align="left")
-        self._count_text = cmds.text(label="已应用 / 已拒绝：0 / 0", align="left")
-        self._pending_text = cmds.text(label="在途目标：0", align="left")
+        self._target_eval_text = cmds.text(label="目标求值：—", align="left",
+                                           width=CARD_BODY)
+        self._applied_eval_text = cmds.text(label="已应用求值：—", align="left",
+                                            width=CARD_BODY)
+        self._sample_text = cmds.text(label="样本序号：—", align="left",
+                                      width=CARD_BODY)
+        self._age_text = cmds.text(label="应用年龄：—", align="left",
+                                   width=CARD_BODY)
+        self._count_text = cmds.text(label="已应用 / 已拒绝：0 / 0", align="left",
+                                     width=CARD_BODY)
+        self._pending_text = cmds.text(label="在途目标：0", align="left",
+                                       width=CARD_BODY)
         cmds.setParent("..")
         cmds.setParent("..")
 
         resource_card = cmds.frameLayout(
             label="逐资源恢复", collapsable=False,
             marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
-        cmds.rowLayout(numberOfColumns=1, columnWidth1=WINDOW_CONTENT)
+        cmds.rowLayout(numberOfColumns=1, columnWidth1=CARD_BODY)
         self._resource_text = cmds.text(
-            label="没有需要恢复的资源。", align="left", wordWrap=True, height=54)
+            label="没有需要恢复的资源。", align="left", wordWrap=True, height=54,
+            width=CARD_BODY)
         cmds.setParent("..")
         cmds.setParent("..")
 
@@ -129,11 +167,11 @@ class LinkWindow(object):
         set_text(self._applied_text, labels.get("applied"))
         set_text(self._lag_text, labels.get("lag"))
         set_text(self._recovery_text, labels.get("recovery"))
-        set_text(self._detail_text, status.get("detail") or "—")
+        _set_compact(self._detail_text, status.get("detail") or "—")
 
-        set_text(self._target_eval_text, "目标求值：{0}".format(
+        _set_compact(self._target_eval_text, "目标求值：{0}".format(
             status.get("target") or "—"))
-        set_text(self._applied_eval_text, "已应用求值：{0}".format(
+        _set_compact(self._applied_eval_text, "已应用求值：{0}".format(
             status.get("applied_eval_id") or "—"))
         set_text(self._sample_text, "样本序号：{0}".format(
             "—" if status.get("applied_sample_serial") is None
@@ -146,8 +184,8 @@ class LinkWindow(object):
         set_text(self._pending_text, "在途目标：{0}".format(
             (status.get("issued") or 0) + (status.get("pending") or 0)))
         records = status.get("recovery_records") or ()
-        set_text(self._resource_text, "没有需要恢复的资源。" if not records
-                 else "\n".join(records))
+        _set_compact(self._resource_text, "没有需要恢复的资源。" if not records
+                     else "\n".join(records))
 
     def show(self):
         cmds = mayaapi.cmds
@@ -165,3 +203,8 @@ class LinkWindow(object):
         # The window's own close must never touch the linkage session; the
         # controller only drops the reference it kept for reuse.
         self._controller.close_link_window()
+
+
+def _set_compact(control, text):
+    """Render ``text`` with long runs elided; the tooltip keeps it whole."""
+    set_text(control, compact(text), tooltip=text)

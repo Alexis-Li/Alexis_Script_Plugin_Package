@@ -376,13 +376,14 @@ class Controller(object):
              self._cached_mode_button: "neutral",
              self._light: "disconnected",
              self._capture_button: "primary",
-             self._enter_linkage_button: "primary"})
+             self._enter_linkage_button: "primary"},
+            divider_card=scene_card)
 
 
-    def _apply_panel_theme(self, cards, roles):
+    def _apply_panel_theme(self, cards, roles, divider_card=None):
         """Style only this Maya window's Qt widgets; keep cmds as state owner."""
         self._card_decorations, self._styled_controls = apply_panel_theme(
-            WINDOW_NAME, cards, roles)
+            WINDOW_NAME, cards, roles, divider_card=divider_card)
 
     def _set_style_role(self, control, role):
         widget = self._styled_controls.get(control)

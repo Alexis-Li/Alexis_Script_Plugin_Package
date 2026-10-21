@@ -29,7 +29,9 @@
   camera whose focus is off still applies. A Level Sequence binding that
   possesses the Binding Actor is taken over and restored with all its
   displays, and the Maya panel follows Unreal's statements and notices a
-  connection Unreal ends during linkage. Maya
+  connection Unreal ends during linkage. The Maya 镜头联动 window shows every
+  value in full at its fixed width and shortens long evaluation identities in
+  the middle, with the full value in the tooltip. Maya
   refuses an oversized group, an unknown or shared writer target is refused
   before any write, and a failed restore is reported per resource instead of
   being hidden. The workflow is additive: the pairing is required only to enter
