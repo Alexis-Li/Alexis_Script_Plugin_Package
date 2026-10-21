@@ -330,6 +330,9 @@ private:
     // Game-thread mirror of the linkage mode the worker reads to refuse work
     // that contradicts the current time authority.
     TAtomic<bool> bWorkerLinkageActive{false};
+    // True while an Unreal-started transition waits for Maya to confirm: the
+    // live frames Maya sent before it saw the transition are still arriving.
+    TAtomic<bool> bWorkerLinkageAwaitingPeer{false};
     FMtoUCacheCommandQueue CacheCommands;
 
     ILiveLinkClient* Client = nullptr;

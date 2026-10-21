@@ -326,6 +326,26 @@ TSharedRef<FJsonObject> SerializeVector2(const FVector2D& Value)
     return Object;
 }
 
+/**
+ * Expresses a world-space camera sample relative to the common-space anchor.
+ * The anchor is rigid (unit scale), so positions take its inverse transform and
+ * the basis and rotation take its inverse rotation.
+ */
+void MapCameraIntoAnchor(FMtoUCameraSample& Camera, const FTransform& Anchor)
+{
+    const FTransform Rigid(Anchor.GetRotation(), Anchor.GetLocation());
+    if (Rigid.Equals(FTransform::Identity, 1.e-9))
+    {
+        return;
+    }
+    Camera.LocationCm = Rigid.InverseTransformPosition(Camera.LocationCm);
+    Camera.ComponentLocationCm = Rigid.InverseTransformPosition(Camera.ComponentLocationCm);
+    Camera.Right = Rigid.InverseTransformVectorNoScale(Camera.Right);
+    Camera.Up = Rigid.InverseTransformVectorNoScale(Camera.Up);
+    Camera.Forward = Rigid.InverseTransformVectorNoScale(Camera.Forward);
+    Camera.Rotation = (Rigid.GetRotation().Inverse() * Camera.Rotation.Quaternion()).Rotator();
+}
+
 TSharedRef<FJsonObject> SerializeCamera(const FMtoUCameraSample& Camera)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -570,7 +590,10 @@ TSharedRef<FJsonObject> SerializeGate(
 
     Object->SetNumberField(TEXT("width"), ApertureRect.Width());
     Object->SetNumberField(TEXT("height"), ApertureRect.Height());
-    Object->SetNumberField(TEXT("pixel_aspect_ratio"), ApertureAspect);
+    // Unreal renders square pixels; the gate's shape is its width and height
+    // (and aspect_ratio). Sending the image aspect here made Maya treat every
+    // pixel as that wide and stretch its resolution gate.
+    Object->SetNumberField(TEXT("pixel_aspect_ratio"), 1.0);
     return Object;
 }
 
@@ -979,6 +1002,9 @@ bool FMtoULinkageEditor::EvaluateCameraTime(
     {
         return false;
     }
+    // Maya poses its character at its own origin; the anchor is where the
+    // paired actor stands in Unreal, so the camera goes over relative to it.
+    MapCameraIntoAnchor(CameraSample, Source.Anchor);
 
     // A heartbeat repeats a target and keeps its evaluation serial. Only a real jump,
     // cut, camera change or change of the camera content starts a new generation and
@@ -1488,8 +1514,7 @@ bool ResolveOpenEvaluationSource(
     return Out.World != nullptr;
 }
 
-/** The components the paired Binding Actor's drives: its primary plus its parts. */
-TArray<UObject*> ResolveTargetComponents(const AActor* Actor)
+TArray<UObject*> FMtoULinkageEditor::ResolveTargetComponents(const AActor* Actor)
 {
     TArray<UObject*> Components;
     if (!Actor)
@@ -1509,6 +1534,13 @@ TArray<UObject*> ResolveTargetComponents(const AActor* Actor)
             {
                 Components.Add(Part.Get());
             }
+        }
+        // The Model follower is a display of the same character: a writer that
+        // drives the Binding Actor reaches it too, and that writer is still the
+        // character's own.
+        if (USkeletalMeshComponent* Follower = BindingActor->GetModelFollowerComponent())
+        {
+            Components.Add(Follower);
         }
         return Components;
     }
@@ -1547,6 +1579,10 @@ bool EvaluateCameraTimeHook(FMtoUCameraTimeTarget& OutTarget)
     {
         return false;
     }
+    if (const AActor* Anchor = ResolvePairedAnchor())
+    {
+        Source.Anchor = Anchor->GetActorTransform();
+    }
     FString Error;
     return FMtoULinkageEditor::EvaluateCameraTime(Source, OutTarget, Error);
 }
@@ -1568,7 +1604,7 @@ bool TakeOverTargetHook(FString& OutError, FString& OutErrorCode)
         return false;
     }
     return FMtoULinkageEditor::TakeOverTarget(
-        Source, ResolveTargetComponents(Anchor), Anchor, OutError, OutErrorCode);
+        Source, FMtoULinkageEditor::ResolveTargetComponents(Anchor), Anchor, OutError, OutErrorCode);
 }
 
 bool RestoreTargetHook(FString& OutError, FString& OutErrorCode)

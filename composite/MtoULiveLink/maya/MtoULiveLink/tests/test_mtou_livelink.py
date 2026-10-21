@@ -1124,6 +1124,66 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual("STREAM_INTERRUPTED", events[0].diagnostic["code"])
         self.assertFalse(events[0].recapture_scene)
 
+    def test_disconnect_while_linkage_paused_sampling_is_noticed_by_polling(self):
+        # Linkage removes the sampling timer, so only the linkage pump's poll
+        # can notice that Unreal ended the connection.
+        events = []
+        deferred = []
+        timers = []
+        state = {"value": "ready"}
+
+        class Worker(object):
+            def __init__(self, init_message, hello_message=None):
+                del init_message
+                self.hello_message = hello_message
+
+            def start(self):
+                pass
+
+            def status(self):
+                return (state["value"], "peer closed", None, None)
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+            def begin_ordered(self):
+                pass
+
+            def submit(self, frame):
+                pass
+
+            def submit_ordered(self, frame):
+                pass
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
+        fake_om, fake_cmds, scene = self._runtime(timers, deferred)
+        scene.sample.return_value = mtou_scene.CharacterFrame(7, [[1, 2, 3]], [])
+        with patch_global("om", fake_om), \
+             patch_global("cmds", fake_cmds), \
+             patch_global("SenderWorker", Worker):
+            session = mtou_session.StreamingSession.start(scene, 24.0, events.append)
+            timers[0](0.0, 0.0, None)
+            session.begin_linkage()
+            self.assertTrue(session.poll_connection())
+            state["value"] = "disconnected"
+            self.assertFalse(session.poll_connection())
+            for action in list(deferred):
+                action()
+
+        self.assertEqual(["ready", "failed"], [event.kind for event in events])
+        self.assertEqual("STREAM_INTERRUPTED", events[-1].diagnostic["code"])
+
     def test_timer_start_failure_rolls_back_worker_and_callbacks(self):
         removed = []
         worker = mock.Mock()

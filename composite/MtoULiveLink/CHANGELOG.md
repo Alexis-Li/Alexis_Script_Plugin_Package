@@ -23,7 +23,13 @@
   The Maya camera linkage borrows or creates is followed by identity: a rename
   keeps every write and the restore on it, and a camera that was deleted or
   whose shape was replaced is refused instead of writing into another camera
-  that took its name. Maya
+  that took its name. The linked camera stands relative to the paired actor
+  in the common space and uses square pixels, so Maya frames the character
+  exactly as Unreal renders it even when the actor is moved or rotated; a
+  camera whose focus is off still applies. A Level Sequence binding that
+  possesses the Binding Actor is taken over and restored with all its
+  displays, and the Maya panel follows Unreal's statements and notices a
+  connection Unreal ends during linkage. Maya
   refuses an oversized group, an unknown or shared writer target is refused
   before any write, and a failed restore is reported per resource instead of
   being hidden. The workflow is additive: the pairing is required only to enter

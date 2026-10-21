@@ -246,6 +246,55 @@ def stale_reference():
     return _Stale()
 
 
+class MainThreadDeferralTests(unittest.TestCase):
+    """Unreal statements arrive on the sender thread and must reach the panel.
+
+    An interactive Maya silently drops ``cmds.evalDeferred`` called from a
+    worker thread, so inside Maya the thread-safe ``maya.utils`` queue is used.
+    """
+
+    def test_statements_use_the_thread_safe_queue_inside_maya(self):
+        queued = []
+        fake_cmds = mock.MagicMock()
+        fake_utils = types.SimpleNamespace(executeDeferred=queued.append)
+        with mock.patch.object(mtou_mayaapi, "utils", fake_utils), \
+                mock.patch.object(mtou_controller, "cmds", fake_cmds):
+            controller = mtou_controller.Controller()
+
+            def action():
+                return None
+
+            controller._defer_ui(action)
+        self.assertEqual([action], queued)
+        fake_cmds.evalDeferred.assert_not_called()
+
+    def test_without_maya_utils_the_cmds_queue_is_used(self):
+        fake_cmds = mock.MagicMock()
+        with mock.patch.object(mtou_mayaapi, "utils", None), \
+                mock.patch.object(mtou_controller, "cmds", fake_cmds):
+            controller = mtou_controller.Controller()
+
+            def action():
+                return None
+
+            controller._defer_ui(action)
+        fake_cmds.evalDeferred.assert_called_once_with(action)
+
+    def test_a_late_group_refusal_is_counted_not_shown(self):
+        # A group still in flight when linkage ended is refused by Unreal; the
+        # panel counts it like a cancelled target instead of an error dialog.
+        fake_cmds = mock.MagicMock()
+        with mock.patch.object(mtou_mayaapi, "utils", None), \
+                mock.patch.object(mtou_controller, "cmds", fake_cmds):
+            controller = mtou_controller.Controller()
+            controller._linkage = mock.Mock()
+            controller._report_runtime_error({
+                "type": "error", "code": "LINKAGE_NOT_ACTIVE",
+                "message": "A group arrived while another host owns time."})
+        controller._linkage.note_refused.assert_called_once()
+        fake_cmds.evalDeferred.assert_not_called()
+
+
 class LinkagePanelTests(unittest.TestCase):
     """Shared harness: one controller, fake bindings and no Unreal peer."""
 

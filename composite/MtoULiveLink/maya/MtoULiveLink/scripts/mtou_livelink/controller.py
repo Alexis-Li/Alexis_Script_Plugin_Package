@@ -2,6 +2,7 @@
 
 import time
 
+from . import mayaapi
 from .cache import CachedPlayback, CachedPlaybackError
 from .config import (
     CACHED_MODE,
@@ -1007,7 +1008,8 @@ class Controller(object):
             self._clear_scene_text()
             if was_connected:
                 diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
-                cmds.evalDeferred(lambda: self._show_error(diagnostic, session=True))
+                mayaapi.run_deferred(lambda: self._show_error(diagnostic, session=True),
+                                     cmds.evalDeferred)
 
     def _on_time_unit_changed(self, *unused):
         fps = self._refresh_fps()
@@ -1602,6 +1604,13 @@ class Controller(object):
         linkage = self._linkage
         if linkage is None:
             return
+        session = self._session
+        poll = getattr(session, "poll_connection", None)
+        if callable(poll) and not poll():
+            # Linkage paused live sampling, so only this pump notices that
+            # Unreal ended the connection; the session's terminal event then
+            # restores Maya on the main thread.
+            return
         if linkage.confirmation_overdue():
             linkage.expire_unconfirmed()
             self._finish_linkage_exit(
@@ -1686,9 +1695,10 @@ class Controller(object):
         """The panel's existing diagnostic path for one Unreal error reply."""
         code = reply.get("code") or "STREAM_INTERRUPTED"
         linkage = self._linkage
-        if code == "EVAL_STALE" and linkage is not None:
+        if code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE") and linkage is not None:
             # Unreal refused an answer to a target a pause, jump or camera edit
-            # cancelled; that is normal scheduling, counted, not a dialog.
+            # cancelled, or a group still in flight when linkage ended; that is
+            # normal scheduling, counted, not a dialog.
             linkage.note_refused(reply.get("details") or reply.get("message") or "")
             return
         message = reply.get("message") or "Unreal 报告了一个错误。"
@@ -1743,7 +1753,7 @@ class Controller(object):
             action()
             return
         try:
-            cmds.evalDeferred(action)
+            mayaapi.run_deferred(action, cmds.evalDeferred)
         except (AttributeError, RuntimeError, TypeError):
             action()
 

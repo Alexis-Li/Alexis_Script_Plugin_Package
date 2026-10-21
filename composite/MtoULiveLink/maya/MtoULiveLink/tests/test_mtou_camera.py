@@ -69,13 +69,13 @@ def gate_payload(**overrides):
 class AxisConversionTest(unittest.TestCase):
 
     def test_known_vectors(self):
-        # Unreal forward +X, right +Y, up +Z land on Maya -Z, +X, +Y.
-        close(self, mtou_camera.ue_to_maya_point(1, 0, 0)[2], -1.0)
-        self.assertEqual(mtou_camera.ue_to_maya_point(1, 0, 0), (0.0, 0.0, -1.0))
-        self.assertEqual(mtou_camera.ue_to_maya_point(0, 1, 0), (1.0, 0.0, 0.0))
+        # The v10 common space: Maya (x, y, z) is Unreal (x, z, y), the same
+        # mapping the character stream uses.
+        self.assertEqual(mtou_camera.ue_to_maya_point(1, 0, 0), (1.0, 0.0, 0.0))
+        self.assertEqual(mtou_camera.ue_to_maya_point(0, 1, 0), (0.0, 0.0, 1.0))
         self.assertEqual(mtou_camera.ue_to_maya_point(0, 0, 1), (0.0, 1.0, 0.0))
         self.assertEqual(mtou_camera.ue_to_maya_point(10.0, -20.0, 30.0),
-                         (-20.0, 30.0, -10.0))
+                         (10.0, 30.0, -20.0))
 
     def test_round_trip(self):
         for point in ((0, 0, 0), (1, 2, 3), (-4.5, 6.25, -7.125), (100.0, 0.0, 0.0)):
@@ -141,7 +141,7 @@ class WorldMatrixTest(unittest.TestCase):
 
     def test_identity_basis_gives_identity_matrix(self):
         matrix = mtou_camera.ue_basis_to_maya_matrix(
-            (0, 1, 0), (0, 0, 1), (1, 0, 0), (0, 0, 0))
+            (1, 0, 0), (0, 0, 1), (0, -1, 0), (0, 0, 0))
         expected = (1.0, 0.0, 0.0, 0.0,
                     0.0, 1.0, 0.0, 0.0,
                     0.0, 0.0, 1.0, 0.0,
@@ -151,8 +151,8 @@ class WorldMatrixTest(unittest.TestCase):
 
     def test_translation_is_the_last_row(self):
         matrix = mtou_camera.ue_basis_to_maya_matrix(
-            (0, 1, 0), (0, 0, 1), (1, 0, 0), (100, 200, 300))
-        self.assertEqual(matrix[12:16], (200.0, 300.0, -100.0, 1.0))
+            (1, 0, 0), (0, 0, 1), (0, -1, 0), (100, 200, 300))
+        self.assertEqual(matrix[12:16], (100.0, 300.0, 200.0, 1.0))
         self.assertEqual(matrix[3], 0.0)
 
     def test_z_axis_is_negative_mapped_forward(self):
@@ -348,7 +348,7 @@ class ProjectionTest(unittest.TestCase):
 
     def setUp(self):
         self.matrix = mtou_camera.ue_basis_to_maya_matrix(
-            (0, 1, 0), (0, 0, 1), (1, 0, 0), (0, 0, 0))
+            (1, 0, 0), (0, 0, 1), (0, -1, 0), (0, 0, 0))
         self.aperture = (0.5, 0.25)
 
     def test_hand_computed_point(self):
@@ -680,6 +680,15 @@ class CameraAttributesTest(unittest.TestCase):
         for attribute in ("fStop", "focusDistance", "depthOfField"):
             self.assertNotIn(attribute, attributes)
 
+    def test_a_camera_without_focus_keeps_maya_focus_distance(self):
+        # A production CineCamera with focus disabled reports a focus distance
+        # of 0; the camera still maps, only the focus distance is not written.
+        camera = camera_payload(focus_distance_cm=0.0, depth_of_field=False)
+        attributes, notes = mtou_camera.camera_attributes(camera, gate_payload())
+        self.assertNotIn("focusDistance", attributes)
+        self.assertFalse(attributes["depthOfField"])
+        self.assertIsNone(notes["intended"]["focus_distance_cm"])
+
     def test_invalid_values_are_rejected(self):
         for camera in (camera_payload(focal_length_mm=0.0),
                        camera_payload(sensor_width_mm=-1.0),
@@ -757,6 +766,8 @@ class FakeCmds(object):
         self.camera_shapes = camera_shapes or {}
         self.nodes = {}
         self.panel_cameras = {}
+        # Panels whose camera switch Maya refuses, for the restore residual.
+        self.failing_panels = set()
         self.gate = list(start_gate)
         self.time = start_time
         self.undo_state = True
@@ -775,8 +786,15 @@ class FakeCmds(object):
             return self.unit
         raise AssertionError("unexpected currentUnit call")
 
+    def _require_node(self, name):
+        # Like Maya: a model panel is a UI object, unknown to node queries.
+        if name.split(".")[0] in self.panels:
+            raise RuntimeError("No object matches name: " + name)
+
     def objExists(self, name):
-        if name in self.nodes or name in self.panel_cameras:
+        if name.split(".")[0] in self.panels:
+            return False
+        if name in self.nodes:
             return True
         return name in self.camera_shapes or any(
             name in shapes for shapes in self.camera_shapes.values())
@@ -785,6 +803,7 @@ class FakeCmds(object):
         return self._get_attr(plug, kwargs)
 
     def _get_attr(self, plug, kwargs):
+        self._require_node(plug)
         if kwargs.get("lock"):
             return plug in self.locked
         if kwargs.get("settable"):
@@ -793,8 +812,6 @@ class FakeCmds(object):
             return self._attr_type(plug)
         if plug in self.nodes:
             return self.nodes[plug]
-        if plug in self.panel_cameras:
-            return self.panel_cameras[plug]
         if plug in _GATE_PLUGS:
             index = _GATE_PLUGS[plug]
             return self.gate[index]
@@ -841,6 +858,7 @@ class FakeCmds(object):
         return "double"
 
     def attributeQuery(self, attribute, node=None, listParent=False):
+        self._require_node(node or "")
         if listParent:
             if attribute in ("translateX", "translateY", "translateZ"):
                 return ["translate"]
@@ -854,11 +872,13 @@ class FakeCmds(object):
         raise AssertionError("unexpected attributeQuery call")
 
     def listConnections(self, plug, source=False, destination=False, **kwargs):
+        self._require_node(plug)
         if source and not destination and plug in self.driven:
             return ["driverCurve"]
         return []
 
     def lockNode(self, node, query=False, lock=False):
+        self._require_node(node)
         if query:
             return [False]
         return None
@@ -868,8 +888,9 @@ class FakeCmds(object):
             return list(self.panels)
         raise AssertionError("unexpected getPanel call")
 
-    def nodeType(self, panel):
-        return "modelPanel" if panel.startswith("modelPanel") else "modelEditor"
+    def nodeType(self, name):
+        self._require_node(name)
+        return "transform"
 
     def xform(self, name, query=False, worldSpace=False, matrix=None):
         if query:
@@ -880,13 +901,21 @@ class FakeCmds(object):
             return None
         raise AssertionError("unexpected xform call")
 
-    def modelPanel(self, panel, edit=False, query=False, camera=None):
+    def modelPanel(self, panel, edit=False, query=False, camera=None, exists=False):
+        if query and exists:
+            return panel in self.panels and panel.startswith("modelPanel")
         return self._panel_call(panel, edit, query, camera)
 
-    def modelEditor(self, panel, edit=False, query=False, camera=None):
+    def modelEditor(self, panel, edit=False, query=False, camera=None, exists=False):
+        if query and exists:
+            return panel in self.panels and not panel.startswith("modelPanel")
         return self._panel_call(panel, edit, query, camera)
 
     def _panel_call(self, panel, edit, query, camera):
+        if panel not in self.panels:
+            raise RuntimeError("Object not found: " + panel)
+        if edit and panel in self.failing_panels:
+            raise RuntimeError("Cannot set the camera of " + panel)
         if query and camera:
             return self.panel_cameras.get(panel, "persp")
         if edit and camera:
@@ -1110,10 +1139,10 @@ class LinkCameraApplyTest(LinkCameraHostTestBase):
         self.assertTrue(self.cmds.nodes[shape + ".displayGateMask"])
         # The world matrix is the mapped Unreal basis and location: rows are
         # right, up, -forward, and the translation is the last row.
-        self.assertEqual([1.0, 0.0, 0.0, 0.0,
+        self.assertEqual([0.0, 0.0, 1.0, 0.0,
                           0.0, 1.0, 0.0, 0.0,
-                          0.0, 0.0, 1.0, 0.0,
-                          200.0, 300.0, -100.0, 1.0], self.cmds._matrix)
+                          -1.0, 0.0, 0.0, 0.0,
+                          100.0, 300.0, 200.0, 1.0], self.cmds._matrix)
         # The resolution gate follows the aperture pixels and the device aspect.
         self.assertEqual((1920, 1080), (self.cmds.gate[0], self.cmds.gate[1]))
         close(self, self.cmds.gate[3], 1920.0 / 1080.0)
@@ -1168,8 +1197,8 @@ class LinkCameraApplyTest(LinkCameraHostTestBase):
         values = self.camera.readback()
         self.assertEqual(mtou_camera.LINK_CAMERA_NAME, values["camera"])
         self.assertEqual(mtou_camera.LINK_CAMERA_NAME + "Shape", values["shape"])
-        expected = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0, 200.0, 300.0, -100.0, 1.0]
+        expected = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                    -1.0, 0.0, 0.0, 0.0, 100.0, 300.0, 200.0, 1.0]
         self.assertEqual(len(expected), len(values["world_matrix"]))
         for first, second in zip(expected, values["world_matrix"]):
             close(self, first, second)
@@ -1311,10 +1340,20 @@ class LinkCameraStateTest(LinkCameraHostTestBase):
         self.cmds.panel_cameras["modelPanel4"] = "persp"
         state = self.camera.capture_state()
         self.camera.apply(camera_payload(), gate_payload())
-        self.cmds.locked.add("modelPanel4.camera")
+        self.cmds.failing_panels.add("modelPanel4")
         residual = self.camera.restore_state(state)
         self.assertEqual(1, len(residual))
         self.assertIn("modelPanel4", residual[0])
+
+    def test_restore_state_puts_back_an_open_panel_and_skips_a_closed_one(self):
+        self.cmds.panels = ["modelPanel4", "modelPanel1"]
+        self.cmds.panel_cameras["modelPanel4"] = "persp"
+        self.cmds.panel_cameras["modelPanel1"] = "side"
+        state = self.camera.capture_state()
+        self.camera.apply(camera_payload(), gate_payload())
+        self.cmds.panels.remove("modelPanel1")
+        self.assertEqual([], self.camera.restore_state(state))
+        self.assertEqual("persp", self.cmds.panel_cameras["modelPanel4"])
 
     def test_apply_undoes_a_failed_read_back_comparison(self):
         shape = mtou_camera.LINK_CAMERA_NAME + "Shape"
@@ -1464,23 +1503,13 @@ class LinkCameraRefusalTest(LinkCameraHostTestBase):
         self.assertEqual(mtou_camera.CATEGORY_CAMERA_INPUT_DRIVEN, caught.exception.category)
         self.assert_nothing_written()
 
-    def test_locked_panel_camera_is_refused(self):
-        self.cmds.panels = ["modelPanel4"]
-        self.cmds.locked.add("modelPanel4.camera")
-        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
-            self.camera.apply(camera_payload(), gate_payload())
-        self.assertEqual(mtou_camera.CATEGORY_LOCKED_ATTRIBUTE, caught.exception.category)
-        self.assertIn("modelPanel4", caught.exception.detail)
-        self.assert_nothing_written()
-
-    def test_driven_panel_camera_is_refused(self):
-        self.cmds.panels = ["modelEditor1"]
-        self.cmds.driven.add("modelEditor1.camera")
-        with self.assertRaises(mtou_camera.CameraSyncRefused) as caught:
-            self.camera.apply(camera_payload(), gate_payload())
-        self.assertEqual(mtou_camera.CATEGORY_CAMERA_INPUT_DRIVEN, caught.exception.category)
-        self.assertIn("modelEditor1", caught.exception.detail)
-        self.assert_nothing_written()
+    def test_panels_are_switched_through_panel_commands_only(self):
+        # Real Maya knows no node named after a model panel; nodeType, getAttr
+        # and objExists all fail on one, so none of them may be used for it.
+        self.cmds.panels = ["modelPanel1", "modelEditor1"]
+        self.camera.apply(camera_payload(), gate_payload())
+        self.assertEqual(mtou_camera.LINK_CAMERA_NAME, self.cmds.panel_cameras["modelPanel1"])
+        self.assertEqual(mtou_camera.LINK_CAMERA_NAME, self.cmds.panel_cameras["modelEditor1"])
 
     def test_apply_switches_every_model_panel_to_the_tool_camera(self):
         self.cmds.panels = ["modelPanel4", "modelEditor1"]

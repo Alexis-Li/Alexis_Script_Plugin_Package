@@ -12,7 +12,9 @@ Conventions (identical to the prototype)
 ----------------------------------------
 Unreal is left-handed, centimetres, ``+X`` forward, ``+Y`` right, ``+Z`` up.
 Maya is right-handed, centimetres, ``+X`` right, ``+Y`` up, ``-Z`` forward.
-The axis conversion used everywhere here is ``ue (x, y, z) -> maya (y, z, -x)``.
+The axis conversion is the v10 common space ``C``: ``maya (x, y, z)`` is
+``ue (x, z, y)``, the mapping the character stream uses, so a camera stands
+where the character's own space puts it.
 
 Sensor millimetres become Maya film-aperture inches (``/ 25.4``, signs
 preserved). Unreal fixes the field of view on its constraint axis, which Maya
@@ -140,13 +142,13 @@ class CameraSyncRefused(RuntimeError):
 # --------------------------------------------------------------------------
 
 def ue_to_maya_point(x, y, z):
-    """Map an Unreal vector/point to Maya coordinates: (y, z, -x)."""
-    return (float(y), float(z), -float(x))
+    """Map an Unreal vector/point to Maya coordinates: (x, z, y)."""
+    return (float(x), float(z), float(y))
 
 
 def maya_to_ue_point(x, y, z):
     """Inverse of :func:`ue_to_maya_point`, used by tests and diagnostics."""
-    return (-float(z), float(x), float(y))
+    return (float(x), float(z), float(y))
 
 
 def ue_basis_vectors(rotation_deg):
@@ -866,9 +868,13 @@ def camera_attributes(camera, gate):
     focus_distance = camera_field(camera, "focus_distance_cm")
     if focus_distance is not None:
         focus_distance = require_number(focus_distance, "camera.focus_distance_cm")
-        if focus_distance <= 0.0:
-            raise PayloadError(ERR_INVALID_FIELD, "focus_distance_cm must be positive")
-        attributes["focusDistance"] = focus_distance
+        if focus_distance < 0.0:
+            raise PayloadError(ERR_INVALID_FIELD, "focus_distance_cm must not be negative")
+        # Unreal reports 0 for a camera whose focus is off; Maya's focus
+        # distance must be positive, so it keeps its own value instead of the
+        # whole camera being refused.
+        if focus_distance > 0.0:
+            attributes["focusDistance"] = focus_distance
     depth_of_field = _depth_of_field(camera)
     if depth_of_field is not None:
         attributes["depthOfField"] = depth_of_field
@@ -990,7 +996,27 @@ def model_panels():
 
 
 def _panel_command(panel):
-    return cmds.modelPanel if cmds.nodeType(panel) == "modelPanel" else cmds.modelEditor
+    # A model panel is a UI object, not a dependency node: node queries such as
+    # nodeType or objExists do not know it, only the panel commands do.
+    return cmds.modelPanel if cmds.modelPanel(panel, query=True, exists=True) else cmds.modelEditor
+
+
+def panel_exists(panel):
+    """True while the model panel or model editor is still open."""
+    return bool(cmds.modelPanel(panel, query=True, exists=True)
+                or cmds.modelEditor(panel, query=True, exists=True))
+
+
+def require_panel(panel):
+    """Refuse a model panel that closed before its camera could be switched.
+
+    A panel's look-through camera can be neither locked nor driven, so the
+    only thing to check before writing is that the panel is still open.
+    """
+    if not panel_exists(panel):
+        raise CameraSyncRefused(
+            CATEGORY_HOST_STATE_MISMATCH,
+            "model panel {0} closed before its camera could be switched".format(panel))
 
 
 def panel_camera(panel):
@@ -1177,7 +1203,7 @@ class LinkCamera(object):
         panels = model_panels()
 
         for panel in panels:
-            require_writable(panel + ".camera")
+            require_panel(panel)
         for plug in RESOLUTION_PLUGS:
             require_writable(plug)
 
@@ -1194,7 +1220,7 @@ class LinkCamera(object):
         for attribute in MANAGED_ATTRIBUTES:
             require_writable(shape + "." + attribute)
         for panel in panels:
-            require_writable(panel + ".camera")
+            require_panel(panel)
 
         report = {
             "camera": transform,
@@ -1499,10 +1525,9 @@ class LinkCamera(object):
 
     def _restore_panel(self, panel, camera):
         """Put one model panel's look-through camera back, or report why not."""
-        if not camera or not cmds.objExists(panel):
+        if not camera or not panel_exists(panel):
             return []
         try:
-            require_writable(panel + ".camera")
             set_panel_camera(panel, camera)
         except (RuntimeError, ValueError, CameraSyncRefused) as error:
             return ["{0}: {1}".format(panel, error)]

@@ -8,7 +8,7 @@ import socket
 import threading
 import time
 
-from . import config
+from . import config, mayaapi
 from .config import CHARACTER_OBJECT_ID, DEFAULT_PLAYBACK_CAP, WORKFLOW_ANIMATION, WORKFLOWS
 from .diagnostics import (
     DIAGNOSTICS,
@@ -862,22 +862,40 @@ class StreamingSession(object):
             self._sample_and_submit(force=True)
         return True
 
-    def _sample_and_submit(self, force=False):
+    def poll_connection(self):
+        """Notice a worker that failed or disconnected while sampling is paused.
+
+        Live sampling notices a dead connection on its own timer, but linkage
+        pauses that timer; its pump calls this instead, so a connection Unreal
+        ended still reaches the terminal event that restores Maya. Returns True
+        while the connection is usable.
+        """
         if self._outcome is not None or self._worker is None:
-            return
-        state, detail, warning, diagnostic = self._worker.status()
+            return False
+        state, detail, unused_warning, diagnostic = self._worker.status()
+        return not self._fail_on_worker_state(state, detail, diagnostic)
+
+    def _fail_on_worker_state(self, state, detail, diagnostic):
+        """Request the terminal failure for a failed worker; True when it did."""
         if state == "error":
-            del detail, warning
             self._request_failure(
                 diagnostic or make_diagnostic("INTERNAL_ERROR", "Streaming failed."),
                 recapture_scene=False)
-            return
+            return True
         if state == "disconnected":
             self._request_failure(
                 make_diagnostic(
                     "STREAM_INTERRUPTED", detail or "Live Link connection ended.",
                     details=detail or "The streaming worker disconnected unexpectedly."),
                 recapture_scene=False)
+            return True
+        return False
+
+    def _sample_and_submit(self, force=False):
+        if self._outcome is not None or self._worker is None:
+            return
+        state, detail, warning, diagnostic = self._worker.status()
+        if self._fail_on_worker_state(state, detail, diagnostic):
             return
         if state != "ready":
             return
@@ -921,7 +939,7 @@ class StreamingSession(object):
             "failed", diagnostic=diagnostic, recapture_scene=recapture_scene)
         if not self._cleanup_pending:
             self._cleanup_pending = True
-            cmds.evalDeferred(self._finish_terminal)
+            mayaapi.run_deferred(self._finish_terminal, cmds.evalDeferred)
 
     def _finish_terminal(self):
         if self._cleaned:
