@@ -25,6 +25,24 @@ public:
      */
     static FText CompactLinkageText(const FText& Text);
 
+    /** The 镜头联动 group's one status line: who controls time and whether Maya keeps up. */
+    static FText FormatLinkageStatus(const struct FMtoULinkageView& View);
+
+    /** The lag row; empty while Maya keeps up, so the row is hidden. */
+    static FText FormatLinkageLag(const struct FMtoULinkageView& View);
+
+    /** The restore row; empty unless a restore left something behind. */
+    static FText FormatLinkageRecovery(const struct FMtoULinkageView& View);
+
+    /** Every linkage read-back the group leaves out, for 高级设置与诊断. */
+    static FText FormatLinkageDiagnostics(const struct FMtoULinkageView& View);
+
+    /** The 场景参考 result line in the user's terms. */
+    static FText FormatSceneReferenceResult(const struct FMtoUSceneRefExportResult& Result);
+
+    /** The handoff identity, counts and scope the result line leaves out. */
+    static FText FormatSceneReferenceDiagnostics(const struct FMtoUSceneRefExportResult& Result);
+
     /**
      * Acceptance renders open every MtoU group, so the check sees rows that
      * start collapsed. Panels built while this is set start expanded.

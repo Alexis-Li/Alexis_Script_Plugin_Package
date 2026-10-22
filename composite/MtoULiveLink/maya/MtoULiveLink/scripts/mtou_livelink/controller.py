@@ -34,9 +34,15 @@ from .scene import CharacterScene, CharacterSceneError, long_transform, require_
 from .session import StreamingSession, StreamingSessionError, bind_conflict_status
 from .space import format_fps, frames_per_second, validate_frame_rate
 from .timeline import load_playback_cap, save_playback_cap
-from .ui.layout import apply_panel_theme, grid_row
-from .ui.link_window import LINK_WINDOW_NAME, LinkWindow
-from .ui.reference_window import REFERENCE_WINDOW_NAME, ReferenceWindow
+from .ui.layout import apply_panel_theme, elide_text, grid_row, text_units
+from .ui.reference_window import (
+    REFERENCE_WINDOW_NAME,
+    ReferenceWindow,
+    import_time_label,
+    reference_counts_summary,
+    reference_report_lines,
+    reference_scope_summary,
+)
 from .ui.style import (
     BUTTON_HEIGHT,
     CARD_CONTENT,
@@ -126,19 +132,12 @@ class Controller(object):
         self._cached_reply_sink = None
         self._reference_offer = None
         self._reference_report = {"action": None, "report": None}
-        self._link_window = None
         self._reference_window = None
         self._enter_linkage_button = None
         self._leave_linkage_button = None
         self._end_linkage_button = None
-        self._link_window_button = None
         self._reference_window_button = None
-        self._link_control_text = None
-        self._link_mode_text = None
-        self._link_target_text = None
-        self._link_applied_text = None
-        self._link_lag_text = None
-        self._link_recovery_text = None
+        self._link_status_text = None
 
     @staticmethod
     def _grid_row(controls, spans=None, height=BUTTON_HEIGHT, top=0):
@@ -193,14 +192,19 @@ class Controller(object):
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(CARD_HALF, CARD_HALF),
                        columnAttach2=("left", "left"))
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._root_text = cmds.text(label="角色根骨骼：—", align="left")
-        self._outfit_text = cmds.text(label="当前衣服：—", align="left")
-        self._fps_text = cmds.text(label="场景帧率：—", align="left")
+        self._root_text = cmds.text(label="角色根骨骼：—", align="left",
+                                    width=SCENE_TEXT_WIDTH)
+        self._outfit_text = cmds.text(label="当前衣服：—", align="left",
+                                      width=SCENE_TEXT_WIDTH)
+        self._fps_text = cmds.text(label="场景帧率：—", align="left",
+                                   width=SCENE_TEXT_WIDTH)
         cmds.setParent("..")
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6,
                           columnAttach=("left", CACHE_TEXT_INDENT))
-        self._bone_text = cmds.text(label="骨骼数：0", align="left")
-        self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
+        self._bone_text = cmds.text(label="骨骼数：0", align="left",
+                                    width=CACHE_TEXT_WIDTH)
+        self._curve_text = cmds.text(label="BlendShape 数：0", align="left",
+                                     width=CACHE_TEXT_WIDTH)
         self._cache_text = cmds.text(label="缓存：无", annotation="缓存：无", align="left",
                                      height=18, width=CACHE_TEXT_WIDTH)
         cmds.setParent("..")
@@ -259,31 +263,19 @@ class Controller(object):
         cmds.setParent("..")
         cmds.setParent("..")
 
-        # Card 5 · single-character linkage: enter, leave and the detail windows.
+        # Card 5 · single-character linkage: one status line, enter and leave,
+        # and the scene-reference window.
         linkage_card = cmds.frameLayout(label="镜头联动", collapsable=False,
                                         marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=0)
-        status_column = (CARD_CONTENT - 2 * GRID_GAP) // 3
-        cmds.rowLayout(numberOfColumns=3,
-                       columnWidth3=(status_column, status_column, status_column),
-                       columnAttach3=("left", "left", "left"))
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._link_control_text = cmds.text(label="控制方：Maya", align="left")
-        self._link_mode_text = cmds.text(label="模式：实时预览", align="left")
-        cmds.setParent("..")
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._link_target_text = cmds.text(label="目标时间：—", align="left")
-        self._link_applied_text = cmds.text(label="最新完整应用：—", align="left")
-        cmds.setParent("..")
-        cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._link_lag_text = cmds.text(label="滞后：—", align="left")
-        self._link_recovery_text = cmds.text(label="恢复结果：无", align="left")
-        cmds.setParent("..")
+        cmds.rowLayout(numberOfColumns=1, columnWidth1=CARD_CONTENT)
+        self._link_status_text = cmds.text(label="未进入联动", align="left",
+                                           width=LINK_STATUS_WIDTH)
         cmds.setParent("..")
         cmds.formLayout(width=CARD_CONTENT)
         self._enter_linkage_button = cmds.button(
             label="进入联动", height=BUTTON_HEIGHT, backgroundColor=PRIMARY_BACKGROUND,
-            annotation="进入镜头联动：Unreal 接管序列时间与摄影机，Maya 回答完整姿势。",
+            annotation="进入镜头联动：Unreal 控制序列时间和相机，Maya 跟随显示角色姿势。",
             command=lambda *_: self.enter_linkage())
         self._leave_linkage_button = cmds.button(
             label="返回实时", height=BUTTON_HEIGHT, enable=False,
@@ -295,15 +287,11 @@ class Controller(object):
                         self._end_linkage_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.formLayout(width=CARD_CONTENT)
-        self._link_window_button = cmds.button(
-            label="打开镜头联动窗口", height=BUTTON_HEIGHT,
-            annotation="查看联动状态、读回值与逐资源恢复详情。",
-            command=lambda *_: self.open_link_window())
         self._reference_window_button = cmds.button(
             label="打开场景参考窗口", height=BUTTON_HEIGHT,
             annotation="查看、导入、移除或恢复 UE 场景参考。",
             command=lambda *_: self.open_reference_window())
-        self._grid_row([self._link_window_button, self._reference_window_button],
+        self._grid_row([self._reference_window_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.setParent("..")
         cmds.setParent("..")
@@ -810,6 +798,12 @@ class Controller(object):
         if control and cmds.control(control, exists=True):
             cmds.text(control, edit=True, label=text, annotation=text)
 
+    def _set_scene_text(self, control, prefix, value):
+        """One scene-card label, shortened to its column; the tooltip keeps it whole."""
+        label, tooltip = scene_label_text(prefix, value)
+        if control and cmds.control(control, exists=True):
+            cmds.text(control, edit=True, label=label, annotation=tooltip)
+
     def _set_connected(self, connected, status):
         label = "●  已连接" if connected else "●  未连接"
         if self._light and cmds.control(self._light, exists=True):
@@ -822,11 +816,11 @@ class Controller(object):
     def _refresh_fps(self):
         try:
             fps = frames_per_second(cmds.currentUnit(query=True, time=True))
-            self._set_text(self._fps_text, "帧率：" + format_fps(fps))
+            self._set_scene_text(self._fps_text, "帧率：", format_fps(fps))
             return fps
         except ValueError:
             unit = cmds.currentUnit(query=True, time=True)
-            self._set_text(self._fps_text, "帧率：{0}（不受支持）".format(unit))
+            self._set_scene_text(self._fps_text, "帧率：", "{0}（不受支持）".format(unit))
             return None
 
     def _on_playback_cap_changed(self, value, *unused):
@@ -911,8 +905,8 @@ class Controller(object):
         return scene
 
     def _render_snapshot(self, snapshot):
-        self._set_text(self._root_text, "角色根骨骼：" + snapshot.root)
-        self._set_text(self._outfit_text, "当前衣服：" + snapshot.outfit)
+        self._set_scene_text(self._root_text, "角色根骨骼：", snapshot.root)
+        self._set_scene_text(self._outfit_text, "当前衣服：", snapshot.outfit)
         self._set_text(self._bone_text, "骨骼数：{0}".format(len(snapshot.bones)))
         self._set_text(self._curve_text, "BlendShape 数：{0}".format(
             len(snapshot.curve_names)))
@@ -935,7 +929,7 @@ class Controller(object):
         except CharacterSceneError as error:
             if error.code == "AMBIGUOUS_DISPLAY":
                 self._pending_root = root
-                self._set_text(self._root_text, "角色根骨骼：" + root)
+                self._set_scene_text(self._root_text, "角色根骨骼：", root)
                 self._set_connected(
                     False, error.message + "：选中 Display 控制器后点击“选择 Display 控制器”")
             else:
@@ -1151,7 +1145,72 @@ class Controller(object):
         ]
         if details and details not in (summary, solution):
             sections.append("错误详情：\n{0}".format(details))
+        sections.append(self._linkage_diagnostic_text())
+        sections.append(self._reference_diagnostic_text())
         return "\n\n".join(sections)
+
+    def _linkage_diagnostic_text(self):
+        """镜头联动 read-back for 诊断详情: everything the status line leaves out."""
+        status = self.linkage_status()
+        labels = status.get("labels") or {}
+
+        def value(key):
+            item = status.get(key)
+            return "—" if item is None else item
+
+        age = status.get("applied_age")
+        records = status.get("recovery_records") or ()
+        lines = [
+            "镜头联动：",
+            "状态：{0}".format(status.get("line") or "—"),
+            labels.get("control") or "控制方：—",
+            labels.get("mode") or "模式：—",
+            "mode_revision：{0} · session：{1} · set：{2} · space：{3}".format(
+                value("mode_revision"), value("session_id"),
+                value("set_revision"), value("space_revision")),
+            labels.get("target") or "目标时间：—",
+            "目标求值：{0}".format(value("target")),
+            labels.get("applied") or "最新完整应用：—",
+            "已应用求值：{0}".format(value("applied_eval_id")),
+            "样本序号：{0}".format(value("applied_sample_serial")),
+            "应用年龄：{0}".format("—" if age is None else "{0:.1f} 秒".format(age)),
+            labels.get("lag") or "滞后：—",
+            "已应用 / 已拒绝：{0} / {1}".format(
+                status.get("applied_count") or 0, status.get("refused_count") or 0),
+            "在途目标：{0}".format(
+                (status.get("issued") or 0) + (status.get("pending") or 0)),
+            "详情：{0}".format(status.get("detail") or "—"),
+            "逐资源恢复：{0}".format("无" if not records else "{0} 项".format(len(records))),
+        ]
+        lines.extend("  {0}".format(record) for record in records)
+        return "\n".join(lines)
+
+    def _reference_diagnostic_text(self):
+        """场景参考 handoff identity, frozen budgets and the full last report."""
+        offer = self._reference_offer
+        lines = ["场景参考："]
+        if isinstance(offer, dict) and offer:
+            space_revision = offer.get("space_revision")
+            lines.extend([
+                "交接 ID：{0}".format(offer.get("transfer_id") or "—"),
+                "目录：{0}".format(offer.get("directory") or "—"),
+                "范围：{0}".format(reference_scope_summary(offer)),
+                "摘要：{0}".format(
+                    offer.get("manifest_digest") or offer.get("digest") or "—"),
+                "计数：{0}".format(reference_counts_summary(offer.get("counts"))),
+                "空间版本：{0}".format(
+                    "—" if space_revision is None else space_revision),
+            ])
+        else:
+            lines.append("交接：暂无")
+        budget = self.reference_budget()
+        lines.append("冻结上限：字节 {0:,}（{1:g} MiB）· 对象 {2:,} · 三角面 {3:,}".format(
+            int(budget["bytes"]), float(budget["bytes"]) / (1024 * 1024),
+            int(budget["objects"]), int(budget["triangles"])))
+        lines.append("上次结果：")
+        lines.extend("  {0}".format(line)
+                     for line in reference_report_lines(self.reference_report()))
+        return "\n".join(lines)
 
     def show_diagnostics(self, *unused):
         if cmds.window(DIAGNOSTIC_WINDOW_NAME, exists=True):
@@ -1163,7 +1222,7 @@ class Controller(object):
         field = cmds.scrollField(
             editable=False, wordWrap=True, text=self._diagnostic_text())
         copy_button = cmds.button(
-            label="复制详情", command=lambda *_: self._copy_text(
+            label="复制完整诊断", command=lambda *_: self._copy_text(
                 cmds.scrollField(field, query=True, text=True)))
         cmds.formLayout(
             layout, edit=True,
@@ -1381,7 +1440,8 @@ class Controller(object):
         linkage = LinkageSession(
             host, session, on_event=self._on_linkage_event,
             object_id=object_id, set_revision=set_revision,
-            space_revision=space_revision, mode_revision=floor)
+            space_revision=space_revision, mode_revision=floor,
+            owed_replies=previous.owed_replies() if previous is not None else None)
         revision = remote_revision if remote else floor + 1
         try:
             linkage.set_session_id(session_id)
@@ -1413,7 +1473,6 @@ class Controller(object):
         self._set_connected(True, "镜头联动中：跟随 UE 序列时间与摄影机")
         self._update_linkage_status()
         self._update_mode_controls()
-        self._refresh_link_window()
 
     def _announce_remote_refusal(self, session, revision, diagnostic):
         """Tell Unreal that Maya cannot follow the transition it started."""
@@ -1466,7 +1525,6 @@ class Controller(object):
                 linkage, "已按 Unreal 的指令退出镜头联动：Maya 暂停在恢复帧，连接不变")
         self._update_linkage_status()
         self._update_mode_controls()
-        self._refresh_link_window()
 
     def _finish_linkage_exit(self, linkage, status):
         """Common tail of every exit Maya did not start from its own panel."""
@@ -1531,10 +1589,9 @@ class Controller(object):
         self._set_connected(self._session_ready(), status)
         self._update_linkage_status()
         self._update_mode_controls()
-        self._refresh_link_window()
 
     def _shutdown_linkage(self):
-        """Release every linkage resource and drop the detail windows."""
+        """Release every linkage resource and drop the reference window."""
         self._stop_linkage_pump()
         self._close_sub_windows()
         linkage, self._linkage = self._linkage, None
@@ -1612,7 +1669,6 @@ class Controller(object):
                 linkage, "Unreal 未确认镜头联动：Maya 已恢复原状态，连接不变")
             self._update_linkage_status()
             self._update_mode_controls()
-            self._refresh_link_window()
             return
         try:
             linkage.pump()
@@ -1623,7 +1679,6 @@ class Controller(object):
                 make_diagnostic("INTERNAL_ERROR", str(error), details=str(error)),
                 repeat=True)
         self._update_linkage_status()
-        self._refresh_link_window()
 
     def _on_runtime_reply(self, reply):
         """Route one post-ready Unreal reply while linkage owns the session.
@@ -1690,11 +1745,16 @@ class Controller(object):
         """The panel's existing diagnostic path for one Unreal error reply."""
         code = reply.get("code") or "STREAM_INTERRUPTED"
         linkage = self._linkage
-        if code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE") and linkage is not None:
+        if linkage is not None and (
+                code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE")
+                or (code == "MODE_CONFLICT" and linkage.owes_group_reply())):
             # Unreal refused an answer to a target a pause, jump or camera edit
-            # cancelled, or a group still in flight when linkage ended; that is
-            # normal scheduling, counted, not a dialog.
-            linkage.note_refused(reply.get("details") or reply.get("message") or "")
+            # cancelled, a group still in flight when linkage ended, or a group
+            # a mode change overtook (an older revision, or one that arrived
+            # during the transition); that is normal scheduling, counted, not
+            # a dialog.
+            linkage.note_refused(reply.get("details") or reply.get("message") or "",
+                                 group_reply=True)
             return
         message = reply.get("message") or "Unreal 报告了一个错误。"
         details = reply.get("details") or reply.get("message") or ""
@@ -1798,7 +1858,11 @@ class Controller(object):
         control = status.control if status is not None else CONTROL_MAYA
         recovery = self._linkage_recovery()
         overdue = bool(linkage.convergence_overdue()) if linkage is not None else False
+        wait = _linkage_wait_seconds(linkage) if overdue else 0.0
+        held = bool(linkage.takeover_held()) if linkage is not None else False
         active = mode == LINKAGE_MODE
+        line, line_tooltip = linkage_status_line(
+            mode, status, recovery, overdue, wait, held)
         snapshot = {
             "active": active,
             "mode": mode,
@@ -1824,12 +1888,16 @@ class Controller(object):
             "refused_count": status.refused_count if status is not None else 0,
             "converged": bool(status.converged) if status is not None else False,
             "overdue": overdue,
+            "wait_seconds": wait,
+            "takeover_held": held,
             "recovery": recovery,
             "recovery_records": recovery,
             "detail": (status.detail if status is not None else
                        "未进入镜头联动。"),
             "labels": _linkage_status_labels(
                 mode, control, status, recovery, overdue, active),
+            "line": line,
+            "line_tooltip": line_tooltip,
         }
         return snapshot
 
@@ -1840,14 +1908,12 @@ class Controller(object):
         return tuple(self._linkage_last_recovery)
 
     def _update_linkage_status(self):
-        """Render the linkage card's status row from the current snapshot."""
-        labels = self.linkage_status().get("labels") or {}
-        self._set_text(self._link_control_text, labels.get("control"))
-        self._set_text(self._link_mode_text, labels.get("mode"))
-        self._set_text(self._link_target_text, labels.get("target"))
-        self._set_text(self._link_applied_text, labels.get("applied"))
-        self._set_text(self._link_lag_text, labels.get("lag"))
-        self._set_text(self._link_recovery_text, labels.get("recovery"))
+        """Render the linkage card's one status line from the current snapshot."""
+        status = self.linkage_status()
+        control = self._link_status_text
+        if control and cmds.control(control, exists=True):
+            cmds.text(control, edit=True, label=status.get("line") or "",
+                      annotation=status.get("line_tooltip") or "")
 
     def _update_linkage_controls(self):
         """Enablement and tooltips for the linkage card's actions."""
@@ -1876,30 +1942,9 @@ class Controller(object):
             "结束预览：Unreal 仍保留预览接管，结束后恢复原写入者。"
             if held else "进入镜头联动后可结束预览。")
         self._set_tooltip(
-            self._link_window_button, "查看联动状态、读回值与逐资源恢复详情。")
-        self._set_tooltip(
             self._reference_window_button, "查看、导入、移除或恢复 UE 场景参考。")
 
     # ---------------------------------------------------------- linkage UI
-    def open_link_window(self):
-        """Show the linkage detail window, reusing the existing instance."""
-        window = self._link_window
-        if window is not None:
-            window.show()
-            return window
-        if cmds is not None and cmds.window(LINK_WINDOW_NAME, exists=True):
-            # A stray window from an earlier session is replaced, never doubled.
-            cmds.deleteUI(LINK_WINDOW_NAME)
-        window = LinkWindow(self)
-        self._link_window = window
-        return window
-
-    def close_link_window(self):
-        """Release this detail window only; the linkage session survives."""
-        window, self._link_window = self._link_window, None
-        if window is not None:
-            window.close()
-
     def open_reference_window(self):
         """Show the scene-reference detail window, reusing the instance."""
         window = self._reference_window
@@ -1919,13 +1964,7 @@ class Controller(object):
             window.close()
 
     def _close_sub_windows(self):
-        self.close_link_window()
         self.close_reference_window()
-
-    def _refresh_link_window(self):
-        window = self._link_window
-        if window is not None:
-            window.refresh()
 
     def _refresh_reference_window(self):
         window = self._reference_window
@@ -1950,10 +1989,33 @@ class Controller(object):
                 "triangles": MAX_REFERENCE_TRIANGLES}
 
     def reference_report(self):
-        """The last reference action and its report."""
+        """The last reference action, its report, handoff and finish time."""
         outcome = self._reference_report
         return {"action": outcome.get("action"),
-                "report": dict(outcome.get("report") or {})}
+                "report": dict(outcome.get("report") or {}),
+                "transfer_id": outcome.get("transfer_id"),
+                "time": outcome.get("time")}
+
+    def reference_state(self):
+        """Return ``(state, tooltip)``: whether the offered handoff can be imported."""
+        offer = self._reference_offer
+        if not isinstance(offer, dict) or not offer:
+            return "暂无交接", "先在 UE 的“场景参考”中导出，再回到这里导入。"
+        outcome = self._reference_report
+        report = outcome.get("report") or {}
+        current = (outcome.get("action") == "import"
+                   and outcome.get("transfer_id") == offer.get("transfer_id"))
+        session_space = exact_int(getattr(self._session, "space_revision", None))
+        offer_space = exact_int(offer.get("space_revision"))
+        if (current and report.get("code") == "REFERENCE_STALE") or (
+                session_space is not None and offer_space is not None
+                and offer_space != session_space):
+            return ("已过期，请在 UE 重新导出",
+                    "这份交接属于旧的共同空间；在 UE 重新导出场景参考后再导入。")
+        if current and report.get("accepted"):
+            return ("已导入（{0}）".format(import_time_label(outcome.get("time"))),
+                    "再次点击“导入/更新参考”会用这份交接替换场景中的参考。")
+        return "可导入", "点击“导入/更新参考”把这份交接导入 Maya。"
 
     def reference_window_controls(self):
         """Enablement and tooltips for the reference window's buttons."""
@@ -1992,12 +2054,12 @@ class Controller(object):
         try:
             report = reference.inspect(handoff, budget)
         except reference.ReferenceRefused as error:
-            self._report_reference_refusal(error)
+            self._report_reference_refusal(error, record=True)
             return
         if not (isinstance(report, dict) and report.get("accepted")):
             # Validation reported a problem instead of raising it: nothing is
             # staged, and the report card carries the reason.
-            self._reference_report = {"action": "import", "report": report}
+            self._reference_report = self._reference_outcome("import", report)
             self._warn("场景参考未通过校验：{0}".format(
                 (report or {}).get("detail") if isinstance(report, dict) else "未知原因"))
             self._refresh_reference_window()
@@ -2005,9 +2067,9 @@ class Controller(object):
         try:
             report = reference.import_handoff(handoff, budget)
         except reference.ReferenceRefused as error:
-            self._report_reference_refusal(error)
+            self._report_reference_refusal(error, record=True)
             return
-        self._reference_report = {"action": "import", "report": report}
+        self._reference_report = self._reference_outcome("import", report)
         self._submit_reference_result(report)
         self._set_text(self._status_text, self._reference_outcome_text(report))
         self._refresh_reference_window()
@@ -2023,7 +2085,7 @@ class Controller(object):
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error)
             return
-        self._reference_report = {"action": "remove", "report": report}
+        self._reference_report = self._reference_outcome("remove", report)
         self._submit_reference_removed(report)
         self._set_text(self._status_text, self._reference_outcome_text(report))
         self._refresh_reference_window()
@@ -2039,7 +2101,7 @@ class Controller(object):
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error)
             return
-        self._reference_report = {"action": "recover", "report": report}
+        self._reference_report = self._reference_outcome("recover", report)
         self._set_text(self._status_text, self._reference_outcome_text(report))
         self._refresh_reference_window()
 
@@ -2115,9 +2177,21 @@ class Controller(object):
         except (StreamingSessionError, RuntimeError, TypeError, ValueError) as error:
             self._warn("移除结果发送失败：{0}".format(error))
 
-    def _report_reference_refusal(self, error):
+    def _reference_outcome(self, action, report):
+        """One stored reference result, tied to the offered handoff and its time."""
+        offer = self._reference_offer or {}
+        return {"action": action, "report": report,
+                "transfer_id": offer.get("transfer_id"), "time": time.time()}
+
+    def _report_reference_refusal(self, error, record=False):
         code = getattr(error, "code", None) or "INTERNAL_ERROR"
         detail = getattr(error, "detail", None) or str(error)
+        if record:
+            # A refused import is the window's last result too, so its state
+            # line can say a stale handoff needs a new export.
+            self._reference_report = self._reference_outcome(
+                "import", {"accepted": False, "code": code, "detail": detail})
+            self._refresh_reference_window()
         diagnostic = make_diagnostic(
             code if code in DIAGNOSTICS else "INTERNAL_ERROR", detail,
             details=detail)
@@ -2185,9 +2259,37 @@ CACHE_TEXT_WIDTH = CARD_HALF - CACHE_TEXT_INDENT
 
 CACHE_LABEL_UNITS = 26
 
+_text_units = text_units
 
-def _text_units(text):
-    return sum(2 if ord(char) >= 0x2E80 else 1 for char in text)
+# The scene card's left column holds the character root, the outfit and the
+# frame rate at the cache summary's fixed width, so a long DAG path or outfit
+# name is shortened instead of widening the panel. Its labels carry no "缓存："
+# style suffix, so their budget is measured on the panel font with a margin.
+SCENE_TEXT_WIDTH = CACHE_TEXT_WIDTH
+
+SCENE_LABEL_UNITS = 29
+
+# The linkage card's one status line spans the card; its text is kept within
+# LINK_STATUS_UNITS and the tooltip carries the whole line and what to do.
+LINK_STATUS_WIDTH = CARD_CONTENT - 2 * CARD_MARGIN
+
+LINK_STATUS_UNITS = 2 * CACHE_LABEL_UNITS + 4
+
+# The applied lag the status line reports: below it Maya keeps up and the line
+# says 同步正常. Display only; the protocol's convergence window is unchanged.
+LINKAGE_LAG_NOTICE_SECONDS = 0.5
+
+
+def scene_label_text(prefix, value):
+    """Return ``(label, tooltip)`` for one scene-card label (R-020).
+
+    The value is shortened in the middle, so both the start and the leaf of a
+    DAG path or outfit name stay readable; the tooltip keeps the whole value.
+    """
+    value = "—" if value in (None, "") else str(value)
+    full = prefix + value
+    budget = SCENE_LABEL_UNITS - _text_units(prefix)
+    return prefix + elide_text(value, budget, middle=True), full
 
 
 def cache_summary_text(summary):
@@ -2205,6 +2307,57 @@ def cache_summary_text(summary):
             return label, tooltip
     tail = (CACHE_LABEL_UNITS - _text_units("缓存：…")) // 2
     return "缓存：{0}…{1}".format(label[3:3 + tail], label[-tail:]), tooltip
+
+
+def _linkage_wait_seconds(linkage):
+    wait = getattr(linkage, "wait_seconds", None)
+    try:
+        return float(wait()) if callable(wait) else 0.0
+    except (RuntimeError, TypeError, ValueError):
+        return 0.0
+
+
+def linkage_status_line(mode, status, recovery, overdue, wait, held):
+    """Return ``(line, tooltip)``: the linkage card's one status line.
+
+    Only the state, a lag Maya cannot keep up with, and a failed restore are
+    shown; the evaluation, sample and revision read-back stays in 诊断详情.
+    """
+    hints = []
+    if mode == LINKAGE_MODE:
+        parts = ["镜头联动中", "Unreal 控制时间"]
+        lag = status.lag_seconds if status is not None else None
+        applied = status is not None and status.applied_eval_id
+        # An overdue target is the lag in effect: it has waited longer than
+        # the last complete application took.
+        behind = float(wait) if overdue else (
+            float(lag) if lag is not None else 0.0)
+        if overdue or behind >= LINKAGE_LAG_NOTICE_SECONDS:
+            parts.append("Maya 跟不上，滞后 {0} 秒".format(_seconds_label(behind)))
+            hints.append("Maya 正在追赶 Unreal 的最新时间；可暂停 Sequencer 等待，"
+                         "或关闭占用性能的程序。")
+        elif not applied:
+            parts.append("正在同步")
+        else:
+            parts.append("同步正常")
+    else:
+        parts = ["未进入联动"]
+        if mode == CACHED_MODE:
+            parts.append("缓存播放中")
+        if held:
+            parts.append("Unreal 仍接管目标")
+            hints.append("点击“结束预览”让 Unreal 交还原来的动画。")
+    if recovery:
+        parts.append("恢复失败 {0} 项".format(len(recovery)))
+        hints.append("打开“诊断详情”查看未恢复的项目，按记录在 Maya 中手动恢复"
+                     "（例如解锁相机或重设时间范围）。")
+    line = " · ".join(parts)
+    tooltip = "\n".join([line] + hints)
+    return elide_text(line, LINK_STATUS_UNITS), tooltip
+
+
+def _seconds_label(value):
+    return "{0:.1f}".format(value) if value < 10 else "{0:.0f}".format(value)
 
 
 def _frame_label(value):

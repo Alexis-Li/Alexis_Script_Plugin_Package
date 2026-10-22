@@ -14,6 +14,37 @@ from .. import mayaapi
 from .style import BUTTON_HEIGHT, CARD_GAP, CARD_HALF, CARD_MARGIN, GRID_GAP, PANEL_STYLE
 
 
+def text_units(text):
+    return sum(2 if ord(char) >= 0x2E80 else 1 for char in text)
+
+
+def elide_text(text, units, middle=False):
+    """Shorten ``text`` to ``units`` (CJK counts two) with one ellipsis."""
+    if text_units(text) <= units:
+        return text
+    budget = units - text_units("…")
+    if not middle:
+        kept = ""
+        for char in text:
+            if text_units(kept + char) > budget:
+                break
+            kept += char
+        return kept + "…"
+    head, tail = "", ""
+    chars = list(text)
+    while chars:
+        char = chars.pop(0)
+        if text_units(head + char + tail) > budget:
+            break
+        head += char
+        if chars:
+            char = chars.pop()
+            if text_units(head + char + tail) > budget:
+                break
+            tail = char + tail
+    return head + "…" + tail
+
+
 def grid_row(controls, spans=None, height=None, top=0):
     """Attach controls of the current formLayout to equal grid columns.
 
