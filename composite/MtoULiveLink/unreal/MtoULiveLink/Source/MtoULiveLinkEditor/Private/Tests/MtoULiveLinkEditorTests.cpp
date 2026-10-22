@@ -605,6 +605,44 @@ bool FMtoUDetailsSeekInputTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsLinkageCompactTextTest,
+    "MtoULiveLink.Editor.DetailsLinkageCompactText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsLinkageCompactTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // A production eval_id: sequence time, the camera path, then the whole
+    // camera description without a space or '/'.
+    FString Description;
+    for (int32 Index = 0; Index < 60; ++Index)
+    {
+        Description += FString::Printf(TEXT("field_%d=%d.000000;"), Index, Index);
+    }
+    const FString EvalId = TEXT("Main@1392000+000//Game/Level/Story/D003/Level_D003CP6_Act01.Level_D003CP6_Act01:")
+        TEXT("PersistentLevel.CineCameraActor_4.CameraComponent#") + Description + TEXT("~e3");
+    const FString Shown = FMtoULiveLinkActorDetails::CompactLinkageText(
+        FText::FromString(TEXT("最新完整应用时间：") + EvalId + TEXT(" · 帧 1,740"))).ToString();
+
+    TArray<FString> Runs;
+    Shown.ParseIntoArray(Runs, TEXT(" "));
+    for (const FString& Line : Runs)
+    {
+        TArray<FString> Segments;
+        Line.ParseIntoArray(Segments, TEXT("/"));
+        for (const FString& Segment : Segments)
+        {
+            TestTrue(*FString::Printf(TEXT("run '%s' fits one line"), *Segment.Left(60)), Segment.Len() <= 52);
+        }
+    }
+    TestTrue(TEXT("the sequence time stays readable"), Shown.StartsWith(TEXT("最新完整应用时间：Main@1392000+000//Game/")));
+    TestTrue(TEXT("the elided run keeps its end"), Shown.Contains(TEXT("…")) && Shown.Contains(TEXT(";~e3")));
+    TestTrue(TEXT("text after the run is unchanged"), Shown.EndsWith(TEXT(" · 帧 1,740")));
+    TestTrue(TEXT("a short text is unchanged"), FMtoULiveLinkActorDetails::CompactLinkageText(
+        FText::FromString(TEXT("恢复结果：无待处理恢复"))).ToString() == TEXT("恢复结果：无待处理恢复"));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
     "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

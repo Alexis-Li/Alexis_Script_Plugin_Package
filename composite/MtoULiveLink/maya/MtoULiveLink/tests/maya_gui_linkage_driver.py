@@ -1,5 +1,5 @@
 # ruff: noqa: E402
-"""Opt-in Maya GUI driver for the Unreal production-sequence linkage test.
+"""Opt-in Maya GUI driver for the Unreal GUI acceptance tests.
 
 Runs inside an interactive Maya session started by the Unreal test:
 
@@ -17,12 +17,17 @@ Fixture keys: ``scene``, ``root``, ``scripts`` (the tool's ``scripts``
 directory), ``command``, ``result``, ``evidence``, ``oracle_joints`` (short
 names), ``keyed_joints`` (short names whose orient-constraint driver gets test
 keys), ``key_range`` ``[start, end]``, ``key_step``, ``key_degrees``,
-optional ``allow_scene_load_warnings``.
+optional ``keyed_morphs`` (blendShape aliases keyed between the two weights of
+``morph_range``, default ``[0.15, 0.85]``) and ``allow_scene_load_warnings``.
 
-Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``leave`` (with
-``target`` ``realtime``/``end``), ``snapshot``, ``panel_shot`` (with
-``name``), ``quit``. The result file always carries the latest panel status;
-``ack`` names the last finished command.
+Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``disconnect``,
+``leave`` (with ``target`` ``realtime``/``end``), ``workflow`` (``target``
+``animation``/``model``), ``mode`` (``target`` ``realtime``/``cached``),
+``capture`` (``range`` ``[start, end]``), ``time`` (``frame``), ``snapshot``,
+``panel_shot`` (with ``name``), ``quit``. Each runs the handler of the panel
+control it names. The result file always carries the latest linkage status
+and the panel's workflow, mode, cache state and status line; ``ack`` names
+the last finished command.
 """
 
 import json
@@ -137,6 +142,47 @@ def key_test_motion():
     RESULT["keyed"] = keyed
 
 
+def morph_plugs(name):
+    """Every blendShape weight plug whose alias is ``name``."""
+    plugs = []
+    for deformer in cmds.ls(type="blendShape") or []:
+        aliases = cmds.aliasAttr(deformer, query=True) or []
+        for alias, attribute in zip(aliases[0::2], aliases[1::2]):
+            if alias == name:
+                plugs.append(deformer + "." + attribute)
+    return plugs
+
+
+def key_test_morphs():
+    """Key every listed Morph between two non-zero weights.
+
+    The rig drives its blendShape weights, so each weight's input is detached
+    in this disposable process and keyed instead; the weights alternate out of
+    phase so no oracle frame sees them all at one value.
+    """
+    start, end = FIXTURE.get("key_range", [0, 2500])
+    step = float(FIXTURE.get("key_step", 45))
+    low, high = FIXTURE.get("morph_range", [0.15, 0.85])
+    keyed = []
+    for index, name in enumerate(FIXTURE.get("keyed_morphs", [])):
+        plugs = morph_plugs(name)
+        if not plugs:
+            RESULT["errors"].append("no blendShape weight named " + name)
+            continue
+        for plug in plugs:
+            for source in cmds.listConnections(plug, source=True, destination=False,
+                                               plugs=True) or []:
+                cmds.disconnectAttr(source, plug)
+            frame = float(start) + index * step / 3.0
+            high_next = index % 2 == 0
+            while frame <= float(end):
+                cmds.setKeyframe(plug, time=frame, value=high if high_next else low)
+                high_next = not high_next
+                frame += step
+        keyed.append(name)
+    RESULT["keyed_morphs"] = keyed
+
+
 def camera_record():
     """The camera Maya's model panels look through, with the values that frame it."""
     panel = None
@@ -212,9 +258,14 @@ def snapshot():
         world = cmds.xform(path, query=True, worldSpace=True, translation=True)
         joints[short] = {"world": world,
                          "screen": screen_point(record, world) if record else None}
+    morphs = {}
+    for name in RESULT.get("keyed_morphs", []):
+        plugs = morph_plugs(name)
+        if plugs:
+            morphs[name] = cmds.getAttr(plugs[0])
     status = CONTROLLER.linkage_status()
     return {"time": cmds.currentTime(query=True), "camera": record, "joints": joints,
-            "status": status}
+            "morphs": morphs, "status": status}
 
 
 def grab_windows(name):
@@ -258,6 +309,25 @@ def run_command(command):
     elif action == "panel_shot":
         CONTROLLER.open_link_window()
         grab_windows(command.get("name", "panel"))
+    elif action == "time":
+        cmds.currentTime(float(command["frame"]), update=True)
+    elif action == "disconnect":
+        CONTROLLER.disconnect()
+    elif action == "workflow":
+        # The 动画／模型 tab buttons' own handler.
+        CONTROLLER._on_workflow_changed(command["target"])
+    elif action == "mode":
+        # The 实时预览／缓存播放 buttons' own handler.
+        from mtou_livelink import controller as panel
+        CONTROLLER._on_mode_changed(
+            panel.CACHED_MODE if command["target"] == "cached" else panel.REALTIME_MODE)
+    elif action == "capture":
+        # 自定义捕获范围 and its fields, then 捕获并上传.
+        start, end = command["range"]
+        cmds.checkBox(CONTROLLER._custom_range_checkbox, edit=True, value=True)
+        cmds.intField(CONTROLLER._range_start_field, edit=True, value=int(start))
+        cmds.intField(CONTROLLER._range_end_field, edit=True, value=int(end))
+        CONTROLLER._capture_cached_playback()
     elif action == "quit":
         quit_maya()
         return
@@ -273,6 +343,12 @@ def tick():
         RESULT["maya_time"] = cmds.currentTime(query=True)
         RESULT["link_camera_exists"] = bool(cmds.objExists("MtoU_LinkCamera"))
         RESULT["panel_camera"] = (camera_record() or {}).get("camera")
+        view = CONTROLLER._cached_view
+        RESULT["panel"] = {
+            "workflow": CONTROLLER._workflow, "mode": CONTROLLER._mode,
+            "cached_state": getattr(view, "state", None) if view else None,
+            "status": cmds.text(CONTROLLER._status_text, query=True, label=True)
+            if CONTROLLER._status_text else None}
         try:
             command = json.loads(Path(FIXTURE["command"]).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
@@ -310,6 +386,7 @@ def start():
         open_scene()
         RESULT["load_seconds"] = round(time.time() - load_start, 1)
         key_test_motion()
+        key_test_morphs()
         import MtoULiveLink
         CONTROLLER = MtoULiveLink.run()
         RESULT["phase"] = "panel"

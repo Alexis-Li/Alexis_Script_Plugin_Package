@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MtoULinkage.h"
+#include "MtoUGuiAcceptance.h"
 #include "MtoULinkageEditor.h"
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
@@ -61,23 +62,8 @@
  */
 namespace
 {
-TSharedPtr<FJsonObject> ReadJsonFile(const FString& Path)
-{
-    FString Text;
-    TSharedPtr<FJsonObject> Value;
-    if (FFileHelper::LoadFileToString(Text, *Path))
-    {
-        FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Value);
-    }
-    return Value;
-}
-
-void WriteJsonFile(const FString& Path, const TSharedRef<FJsonObject>& Value)
-{
-    FString Text;
-    FJsonSerializer::Serialize(Value, TJsonWriterFactory<>::Create(&Text));
-    FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-}
+using MtoUGuiAcceptance::ReadJsonFile;
+using MtoUGuiAcceptance::WriteJsonFile;
 
 TArray<TSharedPtr<FJsonValue>> NumberArray(std::initializer_list<double> Values)
 {
@@ -143,14 +129,7 @@ public:
     ~FProductionLinkageCommand() override
     {
         FWorldDelegates::OnWorldCleanup.Remove(CleanupHandle);
-        if (Maya.IsValid())
-        {
-            if (FPlatformProcess::IsProcRunning(Maya))
-            {
-                FPlatformProcess::TerminateProc(Maya, true);
-            }
-            FPlatformProcess::CloseProc(Maya);
-        }
+        Driver.Terminate();
     }
 
     bool Update() override
@@ -188,10 +167,7 @@ public:
         }
         // The driver rewrites its result file continuously; a read that lands
         // mid-write keeps the last complete result instead of losing it.
-        if (const TSharedPtr<FJsonObject> Fresh = ReadJsonFile(MayaResultPath))
-        {
-            MayaResult = Fresh;
-        }
+        MayaResult = Driver.Poll();
         if (MayaResult.IsValid())
         {
             const TArray<TSharedPtr<FJsonValue>>* MayaErrors = nullptr;
@@ -283,13 +259,10 @@ private:
 
     int32 SendMaya(const FString& Action, const FString& Target = FString(), const FString& Name = FString())
     {
-        TSharedRef<FJsonObject> Command = MakeShared<FJsonObject>();
-        Command->SetNumberField(TEXT("id"), ++CommandId);
-        Command->SetStringField(TEXT("action"), Action);
-        Command->SetStringField(TEXT("target"), Target);
-        Command->SetStringField(TEXT("name"), Name);
-        WriteJsonFile(MayaCommandPath, Command);
-        return CommandId;
+        TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+        Fields->SetStringField(TEXT("target"), Target);
+        Fields->SetStringField(TEXT("name"), Name);
+        return Driver.Send(Action, Fields);
     }
 
     bool Prepare()
@@ -302,10 +275,6 @@ private:
         }
         EvidenceDir = Fixture->GetStringField(TEXT("evidence"));
         IFileManager::Get().MakeDirectory(*EvidenceDir, true);
-        MayaCommandPath = FPaths::Combine(EvidenceDir, TEXT("maya-command.json"));
-        MayaResultPath = FPaths::Combine(EvidenceDir, TEXT("maya-result.json"));
-        FFileHelper::SaveStringToFile(TEXT("{}"), *MayaCommandPath);
-        FFileHelper::SaveStringToFile(TEXT("{\"phase\":\"not-started\"}"), *MayaResultPath);
         Evidence = MakeShared<FJsonObject>();
         CleanupHandle = FWorldDelegates::OnWorldCleanup.AddLambda(
             [this](UWorld* World, bool, bool)
@@ -325,6 +294,7 @@ private:
                 && Actor->GetConnectionStatus().StartsWith(TEXT("Connected"));
         });
         Add(TEXT("pair the target and open the sequence copy"), 60.0, [this]() { return PairAndOpen(); });
+        Add(TEXT("Details renders while connected"), 60.0, [this]() { return RenderDetails(TEXT("connected")); });
         Add(TEXT("record the sequence-driven pose before any takeover"), 60.0, [this]()
         {
             if (!SetTimeAndSettle(OracleFrames[0], 0.5) || !RecordWriterPose(BeforePose))
@@ -347,7 +317,7 @@ private:
             {
                 QuitId = SendMaya(TEXT("quit"));
             }
-            return !FPlatformProcess::IsProcRunning(Maya);
+            return !Driver.IsRunning();
         });
         return true;
     }
@@ -490,26 +460,7 @@ private:
 
     bool StartMaya()
     {
-        const TSharedPtr<FJsonObject> MayaFixture = Fixture->GetObjectField(TEXT("maya"));
-        MayaFixture->SetStringField(TEXT("command"), MayaCommandPath);
-        MayaFixture->SetStringField(TEXT("result"), MayaResultPath);
-        MayaFixture->SetStringField(TEXT("evidence"), EvidenceDir);
-        const FString DriverFixture = FPaths::Combine(EvidenceDir, TEXT("maya-driver-fixture.json"));
-        WriteJsonFile(DriverFixture, MayaFixture.ToSharedRef());
-        FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LINKAGE_DRIVER_FIXTURE"), *DriverFixture);
-        FPlatformMisc::SetEnvironmentVar(TEXT("MAYA_APP_DIR"), *MayaFixture->GetStringField(TEXT("app_dir")));
-        const FString Driver = MayaFixture->GetStringField(TEXT("driver"));
-        const FString Args = FString::Printf(
-            TEXT("-log \"%s\" -command \"python(\\\"import runpy; runpy.run_path(r'%s')\\\")\""),
-            *FPaths::Combine(EvidenceDir, TEXT("maya.log")), *Driver);
-        Maya = FPlatformProcess::CreateProc(*MayaFixture->GetStringField(TEXT("exe")), *Args,
-            true, true, false, nullptr, 0, nullptr, nullptr);
-        if (!Maya.IsValid())
-        {
-            Test->AddError(TEXT("Could not start Maya"));
-            return false;
-        }
-        return true;
+        return Driver.Start(*Test, Fixture->GetObjectField(TEXT("maya")), EvidenceDir);
     }
 
     bool PairAndOpen()
@@ -761,8 +712,27 @@ private:
                 ShotId = -1;
                 return true;
             });
+            Add(TEXT("Details renders during linkage"), 60.0, [this]() { return RenderDetails(TEXT("linkage")); });
         }
         AddExit(Scenario, Tag);
+    }
+
+    /**
+     * Renders the Binding Actor's Details at each fixture width into PNGs.
+     * Only a run with a real RHI can render (-RenderOffscreen, not -NullRHI);
+     * otherwise the step only logs that it was skipped. Every text that cannot
+     * wrap and is painted narrower than it needs is logged as clipped.
+     */
+    bool RenderDetails(const FString& State)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Widths = nullptr;
+        if (Fixture->TryGetArrayField(TEXT("details_widths"), Widths) && Widths->Num() > 0)
+        {
+            MtoUGuiAcceptance::RenderDetails(*Test, *Actor, *Widths,
+                Fixture->HasField(TEXT("details_height")) ? Fixture->GetNumberField(TEXT("details_height")) : 1600.0,
+                EvidenceDir, State, [this](const FString& Line) { Log(Line); });
+        }
+        return true;
     }
 
     void AddOracle(int32 FrameIndex)
@@ -852,6 +822,37 @@ private:
             }
             ++Compared;
         }
+        // Morph weights: every keyed Maya weight against each display that owns
+        // the target, read where the displays' verification reads them.
+        double MaxMorph = 0.0;
+        double MaxExpectedMorph = 0.0;
+        int32 ComparedMorphs = 0;
+        const TSharedPtr<FJsonObject>* Morphs = nullptr;
+        TSharedRef<FJsonObject> MorphRecord = MakeShared<FJsonObject>();
+        if (Snapshot->TryGetObjectField(TEXT("morphs"), Morphs))
+        {
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
+            {
+                const double Expected = Morph.Value->AsNumber();
+                TArray<TSharedPtr<FJsonValue>> Shown;
+                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Actor, FName(*Morph.Key)))
+                {
+                    MaxMorph = FMath::Max(MaxMorph, FMath::Abs(Weight - Expected));
+                    Shown.Add(MakeShared<FJsonValueNumber>(Weight));
+                }
+                if (Shown.Num() > 0)
+                {
+                    ++ComparedMorphs;
+                    MaxExpectedMorph = FMath::Max(MaxExpectedMorph, FMath::Abs(Expected));
+                }
+                TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+                Entry->SetNumberField(TEXT("maya"), Expected);
+                Entry->SetArrayField(TEXT("displays"), Shown);
+                MorphRecord->SetObjectField(Morph.Key, Entry);
+            }
+        }
+        Record->SetObjectField(TEXT("morphs"), MorphRecord);
+        Record->SetNumberField(TEXT("max_morph"), MaxMorph);
         Record->SetNumberField(TEXT("frame"), OracleFrames[FrameIndex]);
         Record->SetArrayField(TEXT("ue_view_location"), NumberArray({View.Location.X, View.Location.Y, View.Location.Z}));
         Record->SetArrayField(TEXT("ue_view_rotation_rpy"), NumberArray({View.Rotation.Roll, View.Rotation.Pitch, View.Rotation.Yaw}));
@@ -871,6 +872,17 @@ private:
             OracleFrames[FrameIndex], Camera ? *Camera->GetOwner()->GetActorNameOrLabel() : TEXT("no camera"),
             Compared, MaxWorld, MaxScreen));
         Test->TestTrue(TEXT("oracle compares the character's bones"), Compared >= 3);
+        const TArray<TSharedPtr<FJsonValue>>* KeyedMorphs = nullptr;
+        if (Fixture->GetObjectField(TEXT("maya"))->TryGetArrayField(TEXT("keyed_morphs"), KeyedMorphs)
+            && KeyedMorphs->Num() > 0)
+        {
+            Log(FString::Printf(TEXT("oracle frame %.1f: %d morphs, max Maya weight %.3f, max delta %.5f"),
+                OracleFrames[FrameIndex], ComparedMorphs, MaxExpectedMorph, MaxMorph));
+            Test->TestEqual(TEXT("every keyed Morph is shown by a display"), ComparedMorphs, KeyedMorphs->Num());
+            Test->TestTrue(TEXT("the oracle Morph weights are non-zero"), MaxExpectedMorph > 0.05);
+            Test->TestTrue(TEXT("the displays show Maya's Morph weights"),
+                MaxMorph < Fixture->GetNumberField(TEXT("morph_tolerance")));
+        }
         Test->TestTrue(TEXT("the displayed character matches Maya's world pose through the anchor"),
             MaxWorld < Fixture->GetNumberField(TEXT("world_tolerance_cm")));
         Test->TestTrue(TEXT("Unreal's rendered camera shows the character where Maya's linked camera does"),
@@ -1119,13 +1131,13 @@ private:
     }
 
     FAutomationTestBase* Test;
-    FString FixturePath, EvidenceDir, MayaCommandPath, MayaResultPath;
+    FString FixturePath, EvidenceDir;
     TSharedPtr<FJsonObject> Fixture, MayaResult, Evidence;
     TArray<FStep> Steps;
     int32 Step = 0;
     double StepStarted = 0.0;
-    int32 LogIndex = 0, CommandId = 0, ReportedMayaErrors = 0;
-    FProcHandle Maya;
+    int32 LogIndex = 0, ReportedMayaErrors = 0;
+    MtoUGuiAcceptance::FMayaGuiDriver Driver;
     TWeakObjectPtr<UWorld> WorldPtr;
     ULevelSequence* MainOriginal = nullptr;
     ULevelSequence* ShotOriginal = nullptr;

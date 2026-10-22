@@ -238,6 +238,7 @@ workflow requires it, and the handoff never delivers image data.
 
 | Problem | What to do |
 | --- | --- |
+| Maya reports an incomplete MtoU_LiveLink install | A part of the `scripts` directory is missing; the message names it. Copy the whole `scripts` directory (`MtoULiveLink.py` and the `mtou_livelink` folder) into one Maya scripts directory again, then restart Maya. |
 | Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. When the details report that one required bone is claimed by two Maya bones, rename one of them in Maya. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
 | An Additional Part is rejected | The diagnostics name the part and the reason. Check the shared **Skeleton** asset, the reported required bones and their parent chains in Maya, and the shared reference poses. If skin weights cannot be read, rebuild or reimport the mesh with CPU skin data available. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |

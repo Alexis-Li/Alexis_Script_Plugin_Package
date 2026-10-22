@@ -131,6 +131,40 @@ CORPUS = json.loads(
 )
 
 
+class IncompleteInstallTests(unittest.TestCase):
+    """A copied entry without its package says what is missing and how to fix it."""
+
+    def import_entry(self, keep_package, drop_module=None):
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as scripts:
+            shutil.copy2(str(SCRIPTS / "MtoULiveLink.py"), scripts)
+            if keep_package:
+                package = pathlib.Path(scripts) / "mtou_livelink"
+                shutil.copytree(str(SCRIPTS / "mtou_livelink"), str(package),
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                (package / drop_module).unlink()
+            completed = subprocess.run(
+                [sys.executable, "-I", "-X", "utf8", "-c",
+                 "import sys; sys.path.insert(0, sys.argv[1]); import MtoULiveLink", scripts],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        return completed.returncode, completed.stderr.decode("utf-8", "replace")
+
+    def test_entry_without_its_package_reports_the_incomplete_install(self):
+        code, stderr = self.import_entry(keep_package=False)
+
+        self.assertNotEqual(0, code)
+        self.assertIn("MtoU_LiveLink 安装不完整：找不到 mtou_livelink", stderr)
+        self.assertIn("Copy the whole scripts directory", stderr)
+
+    def test_missing_module_is_named_in_the_report(self):
+        code, stderr = self.import_entry(keep_package=True, drop_module="linkage.py")
+
+        self.assertNotEqual(0, code)
+        self.assertIn("找不到 mtou_livelink.linkage", stderr)
+
+
 class LatestFrameTests(unittest.TestCase):
     def test_only_newest_unsent_frame_is_kept(self):
         slot = mtou_session.LatestFrame()

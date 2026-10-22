@@ -19,6 +19,12 @@ public:
      */
     static FText FormatCacheState(const FMtoUCachePlaybackView& View);
 
+    /**
+     * Linkage row text with every run longer than 52 characters between spaces
+     * or '/' elided in the middle; the row's tooltip keeps the full text.
+     */
+    static FText CompactLinkageText(const FText& Text);
+
     /** Parse the exact integer accepted by the Details source-frame seek field. */
     static bool ParseSeekSourceFrame(const FString& Input, int32& OutFrame);
 

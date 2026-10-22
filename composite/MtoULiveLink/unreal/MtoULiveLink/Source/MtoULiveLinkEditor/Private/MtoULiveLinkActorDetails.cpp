@@ -462,6 +462,45 @@ FText LinkageControlText(const FString& Control)
     return LOCTEXT("LinkageControlMaya", "Maya");
 }
 
+// Longest run without a space or '/' one line shows. An eval_id carries the
+// whole camera description and runs to kilobytes; the row keeps both ends of
+// each long run and its tooltip keeps the full text.
+constexpr int32 LinkageRunLimit = 52;
+
+FText CompactLinkageRuns(const FText& Text)
+{
+    const FString Full = Text.ToString();
+    FString Out;
+    Out.Reserve(FMath::Min(Full.Len(), 512));
+    int32 Start = 0;
+    while (Start < Full.Len())
+    {
+        int32 End = Start;
+        while (End < Full.Len() && Full[End] != TEXT(' ') && Full[End] != TEXT('/') && Full[End] != TEXT('\n'))
+        {
+            ++End;
+        }
+        const int32 Length = End - Start;
+        if (Length > LinkageRunLimit)
+        {
+            const int32 Tail = LinkageRunLimit / 4;
+            Out += Full.Mid(Start, LinkageRunLimit - Tail - 1);
+            Out += TEXT("…");
+            Out += Full.Mid(End - Tail, Tail);
+        }
+        else
+        {
+            Out += Full.Mid(Start, Length);
+        }
+        if (End < Full.Len())
+        {
+            Out.AppendChar(Full[End]);
+        }
+        Start = End + 1;
+    }
+    return FText::FromString(Out);
+}
+
 FText LinkageTargetTimeText(const FMtoULinkageView& View)
 {
     if (View.TargetEvalId.IsEmpty())
@@ -712,6 +751,11 @@ TSharedRef<IDetailCustomization> FMtoULiveLinkActorDetails::MakeInstance()
 FText FMtoULiveLinkActorDetails::FormatCacheSummary(const FMtoUCachePlaybackView& View)
 {
     return CacheSummaryText(View);
+}
+
+FText FMtoULiveLinkActorDetails::CompactLinkageText(const FText& Text)
+{
+    return CompactLinkageRuns(Text);
 }
 
 FText FMtoULiveLinkActorDetails::FormatCacheState(const FMtoUCachePlaybackView& View)
@@ -1393,7 +1437,8 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         SNew(STextBlock)
             .AutoWrapText(true)
             .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-            .Text_Lambda([]() { return LinkageTargetTimeText(MtoUGetLinkageView()); })
+            .Text_Lambda([]() { return CompactLinkageText(LinkageTargetTimeText(MtoUGetLinkageView())); })
+            .ToolTipText_Lambda([]() { return LinkageTargetTimeText(MtoUGetLinkageView()); })
         );
 
     AddLinkageRow(LOCTEXT("LinkageAppliedRow", "完整应用时间 滞后"),
@@ -1402,7 +1447,8 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
-                .Text_Lambda([]() { return LinkageAppliedText(MtoUGetLinkageView()); })
+                .Text_Lambda([]() { return CompactLinkageText(LinkageAppliedText(MtoUGetLinkageView())); })
+                .ToolTipText_Lambda([]() { return LinkageAppliedText(MtoUGetLinkageView()); })
             ]
             + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
             [
@@ -1417,7 +1463,8 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         SNew(STextBlock)
             .AutoWrapText(true)
             .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-            .Text_Lambda([]() { return LinkageRestoreText(MtoUGetLinkageView()); })
+            .Text_Lambda([]() { return CompactLinkageText(LinkageRestoreText(MtoUGetLinkageView())); })
+            .ToolTipText_Lambda([]() { return LinkageRestoreText(MtoUGetLinkageView()); })
         );
 
     AddLinkageRow(LOCTEXT("LinkageDiagnosticsRow", "错误"),
@@ -1428,9 +1475,13 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             {
                 if (!LinkageMessage->IsEmpty())
                 {
-                    return *LinkageMessage;
+                    return CompactLinkageText(*LinkageMessage);
                 }
-                return LinkageErrorText(MtoUGetLinkageView());
+                return CompactLinkageText(LinkageErrorText(MtoUGetLinkageView()));
+            })
+            .ToolTipText_Lambda([LinkageMessage]()
+            {
+                return LinkageMessage->IsEmpty() ? LinkageErrorText(MtoUGetLinkageView()) : *LinkageMessage;
             })
             .Visibility_Lambda([Actor, LinkageMessage]()
             {

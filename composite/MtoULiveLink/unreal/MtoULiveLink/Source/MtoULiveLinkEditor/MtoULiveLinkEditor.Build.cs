@@ -9,9 +9,9 @@ public class MtoULiveLinkEditor : ModuleRules
         PrivateDependencyModuleNames.AddRange(new[]
         {
             "ApplicationCore", "AssetRegistry", "CinematicCamera", "DynamicMesh", "EditorFramework", "Engine", "GeometryCore", "GeometryFramework",
-            "GeometryScriptingCore", "Json", "LevelSequence", "LevelSequenceEditor", "LiveLinkAnimationCore", "LiveLinkInterface", "MeshDescription",
-            "MovieScene", "MovieSceneTracks", "PropertyEditor", "Sequencer", "SkeletalMeshDescription", "Slate", "SlateCore", "Sockets",
-            "StaticMeshDescription", "UnrealEd"
+            "GeometryScriptingCore", "ImageCore", "Json", "LevelSequence", "LevelSequenceEditor", "LiveLinkAnimationCore", "LiveLinkInterface", "MeshDescription",
+            "MovieScene", "MovieSceneTracks", "PropertyEditor", "RenderCore", "Sequencer", "SkeletalMeshDescription", "Slate", "SlateCore", "Sockets",
+            "StaticMeshDescription", "UMG", "UnrealEd"
         });
         // Editor-private bridge for the Refresh-during-session integration
         // test: the Runtime source lives in its Private dir, so only this
