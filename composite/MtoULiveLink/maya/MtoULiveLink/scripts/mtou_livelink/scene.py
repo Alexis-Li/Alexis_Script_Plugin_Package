@@ -3,6 +3,7 @@
 import math
 import re
 
+from . import mayaapi
 from .config import BIND_MATRIX_TOLERANCE, CURVE_VALUE_TOLERANCE
 from .diagnostics import DIAGNOSTICS, make_diagnostic
 from .mayaapi import cmds, om, oma
@@ -848,7 +849,8 @@ class CharacterScene(object):
                 "character_change_started", snapshot=self._snapshot))
         self._refresh_generation += 1
         generation = self._refresh_generation
-        cmds.evalDeferred(lambda: self._refresh_after_display_change(generation))
+        mayaapi.run_deferred(lambda: self._refresh_after_display_change(generation),
+                             cmds.evalDeferred)
 
     def _refresh_after_display_change(self, generation):
         if self._closed or generation != self._refresh_generation:

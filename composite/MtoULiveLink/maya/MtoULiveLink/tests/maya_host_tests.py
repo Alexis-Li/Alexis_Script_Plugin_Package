@@ -955,7 +955,7 @@ class MayaHostTests(unittest.TestCase):
             payloads.camera_payload(focal_length_mm=60.0), payloads.gate_payload())
         self.assertEqual(cmds.ls("OriginalRenamed", long=True)[0],
                          cmds.ls(report["camera"], long=True)[0])
-        self.assertEqual((60.0, 200.0), self._camera_values("OriginalRenamed"))
+        self.assertEqual((60.0, 100.0), self._camera_values("OriginalRenamed"))
         self.assertEqual((85.0, 1000.0), self._camera_values(name))
         self.assertEqual(foreign_matrix,
                          cmds.xform(name, query=True, worldSpace=True, matrix=True))

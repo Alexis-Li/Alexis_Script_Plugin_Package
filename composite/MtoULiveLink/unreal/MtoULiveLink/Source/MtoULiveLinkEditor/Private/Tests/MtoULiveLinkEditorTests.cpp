@@ -6564,6 +6564,75 @@ bool FMtoULinkageWriterRefusalTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// A sequence binding that drives the Binding Actor itself, as in a production
+// shot whose character binding possesses the actor: every display it owns,
+// the Model follower included, belongs to the paired character.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageBindingActorTakeoverTest,
+    "MtoULiveLinkEditor.LinkageBindingActorTakeover",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageBindingActorTakeoverTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageBindingActor"));
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("editor world"), World) || !TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Mesh;
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>(
+        FVector(60.0, 40.0, 0.0), FRotator(-4.0, 37.0, 3.0), Params);
+    if (!TestNotNull(TEXT("Binding Actor"), Actor))
+    {
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    TestNotNull(TEXT("the Binding Actor owns a Model follower"), Actor->GetModelFollowerComponent());
+
+    ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid ActorBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Actor, TEXT("CharacterBinding"));
+    UMovieScene3DTransformTrack* ActorTrack =
+        AddTransformTrack(*MovieScene, ActorBinding, 0, 100 * 30000 / 30);
+    if (!TestNotNull(TEXT("fixture track built"), ActorTrack))
+    {
+        return false;
+    }
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+
+    const TArray<UObject*> Targets = FMtoULinkageEditor::ResolveTargetComponents(Actor);
+    TestTrue(TEXT("the paired target includes the Model follower"),
+        Targets.Contains(Actor->GetModelFollowerComponent()));
+    FString InventoryError;
+    const TArray<FMtoULinkageEditor::FWriterRecord> Writers =
+        FMtoULinkageEditor::CollectTargetWriters(Source, Targets, Actor, InventoryError);
+    TestTrue(TEXT("the character's own binding is not a shared writer"), InventoryError.IsEmpty());
+    TestEqual(TEXT("the inventory holds the binding's writer"), Writers.Num(), 1);
+
+    FString Error;
+    FString Code;
+    const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(Source, Targets, Actor, Error, Code);
+    if (!TestTrue(TEXT("the takeover of the Binding Actor's binding succeeds"), bTakenOver))
+    {
+        AddError(Error + TEXT(" ") + Code);
+        return false;
+    }
+    TestTrue(TEXT("the binding's writer is muted"), ActorTrack->IsLocalEvalDisabled());
+    TestTrue(TEXT("the restore succeeds"), FMtoULinkageEditor::RestoreTarget(Error, Code));
+    TestFalse(TEXT("the binding's writer drives again"), ActorTrack->IsLocalEvalDisabled());
+    return true;
+}
+
 // The camera/time target of one fixture sequence, across a cut.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FMtoULinkageCameraTimeTest,
@@ -6669,6 +6738,10 @@ bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("the gate carries the flat width spelling"),
             Target.Gate->TryGetNumberField(TEXT("width"), GateWidth));
         TestTrue(TEXT("the flat gate width is positive"), GateWidth > 0.0);
+        double PixelAspect = 0.0;
+        TestTrue(TEXT("the gate declares its pixel aspect"),
+            Target.Gate->TryGetNumberField(TEXT("pixel_aspect_ratio"), PixelAspect));
+        TestNearlyEqual(TEXT("Unreal pixels are square"), PixelAspect, 1.0, 1e-9);
     }
 
     const FString FirstIdentity = Target.EvalId;
@@ -6773,6 +6846,33 @@ bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
                 PausedAgain.EvalId, Paused.EvalId);
             TestFalse(TEXT("a heartbeat after the pause is not an event"),
                 PausedAgain.bDiscontinuous);
+        }
+        // The camera travels relative to the paired actor's placement: with a
+        // rotated, offset anchor Maya receives the anchor-local camera.
+        FMtoUCameraTimeTarget WorldSpace;
+        FMtoULinkageEditor::FEvaluationSource Anchored = Source;
+        Anchored.Anchor = FTransform(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+        FMtoUCameraTimeTarget Local;
+        if (Evaluate(TEXT("the world-space camera evaluates"), WorldSpace)
+            && TestTrue(TEXT("the anchored camera evaluates"),
+                FMtoULinkageEditor::EvaluateCameraTime(Anchored, Local, Error)))
+        {
+            const auto Vec = [](const TSharedPtr<FJsonObject>& Camera, const TCHAR* Field)
+            {
+                const TSharedPtr<FJsonObject> V = Camera->GetObjectField(Field);
+                return FVector(V->GetNumberField(TEXT("x")), V->GetNumberField(TEXT("y")),
+                    V->GetNumberField(TEXT("z")));
+            };
+            const FTransform& A = Anchored.Anchor;
+            TestTrue(TEXT("the camera location is anchor-local"),
+                Vec(Local.Camera, TEXT("location")).Equals(
+                    A.InverseTransformPosition(Vec(WorldSpace.Camera, TEXT("location"))), 1.e-3));
+            TestTrue(TEXT("the camera forward is anchor-local"),
+                Vec(Local.Camera, TEXT("forward")).Equals(
+                    A.InverseTransformVectorNoScale(Vec(WorldSpace.Camera, TEXT("forward"))), 1.e-5));
+            TestTrue(TEXT("the camera up is anchor-local"),
+                Vec(Local.Camera, TEXT("up")).Equals(
+                    A.InverseTransformVectorNoScale(Vec(WorldSpace.Camera, TEXT("up"))), 1.e-5));
         }
     }
     Player->Stop();

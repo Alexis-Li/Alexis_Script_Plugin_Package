@@ -183,6 +183,9 @@ public:
         return CharacterPartComponents;
     }
 
+    /** The original Driver display that follows the generated garment in Model preview. */
+    USkeletalMeshComponent* GetModelFollowerComponent() const { return DriverMeshComponent; }
+
     /** Part-level composition problems of the current Binding; empty when every enabled part is compatible. */
     const FString& GetCharacterPartDiagnostics() const { return CharacterPartDiagnostics; }
 

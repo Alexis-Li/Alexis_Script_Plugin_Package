@@ -47,6 +47,12 @@ public:
         TSharedPtr<ISequencer> Sequencer;
         /** A player the caller owns, used when no editor Sequencer is open. */
         ULevelSequencePlayer* Player = nullptr;
+        /**
+         * The static anchor of the common space: the paired actor's placement.
+         * The camera travels to Maya relative to it, so Maya, whose character
+         * stands at its origin, frames the character as Unreal renders it.
+         */
+        FTransform Anchor = FTransform::Identity;
     };
 
     /**
@@ -84,6 +90,14 @@ public:
         const TArray<UObject*>& TargetObjects,
         const AActor* TargetAnchor,
         FString& OutError);
+
+    /**
+     * The components a paired actor's writers may drive. For a Binding Actor
+     * that is every display of the character it owns: the primary, each
+     * Additional Part and the Model follower. For another actor it is every
+     * scene component.
+     */
+    static TArray<UObject*> ResolveTargetComponents(const AActor* Actor);
 
     /**
      * Mutes exactly the writers that drive the target objects, with the

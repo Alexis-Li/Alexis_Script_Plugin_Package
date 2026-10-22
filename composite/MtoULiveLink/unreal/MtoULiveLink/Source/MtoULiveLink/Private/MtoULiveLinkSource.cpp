@@ -513,6 +513,7 @@ void FMtoULiveLinkSource::Update()
     // The worker reads this mirror to refuse cache work and live frames that
     // contradict the current time authority.
     bWorkerLinkageActive.Store(LinkageSession.GetView().Mode == TEXT("linkage"));
+    bWorkerLinkageAwaitingPeer.Store(LinkageSession.GetView().bTransitioning);
     if (LinkageSession.ConsumeSessionEndRequest())
     {
         // A failed restore ended the session rather than hiding the residual.
@@ -1110,6 +1111,13 @@ uint32 FMtoULiveLinkSource::Run()
                     // Exactly one host owns time in each mode: while linkage
                     // is active, cache work and live frames contradict the
                     // authority statement and are refused with their code.
+                    if (bWorkerLinkageActive.Load() && bWorkerLinkageAwaitingPeer.Load()
+                        && MessageType == TEXT("frame"))
+                    {
+                        // Maya has not seen the transition Unreal started yet;
+                        // its frames in flight are dropped, not refused.
+                        continue;
+                    }
                     if (bWorkerLinkageActive.Load()
                         && (MessageType == TEXT("frame")
                             || MessageType.StartsWith(TEXT("cache_"))))
