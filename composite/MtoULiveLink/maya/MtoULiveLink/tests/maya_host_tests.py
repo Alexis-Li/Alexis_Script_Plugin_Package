@@ -28,6 +28,9 @@ from mtou_livelink import (
     controller as mtou_controller,
 )
 from mtou_livelink import (
+    diagnostics as mtou_diagnostics,
+)
+from mtou_livelink import (
     mayaapi as mtou_mayaapi,
 )
 from mtou_livelink import (
@@ -565,6 +568,59 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])
         self.assertEqual(3, len(FakeWorker.instance.init_message["bones"][0]))
+
+    def test_termination_from_a_worker_thread_is_delivered_without_an_idle_loop(self):
+        # mayapy never runs maya.utils.executeDeferred work; batch mode queues
+        # it for the host loop instead, which drains it on the main thread.
+        import threading
+        group, root, unused_display = self._create_character_group()
+        del group, unused_display
+        mesh = cmds.polyCube(name="body")[0]
+        cmds.skinCluster(root, mesh)
+        scene = mtou_scene.CharacterScene.capture(root)
+        self.addCleanup(scene.close)
+        events = []
+
+        class FakeWorker(object):
+            def __init__(self, init_message, hello_message=None):
+                pass
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("connecting", "Connecting", None, None)
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                pass
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+        with patch_global("SenderWorker", FakeWorker):
+            session = mtou_session.StreamingSession.start(scene, 24.0, events.append)
+            self.addCleanup(session.stop)
+            main_thread = threading.get_ident()
+            ran_on = []
+            mtou_mayaapi.run_deferred(
+                lambda: ran_on.append(threading.get_ident()), cmds.evalDeferred)
+            self.assertEqual([], ran_on)
+            self.assertEqual(1, mtou_mayaapi.drain_deferred())
+            self.assertEqual([main_thread], ran_on)
+
+            worker = threading.Thread(target=lambda: session._request_failure(
+                mtou_diagnostics.make_diagnostic(
+                    "STREAM_INTERRUPTED", "connection lost"), False))
+            worker.start()
+            worker.join()
+            self.assertEqual([], [event.kind for event in events])
+            self.assertEqual(1, mtou_mayaapi.drain_deferred())
+
+        self.assertEqual(["failed"], [event.kind for event in events])
+        self.assertEqual(0, mtou_mayaapi.drain_deferred())
 
     def test_cached_capture_uses_real_playback_range_and_restores_after_cancel(self):
         cmds.playbackOptions(min=10, max=12)
