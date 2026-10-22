@@ -16,7 +16,7 @@ directory's ``scripts`` folder, never from this repository:
 2. ``upgrade``: Maya restarts after the whole current ``scripts`` directory
    replaces it. The saved shelf button opens the new release from the app
    directory; ``run()`` and ``main()`` reuse one panel, closing and reopening
-   the panel and both detail windows leaves one window each.
+   the panel and the scene-reference window leaves one window each.
 3. ``missing_module`` and ``missing_package``: one module, then the whole
    package, is removed; the shelf button must report what is missing.
 4. ``rollback``: the previous single file is restored and the package
