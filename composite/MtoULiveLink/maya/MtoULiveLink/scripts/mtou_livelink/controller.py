@@ -198,10 +198,11 @@ class Controller(object):
         self._fps_text = cmds.text(label="场景帧率：—", align="left")
         cmds.setParent("..")
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6,
-                          columnAttach=("left", 16))
+                          columnAttach=("left", CACHE_TEXT_INDENT))
         self._bone_text = cmds.text(label="骨骼数：0", align="left")
         self._curve_text = cmds.text(label="BlendShape 数：0", align="left")
-        self._cache_text = cmds.text(label="缓存：无", align="left", height=18)
+        self._cache_text = cmds.text(label="缓存：无", annotation="缓存：无", align="left",
+                                     height=18, width=CACHE_TEXT_WIDTH)
         cmds.setParent("..")
         cmds.setParent("..")
         cmds.setParent("..")
@@ -607,16 +608,9 @@ class Controller(object):
             self.disconnect(status="传递 BS 已切换，请重新连接")
 
     def _update_cache_text(self, summary=None):
-        if summary is None:
-            self._set_text(self._cache_text, "缓存：无")
-            return
-        start, end = summary.capture_range
-        capture_time = time.strftime(
-            "%Y-%m-%d %H:%M:%S", time.localtime(summary.capture_time))
-        self._set_text(
-            self._cache_text,
-            "缓存：{0}-{1}，{2} 帧，{3:g} fps，捕获于 {4}".format(
-                start, end, summary.frame_count, summary.scene_fps, capture_time))
+        label, tooltip = cache_summary_text(summary)
+        if self._cache_text and cmds.control(self._cache_text, exists=True):
+            cmds.text(self._cache_text, edit=True, label=label, annotation=tooltip)
 
     def _ensure_cached_playback(self):
         if self._workflow != WORKFLOW_ANIMATION or self._session is None \
@@ -2172,6 +2166,37 @@ LINKAGE_MODE_LABELS = {
 }
 
 LINKAGE_CONTROL_LABELS = {CONTROL_MAYA: "Maya", CONTROL_UNREAL: "Unreal"}
+
+# The cache summary sits in the scene card's right column. Its label has a
+# fixed width so a long summary can never widen the panel, and its text is kept
+# within CACHE_LABEL_UNITS (a CJK character counts two units, anything else
+# one) so it is not clipped; the tooltip keeps the whole summary.
+CACHE_TEXT_INDENT = 16
+
+CACHE_TEXT_WIDTH = CARD_HALF - CACHE_TEXT_INDENT
+
+CACHE_LABEL_UNITS = 26
+
+
+def _text_units(text):
+    return sum(2 if ord(char) >= 0x2E80 else 1 for char in text)
+
+
+def cache_summary_text(summary):
+    """Return ``(label, tooltip)`` for the scene card's cache summary."""
+    if summary is None:
+        return "缓存：无", "缓存：无"
+    start, end = summary.capture_range
+    capture_time = time.strftime(
+        "%Y-%m-%d %H:%M:%S", time.localtime(summary.capture_time))
+    tooltip = "缓存：{0}-{1}，{2} 帧，{3:g} fps，捕获于 {4}".format(
+        start, end, summary.frame_count, summary.scene_fps, capture_time)
+    for label in ("缓存：{0}-{1}（{2} 帧）".format(start, end, summary.frame_count),
+                  "缓存：{0}-{1}".format(start, end)):
+        if _text_units(label) <= CACHE_LABEL_UNITS:
+            return label, tooltip
+    tail = (CACHE_LABEL_UNITS - _text_units("缓存：…")) // 2
+    return "缓存：{0}…{1}".format(label[3:3 + tail], label[-tail:]), tooltip
 
 
 def _frame_label(value):
