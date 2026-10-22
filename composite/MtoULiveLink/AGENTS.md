@@ -37,7 +37,15 @@ evidence.
 
 The two Maya GUI tests render the Binding Actor's Details at the fixture's
 `details_widths` only when the editor can render: use `-RenderOffscreen`
-instead of `-NullRHI`.
+instead of `-NullRHI`. Every MtoU group is expanded and the render grows until
+all rows fit, so collapsed groups and rows below the fold are checked too.
+
+Both tests also fail on any Maya dialog the scenario did not expect. The driver
+records each dialog with the stage (`stage` command) that was current; the test
+lists what each stage may show: `BLENDSHAPE_MISMATCH` on every connect of the
+fixture character, and `STREAM_INTERRUPTED` where the exit ends the session
+(`destroy_target`, `close_world`, and Refresh Preview in `GuiRegression`). A new
+expected dialog is added to that list, not skipped.
 
 `maya/MtoULiveLink/tests/maya_gui_install_check.py`, run with a host Python,
 checks a standalone install in real Maya GUI sessions: previous release with
@@ -49,6 +57,10 @@ remaining path; acceptance records use the old names.
 
 `prototypes/` is frozen verification scaffolding. Its Unreal plugins are
 disabled in `unreal/ToolsLab.uproject`, and product work does not run its tests.
+
+mayapy has no idle loop: the tool queues its main-thread work in batch mode,
+and a host loop (the `maya_*_peer.py` scripts) must call
+`mayaapi.drain_deferred()` on its own thread.
 
 ## Iteration
 

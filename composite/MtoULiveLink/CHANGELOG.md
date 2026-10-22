@@ -37,7 +37,10 @@
   before any write, and a failed restore is reported per resource instead of
   being hidden. The workflow is additive: the pairing is required only to enter
   linkage, and the existing single-character realtime, cached playback and
-  Model comparison paths keep their defaults and connection steps.
+  Model comparison paths keep their defaults and connection steps. Messages of
+  a mode that ended while they were in flight are counted instead of reported:
+  Maya shows no 镜头联动模式冲突 dialog and the Unreal 错误 row stays empty,
+  and 恢复结果 shows whether the writers were handed back.
 
 - Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
   scope as static reference geometry and offers the finished handoff; Maya

@@ -178,6 +178,11 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
     View.bTransitioning = bTransitioning;
     View.bTakeoverHeld = bWritersBorrowed;
     View.Detail = Detail;
+    View.bWritersRestored = bWritersRestored;
+    View.RecoveryResidual = RecoveryResidual;
+    View.RefusedGroupCount = RefusedGroupCount;
+    View.RefusedCode = RefusedCode;
+    View.RefusedMessage = RefusedMessage;
     View.Error = Error;
     View.ErrorCode = ErrorCode;
     return View;
@@ -210,6 +215,11 @@ void FMtoULinkageSession::BeginSession(int32 InSessionId)
     LastAppliedLagSeconds = 0.0;
     bConverged = false;
     Detail.Reset();
+    bWritersRestored = false;
+    RecoveryResidual.Reset();
+    RefusedGroupCount = 0;
+    RefusedCode.Reset();
+    RefusedMessage.Reset();
     Error.Reset();
     ErrorCode.Reset();
     PublishView();
@@ -511,7 +521,8 @@ bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
             SendError(
                 TEXT("MODE_CONFLICT"),
                 TEXT("A group arrived during a time-control transition."),
-                FString::Printf(TEXT("target mode revision %d"), Group.ModeRevision));
+                FString::Printf(TEXT("target mode revision %d"), Group.ModeRevision),
+                ESendErrorKind::Scheduling);
             continue;
         }
         if (Mode != TEXT("linkage"))
@@ -519,15 +530,19 @@ bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
             SendError(
                 TEXT("LINKAGE_NOT_ACTIVE"),
                 TEXT("A group arrived while another host owns time."),
-                FString::Printf(TEXT("current mode %s"), *Mode));
+                FString::Printf(TEXT("current mode %s"), *Mode),
+                ESendErrorKind::Scheduling);
             continue;
         }
         if (Group.ModeRevision != ModeRevision)
         {
+            // A group of a mode Unreal already left was in flight when the
+            // transition happened; only a newer revision is a real conflict.
             SendError(
                 TEXT("MODE_CONFLICT"),
                 TEXT("A group named a different mode revision."),
-                FString::Printf(TEXT("group mode revision %d, current %d"), Group.ModeRevision, ModeRevision));
+                FString::Printf(TEXT("group mode revision %d, current %d"), Group.ModeRevision, ModeRevision),
+                Group.ModeRevision < ModeRevision ? ESendErrorKind::Scheduling : ESendErrorKind::Failure);
             continue;
         }
         if (Group.SetRevision != SetRevision)
@@ -555,7 +570,8 @@ bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
                 TEXT("A group answered a cancelled or superseded target."),
                 FString::Printf(TEXT("group eval %s, current target %s"),
                     *Group.EvalId,
-                    Issued.IsSet() ? *Issued->EvalId : TEXT("none")));
+                    Issued.IsSet() ? *Issued->EvalId : TEXT("none")),
+                ESendErrorKind::Scheduling);
             continue;
         }
         if (Group.EvalId == LastAppliedEvalId && Group.SampleSerial <= LastAppliedSampleSerial)
@@ -1044,6 +1060,8 @@ bool FMtoULinkageSession::BeginTakeover(
         return false;
     }
     bWritersBorrowed = true;
+    bWritersRestored = false;
+    RecoveryResidual.Reset();
     Mode = TEXT("linkage");
     Control = TEXT("unreal");
     ModeRevision = InModeRevision;
@@ -1141,6 +1159,8 @@ void FMtoULinkageSession::RestoreBorrowedWriters(FString& OutResidual)
                 : RestoreError;
         }
     }
+    bWritersRestored = OutResidual.IsEmpty();
+    RecoveryResidual = OutResidual;
 }
 
 void FMtoULinkageSession::UpdateConvergence(double NowSeconds)
@@ -1177,11 +1197,23 @@ void FMtoULinkageSession::SendControl(TArray<uint8>&& Packet)
     }
 }
 
-void FMtoULinkageSession::SendError(const FString& Code, const FString& Message, const FString& Details)
+void FMtoULinkageSession::SendError(
+    const FString& Code, const FString& Message, const FString& Details, ESendErrorKind Kind)
 {
     SendControl(FMtoUProtocol::EncodeError(Code, Message, Details));
-    Error = Message;
-    ErrorCode = Code;
+    if (Kind == ESendErrorKind::Scheduling)
+    {
+        // Normal while scrubbing or switching mode: the peer hears the refusal,
+        // the panel only counts it.
+        ++RefusedGroupCount;
+        RefusedCode = Code;
+        RefusedMessage = Message;
+    }
+    else
+    {
+        Error = Message;
+        ErrorCode = Code;
+    }
     PublishView();
 }
 

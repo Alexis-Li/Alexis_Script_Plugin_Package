@@ -1047,7 +1047,11 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     FMtoUPoseGroupMessage Taken;
                     if (!Session.TakeNextStagedGroup(Taken))
                     {
-                        const FString SessionCode = Session.GetView().ErrorCode;
+                        // A stale or older-mode group is scheduling noise: the
+                        // peer hears its code, the view only counts it.
+                        const FMtoULinkageView Refusal = Session.GetView();
+                        const bool bCounted = Refusal.RefusedGroupCount > 0;
+                        const FString SessionCode = bCounted ? Refusal.RefusedCode : Refusal.ErrorCode;
                         if (!bExpectedAccepted && SessionCode == TEXT("LINKAGE_NOT_ACTIVE"))
                         {
                             // Entering linkage needs a placed, paired actor,
@@ -1063,7 +1067,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                         }
                         bAccepted = false;
                         ErrorCode = SessionCode;
-                        Error = Session.GetView().Error;
+                        Error = bCounted ? Refusal.RefusedMessage : Refusal.Error;
                     }
                 }
             }
@@ -12644,6 +12648,9 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     const FMtoULinkageView AfterStale = MtoUGetLinkageView();
     TestEqual(TEXT("a refused group keeps the applied target"),
         AfterStale.AppliedEvalId, SecondEvalId);
+    TestTrue(TEXT("a stale group is scheduling noise, not an error row"),
+        AfterStale.Error.IsEmpty() && AfterStale.ErrorCode.IsEmpty());
+    TestEqual(TEXT("the stale group is counted"), AfterStale.RefusedGroupCount, 1);
 
     // ---- the failure paths of the whole-group barrier --------------------
     // Every group so far carried Smile = 0.5; the groups below carry 0.9, so
@@ -13194,6 +13201,8 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
             GateError->GetStringField(TEXT("code")), FString(TEXT("MODE_CONFLICT")));
     }
     TestFalse(TEXT("the transition stays closed"), MtoUGetLinkageView().bTransitioning == false);
+    TestEqual(TEXT("a group that arrives during the transition is counted"),
+        MtoUGetLinkageView().RefusedGroupCount, 1);
 
     // Maya's failed transition keeps the previous mode on both hosts.
     const TArray<uint8> ModeFailed = Packet(
@@ -13228,6 +13237,9 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
     // Each restore is per resource and idempotent: the failed transition
     // restored what it had borrowed and ending the preview restored again.
     TestEqual(TEXT("every borrowed writer was restored"), Hooks.RestoreCalls, 2);
+    const FMtoULinkageView AfterEnd = MtoUGetLinkageView();
+    TestTrue(TEXT("the recovery result reports the restore, not the session detail"),
+        AfterEnd.bWritersRestored && AfterEnd.RecoveryResidual.IsEmpty());
 
     // A group that arrives while another host owns time is refused.
     const TArray<uint8> LateGroup = Packet(LinkageGroupJson(

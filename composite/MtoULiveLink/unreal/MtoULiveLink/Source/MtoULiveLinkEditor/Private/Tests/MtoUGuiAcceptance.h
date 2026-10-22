@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MtoULiveLinkActor.h"
+#include "MtoULiveLinkActorDetails.h"
 
 #include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -136,6 +137,55 @@ private:
     int32 CommandId = 0;
 };
 
+/** One dialog a driver stage may legitimately show, by diagnostic code. */
+struct FExpectedDialog
+{
+    FString Stage;
+    FString Code;
+};
+
+/**
+ * Fails the test for every Maya dialog the scenario did not expect. The driver
+ * records each dialog with the stage that was current when it appeared; a
+ * dialog is expected only when `Allowed` lists its stage and diagnostic code.
+ * Returns the number of unexpected dialogs.
+ */
+inline int32 CheckMayaDialogs(FAutomationTestBase& Test, const TSharedPtr<FJsonObject>& MayaResult,
+    const TArray<FExpectedDialog>& Allowed, TFunctionRef<void(const FString&)> Log)
+{
+    const TArray<TSharedPtr<FJsonValue>>* Dialogs = nullptr;
+    if (!MayaResult.IsValid() || !MayaResult->TryGetArrayField(TEXT("dialogs"), Dialogs))
+    {
+        return 0;
+    }
+    int32 Unexpected = 0;
+    for (const TSharedPtr<FJsonValue>& Value : *Dialogs)
+    {
+        const TSharedPtr<FJsonObject> Dialog = Value->AsObject();
+        FString Stage, Code, Summary;
+        Dialog->TryGetStringField(TEXT("stage"), Stage);
+        const TSharedPtr<FJsonObject>* Diagnostic = nullptr;
+        if (Dialog->TryGetObjectField(TEXT("diagnostic"), Diagnostic) && Diagnostic->IsValid())
+        {
+            (*Diagnostic)->TryGetStringField(TEXT("code"), Code);
+            (*Diagnostic)->TryGetStringField(TEXT("details"), Summary);
+        }
+        const bool bExpected = Allowed.ContainsByPredicate([&Stage, &Code](const FExpectedDialog& Entry)
+        {
+            return Entry.Stage == Stage && Entry.Code == Code;
+        });
+        Log(FString::Printf(TEXT("Maya dialog at stage '%s': %s (%s)"), *Stage, *Code,
+            bExpected ? TEXT("expected") : TEXT("UNEXPECTED")));
+        if (!bExpected)
+        {
+            ++Unexpected;
+            Test.AddError(FString::Printf(TEXT("Unexpected Maya dialog at stage '%s': %s: %s"),
+                *Stage, *Code, *Summary.Left(300)));
+        }
+    }
+    return Unexpected;
+}
+
 /**
  * The weight each display of the actor shows for one Morph target, read where
  * the displays' own verification reads it. Displays without the target are
@@ -162,8 +212,10 @@ inline TArray<double> DisplayedMorphWeights(const AMtoULiveLinkActor& Actor, con
 
 /**
  * Renders the Binding Actor's Details at each width into
- * `details-<state>-<width>.png` and records every text that cannot wrap and
- * is painted narrower than it needs. Only a run with a real RHI can render
+ * `details-<state>-<width>.png` with every MtoU group expanded, tall enough to
+ * hold all rows (`Height` is the starting height; the render grows until the
+ * last painted text fits), and records every text that cannot wrap and is
+ * painted narrower than it needs. Only a run with a real RHI can render
  * (-RenderOffscreen, not -NullRHI); otherwise this logs that it was skipped.
  * Returns the number of clipped texts.
  */
@@ -176,6 +228,7 @@ inline int32 RenderDetails(FAutomationTestBase& Test, AMtoULiveLinkActor& Actor,
         Log(TEXT("Details renders skipped: this run cannot render (NullRHI)"));
         return 0;
     }
+    constexpr int32 MaxHeight = 8192;
     FPropertyEditorModule& PropertyEditor =
         FModuleManager::LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
     TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
@@ -188,57 +241,90 @@ inline int32 RenderDetails(FAutomationTestBase& Test, AMtoULiveLinkActor& Actor,
         Args.bLockable = false;
         Args.bUpdatesFromSelection = false;
         TSharedRef<IDetailsView> View = PropertyEditor.CreateDetailView(Args);
+        // The groups start expanded only for the panel built here.
+        FMtoULiveLinkActorDetails::bExpandAllGroups = true;
         View->SetObject(&Actor);
         TSharedRef<SWidget> Panel = SNew(SBorder)
             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
             .Padding(0.0f)
             [View];
-        const FVector2D Size(Width, Height);
         FWidgetRenderer Renderer(true, false);
-        UTextureRenderTarget2D* Target = FWidgetRenderer::CreateTargetFor(Size, TF_Bilinear, true);
-        // The tree builds and lays out over several frames.
-        for (int32 Pass = 0; Pass < 6; ++Pass)
+        UTextureRenderTarget2D* Target = nullptr;
+        int32 PaintedTexts = 0;
+        int32 UsedHeight = FMath::Clamp(static_cast<int32>(Height), 200, MaxHeight);
+        TArray<TSharedPtr<FJsonValue>> ClippedTexts;
+        for (;;)
         {
-            Renderer.DrawWidget(Target, Panel, Size, 1.0f / 30.0f);
+            const FVector2D Size(Width, UsedHeight);
+            Target = FWidgetRenderer::CreateTargetFor(Size, TF_Bilinear, true);
+            // The tree builds and lays out over several frames.
+            for (int32 Pass = 0; Pass < 8; ++Pass)
+            {
+                Renderer.DrawWidget(Target, Panel, Size, 1.0f / 30.0f);
+            }
+
+            // The engine's own asset pickers elide their combo text by design and
+            // show the full path on hover; only the remaining texts must fit.
+            ClippedTexts.Reset();
+            PaintedTexts = 0;
+            float Bottom = 0.0f;
+            const float Top = Panel->GetPaintSpaceGeometry().GetAbsolutePosition().Y;
+            TArray<TPair<TSharedRef<SWidget>, bool>> Pending{{Panel, false}};
+            while (Pending.Num() > 0)
+            {
+                const TPair<TSharedRef<SWidget>, bool> Item = Pending.Pop();
+                const TSharedRef<SWidget>& Widget = Item.Key;
+                const bool bInCombo = Item.Value || Widget->GetType() == FName(TEXT("SComboButton"));
+                if (Widget->GetType() == FName(TEXT("STextBlock")) && Widget->GetVisibility().IsVisible())
+                {
+                    TSharedRef<STextBlock> Text = StaticCastSharedRef<STextBlock>(Widget);
+                    const FGeometry& Geometry = Widget->GetPaintSpaceGeometry();
+                    const float Painted = Geometry.GetLocalSize().X;
+                    if (Painted > 0.0f && !Text->GetText().IsEmpty())
+                    {
+                        ++PaintedTexts;
+                        Bottom = FMath::Max(Bottom, Geometry.GetAbsolutePosition().Y - Top + Geometry.GetLocalSize().Y);
+                        const float Needed = Text->GetDesiredSize().X;
+                        if (!bInCombo && Needed > Painted + 1.0f)
+                        {
+                            ClippedTexts.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%s (%.0f of %.0f px)"),
+                                *Text->GetText().ToString().Left(80), Painted, Needed)));
+                        }
+                    }
+                }
+                FChildren* Children = Widget->GetChildren();
+                for (int32 Child = 0; Children && Child < Children->Num(); ++Child)
+                {
+                    Pending.Add({Children->GetChildAt(Child), bInCombo});
+                }
+            }
+            // Rows are generated only inside the viewport, so a last text
+            // close to the bottom edge means more rows may follow.
+            if (Bottom < UsedHeight - 80 || UsedHeight >= MaxHeight)
+            {
+                if (Bottom >= UsedHeight - 80)
+                {
+                    Test.AddError(FString::Printf(
+                        TEXT("Details %s at %d px needs more than %d px; rows below it were not checked"),
+                        *State, Width, MaxHeight));
+                }
+                break;
+            }
+            UsedHeight = FMath::Min(UsedHeight * 2, MaxHeight);
         }
+        FMtoULiveLinkActorDetails::bExpandAllGroups = false;
         FlushRenderingCommands();
         TArray<FColor> Pixels;
         Target->GameThread_GetRenderTargetResource()->ReadPixels(Pixels);
         const FString Path = FPaths::Combine(EvidenceDir, FString::Printf(TEXT("details-%s-%d.png"), *State, Width));
-        const bool bSaved = Pixels.Num() == Width * static_cast<int32>(Height)
-            && FImageUtils::SaveImageByExtension(*Path, FImageView(Pixels.GetData(), Width, static_cast<int32>(Height)));
+        const bool bSaved = Pixels.Num() == Width * UsedHeight
+            && FImageUtils::SaveImageByExtension(*Path, FImageView(Pixels.GetData(), Width, UsedHeight));
         Test.TestTrue(*FString::Printf(TEXT("Details %s render at %d px is saved"), *State, Width), bSaved);
 
-        // The engine's own asset pickers elide their combo text by design and
-        // show the full path on hover; only the remaining texts must fit.
-        TArray<TSharedPtr<FJsonValue>> ClippedTexts;
-        TArray<TPair<TSharedRef<SWidget>, bool>> Pending{{Panel, false}};
-        while (Pending.Num() > 0)
-        {
-            const TPair<TSharedRef<SWidget>, bool> Item = Pending.Pop();
-            const TSharedRef<SWidget>& Widget = Item.Key;
-            const bool bInCombo = Item.Value || Widget->GetType() == FName(TEXT("SComboButton"));
-            if (!bInCombo && Widget->GetType() == FName(TEXT("STextBlock")) && Widget->GetVisibility().IsVisible())
-            {
-                TSharedRef<STextBlock> Text = StaticCastSharedRef<STextBlock>(Widget);
-                const float Painted = Widget->GetPaintSpaceGeometry().GetLocalSize().X;
-                const float Needed = Text->GetDesiredSize().X;
-                if (Painted > 0.0f && Needed > Painted + 1.0f && !Text->GetText().IsEmpty())
-                {
-                    ClippedTexts.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%s (%.0f of %.0f px)"),
-                        *Text->GetText().ToString().Left(80), Painted, Needed)));
-                }
-            }
-            FChildren* Children = Widget->GetChildren();
-            for (int32 Child = 0; Children && Child < Children->Num(); ++Child)
-            {
-                Pending.Add({Children->GetChildAt(Child), bInCombo});
-            }
-        }
         Clipped += ClippedTexts.Num();
         Record->SetArrayField(FString::Printf(TEXT("%d"), Width), ClippedTexts);
-        Log(FString::Printf(TEXT("Details %s at %d px: %s, %d clipped texts"),
-            *State, Width, bSaved ? *Path : TEXT("not saved"), ClippedTexts.Num()));
+        Log(FString::Printf(TEXT("Details %s at %d px: %s, %d px tall, %d texts checked, %d clipped texts"),
+            *State, Width, bSaved ? *Path : TEXT("not saved"), UsedHeight, PaintedTexts, ClippedTexts.Num()));
     }
     WriteJsonFile(FPaths::Combine(EvidenceDir, FString::Printf(TEXT("details-%s.json"), *State)), Record);
     Test.TestEqual(*FString::Printf(TEXT("no Details text is clipped (%s)"), *State), Clipped, 0);

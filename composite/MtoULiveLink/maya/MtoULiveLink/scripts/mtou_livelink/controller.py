@@ -1716,9 +1716,14 @@ class Controller(object):
 
     def _report_linkage_refusal(self, error):
         """Report one LinkageError refusal and keep the session alive."""
-        if getattr(error, "code", None) == "EVAL_STALE":
-            # A cancelled or superseded target is normal while scrubbing; the
-            # status counters already show how many were dropped.
+        if getattr(error, "code", None) == "EVAL_STALE" \
+                or getattr(error, "stale", False):
+            # A cancelled or superseded target is normal while scrubbing, and
+            # a message of a mode Maya already left is still in flight after
+            # Maya's own transition; both are counted, not reported.
+            linkage = self._linkage
+            if linkage is not None and getattr(error, "stale", False):
+                linkage.note_refused()
             return
         self._report_linkage_failure(error)
 

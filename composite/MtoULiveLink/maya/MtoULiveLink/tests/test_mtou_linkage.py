@@ -218,6 +218,16 @@ class LinkageTargetTests(unittest.TestCase):
                 self.instance.offer_target(message)
             self.assertEqual(code, caught.exception.code)
 
+    def test_only_an_older_mode_revision_is_stale(self):
+        current = self.instance.mode_revision()
+        for revision, stale in ((current - 1, True), (current + 1, False)):
+            message = camera_time()
+            message["mode_revision"] = revision
+            with self.assertRaises(mtou_linkage.LinkageError) as caught:
+                self.instance.offer_target(message)
+            self.assertEqual("MODE_CONFLICT", caught.exception.code)
+            self.assertEqual(stale, caught.exception.stale)
+
     def test_malformed_targets_are_refused(self):
         broken = {
             "missing time": {"time": None},

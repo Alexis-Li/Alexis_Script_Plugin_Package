@@ -648,6 +648,19 @@ private:
     void AddScenario(const FString& Scenario, int32 Index)
     {
         const FString Tag = FString::Printf(TEXT("[%s] "), *Scenario);
+        Add(Tag + TEXT("dialog stage"), 30.0, [this, Scenario]()
+        {
+            if (StageId < 0)
+            {
+                StageId = SendMaya(TEXT("stage"), FString(), Scenario);
+            }
+            if (!MayaAcked(StageId))
+            {
+                return false;
+            }
+            StageId = -1;
+            return true;
+        });
         Add(Tag + TEXT("enter linkage"), 120.0, [this, Index]()
         {
             const FMtoULinkageView View = MtoUGetLinkageView();
@@ -759,11 +772,52 @@ private:
             {
                 return false;
             }
+            // The bones follow the group at once; the displays refresh their
+            // Morph weights with their next evaluation, which a busy editor
+            // frame can delay. Wait for that, and fail if it never happens.
+            const double MorphDelta = DisplayedMorphDelta();
+            const double Now = FPlatformTime::Seconds();
+            if (MorphDelta >= Fixture->GetNumberField(TEXT("morph_tolerance")))
+            {
+                if (MorphWaitStarted == 0.0)
+                {
+                    MorphWaitStarted = Now;
+                }
+                if (Now - MorphWaitStarted < 5.0)
+                {
+                    return false;
+                }
+            }
+            if (MorphWaitStarted != 0.0)
+            {
+                Log(FString::Printf(TEXT("oracle frame %d: the displays needed %.2f s to show Maya's Morph weights (delta now %.5f)"),
+                    FrameIndex, Now - MorphWaitStarted, MorphDelta));
+                MorphWaitStarted = 0.0;
+            }
             SnapshotId = -1;
             SettledFrame = -1.0;
             CompareOracle(FrameIndex);
             return true;
         });
+    }
+
+    /** The largest gap between Maya's snapshot Morph weights and what a display shows. */
+    double DisplayedMorphDelta() const
+    {
+        double Delta = 0.0;
+        const TSharedPtr<FJsonObject>* Morphs = nullptr;
+        if (MayaResult.IsValid() && Actor.IsValid() && MayaResult->HasTypedField<EJson::Object>(TEXT("snapshot"))
+            && MayaResult->GetObjectField(TEXT("snapshot"))->TryGetObjectField(TEXT("morphs"), Morphs))
+        {
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
+            {
+                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Actor, FName(*Morph.Key)))
+                {
+                    Delta = FMath::Max(Delta, FMath::Abs(Weight - Morph.Value->AsNumber()));
+                }
+            }
+        }
+        return Delta;
     }
 
     bool SetTimeAndSettleOnce(double Frame)
@@ -1125,6 +1179,15 @@ private:
         }
         if (MayaResult.IsValid())
         {
+            MayaResult = Driver.Poll();
+            // Only the connect-time Morph mismatch of the fixture and the
+            // exits that end the streaming session may show a dialog.
+            MtoUGuiAcceptance::CheckMayaDialogs(*Test, MayaResult,
+                {{TEXT("startup"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("destroy_target"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("destroy_target"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("close_world"), TEXT("STREAM_INTERRUPTED")}},
+                [this](const FString& Line) { Log(Line); });
             Evidence->SetObjectField(TEXT("maya_final"), MayaResult);
         }
         WriteJsonFile(FPaths::Combine(EvidenceDir, TEXT("ue-run.json")), Evidence.ToSharedRef());
@@ -1152,8 +1215,8 @@ private:
     TArray<TWeakObjectPtr<UMovieSceneTrack>> WriterTracks;
     TArray<FString> ProtectedPackages;
     TMap<FName, FVector> BeforePose;
-    double SettleUntil = 0.0, SettledFrame = -1.0;
-    int32 EnterRequested = -1, SnapshotId = -1, ShotId = -1, QuitId = -1, EndAfterRealtime = -1;
+    double SettleUntil = 0.0, SettledFrame = -1.0, MorphWaitStarted = 0.0;
+    int32 EnterRequested = -1, StageId = -1, SnapshotId = -1, ShotId = -1, QuitId = -1, EndAfterRealtime = -1;
     double MayaTimeBefore = 0.0;
     FString MayaCameraBefore, LeaveIssued, LastApplied;
     double PlayStarted = 0.0, MaxLag = 0.0;
