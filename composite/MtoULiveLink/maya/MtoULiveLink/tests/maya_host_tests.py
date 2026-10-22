@@ -930,6 +930,45 @@ class MayaHostTests(unittest.TestCase):
 
         return link_host.MayaLinkageHost(None, ["character"], 24.0)
 
+    def test_linkage_samples_the_pose_of_the_applied_frame(self):
+        import test_mtou_camera as payloads
+        from mtou_livelink import link_host
+
+        group, root, unused_display = self._create_character_group()
+        del unused_display
+        base = cmds.polyCube(name="body")[0]
+        target = cmds.duplicate(base, name="blinkTarget")[0]
+        blendshape = cmds.blendShape(target, base, name="faceBS")[0]
+        cmds.aliasAttr("Blink", blendshape + ".weight[0]")
+        cmds.skinCluster(root, base, name="bodySkin")
+        for plug, values in ((blendshape + ".Blink", (0.0, 1.0)),
+                             (root + ".translateX", (0.0, 10.0))):
+            for frame, value in zip((0, 100), values):
+                cmds.setKeyframe(plug, time=frame, value=value,
+                                 inTangentType="linear", outTangentType="linear")
+        # The serial Evaluation Manager keeps the last evaluated values until
+        # the scene is evaluated again, which makes a stale sample certain.
+        mode = cmds.evaluationManager(query=True, mode=True)[0]
+        self.addCleanup(cmds.evaluationManager, mode=mode)
+        cmds.evaluationManager(mode="serial")
+        cmds.currentTime(0, edit=True)
+        scene = mtou_scene.CharacterScene.capture(cmds.ls(root, long=True)[0])
+        self.addCleanup(scene.close)
+        scene.sample()
+        host = link_host.MayaLinkageHost(scene, ["character"], 24.0)
+        host.set_origin_frame(0.0)
+        self.addCleanup(lambda: cmds.objExists(mtou_config.LINK_CAMERA_NAME)
+                        and cmds.delete(mtou_config.LINK_CAMERA_NAME))
+        for frame, weight, translate_x in ((50.0, 0.5, 5.0), (100.0, 1.0, 10.0)):
+            applied, unused_readback = host.apply_target(
+                {"display_frame": frame, "playback_range": {"start": 0, "end": 100},
+                 "display_rate": {"numerator": 24, "denominator": 1}},
+                payloads.camera_payload(), payloads.gate_payload())
+            self.assertEqual(frame, applied["maya_frame"])
+            row = host.sample_group(["character"])[0]
+            self.assertAlmostEqual(weight, row["curves"][0], places=5)
+            self.assertAlmostEqual(translate_x, row["transforms"][0][0], places=4)
+
     def _foreign_scene_file(self):
         """A saved scene with its own MtoU_LinkCamera, gate and frame."""
         folder = tempfile.mkdtemp(prefix="mtou-linkage-scene-")

@@ -81,6 +81,10 @@
   inside its column, with the full summary, frame rate and capture time in the
   tooltip; before, the long summary widened the panel and kept it wide after
   returning to 实时预览.
+- Send the pose of the applied frame during linkage (Issue #57 follow-up).
+  Maya now evaluates the scene at each linkage target before sampling it;
+  before, a target could carry the Morph weights or bones Maya had last
+  evaluated for another frame, so Unreal showed a stale pose at that time.
 
 - Fix the independent Issue #54 two-subject prototype's bone negotiation
   (R-005/R-008) and its real-pair world placement (R-009). Mapping now runs in

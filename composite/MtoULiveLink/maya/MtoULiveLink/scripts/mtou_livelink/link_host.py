@@ -190,7 +190,9 @@ class MayaLinkageHost(object):
     def _set_time(self, maya_time):
         if maya_time is None:
             return
-        cmds.currentTime(float(maya_time), edit=True, update=False)
+        # The pose is sampled right after this call. Without update, Maya keeps
+        # the previous frame's evaluated values and the sample would show them.
+        cmds.currentTime(float(maya_time), edit=True, update=True)
 
     def _time_report(self, maya_time, time_payload):
         applied = self._current_time()
