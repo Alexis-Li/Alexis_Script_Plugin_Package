@@ -435,6 +435,42 @@ class LinkagePanelTests(unittest.TestCase):
                     if call[1].get("annotation")]
         self.assertTrue(any("连接 Unreal" in tooltip for tooltip in tooltips))
 
+    def test_cache_summary_stays_inside_its_column_with_the_full_text_as_tooltip(self):
+        self.build_ui()
+        created = [call[1] for call in self.fake_cmds.text.call_args_list
+                   if call[1].get("label") == "缓存：无" and not call[1].get("edit")]
+        self.assertEqual(1, len(created))
+        self.assertEqual(mtou_controller.CACHE_TEXT_WIDTH, created[0].get("width"))
+        self.assertLessEqual(mtou_controller.CACHE_TEXT_WIDTH
+                             + mtou_controller.CACHE_TEXT_INDENT,
+                             mtou_controller.CARD_HALF)
+
+        def summary(start, end, fps):
+            return types.SimpleNamespace(capture_range=(start, end),
+                                         frame_count=end - start + 1,
+                                         scene_fps=fps, capture_time=0.0)
+
+        def render(value):
+            self.fake_cmds.text.reset_mock()
+            with self.bindings:
+                self.controller._update_cache_text(value)
+            edit = self.fake_cmds.text.call_args_list[-1][1]
+            self.assertTrue(edit.get("edit"))
+            return edit["label"], edit["annotation"]
+
+        label, tooltip = render(summary(100, 160, 30.0))
+        self.assertEqual("缓存：100-160（61 帧）", label)
+        self.assertRegex(tooltip, r"^缓存：100-160，61 帧，30 fps，捕获于 \d{4}-\d\d-\d\d ")
+        for start, end in ((-9999, 10000), (-123456789, -123436790),
+                           (12345678901234, 12345678921233)):
+            label, tooltip = render(summary(start, end, 23.976))
+            self.assertLessEqual(mtou_controller._text_units(label),
+                                 mtou_controller.CACHE_LABEL_UNITS, label)
+            self.assertTrue(label.startswith("缓存："), label)
+            self.assertIn("{0}-{1}，{2} 帧，23.976 fps".format(
+                start, end, end - start + 1), tooltip)
+        self.assertEqual(("缓存：无", "缓存：无"), render(None))
+
     def test_enter_linkage_refuses_without_a_ready_session(self):
         self.session._ready = False
         self.enter_linkage()

@@ -67,6 +67,12 @@
   incomplete install and the missing part in Chinese and English instead of a
   bare import error.
 
+- Keep the Maya panel at its normal width once a cache exists (Issue #57,
+  R-018). The 场景信息 cache summary shows the captured range and frame count
+  inside its column, with the full summary, frame rate and capture time in the
+  tooltip; before, the long summary widened the panel and kept it wide after
+  returning to 实时预览.
+
 - Fix the independent Issue #54 two-subject prototype's bone negotiation
   (R-005/R-008) and its real-pair world placement (R-009). Mapping now runs in
   two phases per mapped parent scope: the *necessary* targets - the positive
