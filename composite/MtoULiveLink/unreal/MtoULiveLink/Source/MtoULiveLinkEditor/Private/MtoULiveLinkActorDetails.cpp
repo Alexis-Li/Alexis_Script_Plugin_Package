@@ -537,12 +537,16 @@ FText LinkageLagText(const FMtoULinkageView& View)
 
 FText LinkageRestoreText(const FMtoULinkageView& View)
 {
-    if (View.Detail.IsEmpty())
+    if (!View.RecoveryResidual.IsEmpty())
     {
-        return LOCTEXT("LinkageRestoreNone", "恢复结果：无待处理恢复");
+        return FText::Format(LOCTEXT("LinkageRestoreValue", "恢复结果：{0}"),
+            FText::FromString(View.RecoveryResidual));
     }
-    return FText::Format(LOCTEXT("LinkageRestoreValue", "恢复结果：{0}"),
-        FText::FromString(View.Detail));
+    if (View.bWritersRestored)
+    {
+        return LOCTEXT("LinkageRestoreDone", "恢复结果：已恢复被接管的 writer");
+    }
+    return LOCTEXT("LinkageRestoreNone", "恢复结果：无待处理恢复");
 }
 
 FText LinkageErrorText(const FMtoULinkageView& View)
@@ -763,6 +767,8 @@ FText FMtoULiveLinkActorDetails::FormatCacheState(const FMtoUCachePlaybackView& 
     return CacheStateText(View);
 }
 
+bool FMtoULiveLinkActorDetails::bExpandAllGroups = false;
+
 bool FMtoULiveLinkActorDetails::ParseSeekSourceFrame(const FString& Input, int32& OutFrame)
 {
     const FString Text = Input.TrimStartAndEnd();
@@ -890,7 +896,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         .WholeRowContent()
         [
             SNew(SExpandableArea)
-            .InitiallyCollapsed(true)
+            .InitiallyCollapsed(!bExpandAllGroups)
             .HeaderContent()
             [
                 SNew(STextBlock)
@@ -1494,7 +1500,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
     IDetailCategoryBuilder& SceneReference = DetailBuilder.EditCategory(
         "MtoU Scene Reference", LOCTEXT("SceneReferenceCategory", "场景参考"),
         ECategoryPriority::Default);
-    SceneReference.InitiallyCollapsed(true);
+    SceneReference.InitiallyCollapsed(!bExpandAllGroups);
 
     UWorld* PanelWorld = Actor.IsValid() ? Actor->GetWorld() : nullptr;
     struct FMtoUSublevelChoice
@@ -1712,7 +1718,7 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
     IDetailCategoryBuilder& Advanced = DetailBuilder.EditCategory(
         "MtoU Advanced", LOCTEXT("AdvancedCategory", "高级设置与诊断"),
         ECategoryPriority::Default);
-    Advanced.InitiallyCollapsed(true);
+    Advanced.InitiallyCollapsed(!bExpandAllGroups);
     Advanced.AddCustomRow(LOCTEXT("GarmentOverrideFilter", "服装材质槽覆盖"))
         .WholeRowContent()
         [

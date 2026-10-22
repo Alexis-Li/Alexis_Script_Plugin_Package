@@ -98,6 +98,15 @@ struct MTOULIVELINK_API FMtoULinkageView
     bool bTransitioning = false;
     /** The paired target's writers are still muted (after 返回实时 too). */
     bool bTakeoverHeld = false;
+    /** The last takeover's writers were handed back. */
+    bool bWritersRestored = false;
+    /** What the last restore could not hand back; empty when nothing is left. */
+    FString RecoveryResidual;
+    /** Groups refused as normal scheduling (cancelled, superseded, older mode). */
+    int32 RefusedGroupCount = 0;
+    /** The code and message of the latest such refusal. */
+    FString RefusedCode;
+    FString RefusedMessage;
     FString Detail;
     FString Error;
     FString ErrorCode;

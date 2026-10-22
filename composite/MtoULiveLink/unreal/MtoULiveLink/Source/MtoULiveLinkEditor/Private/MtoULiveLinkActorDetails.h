@@ -25,6 +25,12 @@ public:
      */
     static FText CompactLinkageText(const FText& Text);
 
+    /**
+     * Acceptance renders open every MtoU group, so the check sees rows that
+     * start collapsed. Panels built while this is set start expanded.
+     */
+    static bool bExpandAllGroups;
+
     /** Parse the exact integer accepted by the Details source-frame seek field. */
     static bool ParseSeekSourceFrame(const FString& Input, int32& OutFrame);
 

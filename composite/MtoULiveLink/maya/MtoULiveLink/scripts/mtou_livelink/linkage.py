@@ -37,13 +37,19 @@ from .protocol import (
 
 
 class LinkageError(RuntimeError):
-    """A refusal with a stable protocol code."""
+    """A refusal with a stable protocol code.
 
-    def __init__(self, code, message="", details=""):
+    ``stale`` marks a message that was correct when Unreal sent it and was
+    overtaken by a newer mode transition in flight; the panel counts it
+    instead of reporting it.
+    """
+
+    def __init__(self, code, message="", details="", stale=False):
         RuntimeError.__init__(self, message or code)
         self.code = code
         self.message = message or code
         self.details = details
+        self.stale = stale
 
 
 class LinkageEvent(object):
@@ -655,10 +661,13 @@ class LinkageSession(object):
                     session_id, self._session_id))
         revision = exact_int(message.get("mode_revision"))
         if revision is not None and revision != self._mode_revision:
+            # Unreal's messages of the previous mode are still on the wire
+            # when Maya completes its own transition.
             raise LinkageError(
                 "MODE_CONFLICT",
                 "message mode revision {0} is not the current {1}".format(
-                    revision, self._mode_revision))
+                    revision, self._mode_revision),
+                stale=revision < self._mode_revision)
         set_revision = exact_int(message.get("set_revision"))
         if set_revision is not None and set_revision != self._set_revision:
             raise LinkageError(

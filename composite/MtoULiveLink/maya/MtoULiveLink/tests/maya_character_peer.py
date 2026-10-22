@@ -19,6 +19,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
 from mtou_livelink import (  # noqa: E402
     config as mtou_config,
 )
@@ -183,6 +184,7 @@ def main():
                 if cached.view.state == cached.CAPTURING:
                     cached._capture_step()
                 cached._poll()
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.002)
 
         def until(predicate, label, timeout=60):

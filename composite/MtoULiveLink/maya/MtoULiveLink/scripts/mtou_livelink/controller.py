@@ -1710,9 +1710,14 @@ class Controller(object):
 
     def _report_linkage_refusal(self, error):
         """Report one LinkageError refusal and keep the session alive."""
-        if getattr(error, "code", None) == "EVAL_STALE":
-            # A cancelled or superseded target is normal while scrubbing; the
-            # status counters already show how many were dropped.
+        if getattr(error, "code", None) == "EVAL_STALE" \
+                or getattr(error, "stale", False):
+            # A cancelled or superseded target is normal while scrubbing, and
+            # a message of a mode Maya already left is still in flight after
+            # Maya's own transition; both are counted, not reported.
+            linkage = self._linkage
+            if linkage is not None and getattr(error, "stale", False):
+                linkage.note_refused()
             return
         self._report_linkage_failure(error)
 
@@ -2127,8 +2132,11 @@ class Controller(object):
             return "场景参考：导入失败已回滚（{0}）".format(report.get("detail") or "")
         if report.get("accepted"):
             counts = report.get("counts") or {}
-            return "场景参考：已导入 {0} 个对象".format(
-                counts.get("objects") or 0)
+            text = "场景参考：已导入 {0} 个对象".format(counts.get("objects") or 0)
+            anchor = report.get("anchor")
+            if isinstance(anchor, dict) and anchor.get("source") == "absent":
+                text += "；交接清单未带锚点，参考位于 Maya 原点，请在 Unreal 重新导出并再次导入"
+            return text
         if report.get("removed"):
             return "场景参考：已移除 {0} 个节点".format(report.get("nodes_removed") or 0)
         detail = report.get("detail")

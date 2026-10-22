@@ -100,6 +100,12 @@ public:
     static TArray<UObject*> ResolveTargetComponents(const AActor* Actor);
 
     /**
+     * The placement of the paired target, which is the common-space anchor the
+     * linked camera is expressed against; false when nothing is paired.
+     */
+    static bool TryGetPairedAnchor(FTransform& OutAnchor);
+
+    /**
      * Mutes exactly the writers that drive the target objects, with the
      * editor-local mute flag that is never serialized with the asset, and
      * evaluates the sequence once so the released objects stop holding the

@@ -29,6 +29,7 @@ SCRIPTS = HERE.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
 from mtou_livelink import config as mtou_config  # noqa: E402
 from mtou_livelink import link_host as mtou_link_host  # noqa: E402
 from mtou_livelink import linkage as mtou_linkage  # noqa: E402
@@ -149,6 +150,7 @@ def main():
         while not session.is_ready and time.time() < deadline:
             if any(event.kind == "failed" for event in events):
                 break
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.05)
         if not session.is_ready:
             result["errors"].append("streaming session did not become ready")
@@ -209,6 +211,7 @@ def main():
                 break
             if status["errors"] and not status["applied"]:
                 break
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.005)
         if delay:
             time.sleep(delay)

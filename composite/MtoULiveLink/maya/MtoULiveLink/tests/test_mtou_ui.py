@@ -582,6 +582,34 @@ class LinkagePanelTests(unittest.TestCase):
             self.flush()
         self.assertEqual("UE 已接管", self.controller.linkage_status()["detail"])
 
+    def test_messages_of_a_mode_maya_already_left_are_counted_not_reported(self):
+        self.enter_linkage()
+        self.show_error.reset_mock()
+        current = self.controller._linkage.mode_revision()
+
+        with self.bindings:
+            self.controller._on_runtime_reply(
+                camera_time(mode_revision=current - 1))
+            self.controller._on_runtime_reply(
+                applied_message(mode_revision=current - 1))
+            self.flush()
+
+        self.show_error.assert_not_called()
+        self.assertEqual(2, self.controller.linkage_status()["refused_count"])
+        self.assertEqual(0, self.controller._linkage.pending_count())
+
+    def test_a_message_from_a_newer_mode_is_still_a_conflict(self):
+        self.enter_linkage()
+        self.show_error.reset_mock()
+        current = self.controller._linkage.mode_revision()
+
+        with self.bindings:
+            self.controller._on_runtime_reply(
+                camera_time(mode_revision=current + 1))
+            self.flush()
+
+        self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
+
     def _mode_state(self, revision, mode="linkage", detail=""):
         return {"type": "mode_state", "session_id": 7, "mode_revision": revision,
                 "mode": mode, "control": "unreal" if mode == "linkage" else "maya",
@@ -779,9 +807,8 @@ class LinkagePanelTests(unittest.TestCase):
         self.enter_linkage()
 
         with self.bindings:
-            # A group answering a cancelled target is refused by the identity
-            # check: the message carries an older mode revision.
-            self.controller._on_runtime_reply(applied_message(mode_revision=0))
+            # A message for another session fails the identity check.
+            self.controller._on_runtime_reply(applied_message(session_id=99))
         self.flush()
 
         self.show_error.assert_called()
@@ -1046,6 +1073,15 @@ class ReferenceActionTests(unittest.TestCase):
         self.assertEqual("tx-9", results[0]["transfer_id"])
         self.assertTrue(results[0]["accepted"])
         self.assertEqual(4, results[0]["counts"]["objects"])
+
+    def test_an_import_without_an_anchor_is_reported_in_the_status_line(self):
+        text = self.controller._reference_outcome_text({
+            "accepted": True, "counts": {"objects": 4},
+            "anchor": {"source": "absent"}})
+        self.assertIn("锚点", text)
+        self.assertNotIn("锚点", self.controller._reference_outcome_text({
+            "accepted": True, "counts": {"objects": 4},
+            "anchor": {"source": "manifest"}}))
 
     def test_a_rolled_back_import_is_reported(self):
         self.offer()

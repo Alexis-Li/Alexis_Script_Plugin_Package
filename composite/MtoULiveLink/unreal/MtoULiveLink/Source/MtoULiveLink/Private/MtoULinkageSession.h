@@ -165,7 +165,14 @@ private:
     static constexpr double CameraPumpIntervalSeconds = 0.01;
 
     void SendControl(TArray<uint8>&& Packet);
-    void SendError(const FString& Code, const FString& Message, const FString& Details);
+    /** Whether an error reply is a real failure or normal scheduling noise. */
+    enum class ESendErrorKind : uint8
+    {
+        Failure,
+        Scheduling
+    };
+    void SendError(const FString& Code, const FString& Message, const FString& Details,
+        ESendErrorKind Kind = ESendErrorKind::Failure);
     void PublishView();
     void UpdateConvergence(double NowSeconds);
     void PumpCameraTargets(double NowSeconds, bool bAskEditorNow);
@@ -196,6 +203,13 @@ private:
     bool bTransitioning = false;
     double TransitionStartedSeconds = 0.0;
     bool bWritersBorrowed = false;
+    /** The last takeover's writers were handed back; the residual when they were not. */
+    bool bWritersRestored = false;
+    FString RecoveryResidual;
+    /** Groups refused as scheduling noise (cancelled, superseded, older mode). */
+    int32 RefusedGroupCount = 0;
+    FString RefusedCode;
+    FString RefusedMessage;
 
     TOptional<FMtoUCameraTimeTarget> Issued;
     TOptional<FMtoUCameraTimeTarget> Desired;

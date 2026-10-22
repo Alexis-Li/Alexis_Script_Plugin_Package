@@ -7106,6 +7106,71 @@ bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("an excluded sublevel makes the scope incomplete"),
         Excluded.bScopeComplete, false);
     TestTrue(TEXT("the exclusion is reported"), Excluded.Warnings.Num() > 0);
+
+    // The manifest names the anchor it was exported against: identity while
+    // nothing is paired, the paired target's placement once one is.
+    const auto ReadAnchor = [this](const FMtoUSceneRefExportResult& Run, FVector& OutLocation, FRotator& OutRotation)
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Json;
+        const TSharedPtr<FJsonObject>* WorldObject = nullptr;
+        const TSharedPtr<FJsonObject>* AnchorObject = nullptr;
+        const TSharedPtr<FJsonObject>* RotationObject = nullptr;
+        const TArray<TSharedPtr<FJsonValue>>* Location = nullptr;
+        if (!TestTrue(TEXT("the manifest is read back for the anchor"),
+                FFileHelper::LoadFileToString(Text, *FPaths::Combine(Run.Directory, *Run.ManifestFile))
+                && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Json) && Json.IsValid()
+                && Json->TryGetObjectField(TEXT("world"), WorldObject)
+                && (*WorldObject)->TryGetObjectField(TEXT("anchor"), AnchorObject)
+                && (*AnchorObject)->TryGetArrayField(TEXT("location_cm"), Location) && Location->Num() == 3
+                && (*AnchorObject)->TryGetObjectField(TEXT("rotation_deg"), RotationObject)))
+        {
+            return false;
+        }
+        OutLocation = FVector((*Location)[0]->AsNumber(), (*Location)[1]->AsNumber(), (*Location)[2]->AsNumber());
+        OutRotation = FRotator(
+            (*RotationObject)->GetNumberField(TEXT("pitch")),
+            (*RotationObject)->GetNumberField(TEXT("yaw")),
+            (*RotationObject)->GetNumberField(TEXT("roll")));
+        return true;
+    };
+    FVector UnpairedLocation;
+    FRotator UnpairedRotation;
+    if (ReadAnchor(Result, UnpairedLocation, UnpairedRotation))
+    {
+        TestTrue(TEXT("an unpaired export names the identity anchor"),
+            UnpairedLocation.IsNearlyZero(1e-6) && UnpairedRotation.IsNearlyZero(1e-6));
+    }
+
+    const FTransform PairedPlacement(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+    AMtoULiveLinkActor* Paired = World->SpawnActor<AMtoULiveLinkActor>(
+        PairedPlacement.GetLocation(), PairedPlacement.Rotator());
+    UMtoULiveLinkBinding* PairedBinding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    TStrongObjectPtr<UMtoULiveLinkBinding> PairedBindingGuard(PairedBinding);
+    if (TestNotNull(TEXT("the paired target is created"), Paired))
+    {
+        Paired->SetBinding(PairedBinding);
+        FString PairError;
+        TestTrue(TEXT("the target is paired"), MtoUPairLinkageTarget(*Paired, TEXT("character"), PairError));
+        FMtoULinkageEditor::SetObservedLinkageActor(Paired);
+        FMtoUSceneRefExportResult PairedRun;
+        if (TestTrue(TEXT("the paired export succeeds"), FMtoUSceneRefExport::Run(*World, {}, PairedRun)))
+        {
+            FVector Location;
+            FRotator Rotation;
+            if (ReadAnchor(PairedRun, Location, Rotation))
+            {
+                TestTrue(TEXT("the anchor is the target's location"),
+                    Location.Equals(PairedPlacement.GetLocation(), 1e-3));
+                TestTrue(TEXT("the anchor is the target's rotation"),
+                    FMath::Abs(FRotator::NormalizeAxis(Rotation.Roll - 3.0)) < 1e-3
+                    && FMath::Abs(FRotator::NormalizeAxis(Rotation.Pitch + 4.0)) < 1e-3
+                    && FMath::Abs(FRotator::NormalizeAxis(Rotation.Yaw - 37.0)) < 1e-3);
+            }
+        }
+        MtoUClearLinkageTarget(*Paired);
+        FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
+    }
     return true;
 }
 

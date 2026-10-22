@@ -28,6 +28,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
 from mtou_livelink import (
     config as mtou_config,
 )
@@ -117,6 +118,7 @@ def main():
                     session._sample_and_submit(force=True)
                 if predicate is not None and predicate():
                     return True
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.005)
             if predicate is not None:
                 raise AssertionError("Timed out: {0}; diagnostics={1}".format(
@@ -132,6 +134,7 @@ def main():
                 session = controller._session
                 if session is not None:
                     session._sample_and_submit(force=True)
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.01)
             raise AssertionError("Timed out waiting for command: {0}".format(action))
 
@@ -147,6 +150,7 @@ def main():
                 session = controller._session
                 if session is not None:
                     session._sample_and_submit(force=True)
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.01)
             raise AssertionError("Timed out waiting for stream command")
 
@@ -174,6 +178,7 @@ def main():
                 session._sample_and_submit(force=True)
             result["streaming_a"]["time"] = cmds.currentTime(query=True)
             write_json(args.result, result)
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.01)
 
         # The Unreal refresh closed the socket: the real sender must observe

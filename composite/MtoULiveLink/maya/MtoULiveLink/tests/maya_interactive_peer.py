@@ -29,6 +29,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
 from mtou_livelink import (
     config as mtou_config,
 )
@@ -112,7 +113,7 @@ def main():
                 cached = controller._cached_playback
                 # Real-time sampling also observes the transport: outside cached
                 # playback it is what notices a socket that died.
-                if session is not None and not session._paused_for_cached:
+                if session is not None and not session._sampling_paused:
                     session._sample_and_submit()
                 cached = controller._cached_playback
                 if cached is not None and not cached._closed:
@@ -123,6 +124,7 @@ def main():
                     cached._poll()
                 if predicate():
                     return
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.002)
             cached = controller._cached_playback
             session = controller._session

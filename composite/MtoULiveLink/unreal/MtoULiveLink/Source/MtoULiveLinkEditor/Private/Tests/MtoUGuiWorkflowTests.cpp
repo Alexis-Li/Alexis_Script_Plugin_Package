@@ -305,6 +305,7 @@ private:
         AddPoseCheck(TEXT("real time after the cache"), Fixture->GetNumberField(TEXT("model_frame")) + 30.0);
 
         // ---- Model, Refresh and garment comparison --------------------------
+        AddStage(TEXT("refresh"));
         Add(TEXT("刷新预览 builds the Generated Preview"), 300.0, [this]()
         {
             const FMtoUPreviewReadiness Ready = FMtoUPreviewPreparation::RefreshActor(*Actor);
@@ -312,6 +313,7 @@ private:
             return Test->TestTrue(TEXT("Refresh reaches a usable Generated Preview"), Ready.IsUsable() && Ready.GeneratedPreview);
         });
         Add(TEXT("Refresh ends the session in Maya"), 60.0, [this]() { return !MayaConnected(); });
+        AddStage(TEXT("model"));
         Add(TEXT("Maya selects 模型"), 30.0, [this]()
         {
             return SendOnce(TEXT("workflow"), Field(TEXT("target"), MakeShared<FJsonValueString>(TEXT("model"))))
@@ -348,6 +350,7 @@ private:
         });
 
         // ---- Animation again ------------------------------------------------
+        AddStage(TEXT("animation-again"));
         Add(TEXT("Maya disconnects"), 60.0, [this]() { return SendOnce(TEXT("disconnect")) && !MayaConnected(); });
         Add(TEXT("Maya selects 动画"), 30.0, [this]()
         {
@@ -366,6 +369,27 @@ private:
             return !Driver.IsRunning();
         });
         return true;
+    }
+
+    /** Names the stage Maya's dialogs are recorded under from here on. */
+    void AddStage(const FString& Stage)
+    {
+        Add(TEXT("dialog stage ") + Stage, 30.0, [this, Stage]()
+        {
+            return SendOnce(TEXT("stage"), Field(TEXT("name"), MakeShared<FJsonValueString>(Stage)));
+        });
+    }
+
+    /** Maya's dialogs each stage expects; any other dialog fails the test. */
+    static TArray<MtoUGuiAcceptance::FExpectedDialog> ExpectedDialogs()
+    {
+        return {
+            // The fixture's Morph names differ between Maya and Unreal.
+            {TEXT("startup"), TEXT("BLENDSHAPE_MISMATCH")},
+            {TEXT("model"), TEXT("BLENDSHAPE_MISMATCH")},
+            {TEXT("animation-again"), TEXT("BLENDSHAPE_MISMATCH")},
+            // Refresh Preview ends the session Maya was connected through.
+            {TEXT("refresh"), TEXT("STREAM_INTERRUPTED")}};
     }
 
     /** Maya moves to one frame; Unreal shows Maya's world pose and Morph weights there. */
@@ -533,22 +557,8 @@ private:
     {
         if (MayaResult.IsValid())
         {
-            const TArray<TSharedPtr<FJsonValue>>* Dialogs = nullptr;
-            if (MayaResult->TryGetArrayField(TEXT("dialogs"), Dialogs))
-            {
-                for (const TSharedPtr<FJsonValue>& Dialog : *Dialogs)
-                {
-                    FString Title;
-                    Dialog->AsObject()->TryGetStringField(TEXT("title"), Title);
-                    const TSharedPtr<FJsonObject>* Diagnostic = nullptr;
-                    FString Code;
-                    if (Dialog->AsObject()->TryGetObjectField(TEXT("diagnostic"), Diagnostic) && Diagnostic->IsValid())
-                    {
-                        (*Diagnostic)->TryGetStringField(TEXT("code"), Code);
-                    }
-                    Log(FString::Printf(TEXT("Maya dialog: %s (%s)"), *Title, *Code));
-                }
-            }
+            MtoUGuiAcceptance::CheckMayaDialogs(*Test, Driver.Poll(), ExpectedDialogs(),
+                [this](const FString& Line) { Log(Line); });
             WriteJsonFile(FPaths::Combine(EvidenceDir, TEXT("maya-final.json")), MayaResult.ToSharedRef());
         }
         Driver.Terminate();

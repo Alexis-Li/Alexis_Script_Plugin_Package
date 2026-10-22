@@ -1,6 +1,7 @@
 #include "MtoUSceneRefExport.h"
 
 #include "MtoULinkage.h"
+#include "MtoULinkageEditor.h"
 
 #include "AssetExportTask.h"
 #include "Camera/CameraComponent.h"
@@ -948,6 +949,26 @@ bool FMtoUSceneRefExport::Run(
         Writer->WriteValue(TEXT("up_axis"), TEXT("Z"));
         Writer->WriteValue(TEXT("linear_unit"), TEXT("cm"));
         Writer->WriteValue(TEXT("world_partition"), World.IsPartitionedWorld());
+        // The paired target's placement: the frame the character and the linked
+        // camera share. Every other value in this manifest stays in Unreal world
+        // coordinates; Maya places the container by the inverse of this anchor.
+        // Identity when no target is paired.
+        FTransform PairedAnchor = FTransform::Identity;
+        FMtoULinkageEditor::TryGetPairedAnchor(PairedAnchor);
+        const FTransform RigidAnchor(PairedAnchor.GetRotation(), PairedAnchor.GetLocation());
+        const FRotator AnchorRotation = RigidAnchor.Rotator();
+        Writer->WriteObjectStart(TEXT("anchor"));
+        Writer->WriteArrayStart(TEXT("location_cm"));
+        Writer->WriteValue(RigidAnchor.GetLocation().X);
+        Writer->WriteValue(RigidAnchor.GetLocation().Y);
+        Writer->WriteValue(RigidAnchor.GetLocation().Z);
+        Writer->WriteArrayEnd();
+        Writer->WriteObjectStart(TEXT("rotation_deg"));
+        Writer->WriteValue(TEXT("roll"), AnchorRotation.Roll);
+        Writer->WriteValue(TEXT("pitch"), AnchorRotation.Pitch);
+        Writer->WriteValue(TEXT("yaw"), AnchorRotation.Yaw);
+        Writer->WriteObjectEnd();
+        Writer->WriteObjectEnd();
         Writer->WriteObjectEnd();
 
         // The handoff's axis convention is the engine's own: the file is written in

@@ -24,7 +24,9 @@ Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``disconnect``,
 ``leave`` (with ``target`` ``realtime``/``end``), ``workflow`` (``target``
 ``animation``/``model``), ``mode`` (``target`` ``realtime``/``cached``),
 ``capture`` (``range`` ``[start, end]``), ``time`` (``frame``), ``snapshot``,
-``panel_shot`` (with ``name``), ``quit``. Each runs the handler of the panel
+``panel_shot`` (with ``name``), ``stage`` (with ``name``: every dialog is
+recorded with the latest stage, so the test can tell which ones a scenario
+expects), ``quit``. Each runs the handler of the panel
 control it names. The result file always carries the latest linkage status
 and the panel's workflow, mode, cache state and status line; ``ack`` names
 the last finished command.
@@ -80,7 +82,7 @@ _original_confirm = cmds.confirmDialog
 def _recorded_confirm(*args, **kwargs):
     diagnostic = getattr(CONTROLLER, "_last_diagnostic", None) if CONTROLLER else None
     RESULT["dialogs"].append({"title": kwargs.get("title"), "message": kwargs.get("message"),
-                              "diagnostic": diagnostic})
+                              "diagnostic": diagnostic, "stage": RESULT.get("stage", "startup")})
     write_result()
     return kwargs.get("defaultButton") or (kwargs.get("button") or ["OK"])[0]
 
@@ -304,6 +306,9 @@ def run_command(command):
         CONTROLLER.connect()
     elif action == "leave":
         CONTROLLER.leave_linkage(command.get("target", "realtime"))
+    elif action == "stage":
+        # Names the scenario the following dialogs belong to.
+        RESULT["stage"] = command.get("name") or "startup"
     elif action == "snapshot":
         RESULT["snapshot"] = snapshot()
     elif action == "panel_shot":

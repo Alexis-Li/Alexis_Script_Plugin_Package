@@ -37,7 +37,10 @@
   before any write, and a failed restore is reported per resource instead of
   being hidden. The workflow is additive: the pairing is required only to enter
   linkage, and the existing single-character realtime, cached playback and
-  Model comparison paths keep their defaults and connection steps.
+  Model comparison paths keep their defaults and connection steps. Messages of
+  a mode that ended while they were in flight are counted instead of reported:
+  Maya shows no 镜头联动模式冲突 dialog and the Unreal 错误 row stays empty,
+  and 恢复结果 shows whether the writers were handed back.
 
 - Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
   scope as static reference geometry and offers the finished handoff; Maya
@@ -46,7 +49,13 @@
   imports into a tool-owned container with a staged swap, rollback, recovery
   and an ownership mark, so a failed or interrupted update never loses the
   previous reference. The reference is a display aid; the single-character
-  realtime and cached workflows still run without it.
+  realtime and cached workflows still run without it. The manifest's new
+  optional `world.anchor` (digest-covered) holds the paired target's placement
+  at export time, identity when nothing is paired, and Maya places the verified
+  container in that frame, so the reference lines up with the character and the
+  linked camera when the target is moved or rotated; a manifest without it
+  imports at the Maya origin and says so, and moving the target later needs a
+  new export.
 
 - Move to protocol v10 as a paired upgrade (Issue #57). The connection now
   starts with a version and capability greeting, the object description carries
