@@ -20,6 +20,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
+from mtou_livelink import camera as camera_module  # noqa: E402
 from mtou_livelink import reference  # noqa: E402
 
 #: The repository root, so scratch directories land beside the checkout.
@@ -223,7 +224,7 @@ class MatrixTest(unittest.TestCase):
 
     def test_expected_axis_sizes_permutes(self):
         camera = candidate_matrix(CAMERA)
-        # ue (x, y, z) -> maya (y, z, -x), so the Maya size is (size_y, size_z, size_x).
+        # the prototype map ue (x, y, z) -> maya (y, z, -x), so the Maya size is (size_y, size_z, size_x).
         self.assertEqual(reference.expected_axis_sizes(camera, (10.0, 20.0, 30.0)),
                          [20.0, 30.0, 10.0])
 
@@ -1134,7 +1135,7 @@ class ComparisonTest(unittest.TestCase):
         self.assertGreater(contract["max_position_error_cm"], 100.0)
         self.assertGreater(contract["max_size_error_cm"], 10.0)
         self.assertFalse(contract["within_tolerance"])
-        self.assertIn("reconcile", contract["note"])
+        self.assertIn("prototype", contract["note"])
         self.assertIn("does not correct", contract["note"])
 
     def test_the_classic_candidate_alone_is_not_the_engine_match(self):
@@ -1742,7 +1743,11 @@ class _FakeCommands(object):
         node = self.find(path)
         if node is None:
             raise RuntimeError("no node named {0}".format(path))
-        return list(node.matrix) if flags.get("query") else None
+        if flags.get("query"):
+            return list(node.matrix)
+        if "matrix" in flags:
+            node.matrix = [float(value) for value in flags["matrix"]]
+        return None
 
     def exactWorldBoundingBox(self, *targets):
         for target in targets:
@@ -1867,7 +1872,7 @@ def staging_scene(scene, staging_name):
 class HandoffFixture(object):
     """One synthetic handoff directory: a manifest, an FBX file and its digest."""
 
-    def __init__(self, directory, triangles=120):
+    def __init__(self, directory, triangles=120, anchor=None):
         self.directory = pathlib.Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         manifest = {
@@ -1881,6 +1886,8 @@ class HandoffFixture(object):
             "files": {"geometry": "Lvl.fbx", "geometry_bytes": 2048,
                       "image_data": False},
         }
+        if anchor is not None:
+            manifest["world"]["anchor"] = anchor
         self.manifest_text = json.dumps(manifest, indent=2)
         (self.directory / "Lvl.manifest.json").write_bytes(
             self.manifest_text.encode("utf-8"))
@@ -2090,6 +2097,173 @@ class StagedImportTest(unittest.TestCase):
         self.assertNotIn(staging, scene.namespaces)
         self.assertEqual("|{0}:{0}".format(container),
                          scene.find("{0}:{0}".format(container)).long_name)
+
+
+def ue_anchor(location, roll, pitch, yaw):
+    """The manifest's ``world.anchor`` for an Unreal placement."""
+    return {"location_cm": list(location),
+            "rotation_deg": {"roll": roll, "pitch": pitch, "yaw": yaw}}
+
+
+def ue_axes(roll, pitch, yaw):
+    """Forward, right and up of an Unreal FRotator, from first principles."""
+    cr, sr = math.cos(math.radians(roll)), math.sin(math.radians(roll))
+    cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+    cy, sy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    return ([cp * cy, cp * sy, sp],
+            [sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp],
+            [-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp])
+
+
+#: The D003 acceptance fixture's anchor: (60, 40, 0), roll 3, pitch -4, yaw 37.
+D003_ANCHOR = ue_anchor((60.0, 40.0, 0.0), 3.0, -4.0, 37.0)
+D003_AXES = ue_axes(3.0, -4.0, 37.0)
+
+
+def to_anchor_local(anchor, point):
+    """``A^-1 . p`` in Unreal axes: the anchor's axes dotted with ``p - t``."""
+    shifted = [point[index] - anchor["location_cm"][index] for index in range(3)]
+    return [sum(axis[index] * shifted[index] for index in range(3))
+            for axis in D003_AXES]
+
+
+def row_vector_times(matrix, point):
+    """A point carried by a row-major, translation-in-fourth-row Maya matrix."""
+    return [sum(point[row] * matrix[row * 4 + column] for row in range(3))
+            + matrix[12 + column] for column in range(3)]
+
+
+class AnchorTest(unittest.TestCase):
+    """The reference follows the character and the camera into the anchor frame."""
+
+    def test_a_manifest_without_an_anchor_names_none(self):
+        self.assertEqual((None, None), reference.parse_anchor(None))
+
+    def test_a_rigid_right_handed_anchor_is_accepted(self):
+        anchor, problem = reference.parse_anchor(D003_ANCHOR)
+        self.assertIsNone(problem)
+        self.assertEqual((60.0, 40.0, 0.0), anchor["location_cm"])
+        for axis, expected in zip(anchor["axes"], D003_AXES):
+            for index in range(3):
+                self.assertAlmostEqual(expected[index], axis[index], places=9)
+
+    def test_a_malformed_anchor_names_its_problem(self):
+        bad = {
+            "not an object": [1, 2, 3],
+            "missing rotation": {"location_cm": [0, 0, 0]},
+            "missing location": {"rotation_deg": D003_ANCHOR["rotation_deg"]},
+            "short location": dict(D003_ANCHOR, location_cm=[1.0, 0.0]),
+            "not a number": dict(D003_ANCHOR, location_cm=["a", 0, 0]),
+            "non finite": dict(D003_ANCHOR, location_cm=[float("nan"), 0, 0]),
+            "partial rotation": dict(D003_ANCHOR, rotation_deg={"yaw": 1.0}),
+            "non finite rotation": dict(
+                D003_ANCHOR, rotation_deg={"roll": 0, "pitch": 0, "yaw": float("inf")}),
+        }
+        for name, value in bad.items():
+            anchor, problem = reference.parse_anchor(value)
+            self.assertIsNone(anchor, name)
+            self.assertTrue(problem, name)
+
+    def test_the_identity_anchor_leaves_the_container_alone(self):
+        anchor, _problem = reference.parse_anchor(
+            ue_anchor((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
+        matrix = reference.anchor_container_matrix(anchor)
+        for index, value in enumerate(
+                [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]):
+            self.assertAlmostEqual(value, matrix[index], places=9)
+
+    def test_the_container_takes_every_reference_point_into_the_anchor_frame(self):
+        anchor, _problem = reference.parse_anchor(D003_ANCHOR)
+        matrix = reference.anchor_container_matrix(anchor)
+        for point in ((0.0, 0.0, 0.0), (60.0, 40.0, 0.0), (500.0, -120.0, 35.0),
+                      (-80.0, 260.0, 910.0)):
+            imported = camera_module.ue_to_maya_point(*point)
+            placed = row_vector_times(matrix, imported)
+            expected = camera_module.ue_to_maya_point(
+                *to_anchor_local(D003_ANCHOR, point))
+            for index in range(3):
+                self.assertAlmostEqual(expected[index], placed[index], places=6)
+
+    def test_the_reference_stands_where_the_linked_camera_sees_it(self):
+        # Unreal's camera is sent relative to the anchor and mapped through C,
+        # so a prop 300 cm in front of the camera in world space must be 300 cm
+        # in front of it after the container is placed too.
+        anchor, _problem = reference.parse_anchor(D003_ANCHOR)
+        matrix = reference.anchor_container_matrix(anchor)
+        camera_world = (260.0, -40.0, 170.0)
+        forward = (math.cos(math.radians(20.0)), math.sin(math.radians(20.0)), 0.0)
+        prop_world = tuple(camera_world[index] + 300.0 * forward[index]
+                           for index in range(3))
+        camera_maya = camera_module.ue_to_maya_point(
+            *to_anchor_local(D003_ANCHOR, camera_world))
+        prop_maya = row_vector_times(
+            matrix, camera_module.ue_to_maya_point(*prop_world))
+        distance = math.sqrt(sum((prop_maya[index] - camera_maya[index]) ** 2
+                                 for index in range(3)))
+        self.assertAlmostEqual(300.0, distance, places=6)
+        # The character stands at the anchor's origin: Maya (0, 0, 0).
+        origin = row_vector_times(
+            matrix, camera_module.ue_to_maya_point(60.0, 40.0, 0.0))
+        for value in origin:
+            self.assertAlmostEqual(0.0, value, places=6)
+
+
+class AnchorImportTest(unittest.TestCase):
+    """The staged import places the container once the comparison passed."""
+
+    def setUp(self):
+        self.directory = scratch_directory("mtou_ref_anchor_")
+
+    def tearDown(self):
+        shutil.rmtree(str(self.directory), ignore_errors=True)
+
+    def imported(self, **fixture_extra):
+        fixture = HandoffFixture(self.directory / "handoff", **fixture_extra)
+        scene = FakeReferenceScene()
+        report = import_fixture(scene, fixture)
+        return scene, report
+
+    def group_matrix(self, scene, report):
+        return scene.find(report["container"]["group_path"]).matrix
+
+    def test_the_container_is_placed_in_the_anchor_frame(self):
+        scene, report = self.imported(anchor=D003_ANCHOR)
+        self.assertTrue(report["accepted"], report["problems"])
+        anchor, _problem = reference.parse_anchor(D003_ANCHOR)
+        expected = reference.anchor_container_matrix(anchor)
+        for index, value in enumerate(self.group_matrix(scene, report)):
+            self.assertAlmostEqual(expected[index], value, places=9)
+        self.assertEqual("manifest", report["anchor"]["source"])
+        self.assertTrue(report["anchor"]["applied"])
+        self.assertFalse(any(entry.startswith("ANCHOR_ABSENT")
+                             for entry in report["warnings"]))
+
+    def test_a_manifest_without_an_anchor_imports_at_the_origin_and_says_so(self):
+        scene, report = self.imported()
+        self.assertTrue(report["accepted"], report["problems"])
+        self.assertEqual([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                         [int(value) for value in self.group_matrix(scene, report)])
+        self.assertEqual("absent", report["anchor"]["source"])
+        self.assertFalse(report["anchor"]["applied"])
+        self.assertTrue(any(entry.startswith("ANCHOR_ABSENT")
+                            for entry in report["warnings"]))
+
+    def test_a_malformed_anchor_refuses_the_import_and_changes_nothing(self):
+        scene, report = self.imported(anchor=dict(D003_ANCHOR, location_cm=[1.0]))
+        self.assertFalse(report["accepted"])
+        self.assertEqual("refused", report["phase"])
+        self.assertTrue(any("ANCHOR_INVALID" in entry for entry in report["problems"]))
+        self.assertNotIn(reference.REFERENCE_CONTAINER, scene.namespaces)
+
+    def test_a_dry_run_places_nothing(self):
+        fixture = HandoffFixture(self.directory / "handoff", anchor=D003_ANCHOR)
+        scene = FakeReferenceScene()
+        with FakeBindings(scene):
+            container = reference.ReferenceImporter(
+                fixture.handoff, frozen_budget(), dry_run=True)
+            report = container.run()
+        self.assertFalse(report["anchor"]["applied"])
+        self.assertNotIn(reference.REFERENCE_CONTAINER, scene.namespaces)
 
 
 class SwapRollbackTest(unittest.TestCase):

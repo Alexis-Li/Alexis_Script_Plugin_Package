@@ -49,7 +49,13 @@
   imports into a tool-owned container with a staged swap, rollback, recovery
   and an ownership mark, so a failed or interrupted update never loses the
   previous reference. The reference is a display aid; the single-character
-  realtime and cached workflows still run without it.
+  realtime and cached workflows still run without it. The manifest's new
+  optional `world.anchor` (digest-covered) holds the paired target's placement
+  at export time, identity when nothing is paired, and Maya places the verified
+  container in that frame, so the reference lines up with the character and the
+  linked camera when the target is moved or rotated; a manifest without it
+  imports at the Maya origin and says so, and moving the target later needs a
+  new export.
 
 - Move to protocol v10 as a paired upgrade (Issue #57). The connection now
   starts with a version and capability greeting, the object description carries

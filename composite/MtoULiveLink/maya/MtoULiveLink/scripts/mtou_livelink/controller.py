@@ -2138,8 +2138,11 @@ class Controller(object):
             return "场景参考：导入失败已回滚（{0}）".format(report.get("detail") or "")
         if report.get("accepted"):
             counts = report.get("counts") or {}
-            return "场景参考：已导入 {0} 个对象".format(
-                counts.get("objects") or 0)
+            text = "场景参考：已导入 {0} 个对象".format(counts.get("objects") or 0)
+            anchor = report.get("anchor")
+            if isinstance(anchor, dict) and anchor.get("source") == "absent":
+                text += "；交接清单未带锚点，参考位于 Maya 原点，请在 Unreal 重新导出并再次导入"
+            return text
         if report.get("removed"):
             return "场景参考：已移除 {0} 个节点".format(report.get("nodes_removed") or 0)
         detail = report.get("detail")

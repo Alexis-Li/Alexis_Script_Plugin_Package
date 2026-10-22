@@ -52,12 +52,14 @@ the report names the convention the handoff really used; the least-squares fit
 decides only when no named candidate does, and then only while it is a signed
 permutation inside tolerance (``transform_check.decided_by`` says which decided,
 ``transform_check.winner`` carries the matrix the comparison used). This matters
-because the engine's FBX level export and the camera route use *different*
-Unreal to Maya maps: the handoff map is
-``maya = (ue_x, ue_z, ue_y)`` (determinant -1) while the camera sync prototype
-documents ``maya = (ue_y, ue_z, -ue_x)``. The report scores the camera route's
-map on the same handoff in ``transform_check.camera_contract`` so the divergence
-is on the record.
+because the engine's FBX level export and the camera sync *prototype* use
+different Unreal to Maya maps: the handoff map is ``maya = (ue_x, ue_z, ue_y)``
+(determinant -1), the prototype documented ``maya = (ue_y, ue_z, -ue_x)``. The
+product's linked camera uses the handoff's map, the v10 common space
+``C(x, y, z) = (x, z, y)``, applied to a camera expressed relative to the
+anchor, so the prototype's map is only a diagnostic: the report scores it on
+the same handoff in ``transform_check.camera_contract`` so the divergence is on
+the record.
 
 The orientation comparison is *not* scored per candidate: a node matrix is not a
 point, and the file writes each node in the file's own local frame, so the
@@ -142,16 +144,18 @@ PERMUTATION_TOLERANCE = 1e-6
 #: Relative determinant below which a 3x3 system is treated as singular.
 SINGULAR_RELATIVE_EPSILON = 1e-12
 
-#: The camera route's Unreal to Maya map, from the camera sync prototype.
+#: The camera sync prototype's Unreal to Maya map. The product's camera does not
+#: use it: v10 maps every camera and reference point with ``C(x, y, z) =
+#: (x, z, y)`` after expressing it relative to the anchor. It stays as the
+#: diagnostic ``transform_check.camera_contract`` scores.
 CAMERA_SYNC_CANDIDATE = "maya_x=ue_y, maya_y=ue_z, maya_z=-ue_x"
 
 #: The map the engine's FBX level export round-trips through, measured on
 #: 2026-09-28 with Unreal 5.7.4 and Maya 2024: the engine writes the node
 #: translation with Y negated and Maya converts the file's Z-up axis system to
 #: Y-up, so an Unreal world point (x, y, z) arrives at (x, z, y). Its
-#: determinant is -1, which makes it a mirror of the camera route's map: the two
-#: conventions are different and a product that carries both must reconcile
-#: them.
+#: determinant is -1, and it is the v10 common space ``C`` the linked camera
+#: also uses; the prototype's map above is its mirror.
 ENGINE_HANDOFF_CANDIDATE = "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y"
 
 #: Reported as ``best`` when no named candidate places the objects inside
@@ -190,8 +194,9 @@ MEASURED_ASYMMETRIC_FRAME_OPTIONS = ("bForceFrontXAxis=false",)
 #: 2026-09-29).
 #:
 #: ``camera`` is the camera sync prototype's world (``CAMERA_SYNC_CANDIDATE``);
-#: the two differ by a rotation, and moving the reference into the camera's world
-#: is an explicit conversion the caller asks for.
+#: the two differ by a rotation, and moving the reference into it is an explicit
+#: conversion the caller asks for. The product's linked camera lives in the
+#: ``engine`` world, relative to the anchor.
 WORLD_ENGINE = "engine"
 WORLD_CAMERA = "camera"
 WORLD_TARGETS = (
@@ -199,8 +204,8 @@ WORLD_TARGETS = (
      "the engine FBX level handoff's own world, shared with the product's "
      "Maya to Unreal animation route"),
     (WORLD_CAMERA, CAMERA_SYNC_CANDIDATE,
-     "the camera sync prototype's world, for a scene that also follows an "
-     "Unreal camera"),
+     "the camera sync prototype's world, kept for comparison; the linked camera "
+     "uses the engine world relative to the anchor"),
 )
 
 #: Axis candidates, in report order. ``matrix`` maps Unreal world points to Maya
@@ -215,7 +220,8 @@ AXIS_CANDIDATES = (
     {
         "name": CAMERA_SYNC_CANDIDATE,
         "matrix": (0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0),
-        "note": "the camera sync prototype's Unreal to Maya map: determinant -1",
+        "note": "the camera sync prototype's Unreal to Maya map, not the product "
+                "camera's: determinant -1",
     },
     {
         "name": "maya_x=ue_x, maya_y=ue_z, maya_z=-ue_y",
@@ -1079,6 +1085,58 @@ def uncarry_world_matrix(candidate, world_matrix):
     return matrix4_from_linear_and_translation(uncarried, position)
 
 
+def parse_anchor(value):
+    """The anchor a manifest's ``world.anchor`` names, or the reason it is unusable.
+
+    ``value`` is ``{"location_cm": [x, y, z], "rotation_deg": {"roll", "pitch",
+    "yaw"}}``: the paired target's placement in Unreal world axes (Unreal's
+    ``FRotator``: yaw about Z, pitch about Y, roll about X). Returns
+    ``(anchor, None)`` with the anchor's unit axes (its forward, right and up in
+    Unreal world axes), ``(None, None)`` when the manifest names no anchor, or
+    ``(None, reason)``.
+    """
+    if value is None:
+        return None, None
+    if not isinstance(value, dict):
+        return None, "the manifest's world.anchor is not an object"
+    try:
+        location = tuple(float(entry) for entry in value["location_cm"])
+        rotation = value["rotation_deg"]
+        roll, pitch, yaw = (float(rotation[name])
+                            for name in ("roll", "pitch", "yaw"))
+    except (KeyError, TypeError, ValueError):
+        return None, ("the manifest's world.anchor needs location_cm and "
+                      "rotation_deg with roll, pitch and yaw")
+    if len(location) != 3:
+        return None, "the manifest's world.anchor location_cm needs three numbers"
+    if any(not math.isfinite(entry) for entry in location + (roll, pitch, yaw)):
+        return None, "the manifest's world.anchor holds a non-finite number"
+    cr, sr = math.cos(math.radians(roll)), math.sin(math.radians(roll))
+    cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+    cy, sy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    axes = ((cp * cy, cp * sy, sp),
+            (sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp),
+            (-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp))
+    return {"location_cm": location, "axes": axes}, None
+
+
+def anchor_container_matrix(anchor):
+    """The Maya matrix that moves the reference container into the anchor frame.
+
+    The staged reference sits in Maya world space, ``maya = C . ue`` with
+    ``C(x, y, z) = (x, z, y)``. The character and the linked camera live in the
+    anchor frame: ``ue_local = A^-1 . ue``. The container therefore takes
+    ``C . A^-1 . C^-1``. Maya matrices are row-major with the translation in the
+    fourth row, so the returned 16 values act on row vectors.
+    """
+    swap = matrix3(candidate_matrix_by_name(ENGINE_HANDOFF_CANDIDATE))
+    inverse_linear = matrix3(anchor["axes"])
+    linear = matrix3_multiply(matrix3_multiply(swap, inverse_linear), swap)
+    shift = matrix3_apply(linear, matrix3_apply(swap, anchor["location_cm"]))
+    return matrix4_from_linear_and_translation(
+        matrix3_transpose(linear), tuple(-value for value in shift))
+
+
 def vector_length(vector):
     return math.sqrt(sum(float(value) * float(value) for value in vector))
 
@@ -1680,9 +1738,10 @@ def _camera_contract(scored, limits):
         "max_orientation_error_deg": None,
         "objects_compared": 0,
         "within_tolerance": False,
-        "note": ("the geometry handoff and the camera route use different Unreal to "
-                 "Maya conventions; a product that carries both must reconcile them, "
-                 "and this prototype does not correct the imported geometry"),
+        "note": ("the camera sync prototype's map differs from the handoff's map, "
+                 "which is also the product camera's map C(x, y, z) = (x, z, y); the "
+                 "prototype map is a diagnostic and does not correct the imported "
+                 "geometry"),
     }
     if camera is not None:
         block.update({
@@ -1846,6 +1905,7 @@ CATEGORY_FBX_PLUGIN = "FBX_PLUGIN_UNAVAILABLE"
 CATEGORY_IMPORT_FAILED = "FBX_IMPORT_FAILED"
 CATEGORY_GRAY_MATERIAL = "GRAY_MATERIAL_CONFLICT"
 CATEGORY_SWAP_FAILED = "STAGED_SWAP_FAILED"
+CATEGORY_ANCHOR_INVALID = "ANCHOR_INVALID"
 
 
 class ReferenceRefused(RuntimeError):
@@ -2326,6 +2386,7 @@ class ReferenceImporter(object):
         self.retired = None
         self.previous_state = None
         self.frame_factor_reported = False
+        self.anchor = None
         self.report = {
             "schema": REPORT_SCHEMA,
             "phase": "start",
@@ -2377,6 +2438,7 @@ class ReferenceImporter(object):
         started = time.time()
         try:
             self._validate_handoff()
+            self._read_anchor()
             self._read_manifest()
             self._read_scene()
             self._stage_handoff()
@@ -2439,6 +2501,47 @@ class ReferenceImporter(object):
                            "the handoff directory holds no FBX geometry")
         self.fbx = geometry[0]
         self.report["phase"] = "validated"
+
+    def _read_anchor(self):
+        """Read the anchor the manifest names; none means the Maya origin frame.
+
+        The reference is placed in the frame the character and the linked
+        camera share. A manifest without ``world.anchor`` (an export from before
+        the anchor existed) leaves the container at identity and says so in the
+        report instead of guessing a frame.
+        """
+        world = (self.raw_manifest or {}).get("world")
+        anchor, problem = parse_anchor(
+            world.get("anchor") if isinstance(world, dict) else None)
+        if problem:
+            raise _Refusal(CATEGORY_ANCHOR_INVALID, problem)
+        self.anchor = anchor
+        self.report["anchor"] = {
+            "applied": False,
+            "source": "manifest" if anchor else "absent",
+            "location_cm": list(anchor["location_cm"]) if anchor else None,
+        }
+        if anchor is None:
+            self.report["warnings"].append(
+                "ANCHOR_ABSENT: the manifest names no anchor, so the reference stays "
+                "at the Maya origin and will not line up with a moved or rotated "
+                "target; export again in Unreal and re-import")
+
+    def _place_anchor(self):
+        """Move the verified staged container into the anchor frame."""
+        if self.anchor is None:
+            return
+        try:
+            group = self._container_group(self.active_namespace)
+            cmds.xform(group, matrix=anchor_container_matrix(self.anchor))
+        except _Refusal:
+            raise
+        except Exception as error:  # noqa: BLE001 - nothing was swapped yet
+            raise _Refusal(
+                CATEGORY_ANCHOR_INVALID,
+                "the container could not be placed in the anchor frame: {0}".format(
+                    error))
+        self.report["anchor"]["applied"] = True
 
     def _read_manifest(self):
         """Read the manifest and report the scope before anything is imported.
@@ -2886,6 +2989,7 @@ class ReferenceImporter(object):
             self._discard_staging("dry_run" if self.dry_run else "check_failed")
             self.report["phase"] = "dry_run" if self.dry_run else "check_failed"
             return
+        self._place_anchor()
         started = time.time()
         try:
             self.retired = _retire_container(self.container, self.previous_state)

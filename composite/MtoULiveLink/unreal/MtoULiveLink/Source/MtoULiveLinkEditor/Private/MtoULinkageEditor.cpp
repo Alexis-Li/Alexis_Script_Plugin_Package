@@ -1733,3 +1733,13 @@ void FMtoULinkageEditor::RegisterLinkagePanelWidget(TWeakPtr<SWidget> Widget)
     State.PanelWidgets.AddUnique(Widget);
 }
 
+bool FMtoULinkageEditor::TryGetPairedAnchor(FTransform& OutAnchor)
+{
+    const AActor* Anchor = ResolvePairedAnchor();
+    if (!Anchor)
+    {
+        return false;
+    }
+    OutAnchor = Anchor->GetActorTransform();
+    return true;
+}

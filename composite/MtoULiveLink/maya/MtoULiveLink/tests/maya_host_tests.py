@@ -22,6 +22,9 @@ from mtou_livelink import (  # noqa: E402
     cache as mtou_cache,
 )
 from mtou_livelink import (
+    camera as mtou_camera,
+)
+from mtou_livelink import (
     config as mtou_config,
 )
 from mtou_livelink import (
@@ -621,6 +624,56 @@ class MayaHostTests(unittest.TestCase):
 
         self.assertEqual(["failed"], [event.kind for event in events])
         self.assertEqual(0, mtou_mayaapi.drain_deferred())
+
+    def test_reference_container_in_the_anchor_frame_lines_up_with_the_character_and_camera(self):
+        # The D003 fixture anchor: (60, 40, 0), roll 3, pitch -4, yaw 37. Real
+        # Maya nodes: the imported level geometry sits at C(p), the character
+        # stands at the Maya origin, the linked camera at C(A^-1 camera).
+        import math
+        import test_mtou_reference as fixtures
+        from mtou_livelink import reference
+        anchor, problem = reference.parse_anchor(fixtures.D003_ANCHOR)
+        self.assertIsNone(problem)
+        group = cmds.createNode("transform", name="reference_container")
+        prop_world = (360.0, 140.0, 20.0)
+        wall = cmds.createNode("transform", name="reference_wall", parent=group)
+        cmds.xform(wall, translation=mtou_camera.ue_to_maya_point(*prop_world),
+                   worldSpace=True)
+        character = cmds.createNode("transform", name="reference_character")
+        cmds.xform(group, matrix=reference.anchor_container_matrix(anchor))
+
+        local_prop = fixtures.to_anchor_local(fixtures.D003_ANCHOR, prop_world)
+        expected = mtou_camera.ue_to_maya_point(*local_prop)
+        placed = cmds.xform(wall, query=True, worldSpace=True, translation=True)
+        for index in range(3):
+            self.assertAlmostEqual(expected[index], placed[index], places=4)
+        # Rigid: the container never rescales or shears the reference.
+        matrix = cmds.xform(group, query=True, matrix=True)
+        for row in range(3):
+            self.assertAlmostEqual(1.0, math.sqrt(sum(
+                matrix[row * 4 + column] ** 2 for column in range(3))), places=6)
+
+        # The character stays at the origin, where the anchor's own position
+        # lands; the camera Unreal sends is relative to the anchor.
+        probe = cmds.createNode("transform", name="reference_anchor_probe", parent=group)
+        cmds.xform(probe, translation=mtou_camera.ue_to_maya_point(60.0, 40.0, 0.0),
+                   worldSpace=False)
+        at_anchor = cmds.xform(probe, query=True, worldSpace=True, translation=True)
+        at_character = cmds.xform(character, query=True, worldSpace=True, translation=True)
+        for index in range(3):
+            self.assertAlmostEqual(at_character[index], at_anchor[index], places=4)
+
+        camera_world = (160.0, -60.0, 170.0)
+        camera = cmds.createNode("transform", name="reference_linked_camera")
+        cmds.xform(camera, translation=mtou_camera.ue_to_maya_point(
+            *fixtures.to_anchor_local(fixtures.D003_ANCHOR, camera_world)),
+            worldSpace=True)
+        camera_at = cmds.xform(camera, query=True, worldSpace=True, translation=True)
+        wall_at = cmds.xform(wall, query=True, worldSpace=True, translation=True)
+        distance = math.sqrt(sum((camera_at[i] - wall_at[i]) ** 2 for i in range(3)))
+        world_distance = math.sqrt(sum(
+            (camera_world[i] - prop_world[i]) ** 2 for i in range(3)))
+        self.assertAlmostEqual(world_distance, distance, places=4)
 
     def test_cached_capture_uses_real_playback_range_and_restores_after_cancel(self):
         cmds.playbackOptions(min=10, max=12)

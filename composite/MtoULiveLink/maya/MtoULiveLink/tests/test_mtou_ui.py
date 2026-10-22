@@ -1038,6 +1038,15 @@ class ReferenceActionTests(unittest.TestCase):
         self.assertTrue(results[0]["accepted"])
         self.assertEqual(4, results[0]["counts"]["objects"])
 
+    def test_an_import_without_an_anchor_is_reported_in_the_status_line(self):
+        text = self.controller._reference_outcome_text({
+            "accepted": True, "counts": {"objects": 4},
+            "anchor": {"source": "absent"}})
+        self.assertIn("锚点", text)
+        self.assertNotIn("锚点", self.controller._reference_outcome_text({
+            "accepted": True, "counts": {"objects": 4},
+            "anchor": {"source": "manifest"}}))
+
     def test_a_rolled_back_import_is_reported(self):
         self.offer()
         self.controller._status_text = "statusText"

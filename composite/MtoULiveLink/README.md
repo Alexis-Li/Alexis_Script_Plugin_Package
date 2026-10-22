@@ -209,13 +209,21 @@ workflow requires it, and the handoff never delivers image data.
 
 1. In Unreal, choose the level and the sublevels to include under **场景参考**
    and run the export. Unreal reports the scope it resolved, including requested
-   sublevels the loaded world does not hold.
+   sublevels the loaded world does not hold. Pair the target first (see camera
+   linkage) so the reference lines up with it.
 2. In Maya, open **场景参考** and click **导入/更新参考**. Maya validates the
    transfer identity, the content digest, the space revision and the size
    budgets before it touches the scene, imports into its own container, and
    reports what it accepted, discarded or rolled back.
 3. **移除参考** deletes only that container; **恢复上次更新** finishes or
    discards an interrupted update.
+
+The reference is placed in the same frame as the character and the linked
+camera, so it follows a moved or rotated target. The placement is the paired
+target's position when Unreal exports. Export and import again after moving or
+rotating the target, and for any reference exported by an earlier version; if
+the status line says the manifest carried no anchor, the reference sits at the
+Maya origin until you do.
 
 ## Garment model preview
 
