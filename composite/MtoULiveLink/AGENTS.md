@@ -47,6 +47,26 @@ fixture character, and `STREAM_INTERRUPTED` where the exit ends the session
 (`destroy_target`, `close_world`, and Refresh Preview in `GuiRegression`). A new
 expected dialog is added to that list, not skipped.
 
+Maya's linkage throughput depends on the plug-ins its preferences load
+automatically, so give both tests `maya.app_dir_template` instead of a reused
+`maya.app_dir`. The test copies the template to `<evidence>/mayaapp` for every
+run and records the source, the `pluginPrefs.mel` SHA-256 and the autoload and
+loaded plug-in counts in its log (`ProductionSequence` also in `ue-run.json` as
+`maya_prefs`). Build the templates once per machine outside the repository with
+a host Python:
+
+```powershell
+python composite/MtoULiveLink/maya/MtoULiveLink/tests/maya_prefs_template.py --maya <Maya2024>/bin/maya.exe --kind minimal --out <scratch>/maya-prefs-minimal
+```
+
+`minimal` (only `modelingToolkit`) is the comparable baseline; `maya-default`
+(the list a first Maya start saves) measures a default Maya install. A template
+holds `pluginPrefs.mel` and a `userPrefs.mel` with only Maya's one-time
+plug-in load markers; without those markers Maya loads its default set
+whatever `pluginPrefs.mel` says. Compare throughput only between runs with the
+same SHA-256; the loaded count shows how far autoloading had got at that stage
+and can still rise during playback with `maya-default`.
+
 `maya/MtoULiveLink/tests/maya_gui_install_check.py`, run with a host Python,
 checks a standalone install in real Maya GUI sessions: previous release with
 a saved shelf button, upgrade, repeated runs and reopening, missing parts and

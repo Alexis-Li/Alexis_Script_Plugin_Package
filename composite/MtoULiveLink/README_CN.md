@@ -152,9 +152,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
    跟随 Sequence 时间与求值相机，并回传角色的完整姿势。
 3. 两端都用一行状态显示联动情况，例如“镜头联动中 · Unreal 控制时间 · 同步正常”。
    Maya 跟不上时会显示“Maya 跟不上”和滞后时间；可暂停 Sequencer 等待 Maya 追上，
-   或关闭占用性能的程序。滞后的姿势不会被报成已同步。求值、样本与 revision 等
-   读回值保留在 Maya 的诊断详情和 Unreal 的 **高级设置与诊断** 中，可用
-   **复制完整诊断** 一并复制。
+   或关闭占用性能的程序；经常出现时见[常见问题](#常见问题)。滞后的姿势不会被报成
+   已同步。求值、样本与 revision 等读回值保留在 Maya 的诊断详情和 Unreal 的
+   **高级设置与诊断** 中，可用 **复制完整诊断** 一并复制。
 4. **返回实时** 会恢复 Maya 的时间轴、视图与门，并保持 Maya 暂停，Unreal 继续
    保持接管；Maya 播放由用户自行恢复。**结束预览** 另外把原 writer 交还给 Sequence，
    在 **返回实时** 之后仍可使用，直到交还完成。两个按钮在任一端都可操作。
@@ -215,6 +215,7 @@ Unreal 导出时已配对目标所在的位置。目标被移动或旋转之后�
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |
 | 有意减面的模型无法通过自动服装识别 | 检查源模型是否有重复几何体或服装／身体混用材质槽。确认是有意减面后，在 Binding 的 **Driver Garment Slot Override** 中指定服装独立的材质槽，再刷新并检查效果。 |
 | BlendShape 未生效 | 检查“传递 BS”、名称匹配、当前服装及连接诊断。模型预览的源资产变更后需重新刷新。 |
+| 镜头联动中经常显示“Maya 跟不上”和滞后时间 | 在 Maya 中打开 **窗口 > 设置/首选项 > 插件管理器**（英文界面：**Windows > Settings/Preferences > Plug-in Manager**），取消不用的插件的 **自动加载**，例如 MASH、XGen（`xgenToolkit`）、GPU Cache、Scene Assembly、LookdevX 和 Type，然后重启 Maya。打开场景时，场景需要的插件仍会加载。 |
 | 修改后连接断开 | 更换服装、模式、“传递 BS”或角色部件后需重连；刷新也会断开当前连接。修改或重新导入 Primary Driver、Preview Static Mesh，或修改 **Driver Garment Slot Override** 后，刷新模型预览并重连；撤销／重做这些修改时也遵循同一规则。 |
 
 预览时请保留 Binding Actor 并保持其关卡加载；删除 Actor 或卸载关卡会结束连接。

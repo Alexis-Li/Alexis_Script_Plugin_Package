@@ -30,6 +30,11 @@ expects), ``quit``. Each runs the handler of the panel
 control it names. The result file always carries the latest linkage status
 and the panel's workflow, mode, cache state and status line; ``ack`` names
 the last finished command.
+
+``prefs`` describes the ``MAYA_APP_DIR`` this Maya started with, read before
+Maya can save it again: its ``pluginPrefs.mel``, that file's SHA-256 and the
+plug-ins it loads automatically. ``plugins`` lists the plug-ins loaded when the
+latest ``stage`` or ``snapshot`` command ran, with that stage.
 """
 
 import json
@@ -48,10 +53,16 @@ FIXTURE = json.loads(Path(os.environ["MTOU_LINKAGE_DRIVER_FIXTURE"]).read_text(
 SCRIPTS = Path(FIXTURE["scripts"])
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+TESTS = str(Path(__file__).resolve().parent)
+if TESTS not in sys.path:
+    sys.path.insert(0, TESTS)
+
+import maya_prefs_template
 
 RESULT = {"phase": "starting", "ok": True, "ack": -1, "dialogs": [], "errors": [],
           "events": [], "shots": [], "maya_version": cmds.about(version=True),
-          "pid": os.getpid()}
+          "pid": os.getpid(),
+          "prefs": maya_prefs_template.describe(os.environ.get("MAYA_APP_DIR", ""))}
 
 
 def write_result():
@@ -325,6 +336,11 @@ LAST_ID = [-1]
 TIMER = [None]
 
 
+def record_plugins():
+    RESULT["plugins"] = {"stage": RESULT.get("stage", "startup"),
+                         "loaded": sorted(cmds.pluginInfo(query=True, listPlugins=True) or [])}
+
+
 def run_command(command):
     action = command.get("action")
     if action == "enter":
@@ -336,8 +352,10 @@ def run_command(command):
     elif action == "stage":
         # Names the scenario the following dialogs belong to.
         RESULT["stage"] = command.get("name") or "startup"
+        record_plugins()
     elif action == "snapshot":
         RESULT["snapshot"] = snapshot()
+        record_plugins()
     elif action == "panel_shot":
         CONTROLLER.show_diagnostics()
         grab_windows(command.get("name", "panel"))
