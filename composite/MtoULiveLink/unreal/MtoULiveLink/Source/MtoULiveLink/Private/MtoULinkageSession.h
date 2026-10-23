@@ -228,6 +228,8 @@ private:
     double LastAppliedDisplayFrame = 0.0;
     double LastAppliedLagSeconds = 0.0;
     bool bConverged = false;
+    /** How long the issued target has waited once past the convergence window; 0 otherwise. */
+    double OverdueWaitSeconds = 0.0;
 
     FString Detail;
     FString Error;

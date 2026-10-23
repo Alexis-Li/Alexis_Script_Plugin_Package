@@ -2,14 +2,37 @@
 
 ## Unreleased
 
+- Show only state, actions, problems and their remedy on the MtoU panels
+  (Issue #71). The Maya 镜头联动 card shows one status line, such as
+  镜头联动中 · Unreal 控制时间 · 同步正常 or 未进入联动; it adds the lag only when
+  Maya cannot keep up (Maya 跟不上，滞后 0.8 秒) and a failed restore only when
+  it happens, with what to do in the tooltip. The 打开镜头联动窗口 button and
+  its window are removed: the evaluation identities, sample serial, applied
+  age, applied/refused counts, targets in flight, revisions and per-resource
+  restore records are in 诊断详情, whose button now reads 复制完整诊断. The
+  scene-reference window shows the source level and sublevels, the size (for
+  example 152 个对象，约 120 万三角面) and one state, 可导入, 已导入（time） or
+  已过期，请在 UE 重新导出; the import result is one sentence, and discarded
+  nodes, rollback and leftovers appear only on failure. The handoff identity,
+  digest, space revision and frozen budgets are in 诊断详情. In the Unreal
+  Details, 当前显示 reads 原始角色 instead of the Driver term; 镜头联动 pairs
+  the Maya character with one 配对/解除配对 button and no object-id field, and
+  shows one status line, with the lag, restore and error rows only when there
+  is a problem; its tooltips use the user's terms; and 场景参考 reports
+  已导出 152 个对象，可在 Maya 导入. Every value removed from these groups is in
+  高级设置与诊断 and its 复制完整诊断. The Maya scene card's root, outfit and
+  frame-rate labels keep a fixed width and are shortened in the middle, with
+  the full value in the tooltip, so a long name never widens the panel (R-020).
+  The wire protocol and its codes are unchanged.
+
 - Add the single-character camera/time linkage workflow (Issue #57, protocol
-  v10). A new 镜头联动 card and window pair the Maya character with the Unreal
-  target, enter linkage, follow the Level Sequence time and evaluated camera,
-  and leave through 返回实时 or 结束预览 from either host; 结束预览 stays
-  available after 返回实时 until the writers are back. Unreal confirms a pose
-  group only once the Live Link subject holds it and every display component
-  evaluated its bones and Morph values, so both hosts show the time control
-  owner, the target time, the latest complete application time and the lag;
+  v10). A new 镜头联动 card in Maya and Details group in Unreal pair the Maya
+  character with the Unreal target, enter linkage, follow the Level Sequence
+  time and evaluated camera, and leave through 返回实时 or 结束预览 from either
+  host; 结束预览 stays available after 返回实时 until the writers are back.
+  Unreal confirms a pose group only once the Live Link subject holds it and
+  every display component evaluated its bones and Morph values, so a pose
+  behind the sequence time is reported as lagging, never as synchronised;
   Maya restores its timeline, view and gate and stays paused on the way back.
   The whole character is verified against a group before any display shows
   it and then switches in one step; a group with a missing or disagreeing
@@ -29,18 +52,19 @@
   camera whose focus is off still applies. A Level Sequence binding that
   possesses the Binding Actor is taken over and restored with all its
   displays, and the Maya panel follows Unreal's statements and notices a
-  connection Unreal ends during linkage. The Maya 镜头联动 window and the
-  Unreal 镜头联动 Details group keep every value inside their width: long
-  evaluation identities are shortened in the middle, with the full value in
-  the tooltip. Maya
-  refuses an oversized group, an unknown or shared writer target is refused
-  before any write, and a failed restore is reported per resource instead of
-  being hidden. The workflow is additive: the pairing is required only to enter
-  linkage, and the existing single-character realtime, cached playback and
-  Model comparison paths keep their defaults and connection steps. Messages of
-  a mode that ended while they were in flight are counted instead of reported:
-  Maya shows no 镜头联动模式冲突 dialog and the Unreal 错误 row stays empty,
-  and 恢复结果 shows whether the writers were handed back.
+  connection Unreal ends during linkage. Maya refuses an oversized group, an
+  unknown or shared writer target is refused before any write, and a failed
+  restore is reported per resource instead of being hidden. The workflow is
+  additive: the pairing is required only to enter linkage, and the existing
+  single-character realtime, cached playback and Model comparison paths keep
+  their defaults and connection steps. Messages of a mode that ended while
+  they were in flight are counted instead of reported, on both hosts: Maya
+  checks the revision of Unreal's statements itself, and it counts Unreal's
+  `MODE_CONFLICT` refusal of a pose group that arrived during a transition or
+  named an older revision as scheduling (#71, R-021), so neither shows a
+  镜头联动模式冲突 dialog and the Unreal 错误 row stays empty. Every other
+  `MODE_CONFLICT`, such as a refused 返回实时 or a group of a newer revision,
+  is still reported.
 
 - Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
   scope as static reference geometry and offers the finished handoff; Maya

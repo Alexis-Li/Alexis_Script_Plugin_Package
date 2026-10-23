@@ -30,7 +30,6 @@ from mtou_livelink import scene as mtou_scene  # noqa: E402
 from mtou_livelink import session as mtou_session  # noqa: E402
 from mtou_livelink import space as mtou_space  # noqa: E402
 from mtou_livelink import timeline as mtou_timeline  # noqa: E402
-from mtou_livelink.ui import link_window as mtou_link_window  # noqa: E402
 from mtou_livelink.ui import reference_window as mtou_reference_window  # noqa: E402
 
 # Every module that binds a Maya global at import time; the detail windows read
@@ -38,7 +37,7 @@ from mtou_livelink.ui import reference_window as mtou_reference_window  # noqa: 
 _PACKAGE_MODULES = (mtou_cache, mtou_config, mtou_controller, mtou_diagnostics,
                     mtou_linkage, mtou_mayaapi, mtou_protocol, mtou_scene,
                     mtou_session, mtou_space, mtou_timeline,
-                    mtou_link_window, mtou_reference_window)
+                    mtou_reference_window)
 
 
 class _Bindings(object):
@@ -418,22 +417,120 @@ class LinkagePanelTests(unittest.TestCase):
         buttons = [call[1].get("label")
                    for call in self.fake_cmds.button.call_args_list
                    if call[1].get("label")]
-        for label in ("进入联动", "返回实时", "结束预览",
-                      "打开镜头联动窗口", "打开场景参考窗口"):
+        for label in ("进入联动", "返回实时", "结束预览", "打开场景参考窗口"):
             self.assertIn(label, buttons)
+        # The read-back window is gone: its values live in 诊断详情.
+        self.assertNotIn("打开镜头联动窗口", buttons)
         cards = [call[1].get("label")
                  for call in self.fake_cmds.frameLayout.call_args_list
                  if call[1].get("label")]
         self.assertIn("镜头联动", cards)
-        self.assertEqual("控制方：Maya", self.controller._link_control_text
-                         and self.controller.linkage_status()["labels"]["control"])
-        self.assertIn("模式：实时预览", self.labels())
-        self.assertIn("恢复结果：无", self.labels())
+        self.assertEqual("未进入联动", self.controller.linkage_status()["line"])
+        self.assertIn("未进入联动", self.labels())
+        for internal in ("控制方：", "模式：", "目标时间：", "最新完整应用：",
+                         "滞后：", "恢复结果："):
+            self.assertFalse(any(label.startswith(internal) for label in self.labels()),
+                             internal)
+        created = [call[1] for call in self.fake_cmds.text.call_args_list
+                   if call[1].get("label") == "未进入联动" and not call[1].get("edit")]
+        self.assertEqual(mtou_controller.LINK_STATUS_WIDTH, created[0].get("width"))
         # The disabled actions keep a reason exactly like the cache actions.
         tooltips = [call[1].get("annotation")
                     for call in self.fake_cmds.control.call_args_list
                     if call[1].get("annotation")]
         self.assertTrue(any("连接 Unreal" in tooltip for tooltip in tooltips))
+
+    def test_scene_labels_keep_their_column_width_with_the_full_text_as_tooltip(self):
+        # R-020: a long root path or outfit name is shortened inside its column
+        # instead of widening the panel; the tooltip keeps the whole value.
+        self.build_ui()
+        for prefix in ("角色根骨骼：", "当前衣服：", "场景帧率："):
+            created = [call[1] for call in self.fake_cmds.text.call_args_list
+                       if str(call[1].get("label", "")).startswith(prefix)
+                       and not call[1].get("edit")]
+            self.assertEqual(1, len(created), prefix)
+            self.assertEqual(mtou_controller.SCENE_TEXT_WIDTH, created[0].get("width"))
+        for label in ("骨骼数：0", "BlendShape 数：0"):
+            created = [call[1] for call in self.fake_cmds.text.call_args_list
+                       if call[1].get("label") == label and not call[1].get("edit")]
+            self.assertEqual(mtou_controller.CACHE_TEXT_WIDTH, created[0].get("width"))
+        self.assertLessEqual(mtou_controller.SCENE_TEXT_WIDTH, mtou_controller.CARD_HALF)
+
+        root = "|C01_111_MetaHuman_Body_Rig_Group|DHIbody_root_with_a_very_long_name|root"
+        outfit = "Clothes13_LongGarmentVariantName_WithExtraSuffix_v027_服装变体名称"
+        snapshot = types.SimpleNamespace(root=root, outfit=outfit, bones=[1] * 214,
+                                         curve_names=["c"] * 312, duplicate_paths=())
+        self.controller._scene = types.SimpleNamespace(snapshot=lambda: snapshot)
+        self.fake_cmds.text.reset_mock()
+        with self.bindings:
+            self.controller._render_snapshot(snapshot)
+        edits = {call[1]["label"]: call[1]["annotation"]
+                 for call in self.fake_cmds.text.call_args_list if call[1].get("edit")}
+        for prefix, value in (("角色根骨骼：", root), ("当前衣服：", outfit)):
+            label = [item for item in edits if item.startswith(prefix)][0]
+            self.assertLessEqual(mtou_controller._text_units(label),
+                                 mtou_controller.SCENE_LABEL_UNITS, label)
+            self.assertIn("…", label)
+            self.assertEqual(prefix + value, edits[label])
+        root_label = [item for item in edits if item.startswith("角色根骨骼：")][0]
+        self.assertTrue(root_label.endswith("|root"), root_label)
+        self.assertIn("骨骼数：214", edits)
+        self.assertIn("BlendShape 数：312", edits)
+        # A short value is shown unchanged.
+        self.assertEqual(("当前衣服：Clothes13", "当前衣服：Clothes13"),
+                         mtou_controller.scene_label_text("当前衣服：", "Clothes13"))
+
+    def test_linkage_status_line_shows_only_state_and_problems(self):
+        def line(mode, lag=None, applied="seq@1", overdue=False, wait=0.0,
+                 held=False, recovery=()):
+            status = types.SimpleNamespace(lag_seconds=lag, applied_eval_id=applied)
+            text, tooltip = mtou_controller.linkage_status_line(
+                mode, status, recovery, overdue, wait, held)
+            self.assertLessEqual(mtou_controller._text_units(text),
+                                 mtou_controller.LINK_STATUS_UNITS, text)
+            return text, tooltip
+
+        linkage = mtou_config.LINKAGE_MODE
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · 同步正常",
+                         line(linkage, lag=0.13)[0])
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · 正在同步",
+                         line(linkage, applied=None)[0])
+        text, tooltip = line(linkage, lag=0.8)
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · Maya 跟不上，滞后 0.8 秒", text)
+        self.assertIn("暂停 Sequencer", tooltip)
+        self.assertIn("Maya 跟不上，滞后 2.6 秒",
+                      line(linkage, lag=0.1, overdue=True, wait=2.6)[0])
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · Maya 跟不上，滞后 13 秒",
+                         line(linkage, lag=0.1, overdue=True, wait=12.6)[0])
+        self.assertEqual("未进入联动", line(mtou_config.REALTIME_MODE)[0])
+        self.assertEqual("未进入联动 · 缓存播放中", line(mtou_config.CACHED_MODE)[0])
+        text, tooltip = line(mtou_config.REALTIME_MODE, held=True)
+        self.assertEqual("未进入联动 · Unreal 仍接管目标", text)
+        self.assertIn("结束预览", tooltip)
+        text, tooltip = line(mtou_config.REALTIME_MODE, held=True,
+                             recovery=("residual: camera persp is locked",
+                                       "restore: timeline"))
+        self.assertIn("恢复失败 2 项", tooltip.splitlines()[0])
+        self.assertIn("手动恢复", tooltip)
+        for internal in ("eval", "revision", "样本", "seq@1"):
+            self.assertNotIn(internal, text)
+
+    def test_diagnostic_details_keep_the_linkage_read_back(self):
+        self.enter_linkage()
+        with self.bindings:
+            self.controller._on_runtime_reply(camera_time(display_frame=12.0))
+        self.run_timer()
+        with self.bindings:
+            self.controller._on_runtime_reply(
+                applied_message(eval_id="seq@10+0/cam#c1", sample_serial=1))
+
+        text = self.controller._diagnostic_text()
+        for expected in ("镜头联动：", "状态：镜头联动中", "控制方：Unreal",
+                         "模式：镜头联动", "mode_revision：1 · session：7",
+                         "目标时间：", "已应用求值：seq@10+0/cam#c1", "样本序号：1",
+                         "应用年龄：", "滞后：", "已应用 / 已拒绝：1 / 0",
+                         "在途目标：", "逐资源恢复：无", "场景参考：", "冻结上限："):
+            self.assertIn(expected, text)
 
     def test_cache_summary_stays_inside_its_column_with_the_full_text_as_tooltip(self):
         self.build_ui()
@@ -536,8 +633,6 @@ class LinkagePanelTests(unittest.TestCase):
 
     def test_pump_applies_the_waiting_target_and_submits_one_group(self):
         self.enter_linkage()
-        window = mock.Mock()
-        self.controller._link_window = window
 
         with self.bindings:
             self.controller._on_runtime_reply(camera_time(display_frame=12.0))
@@ -556,7 +651,8 @@ class LinkagePanelTests(unittest.TestCase):
         self.assertEqual(0, status["pending"])
         self.assertIn("目标时间：12.00",
                       self.controller.linkage_status()["labels"]["target"])
-        window.refresh.assert_called()
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · 正在同步",
+                         self.controller.linkage_status()["line"])
 
     def test_runtime_reply_routes_every_linkage_message_type(self):
         self.enter_linkage()
@@ -597,6 +693,76 @@ class LinkagePanelTests(unittest.TestCase):
         self.show_error.assert_not_called()
         self.assertEqual(2, self.controller.linkage_status()["refused_count"])
         self.assertEqual(0, self.controller._linkage.pending_count())
+
+    def _send_one_group(self):
+        with self.bindings:
+            self.controller._on_runtime_reply(camera_time())
+        self.run_timer()
+
+    def _assert_counted(self, details, message="A group named a different mode revision."):
+        self.show_error.reset_mock()
+        refused = self.controller.linkage_status()["refused_count"]
+        self._route({"type": "error", "code": "MODE_CONFLICT",
+                     "message": message, "details": details})
+        self.flush()
+        self.show_error.assert_not_called()
+        self.assertEqual(refused + 1, self.controller.linkage_status()["refused_count"])
+
+    def _assert_reported(self, details, message):
+        self.show_error.reset_mock()
+        self._route({"type": "error", "code": "MODE_CONFLICT",
+                     "message": message, "details": details})
+        self.flush()
+        self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
+
+    def test_unreal_refusing_a_group_during_its_transition_is_counted(self):
+        # R-021: a group that reached Unreal during a transition is scheduling.
+        self.enter_linkage()
+        self._send_one_group()
+        self._assert_counted("target mode revision 2",
+                             "A group arrived during a time-control transition.")
+
+    def test_unreal_refusing_a_group_of_an_older_revision_is_counted(self):
+        # The group was in flight when Maya returned to realtime; the reply of
+        # the old revision arrives afterwards.
+        self.enter_linkage()
+        self._send_one_group()
+        with self.bindings:
+            self.controller.leave_linkage("realtime")
+        self._assert_counted("group mode revision 1, current 2")
+
+    def test_a_group_of_a_newer_revision_is_still_a_conflict(self):
+        # R-022: Unreal treats a group ahead of its revision as a failure.
+        self.enter_linkage()
+        self._send_one_group()
+        self._assert_reported("group mode revision 9, current 3",
+                              "A group named a different mode revision.")
+
+    def test_a_refused_mode_message_is_reported_while_a_group_is_in_flight(self):
+        # R-022: a conflict about Maya's own transition is never scheduling,
+        # however many groups are still on their way.
+        self.enter_linkage()
+        self._send_one_group()
+        self._assert_reported(
+            "current mode revision 3, message 2",
+            "A leave_linkage message named an older or repeated mode revision.")
+        self._assert_reported(
+            "message mode revision 5, current 3",
+            "A failed transition named a mode revision this session never entered.")
+
+    def test_a_mode_conflict_without_group_details_is_reported(self):
+        self.enter_linkage()
+        self._assert_reported("", "Linkage is already active.")
+
+    def test_only_the_two_group_forms_are_scheduling_conflicts(self):
+        scheduling = mtou_linkage.is_scheduling_conflict
+        self.assertTrue(scheduling("target mode revision 4"))
+        self.assertTrue(scheduling("group mode revision 1, current 2"))
+        self.assertFalse(scheduling("group mode revision 2, current 2"))
+        self.assertFalse(scheduling("group mode revision 3, current 2"))
+        self.assertFalse(scheduling("current mode revision 3, message 2"))
+        self.assertFalse(scheduling("prefix target mode revision 4"))
+        self.assertFalse(scheduling(None))
 
     def test_a_message_from_a_newer_mode_is_still_a_conflict(self):
         self.enter_linkage()
@@ -862,6 +1028,9 @@ class LinkagePanelTests(unittest.TestCase):
         self.assertIn("恢复残留：camera: persp is locked", status)
         self.assertIn("camera: persp is locked",
                       self.controller.linkage_status()["labels"]["recovery"])
+        snapshot = self.controller.linkage_status()
+        self.assertIn("恢复失败 1 项", snapshot["line"])
+        self.assertIn("诊断详情", snapshot["line_tooltip"])
         self.assertTrue(any("camera: persp is locked" in record for record
                             in self.controller.linkage_status()["recovery_records"]))
 
@@ -875,7 +1044,6 @@ class LinkagePanelTests(unittest.TestCase):
     def test_disconnect_stops_the_pump_and_restores_every_resource(self):
         self.enter_linkage()
         with self.bindings:
-            self.controller.open_link_window()
             self.controller.open_reference_window()
 
         with self.bindings:
@@ -885,24 +1053,21 @@ class LinkagePanelTests(unittest.TestCase):
         self.assertEqual([{"time": 42.0, "camera": "persp"}], self.host.restored)
         self.assertEqual([1], self.removed_callbacks)
         self.fake_cmds.deleteUI.assert_any_call(
-            mtou_link_window.LINK_WINDOW_NAME)
-        self.fake_cmds.deleteUI.assert_any_call(
             mtou_reference_window.REFERENCE_WINDOW_NAME)
-        self.assertIsNone(self.controller._link_window)
         self.assertIsNone(self.controller._reference_window)
         self.assertIn("camera: persp" if self.host.restore_residual else "无",
                       self.controller.linkage_status()["labels"]["recovery"])
 
     def test_scene_change_releases_linkage_and_its_windows(self):
         self.enter_linkage()
-        self.controller._link_window = mock.Mock()
+        self.controller._reference_window = mock.Mock()
 
         with self.bindings:
             self.controller._on_scene_change()
 
         self.assertIsNone(self.controller._linkage)
         self.assertEqual(1, len(self.removed_callbacks))
-        self.assertIsNone(self.controller._link_window)
+        self.assertIsNone(self.controller._reference_window)
 
     def test_maya_exit_releases_linkage_and_its_windows(self):
         self.enter_linkage()
@@ -1027,8 +1192,10 @@ class ReferenceActionTests(unittest.TestCase):
         self.assertEqual([], self.reference.calls)
         self.assertTrue(self.fake_cmds.warning.called)
         self.assertIsNone(self.controller.reference_offer())
-        self.assertEqual({"action": None, "report": {}},
+        self.assertEqual({"action": None, "report": {}, "transfer_id": None,
+                          "time": None},
                          self.controller.reference_report())
+        self.assertEqual("暂无交接", self.controller.reference_state()[0])
 
     def test_reference_budgets_are_the_frozen_ones(self):
         budget = self.controller.reference_budget()
@@ -1047,7 +1214,14 @@ class ReferenceActionTests(unittest.TestCase):
         self.assertEqual(["inspect"], [name for name, *_ in self.reference.calls])
         self.assertEqual("REFERENCE_STALE",
                          self.controller._last_diagnostic["code"])
-        self.assertIsNone(self.controller.reference_report()["report"] or None)
+        # The refusal is the window's last result, so its state asks for a
+        # new export; nothing was imported.
+        report = self.controller.reference_report()
+        self.assertFalse(report["report"]["accepted"])
+        self.assertEqual("REFERENCE_STALE", report["report"]["code"])
+        self.assertEqual("tx-9", report["transfer_id"])
+        self.assertEqual("已过期，请在 UE 重新导出",
+                         self.controller.reference_state()[0])
 
     def test_import_passes_the_frozen_budgets_to_validation(self):
         self.offer()
@@ -1099,9 +1273,14 @@ class ReferenceActionTests(unittest.TestCase):
         report = self.controller.reference_report()["report"]
         self.assertTrue(report["rolled_back"])
         self.assertTrue(report["discarded"])
-        lines = mtou_reference_window._report_lines(
+        lines = mtou_reference_window.reference_report_lines(
             self.controller.reference_report())
         self.assertTrue(any("回滚：是" in line for line in lines))
+        result = mtou_reference_window.reference_result_text(
+            self.controller.reference_report())
+        self.assertTrue(result.startswith("导入失败：staged swap failed"))
+        self.assertIn("已回滚，原参考保留。", result)
+        self.assertIn("tx-9_staging", result)
         results = [message for message in self.session.messages
                    if message["type"] == "reference_result"]
         self.assertFalse(results[-1]["accepted"])
@@ -1195,58 +1374,6 @@ class DetailWindowTests(unittest.TestCase):
                 if call[0] and call[0][0] == name
                 and not call[1].get("exists") and not call[1].get("query")]
 
-    def test_repeated_open_reuses_one_linkage_window(self):
-        with self.bindings:
-            first = self.controller.open_link_window()
-            second = self.controller.open_link_window()
-
-        self.assertIs(first, second)
-        self.assertEqual(1, len(self.created_windows(
-            mtou_link_window.LINK_WINDOW_NAME)))
-
-    def test_linkage_window_labels_keep_a_fixed_width(self):
-        # Maya keeps a label at its creation width unless one is given, which
-        # clipped every value that grew after the window opened.
-        with self.bindings:
-            self.controller.open_link_window()
-
-        created = [call for call in self.fake_cmds.text.call_args_list
-                   if not call[1].get("edit") and call[1].get("label")]
-        self.assertEqual(14, len(created))
-        # A label wider than its card body widens the window past its default.
-        self.assertLessEqual(3 * mtou_link_window.STATUS_COLUMN,
-                             mtou_link_window.CARD_BODY)
-        for call in created:
-            self.assertLessEqual(call[1].get("width", 0),
-                                 mtou_link_window.CARD_BODY, call)
-            self.assertGreaterEqual(call[1].get("width", 0),
-                                    mtou_link_window.STATUS_LABEL, call)
-
-    def test_linkage_window_elides_long_eval_ids_and_keeps_them_in_the_tooltip(self):
-        eval_id = "Main@1200000+000//Game/Level/Cam.CameraComponent#" + \
-            ";".join("field_{0}={0}.000000".format(index) for index in range(80)) + ";~e2"
-        status = {"applied_eval_id": eval_id, "detail": "已应用 " + eval_id,
-                  "recovery_records": ["camera: persp is locked"], "labels": {}}
-        with self.bindings, mock.patch.object(
-                self.controller, "linkage_status", return_value=status):
-            self.controller.open_link_window()
-
-        labels = {call[1]["label"]: call[1]["annotation"]
-                  for call in self.fake_cmds.text.call_args_list
-                  if call[1].get("edit") and call[1]["label"]}
-        applied = [label for label in labels if label.startswith("已应用求值：")]
-        self.assertEqual(1, len(applied))
-        self.assertIn("…", applied[0])
-        self.assertTrue(applied[0].startswith("已应用求值：Main@1200000+000"))
-        self.assertTrue(applied[0].endswith(";~e2"))
-        self.assertLessEqual(len(applied[0]), len("已应用求值：")
-                             + mtou_link_window.TOKEN_LIMIT)
-        self.assertEqual("已应用求值：" + eval_id, labels[applied[0]])
-        detail = [label for label in labels if label.startswith("已应用 Main")]
-        self.assertEqual(["已应用 " + mtou_link_window.compact(eval_id)], detail)
-        self.assertEqual("camera: persp is locked",
-                         labels["camera: persp is locked"])
-
     def test_repeated_open_reuses_one_reference_window(self):
         with self.bindings:
             first = self.controller.open_reference_window()
@@ -1258,16 +1385,16 @@ class DetailWindowTests(unittest.TestCase):
 
     def test_closing_a_window_releases_only_that_window(self):
         with self.bindings:
-            window = self.controller.open_link_window()
+            window = self.controller.open_reference_window()
             window._on_closed()
 
-        self.assertIsNone(self.controller._link_window)
+        self.assertIsNone(self.controller._reference_window)
         self.fake_cmds.deleteUI.assert_called_with(
-            mtou_link_window.LINK_WINDOW_NAME)
-        # The session and every other window survive a detail window's close.
+            mtou_reference_window.REFERENCE_WINDOW_NAME)
+        # The session survives a detail window's close.
         self.assertIs(self.session, self.controller._session)
         with self.bindings:
-            reopened = self.controller.open_link_window()
+            reopened = self.controller.open_reference_window()
         self.assertIsNot(window, reopened)
 
     def test_reference_window_close_keeps_the_offer_and_the_session(self):
@@ -1301,10 +1428,63 @@ class DetailWindowTests(unittest.TestCase):
         labels = [call[1].get("label")
                   for call in self.fake_cmds.text.call_args_list
                   if call[1].get("label")]
-        self.assertIn("交接：tx-4", labels)
-        self.assertIn("摘要：ab78", labels)
-        self.assertIn("计数：对象 5｜三角面 60｜字节 128", labels)
-        self.assertTrue(any("字节上限" in label for label in labels))
+        self.assertIn("来源关卡：L_Main", labels)
+        self.assertIn("子关卡：A", labels)
+        self.assertIn("规模：5 个对象，60 三角面", labels)
+        # The offer names space revision 2 while the session is at 1.
+        self.assertIn("状态：已过期，请在 UE 重新导出", labels)
+        # Handoff identity, digest, space revision and budgets are diagnostics.
+        for internal in ("交接：", "摘要：", "空间版本：", "计数：", "字节上限"):
+            self.assertFalse(any(internal in label for label in labels), internal)
+        diagnostics = self.controller._reference_diagnostic_text()
+        for expected in ("交接 ID：tx-4", "摘要：ab78", "空间版本：2",
+                         "计数：对象 5｜三角面 60｜字节 128", "冻结上限：字节 "):
+            self.assertIn(expected, diagnostics)
+
+    def test_reference_window_states_and_one_sentence_results(self):
+        with self.bindings:
+            self.controller.offer_reference({
+                "transfer_id": "tx-5", "directory": "handoff/tx-5",
+                "manifest_digest": "cd90",
+                "scope": {"level": "/Game/Maps/L_Main",
+                          "sublevels": ["/Game/Maps/L_Main_Props"],
+                          "unloaded_sublevels": ["/Game/Maps/L_Main_FX"]},
+                "space_revision": 1,
+                "counts": {"objects": 152, "triangles": 1203344, "bytes": 4096}})
+            self.flush()
+        offer = self.controller.reference_offer()
+        level, sublevels, tooltip = mtou_reference_window.reference_source_lines(offer)
+        self.assertEqual("来源关卡：L_Main", level)
+        self.assertEqual("子关卡：L_Main_Props（1 个未加载，未包含）", sublevels)
+        self.assertIn("/Game/Maps/L_Main_Props", tooltip)
+        self.assertEqual("规模：152 个对象，约 120 万三角面",
+                         mtou_reference_window.reference_scale_text(offer["counts"]))
+        self.assertEqual("可导入", self.controller.reference_state()[0])
+
+        self.controller._reference_report = self.controller._reference_outcome(
+            "import", {"accepted": True, "counts": {"objects": 152},
+                       "discarded": False, "rolled_back": False, "residual": {}})
+        self.assertTrue(self.controller.reference_state()[0].startswith("已导入（"))
+        self.assertEqual("已导入 152 个对象。",
+                         mtou_reference_window.reference_result_text(
+                             self.controller.reference_report()))
+        # A newer handoff for the same scope can be imported again.
+        self.controller._reference_offer["transfer_id"] = "tx-6"
+        self.assertEqual("可导入", self.controller.reference_state()[0])
+        # A handoff from another common space needs a new export.
+        self.session.space_revision = 2
+        self.assertEqual("已过期，请在 UE 重新导出",
+                         self.controller.reference_state()[0])
+
+        removed = mtou_reference_window.reference_result_text(
+            {"action": "remove", "report": {"removed": True, "nodes_removed": 3,
+                                            "residual": {}}})
+        self.assertEqual("已移除参考（3 个节点）。", removed)
+        anchorless = mtou_reference_window.reference_result_text(
+            {"action": "import", "report": {"accepted": True,
+                                            "counts": {"objects": 2},
+                                            "anchor": {"source": "absent"}}})
+        self.assertIn("重新导出", anchorless)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,23 @@
 """场景参考 detail window: one Unreal handoff offer and its import outcome.
 
-Like the linkage window this one owns no state: the offered handoff, the frozen
-budgets, the last report and even the button enablement come from controller
-getters, and every button sends a controller action.
+The window owns no state: the offered handoff, the last report and even the
+button enablement come from controller getters, and every button sends a
+controller action. It shows where the reference comes from, its size, whether
+it can be imported and the last result in one sentence; the handoff identity,
+digest, space revision and frozen budgets are in 诊断详情.
 """
 
+import time
+
 from .. import mayaapi
-from .layout import apply_panel_theme, grid_row, set_enabled, set_text, set_tooltip
+from .layout import (
+    apply_panel_theme,
+    elide_text,
+    grid_row,
+    set_enabled,
+    set_text,
+    set_tooltip,
+)
 from .style import CARD_MARGIN, GRID_GAP, ROW_SPACING
 
 REFERENCE_WINDOW_NAME = "MtoULiveLinkReferenceWindow"
@@ -15,10 +26,23 @@ WINDOW_WIDTH = 520
 
 WINDOW_CONTENT = WINDOW_WIDTH - 2 * CARD_MARGIN
 
-_MIB = 1024 * 1024
+# A card's body sits inside its margins and Maya's one-pixel frame; a wider
+# label widens the whole window past WINDOW_WIDTH.
+CARD_BODY = WINDOW_CONTENT - 2 * (CARD_MARGIN + 1)
+
+# The longest line (a CJK character counts two) a card label shows; a longer
+# level list ends in an ellipsis and the tooltip lists every level.
+LINE_UNITS = 68
 
 
-def _scope_summary(offer):
+def _package_name(path):
+    """The last segment of an Unreal package path: what the user calls the level."""
+    text = str(path or "").rstrip("/")
+    return text.rsplit("/", 1)[-1].split(".", 1)[0] if text else "—"
+
+
+def reference_scope_summary(offer):
+    """The handoff scope as one diagnostic line."""
     scope = offer.get("scope")
     if not isinstance(scope, dict) or not scope:
         return "—"
@@ -35,7 +59,8 @@ def _scope_summary(offer):
     return "｜".join(parts)
 
 
-def _counts_summary(counts):
+def reference_counts_summary(counts):
+    """Exact object, triangle and byte counts as one diagnostic line."""
     if not isinstance(counts, dict) or not counts:
         return "—"
     parts = []
@@ -45,8 +70,51 @@ def _counts_summary(counts):
     return "｜".join(parts) if parts else "—"
 
 
-def _count_label(value):
-    return "{0:,}".format(int(value))
+def reference_source_lines(offer):
+    """Return ``(level line, sublevel line, tooltip)`` for the offered scope."""
+    scope = offer.get("scope") if isinstance(offer, dict) else None
+    if not isinstance(scope, dict) or not scope:
+        return "来源关卡：—", "子关卡：—", ""
+    level = scope.get("level")
+    sublevels = [str(name) for name in scope.get("sublevels") or ()]
+    unloaded = [str(name) for name in scope.get("unloaded_sublevels") or ()]
+    level_line = "来源关卡：{0}".format(_package_name(level))
+    if sublevels:
+        sublevel_line = "子关卡：{0}".format("、".join(
+            _package_name(name) for name in sublevels))
+    else:
+        sublevel_line = "子关卡：无"
+    if unloaded:
+        sublevel_line += "（{0} 个未加载，未包含）".format(len(unloaded))
+    tooltip = "\n".join([str(level or "—")] + sublevels)
+    return (elide_text(level_line, LINE_UNITS),
+            elide_text(sublevel_line, LINE_UNITS), tooltip)
+
+
+def _approximate(value, unit_label):
+    value = int(value)
+    for scale, name in ((100000000, "亿"), (10000, "万")):
+        if value >= scale:
+            amount = value / float(scale)
+            amount = round(amount) if amount >= 100 else round(amount, 1)
+            return "约 {0:g} {1}{2}".format(amount, name, unit_label)
+    return "{0} {1}".format(value, unit_label)
+
+
+def reference_scale_text(counts):
+    """规模 in the user's terms, for example “152 个对象，约 120.3 万三角面”."""
+    if not isinstance(counts, dict) or counts.get("objects") is None:
+        return "规模：—"
+    text = "规模：{0} 个对象".format(int(counts["objects"]))
+    if counts.get("triangles") is not None:
+        text += "，{0}".format(_approximate(counts["triangles"], "三角面"))
+    return text
+
+
+def _clock(seconds):
+    if seconds is None:
+        return ""
+    return time.strftime("%H:%M", time.localtime(seconds))
 
 
 def _residual_text(residual):
@@ -62,15 +130,17 @@ def _residual_text(residual):
     return str(residual)
 
 
-def _report_lines(outcome):
-    """The report card's lines for the last import, removal or recovery."""
+def reference_report_lines(outcome):
+    """Every field of the last import, removal or recovery, for 诊断详情."""
     action = outcome.get("action")
     report = outcome.get("report")
-    if not isinstance(report, dict):
+    if not isinstance(report, dict) or not report:
         return ["还没有导入记录。"]
     if action == "import":
         lines = ["导入：{0}".format(
             "已接受" if report.get("accepted") else "已拒绝")]
+        if report.get("code"):
+            lines.append("代码：{0}".format(report.get("code")))
         detail = report.get("detail")
         if detail:
             lines.append("说明：{0}".format(detail))
@@ -79,10 +149,13 @@ def _report_lines(outcome):
         lines.append("残留：{0}".format(_residual_text(report.get("residual"))))
         counts = report.get("counts")
         if isinstance(counts, dict):
-            lines.append("计数：{0}".format(_counts_summary(counts)))
+            lines.append("计数：{0}".format(reference_counts_summary(counts)))
         container = report.get("container")
         if isinstance(container, dict) and container.get("name"):
             lines.append("容器：{0}".format(container["name"]))
+        anchor = report.get("anchor")
+        if isinstance(anchor, dict) and anchor.get("source"):
+            lines.append("锚点：{0}".format(anchor.get("source")))
         return lines
     if action == "remove":
         return [
@@ -112,17 +185,57 @@ def _report_lines(outcome):
     return ["还没有导入记录。"]
 
 
+def reference_result_text(outcome):
+    """The report card: one sentence, plus the failure detail only on failure."""
+    action = outcome.get("action")
+    report = outcome.get("report")
+    if not isinstance(report, dict) or not report:
+        return "还没有导入记录。"
+    if action == "import":
+        if report.get("accepted"):
+            counts = report.get("counts") or {}
+            text = "已导入 {0} 个对象。".format(counts.get("objects") or 0)
+            anchor = report.get("anchor")
+            if isinstance(anchor, dict) and anchor.get("source") == "absent":
+                text += "交接清单未带锚点，参考放在 Maya 原点；请在 UE 重新导出后再次导入。"
+            return text
+        lines = ["导入失败：{0}".format(report.get("detail") or "未知原因")]
+        if report.get("rolled_back"):
+            lines.append("已回滚，原参考保留。")
+        if report.get("discarded"):
+            lines.append("已丢弃导入的节点。")
+        residual = _residual_text(report.get("residual"))
+        if residual != "无":
+            lines.append("残留：{0}。点击“恢复上次更新”清理后重试。".format(residual))
+        return "\n".join(lines)
+    if action == "remove":
+        if not report.get("removed"):
+            text = "场景中没有需要移除的参考。"
+        else:
+            text = "已移除参考（{0} 个节点）。".format(report.get("nodes_removed") or 0)
+        residual = _residual_text(report.get("residual"))
+        if residual != "无":
+            text += "\n残留：{0}。请手动删除这些节点。".format(residual)
+        return text
+    if action == "recover":
+        if report.get("partial_cleanups") or report.get("skipped_namespaces"):
+            return ("上次更新已恢复，但有部分内容未能清理；"
+                    "打开主面板的“诊断详情”查看。")
+        if report.get("restored_previous_reference"):
+            return "已恢复上一次的参考。"
+        return "已完成上次更新的恢复。"
+    return "还没有导入记录。"
+
+
 class ReferenceWindow(object):
-    """Shows the offered handoff, the frozen budgets and the last report."""
+    """Shows the offered handoff's source, size, state and the last result."""
 
     def __init__(self, controller):
         self._controller = controller
-        self._transfer_text = None
-        self._scope_text = None
-        self._digest_text = None
-        self._counts_text = None
-        self._space_text = None
-        self._budget_text = None
+        self._level_text = None
+        self._sublevel_text = None
+        self._scale_text = None
+        self._state_text = None
         self._report_text = None
         self._import_button = None
         self._remove_button = None
@@ -147,19 +260,10 @@ class ReferenceWindow(object):
             label="参考交接", collapsable=False,
             marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
         cmds.columnLayout(adjustableColumn=False, rowSpacing=6)
-        self._transfer_text = cmds.text(label="交接：暂无", align="left")
-        self._scope_text = cmds.text(label="范围：—", align="left")
-        self._digest_text = cmds.text(label="摘要：—", align="left")
-        self._counts_text = cmds.text(label="计数：—", align="left")
-        self._space_text = cmds.text(label="空间版本：—", align="left")
-        cmds.setParent("..")
-        cmds.setParent("..")
-
-        budget_card = cmds.frameLayout(
-            label="冻结上限", collapsable=False,
-            marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
-        cmds.rowLayout(numberOfColumns=1, columnWidth1=WINDOW_CONTENT)
-        self._budget_text = cmds.text(label="—", align="left", wordWrap=True, height=54)
+        self._level_text = cmds.text(label="来源关卡：—", align="left", width=CARD_BODY)
+        self._sublevel_text = cmds.text(label="子关卡：—", align="left", width=CARD_BODY)
+        self._scale_text = cmds.text(label="规模：—", align="left", width=CARD_BODY)
+        self._state_text = cmds.text(label="状态：暂无交接", align="left", width=CARD_BODY)
         cmds.setParent("..")
         cmds.setParent("..")
 
@@ -168,7 +272,7 @@ class ReferenceWindow(object):
             marginWidth=CARD_MARGIN, marginHeight=CARD_MARGIN - 3)
         cmds.rowLayout(numberOfColumns=1, columnWidth1=WINDOW_CONTENT)
         self._report_text = cmds.text(label="还没有导入记录。", align="left",
-                                      wordWrap=True, height=96)
+                                      wordWrap=True, height=72, width=CARD_BODY)
         cmds.setParent("..")
         cmds.setParent("..")
 
@@ -194,41 +298,27 @@ class ReferenceWindow(object):
         cmds.showWindow(REFERENCE_WINDOW_NAME)
         self._card_decorations, self._styled_controls = apply_panel_theme(
             REFERENCE_WINDOW_NAME,
-            (offer_card, budget_card, report_card),
+            (offer_card, report_card),
             {self._import_button: "primary"})
         self.refresh()
 
     # ------------------------------------------------------------- actions
     def refresh(self):
-        """Render the controller's current handoff, budgets and report."""
+        """Render the controller's current handoff, state and last result."""
         offer = self._controller.reference_offer()
         if offer:
-            set_text(self._transfer_text, "交接：{0}".format(
-                offer.get("transfer_id") or "—"))
-            set_text(self._scope_text, "范围：{0}".format(_scope_summary(offer)))
-            set_text(self._digest_text, "摘要：{0}".format(
-                offer.get("manifest_digest") or offer.get("digest") or "—"))
-            set_text(self._counts_text, "计数：{0}".format(
-                _counts_summary(offer.get("counts"))))
-            space_revision = offer.get("space_revision")
-            set_text(self._space_text, "空间版本：{0}".format(
-                "—" if space_revision is None else space_revision))
+            level, sublevels, tooltip = reference_source_lines(offer)
+            set_text(self._level_text, level, tooltip=tooltip)
+            set_text(self._sublevel_text, sublevels, tooltip=tooltip)
+            set_text(self._scale_text, reference_scale_text(offer.get("counts")))
         else:
-            set_text(self._transfer_text, "交接：暂无")
-            set_text(self._scope_text, "范围：—")
-            set_text(self._digest_text, "摘要：—")
-            set_text(self._counts_text, "计数：—")
-            set_text(self._space_text, "空间版本：—")
-
-        budget = self._controller.reference_budget()
-        set_text(self._budget_text, "字节上限：{0}（{1:g} MiB）\n"
-                 "对象上限：{2}\n三角面上限：{3}".format(
-                     _count_label(budget.get("bytes")),
-                     float(budget.get("bytes")) / _MIB,
-                     _count_label(budget.get("objects")),
-                     _count_label(budget.get("triangles"))))
-        set_text(self._report_text, "\n".join(
-            _report_lines(self._controller.reference_report())))
+            set_text(self._level_text, "来源关卡：—")
+            set_text(self._sublevel_text, "子关卡：—")
+            set_text(self._scale_text, "规模：—")
+        state, state_tooltip = self._controller.reference_state()
+        set_text(self._state_text, "状态：{0}".format(state), tooltip=state_tooltip)
+        set_text(self._report_text, reference_result_text(
+            self._controller.reference_report()))
 
         controls = self._controller.reference_window_controls()
         for button, control in ((self._import_button, controls.get("import")),
@@ -254,3 +344,8 @@ class ReferenceWindow(object):
         del unused
         # Closing this window must never leave, import or remove anything.
         self._controller.close_reference_window()
+
+
+def import_time_label(seconds):
+    """The clock time an import finished, as the state line shows it."""
+    return _clock(seconds)

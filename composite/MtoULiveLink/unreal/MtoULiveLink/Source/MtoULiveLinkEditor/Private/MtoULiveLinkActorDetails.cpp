@@ -380,7 +380,7 @@ FText DisplayText(EMtoUDisplayTarget Target)
     case EMtoUDisplayTarget::OriginalGarment:
         return LOCTEXT("DisplayOriginalGarment", "当前显示：原始服装与角色其他部分");
     case EMtoUDisplayTarget::Driver:
-        return LOCTEXT("DisplayDriver", "当前显示：原始主体网格（Driver，非模型对比）");
+        return LOCTEXT("DisplayDriver", "当前显示：原始角色");
     case EMtoUDisplayTarget::Hidden:
     default:
         return LOCTEXT("DisplayHidden", "当前未显示网格");
@@ -429,37 +429,11 @@ FText GarmentComparisonTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
     }
     if (!Target->CanCompareGarments())
     {
-        return LOCTEXT("ComparisonWrongDisplay", "先显示当前生成预览；动画工作流中的原始主体不属于模型对比。");
+        return LOCTEXT("ComparisonWrongDisplay", "先显示当前生成预览；动画工作流显示的原始角色不参与服装对比。");
     }
     return Target->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
         ? LOCTEXT("ComparisonShowGenerated", "显示生成服装；保持当前会话、姿势和角色部件。")
         : LOCTEXT("ComparisonShowOriginal", "显示原始服装；保持当前会话、姿势和角色部件。");
-}
-
-FText LinkageModeText(const FString& Mode)
-{
-    if (Mode == TEXT("linkage"))
-    {
-        return LOCTEXT("LinkageModeLinkage", "镜头联动");
-    }
-    if (Mode == TEXT("cached"))
-    {
-        return LOCTEXT("LinkageModeCached", "缓存播放");
-    }
-    return LOCTEXT("LinkageModeRealtime", "实时预览");
-}
-
-FText LinkageControlText(const FString& Control)
-{
-    if (Control == TEXT("unreal"))
-    {
-        return LOCTEXT("LinkageControlUnreal", "Unreal（Level Sequence）");
-    }
-    if (Control == TEXT("cache"))
-    {
-        return LOCTEXT("LinkageControlCache", "Unreal 缓存时钟");
-    }
-    return LOCTEXT("LinkageControlMaya", "Maya");
 }
 
 // Longest run without a space or '/' one line shows. An eval_id carries the
@@ -501,52 +475,82 @@ FText CompactLinkageRuns(const FText& Text)
     return FText::FromString(Out);
 }
 
-FText LinkageTargetTimeText(const FMtoULinkageView& View)
+// The applied lag the panel reports: below it Maya keeps up and the lag row
+// stays hidden. Display only; the protocol's convergence window is unchanged.
+constexpr double LinkageLagNoticeSeconds = 0.5;
+
+/** True while Maya does not keep up with the Level Sequence time. */
+bool LinkageLagging(const FMtoULinkageView& View)
 {
-    if (View.TargetEvalId.IsEmpty())
+    if (View.Mode != TEXT("linkage") || View.bTransitioning || View.bConverged)
     {
-        return LOCTEXT("LinkageNoTarget", "目标时间：无联动目标");
+        return false;
     }
-    return FText::Format(LOCTEXT("LinkageTargetTimeValue", "目标时间：{0} · 帧 {1}"),
-        FText::FromString(View.TargetEvalId), FText::AsNumber(View.TargetDisplayFrame));
+    // A target waiting past the convergence window, or a slow but complete
+    // application, both mean Maya is behind.
+    return View.TargetOverdueSeconds > 0.0
+        || (!View.AppliedEvalId.IsEmpty() && View.AppliedLagSeconds >= LinkageLagNoticeSeconds);
 }
 
-FText LinkageAppliedText(const FMtoULinkageView& View)
+/** The lag in effect: an overdue target has waited longer than the last application took. */
+double LinkageBehindSeconds(const FMtoULinkageView& View)
 {
-    if (View.AppliedEvalId.IsEmpty())
+    return FMath::Max(View.TargetOverdueSeconds,
+        View.AppliedEvalId.IsEmpty() ? 0.0 : View.AppliedLagSeconds);
+}
+
+FText LinkageSecondsText(double Seconds)
+{
+    FNumberFormattingOptions Options;
+    Options.MinimumFractionalDigits = Seconds < 10.0 ? 1 : 0;
+    Options.MaximumFractionalDigits = Seconds < 10.0 ? 1 : 0;
+    return FText::AsNumber(Seconds, &Options);
+}
+
+FText LinkageStatusText(const FMtoULinkageView& View)
+{
+    if (View.bTransitioning)
     {
-        return LOCTEXT("LinkageNoApplied", "最新完整应用时间：尚无完整应用");
+        return LOCTEXT("LinkageStatusTransitioning", "正在切换镜头联动，请稍候");
     }
-    return FText::Format(LOCTEXT("LinkageAppliedValue", "最新完整应用时间：{0} · 帧 {1} · 样本 {2}"),
-        FText::FromString(View.AppliedEvalId), FText::AsNumber(View.AppliedDisplayFrame),
-        FText::AsNumber(View.AppliedSampleSerial));
+    if (View.Mode == TEXT("linkage"))
+    {
+        if (LinkageLagging(View))
+        {
+            return LOCTEXT("LinkageStatusLagging", "镜头联动中 · Unreal 控制时间 · Maya 跟不上");
+        }
+        return View.AppliedEvalId.IsEmpty()
+            ? LOCTEXT("LinkageStatusSyncing", "镜头联动中 · Unreal 控制时间 · 正在同步")
+            : LOCTEXT("LinkageStatusSynced", "镜头联动中 · Unreal 控制时间 · 同步正常");
+    }
+    if (View.Mode == TEXT("cached"))
+    {
+        return LOCTEXT("LinkageStatusCached", "未进入联动 · 缓存播放中");
+    }
+    return View.bTakeoverHeld
+        ? LOCTEXT("LinkageStatusHeld", "未进入联动 · 仍接管目标，点击“结束预览”交还原动画")
+        : LOCTEXT("LinkageStatusIdle", "未进入联动");
 }
 
 FText LinkageLagText(const FMtoULinkageView& View)
 {
-    if (View.AppliedEvalId.IsEmpty())
+    if (!LinkageLagging(View))
     {
-        return LOCTEXT("LinkageLagUnknown", "滞后：未测量");
+        return FText::GetEmpty();
     }
-    return View.bConverged
-        ? FText::Format(LOCTEXT("LinkageLagSynced", "滞后：{0} 秒（已同步）"),
-            FText::AsNumber(View.AppliedLagSeconds))
-        : FText::Format(LOCTEXT("LinkageLagging", "滞后：{0} 秒（未收敛）"),
-            FText::AsNumber(View.AppliedLagSeconds));
+    return FText::Format(
+        LOCTEXT("LinkageLagValue", "Maya 跟不上，滞后 {0} 秒。可暂停 Sequencer 等待 Maya 追上，或关闭占用性能的程序。"),
+        LinkageSecondsText(LinkageBehindSeconds(View)));
 }
 
 FText LinkageRestoreText(const FMtoULinkageView& View)
 {
-    if (!View.RecoveryResidual.IsEmpty())
+    if (View.RecoveryResidual.IsEmpty())
     {
-        return FText::Format(LOCTEXT("LinkageRestoreValue", "恢复结果：{0}"),
-            FText::FromString(View.RecoveryResidual));
+        return FText::GetEmpty();
     }
-    if (View.bWritersRestored)
-    {
-        return LOCTEXT("LinkageRestoreDone", "恢复结果：已恢复被接管的 writer");
-    }
-    return LOCTEXT("LinkageRestoreNone", "恢复结果：无待处理恢复");
+    return LOCTEXT("LinkageRestoreFailed",
+        "恢复未完成：部分被接管的动画或轨道没有交还。请在“高级设置与诊断”查看未恢复的项目并在 Sequencer 中手动恢复，或重新打开关卡。");
 }
 
 FText LinkageErrorText(const FMtoULinkageView& View)
@@ -561,6 +565,52 @@ FText LinkageErrorText(const FMtoULinkageView& View)
             FText::FromString(View.Error), FText::FromString(View.ErrorCode));
 }
 
+FText LinkageDiagnosticsText(const FMtoULinkageView& View)
+{
+    const bool bHasLinkage = View.bPaired || View.Mode != TEXT("realtime") || View.bTakeoverHeld
+        || View.bTransitioning || View.Identity.ModeRevision > 0 || !View.TargetEvalId.IsEmpty()
+        || !View.AppliedEvalId.IsEmpty() || !View.RecoveryResidual.IsEmpty()
+        || !View.Error.IsEmpty() || View.RefusedGroupCount > 0;
+    if (!bHasLinkage)
+    {
+        return FText::GetEmpty();
+    }
+    // Diagnostic lines keep the protocol's own names and exact values, so a
+    // copied report matches both hosts' logs.
+    TArray<FString> Lines;
+    Lines.Add(TEXT("镜头联动诊断"));
+    Lines.Add(FString::Printf(TEXT("控制方：%s · 模式：%s%s"), *View.Control, *View.Mode,
+        View.bTransitioning ? TEXT(" · 切换中") : TEXT("")));
+    Lines.Add(FString::Printf(TEXT("session %d · set_revision %d · space_revision %d · mode_revision %d"),
+        View.Identity.SessionId, View.Identity.SetRevision, View.Identity.SpaceRevision,
+        View.Identity.ModeRevision));
+    Lines.Add(FString::Printf(TEXT("配对：%s · %s %s"),
+        View.bPaired ? *View.PairedObjectId : TEXT("未配对"), *View.TargetKind, *View.TargetPath));
+    Lines.Add(FString::Printf(TEXT("目标时间：%s · 帧 %s"),
+        View.TargetEvalId.IsEmpty() ? TEXT("—") : *View.TargetEvalId,
+        *FString::SanitizeFloat(View.TargetDisplayFrame)));
+    Lines.Add(FString::Printf(TEXT("最新完整应用时间：%s · 帧 %s · 样本 %d"),
+        View.AppliedEvalId.IsEmpty() ? TEXT("—") : *View.AppliedEvalId,
+        *FString::SanitizeFloat(View.AppliedDisplayFrame), View.AppliedSampleSerial));
+    Lines.Add(FString::Printf(TEXT("滞后：%s 秒（%s）· 目标超时等待 %s 秒"),
+        *FString::SanitizeFloat(View.AppliedLagSeconds),
+        View.bConverged ? TEXT("已同步") : TEXT("未收敛"),
+        *FString::SanitizeFloat(View.TargetOverdueSeconds)));
+    Lines.Add(FString::Printf(TEXT("恢复结果：%s"),
+        !View.RecoveryResidual.IsEmpty() ? *View.RecoveryResidual
+        : View.bWritersRestored ? TEXT("已恢复被接管的 writer") : TEXT("无待处理恢复")));
+    Lines.Add(FString::Printf(TEXT("接管中：%s"), View.bTakeoverHeld ? TEXT("是") : TEXT("否")));
+    Lines.Add(FString::Printf(TEXT("调度拒绝：%d%s"), View.RefusedGroupCount,
+        View.RefusedCode.IsEmpty() ? TEXT("")
+        : *FString::Printf(TEXT("（%s：%s）"), *View.RefusedCode, *View.RefusedMessage)));
+    Lines.Add(FString::Printf(TEXT("详情：%s"), View.Detail.IsEmpty() ? TEXT("—") : *View.Detail));
+    if (!View.Error.IsEmpty())
+    {
+        Lines.Add(FString::Printf(TEXT("错误：%s（%s）"), *View.Error, *View.ErrorCode));
+    }
+    return FText::FromString(FString::Join(Lines, TEXT("\n")));
+}
+
 FText LinkageEnterTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULinkageView& View)
 {
     if (!Actor.IsValid())
@@ -569,21 +619,21 @@ FText LinkageEnterTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoUL
     }
     if (View.bTransitioning)
     {
-        return LOCTEXT("LinkageEnterTransitioning", "模式切换进行中，请等待双方确认新的 mode_revision。");
+        return LOCTEXT("LinkageEnterTransitioning", "正在切换镜头联动，请等待 Maya 确认。");
     }
     if (!View.bPaired)
     {
-        return LOCTEXT("LinkageEnterUnpaired", "先配对 Maya 对象（默认 character）；未配对时 Unreal 不知道该驱动谁。");
+        return LOCTEXT("LinkageEnterUnpaired", "先点击“配对”，把这个角色与 Maya 配对。");
     }
     if (View.Mode == TEXT("linkage"))
     {
-        return LOCTEXT("LinkageEnterAlready", "已处于镜头联动；Unreal 拥有时间与相机。");
+        return LOCTEXT("LinkageEnterAlready", "已在镜头联动中：Level Sequence 控制时间和相机。");
     }
     if (View.Mode == TEXT("cached"))
     {
-        return LOCTEXT("LinkageEnterCached", "先清除缓存预览并确认 clears，缓存与镜头联动不能同时拥有时间。");
+        return LOCTEXT("LinkageEnterCached", "缓存播放中：先在 Maya 返回实时预览，再进入镜头联动。");
     }
-    return LOCTEXT("LinkageEnterReady", "接管目标 writer 并进入镜头联动；Unreal 驱动时间与求值相机，Maya 回传完整姿势。");
+    return LOCTEXT("LinkageEnterReady", "进入联动后，由 Level Sequence 控制时间和相机，Maya 跟随显示角色姿势。");
 }
 
 FText LinkageRealtimeTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULinkageView& View)
@@ -594,9 +644,9 @@ FText LinkageRealtimeTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMt
     }
     if (View.Mode != TEXT("linkage"))
     {
-        return LOCTEXT("LinkageRealtimeWrongMode", "仅镜头联动模式可返回实时；当前显示的时间控制方见上方模式行。");
+        return LOCTEXT("LinkageRealtimeWrongMode", "进入镜头联动后可返回实时。");
     }
-    return LOCTEXT("LinkageRealtimeReady", "返回实时预览：Maya 恢复自己的时间、视图与门并保持暂停，Unreal 保留接管。");
+    return LOCTEXT("LinkageRealtimeReady", "返回实时预览：Maya 恢复自己的时间和视图并暂停；目标仍由预览接管，点击“结束预览”交还。");
 }
 
 /**
@@ -617,22 +667,22 @@ FText LinkageEndTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULin
     }
     if (View.Mode != TEXT("linkage") && !View.bTakeoverHeld)
     {
-        return LOCTEXT("LinkageEndNothing", "没有进行中的联动或预览接管需要结束。");
+        return LOCTEXT("LinkageEndNothing", "没有需要结束的镜头联动。");
     }
-    return LOCTEXT("LinkageEndReady", "结束预览：每个借用的 writer 逐资源恢复，原始 writer 归位；恢复缺口会被报告而不是隐藏。");
+    return LOCTEXT("LinkageEndReady", "结束预览：交还被接管的动画和轨道，恢复原来的播放；没能恢复的部分会在这里提示。");
 }
 
 FText LinkagePairTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULinkageView& View)
 {
     if (!Actor.IsValid())
     {
-        return LOCTEXT("LinkagePairNoActor", "选择绑定 Actor 后配对 Maya 对象。");
+        return LOCTEXT("LinkagePairNoActor", "选择绑定 Actor 后配对 Maya 角色。");
     }
     if (View.bPaired)
     {
-        return LOCTEXT("LinkagePairPaired", "已配对；先解除配对再改绑其他对象。");
+        return LOCTEXT("LinkagePairPaired", "解除配对后，需要重新配对才能进入镜头联动；进行中的连接不受影响。");
     }
-    return LOCTEXT("LinkagePairReady", "把当前绑定的角色与一个 Maya 对象 id 配对（协议 v10 固定为 character）。");
+    return LOCTEXT("LinkagePairReady", "把这个角色与 Maya 中连接的角色配对，配对后才能进入镜头联动。");
 }
 
 /** Formats the scene-reference handoff result into the panel's one report line. */
@@ -647,16 +697,64 @@ FText SceneReferenceResultText(const FMtoUSceneRefExportResult& Result)
     {
         return LOCTEXT("SceneReferenceIdle", "场景参考：尚未导出。");
     }
-    return FText::Format(
-        LOCTEXT("SceneReferenceValue",
-            "场景参考：{0} 个对象 · {1} 三角形 · {2} 字节 · 范围{3} · 交付 {4}"),
-        FText::AsNumber(Result.ExportedObjectCount),
-        FText::AsNumber(Result.TriangleCount),
-        FText::AsNumber(Result.GeometryBytes + Result.ManifestBytes),
-        Result.bScopeComplete
-            ? LOCTEXT("SceneReferenceScopeComplete", "完整")
-            : LOCTEXT("SceneReferenceScopePartial", "未确认（见告警）"),
-        FText::FromString(Result.TransferId));
+    const FText Objects = FText::AsNumber(Result.ExportedObjectCount);
+    if (Result.bScopeComplete)
+    {
+        return FText::Format(LOCTEXT("SceneReferenceValue", "已导出 {0} 个对象，可在 Maya 导入。"), Objects);
+    }
+    // The export names why its scope is partial; the panel says which reason
+    // applies so the user knows what to load or select.
+    if (!Result.UnloadedSublevels.IsEmpty())
+    {
+        return FText::Format(LOCTEXT("SceneReferenceUnloadedValue",
+            "已导出 {0} 个对象，可在 Maya 导入；勾选的 {1} 个子关卡未加载，未包含在内，加载后重新导出即可补上。"),
+            Objects, FText::AsNumber(Result.UnloadedSublevels.Num()));
+    }
+    if (!Result.ExcludedSublevels.IsEmpty())
+    {
+        // Excluded names were selected but the world does not stream them.
+        return FText::Format(LOCTEXT("SceneReferenceExcludedValue",
+            "已导出 {0} 个对象，可在 Maya 导入；勾选的 {1} 个子关卡不在当前世界中，未包含在内。请检查关卡的流式设置，或重新选择子关卡。"),
+            Objects, FText::AsNumber(Result.ExcludedSublevels.Num()));
+    }
+    return FText::Format(LOCTEXT("SceneReferencePartitionedValue",
+        "已导出 {0} 个对象，可在 Maya 导入；World Partition 世界只包含当前已加载区域的内容。"), Objects);
+}
+
+FText SceneReferenceDiagnosticsText(const FMtoUSceneRefExportResult& Result)
+{
+    if (Result.Directory.IsEmpty() && Result.Error.IsEmpty())
+    {
+        return FText::GetEmpty();
+    }
+    TArray<FString> Lines;
+    Lines.Add(TEXT("场景参考诊断"));
+    Lines.Add(FString::Printf(TEXT("交付 ID：%s"), Result.TransferId.IsEmpty() ? TEXT("—") : *Result.TransferId));
+    Lines.Add(FString::Printf(TEXT("清单摘要：%s"), Result.ManifestDigest.IsEmpty() ? TEXT("—") : *Result.ManifestDigest));
+    Lines.Add(FString::Printf(TEXT("目录：%s"), Result.Directory.IsEmpty() ? TEXT("—") : *Result.Directory));
+    Lines.Add(FString::Printf(TEXT("范围：%s · 常驻关卡 %s · 范围%s"),
+        *Result.ScopeName, *Result.LevelPackage,
+        Result.bScopeComplete ? TEXT("完整") : TEXT("未确认")));
+    Lines.Add(FString::Printf(TEXT("子关卡：请求 %s · 已加载 %s · 排除 %s · 未加载 %s"),
+        *FString::Join(Result.RequestedSublevels, TEXT(", ")),
+        *FString::Join(Result.LoadedSublevels, TEXT(", ")),
+        *FString::Join(Result.ExcludedSublevels, TEXT(", ")),
+        *FString::Join(Result.UnloadedSublevels, TEXT(", "))));
+    Lines.Add(FString::Printf(TEXT("对象 %d · 三角形 %d · 顶点 %d · 字节 %lld（几何 %lld + 清单 %lld）"),
+        Result.ExportedObjectCount, Result.TriangleCount, Result.VertexCount,
+        Result.GeometryBytes + Result.ManifestBytes, Result.GeometryBytes, Result.ManifestBytes));
+    Lines.Add(FString::Printf(TEXT("跳过 Actor %d · 抑制组件 %d · 图片数据 %s"),
+        Result.SkippedActorCount, Result.SuppressedComponentCount,
+        Result.bImageDataDetected ? TEXT("有") : TEXT("无")));
+    for (const FString& Warning : Result.Warnings)
+    {
+        Lines.Add(FString::Printf(TEXT("告警：%s"), *Warning));
+    }
+    if (!Result.Error.IsEmpty())
+    {
+        Lines.Add(FString::Printf(TEXT("错误：%s"), *Result.Error));
+    }
+    return FText::FromString(FString::Join(Lines, TEXT("\n")));
 }
 
 /** Builds the one status view from an already-read axis snapshot. */
@@ -765,6 +863,36 @@ FText FMtoULiveLinkActorDetails::CompactLinkageText(const FText& Text)
 FText FMtoULiveLinkActorDetails::FormatCacheState(const FMtoUCachePlaybackView& View)
 {
     return CacheStateText(View);
+}
+
+FText FMtoULiveLinkActorDetails::FormatLinkageStatus(const FMtoULinkageView& View)
+{
+    return LinkageStatusText(View);
+}
+
+FText FMtoULiveLinkActorDetails::FormatLinkageLag(const FMtoULinkageView& View)
+{
+    return LinkageLagText(View);
+}
+
+FText FMtoULiveLinkActorDetails::FormatLinkageRecovery(const FMtoULinkageView& View)
+{
+    return LinkageRestoreText(View);
+}
+
+FText FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(const FMtoULinkageView& View)
+{
+    return LinkageDiagnosticsText(View);
+}
+
+FText FMtoULiveLinkActorDetails::FormatSceneReferenceResult(const FMtoUSceneRefExportResult& Result)
+{
+    return SceneReferenceResultText(Result);
+}
+
+FText FMtoULiveLinkActorDetails::FormatSceneReferenceDiagnostics(const FMtoUSceneRefExportResult& Result)
+{
+    return SceneReferenceDiagnosticsText(Result);
 }
 
 bool FMtoULiveLinkActorDetails::bExpandAllGroups = false;
@@ -1239,7 +1367,6 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         "MtoU Linkage", LOCTEXT("LinkageCategory", "镜头联动"), ECategoryPriority::Important);
     Linkage.InitiallyCollapsed(false);
 
-    const TSharedPtr<FString> PairingInput = MakeShared<FString>(TEXT("character"));
     const TSharedPtr<FText> LinkageMessage = MakeShared<FText>();
     // Every linkage row reads MtoUGetLinkageView() through a Slate attribute, so a
     // row that is not invalidated keeps the text it was last painted with. Each row
@@ -1251,39 +1378,36 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         Row.WholeRowContent()[Widget];
         FMtoULinkageEditor::RegisterLinkagePanelWidget(Row.WholeRowWidget.Widget);
     };
-    AddLinkageRow(LOCTEXT("LinkagePairingFilter", "配对 对象"),
+    // Protocol v10 pairs the one Maya character, whose object id is always
+    // "character"; the row names it instead of asking for the id.
+    AddLinkageRow(LOCTEXT("LinkagePairingFilter", "配对 Maya 角色"),
         SNew(SHorizontalBox)
-            + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+            + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
             [
-                SNew(SBox)
-                .WidthOverride(160.0f)
-                [
-                    SNew(SEditableTextBox)
-                    .HintText(LOCTEXT("LinkageObjectHint", "Maya 对象 id"))
-                    .Text_Lambda([PairingInput]() { return FText::FromString(*PairingInput); })
-                    .OnTextChanged_Lambda([PairingInput](const FText& NewText)
-                    {
-                        *PairingInput = NewText.ToString();
-                    })
-                    .IsEnabled_Lambda([]()
-                    {
-                        return !MtoUGetLinkageView().bPaired;
-                    })
-                ]
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([]()
+                {
+                    return MtoUGetLinkageView().bPaired
+                        ? LOCTEXT("LinkagePairedState", "已配对 Maya 角色")
+                        : LOCTEXT("LinkageUnpairedState", "未配对 Maya 角色");
+                })
             ]
-            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 8.0f, 0.0f)
+            + SHorizontalBox::Slot().AutoWidth()
             [
                 SNew(SButton)
-                .Text(LOCTEXT("LinkagePair", "配对"))
+                .Text_Lambda([]()
+                {
+                    return MtoUGetLinkageView().bPaired
+                        ? LOCTEXT("LinkageClearPair", "解除配对")
+                        : LOCTEXT("LinkagePair", "配对");
+                })
                 .ToolTipText_Lambda([Actor]()
                 {
                     return LinkagePairTooltip(Actor, MtoUGetLinkageView());
                 })
-                .IsEnabled_Lambda([Actor]()
-                {
-                    return Actor.IsValid() && !MtoUGetLinkageView().bPaired;
-                })
-                .OnClicked_Lambda([Actor, PairingInput, LinkageMessage]()
+                .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
+                .OnClicked_Lambda([Actor, LinkageMessage]()
                 {
                     AMtoULiveLinkActor* Target = Actor.Get();
                     if (!Target)
@@ -1291,35 +1415,19 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                         return FReply::Handled();
                     }
                     *LinkageMessage = FText::GetEmpty();
+                    if (MtoUGetLinkageView().bPaired)
+                    {
+                        MtoUClearLinkageTarget(*Target);
+                        FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
+                        return FReply::Handled();
+                    }
                     FMtoULinkageEditor::SetObservedLinkageActor(Target);
                     FString PairError;
-                    if (!MtoUPairLinkageTarget(*Target, PairingInput->IsEmpty()
-                            ? FString(TEXT("character")) : *PairingInput, PairError))
+                    if (!MtoUPairLinkageTarget(*Target, TEXT("character"), PairError))
                     {
                         *LinkageMessage = FText::Format(
                             LOCTEXT("LinkagePairRefused", "无法配对：{0}"),
                             FText::FromString(PairError));
-                    }
-                    return FReply::Handled();
-                })
-            ]
-            + SHorizontalBox::Slot().AutoWidth()
-            [
-                SNew(SButton)
-                .Text(LOCTEXT("LinkageClearPair", "解除配对"))
-                .ToolTipText(LOCTEXT("LinkageClearPairTip",
-                    "解除当前配对；进行中的会话保留已协商的对象集合。"))
-                .IsEnabled_Lambda([Actor]()
-                {
-                    return Actor.IsValid() && MtoUGetLinkageView().bPaired;
-                })
-                .OnClicked_Lambda([Actor, LinkageMessage]()
-                {
-                    if (AMtoULiveLinkActor* Target = Actor.Get())
-                    {
-                        *LinkageMessage = FText::GetEmpty();
-                        MtoUClearLinkageTarget(*Target);
-                        FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
                     }
                     return FReply::Handled();
                 })
@@ -1428,49 +1536,35 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             ]
         );
 
-    AddLinkageRow(LOCTEXT("LinkageControlRow", "控制方 模式"),
+    AddLinkageRow(LOCTEXT("LinkageStatusRow", "联动状态"),
         SNew(STextBlock)
             .AutoWrapText(true)
-            .Text_Lambda([]()
+            .Text_Lambda([]() { return LinkageStatusText(MtoUGetLinkageView()); })
+        );
+
+    AddLinkageRow(LOCTEXT("LinkageLagRow", "滞后"),
+        SNew(STextBlock)
+            .AutoWrapText(true)
+            .ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f)))
+            .Text_Lambda([]() { return LinkageLagText(MtoUGetLinkageView()); })
+            .Visibility_Lambda([]()
             {
-                const FMtoULinkageView View = MtoUGetLinkageView();
-                return FText::Format(LOCTEXT("LinkageControlMode", "控制方：{0} · 模式：{1}"),
-                    LinkageControlText(View.Control), LinkageModeText(View.Mode));
+                return LinkageLagText(MtoUGetLinkageView()).IsEmpty()
+                    ? EVisibility::Collapsed : EVisibility::Visible;
             })
-        );
-
-    AddLinkageRow(LOCTEXT("LinkageTargetTimeRow", "目标时间"),
-        SNew(STextBlock)
-            .AutoWrapText(true)
-            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-            .Text_Lambda([]() { return CompactLinkageText(LinkageTargetTimeText(MtoUGetLinkageView())); })
-            .ToolTipText_Lambda([]() { return LinkageTargetTimeText(MtoUGetLinkageView()); })
-        );
-
-    AddLinkageRow(LOCTEXT("LinkageAppliedRow", "完整应用时间 滞后"),
-        SNew(SVerticalBox)
-            + SVerticalBox::Slot().AutoHeight()
-            [
-                SNew(STextBlock)
-                .AutoWrapText(true)
-                .Text_Lambda([]() { return CompactLinkageText(LinkageAppliedText(MtoUGetLinkageView())); })
-                .ToolTipText_Lambda([]() { return LinkageAppliedText(MtoUGetLinkageView()); })
-            ]
-            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
-            [
-                SNew(STextBlock)
-                .AutoWrapText(true)
-                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-                .Text_Lambda([]() { return LinkageLagText(MtoUGetLinkageView()); })
-            ]
         );
 
     AddLinkageRow(LOCTEXT("LinkageRecoveryRow", "恢复结果"),
         SNew(STextBlock)
             .AutoWrapText(true)
-            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-            .Text_Lambda([]() { return CompactLinkageText(LinkageRestoreText(MtoUGetLinkageView())); })
-            .ToolTipText_Lambda([]() { return LinkageRestoreText(MtoUGetLinkageView()); })
+            .ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.75f, 0.25f)))
+            .Text_Lambda([]() { return LinkageRestoreText(MtoUGetLinkageView()); })
+            .ToolTipText_Lambda([]() { return FText::FromString(MtoUGetLinkageView().RecoveryResidual); })
+            .Visibility_Lambda([]()
+            {
+                return LinkageRestoreText(MtoUGetLinkageView()).IsEmpty()
+                    ? EVisibility::Collapsed : EVisibility::Visible;
+            })
         );
 
     AddLinkageRow(LOCTEXT("LinkageDiagnosticsRow", "错误"),
@@ -1744,8 +1838,27 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                     FText::FromString(FString::Join(Slots, TEXT(", "))));
             })
         ];
-    Advanced.AddCustomRow(LOCTEXT("DiagnosticsFilter", "错误详情 原始诊断"))
-        .WholeRowContent()
+    // The full report: the preview and connection diagnostics plus the linkage
+    // read-back and the handoff identity the groups above leave out.
+    auto FullDiagnostics = [Status, ReferenceResult]()
+    {
+        const FText Parts[] = {
+            Status->Get().RawDiagnostics,
+            LinkageDiagnosticsText(MtoUGetLinkageView()),
+            SceneReferenceDiagnosticsText(*ReferenceResult)};
+        TArray<FString> Sections;
+        for (const FText& Section : Parts)
+        {
+            if (!Section.IsEmpty())
+            {
+                Sections.Add(Section.ToString());
+            }
+        }
+        return FText::FromString(FString::Join(Sections, TEXT("\n\n")));
+    };
+    FDetailWidgetRow& DiagnosticsRow = Advanced.AddCustomRow(
+        LOCTEXT("DiagnosticsFilter", "错误详情 原始诊断 镜头联动 场景参考"));
+    DiagnosticsRow.WholeRowContent()
         [
             SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight()
@@ -1796,16 +1909,16 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
             [
                 SNew(SBox)
                 .MaxDesiredHeight(180.0f)
-                .Visibility_Lambda([Status]()
+                .Visibility_Lambda([FullDiagnostics]()
                 {
-                    return Status->Get().RawDiagnostics.IsEmpty()
+                    return FullDiagnostics().IsEmpty()
                         ? EVisibility::Collapsed : EVisibility::Visible;
                 })
                 [
                     SNew(SMultiLineEditableTextBox)
                     .IsReadOnly(true)
                     .AutoWrapText(true)
-                    .Text_Lambda([Status]() { return Status->Get().RawDiagnostics; })
+                    .Text_Lambda([FullDiagnostics]() { return FullDiagnostics(); })
                 ]
             ]
             + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
@@ -1813,18 +1926,21 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                 SNew(SButton)
                 .HAlign(HAlign_Center)
                 .Text(LOCTEXT("CopyDiagnostics", "复制完整诊断"))
-                .Visibility_Lambda([Status]()
+                .Visibility_Lambda([FullDiagnostics]()
                 {
-                    return Status->Get().RawDiagnostics.IsEmpty()
+                    return FullDiagnostics().IsEmpty()
                         ? EVisibility::Collapsed : EVisibility::Visible;
                 })
-                .OnClicked_Lambda([Status]()
+                .OnClicked_Lambda([FullDiagnostics]()
                 {
-                    FPlatformApplicationMisc::ClipboardCopy(*Status->Get().RawDiagnostics.ToString());
+                    FPlatformApplicationMisc::ClipboardCopy(*FullDiagnostics().ToString());
                     return FReply::Handled();
                 })
             ]
         ];
+    // The linkage read-back changes without touching the actor, so this row is
+    // invalidated with the linkage rows.
+    FMtoULinkageEditor::RegisterLinkagePanelWidget(DiagnosticsRow.WholeRowWidget.Widget);
 }
 FMtoULiveLinkActorDetails::FStatusView FMtoULiveLinkActorDetails::MakeStatusView(
     TWeakObjectPtr<AMtoULiveLinkActor> Actor)

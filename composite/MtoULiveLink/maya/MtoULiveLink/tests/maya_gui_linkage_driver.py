@@ -271,7 +271,7 @@ def snapshot():
 
 
 def grab_windows(name):
-    """Save the main panel and the 镜头联动 window as PNG images."""
+    """Save the main panel and the 诊断详情 window as PNG images."""
     from maya import OpenMayaUI as omui
     try:
         from PySide2.QtWidgets import QWidget
@@ -280,7 +280,7 @@ def grab_windows(name):
         from PySide6.QtWidgets import QWidget
         from shiboken6 import wrapInstance
     saved = []
-    for window in ("MtoULiveLinkWindow", "MtoULiveLinkLinkWindow"):
+    for window in ("MtoULiveLinkWindow", "MtoULiveLinkDiagnosticWindow"):
         pointer = omui.MQtUtil.findWindow(window)
         if not pointer:
             continue
@@ -312,7 +312,7 @@ def run_command(command):
     elif action == "snapshot":
         RESULT["snapshot"] = snapshot()
     elif action == "panel_shot":
-        CONTROLLER.open_link_window()
+        CONTROLLER.show_diagnostics()
         grab_windows(command.get("name", "panel"))
     elif action == "time":
         cmds.currentTime(float(command["frame"]), update=True)

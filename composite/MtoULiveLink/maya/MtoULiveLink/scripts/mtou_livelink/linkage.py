@@ -11,6 +11,7 @@ cancels the work in flight, because Unreal shows that complete result and marks
 it as lagging instead of losing the only sample that was going to arrive.
 """
 
+import re
 import threading
 import time
 
@@ -34,6 +35,24 @@ from .protocol import (
     make_mode_message,
     validate_reply,
 )
+
+# Unreal refuses a pose group a mode change overtook with MODE_CONFLICT and
+# names the group's revision in ``details`` (MtoULinkageSession's staged-group
+# gate). The code alone also covers real conflicts, so only these two forms are
+# scheduling: a group that arrived during the transition, and a group of an
+# older revision. A paired upgrade guarantees both hosts share these strings,
+# as ``note_refused`` already relies on for EVAL_STALE.
+_GROUP_DURING_TRANSITION = re.compile(r"^target mode revision -?\d+$")
+_GROUP_REVISION = re.compile(r"^group mode revision (-?\d+), current (-?\d+)$")
+
+
+def is_scheduling_conflict(details):
+    """True when a MODE_CONFLICT answers a group that a mode change overtook."""
+    text = str(details or "").strip()
+    if _GROUP_DURING_TRANSITION.match(text):
+        return True
+    match = _GROUP_REVISION.match(text)
+    return bool(match) and int(match.group(1)) < int(match.group(2))
 
 
 class LinkageError(RuntimeError):

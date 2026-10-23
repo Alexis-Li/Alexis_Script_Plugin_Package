@@ -16,7 +16,7 @@ directory's ``scripts`` folder, never from this repository:
 2. ``upgrade``: Maya restarts after the whole current ``scripts`` directory
    replaces it. The saved shelf button opens the new release from the app
    directory; ``run()`` and ``main()`` reuse one panel, closing and reopening
-   the panel and both detail windows leaves one window each.
+   the panel and the scene-reference window leaves one window each.
 3. ``missing_module`` and ``missing_package``: one module, then the whole
    package, is removed; the shelf button must report what is missing.
 4. ``rollback``: the previous single file is restored and the package
@@ -36,7 +36,7 @@ from pathlib import Path
 
 SHELF = "MtoU"
 SHELF_COMMAND = "import MtoULiveLink\nMtoULiveLink.run()"
-WINDOWS = ("MtoULiveLinkWindow", "MtoULiveLinkLinkWindow", "MtoULiveLinkReferenceWindow")
+WINDOWS = ("MtoULiveLinkWindow", "MtoULiveLinkReferenceWindow")
 STEPS = ("install_old", "upgrade", "missing_module", "missing_package", "rollback")
 
 
@@ -130,9 +130,7 @@ def _in_maya():
                 controller = first.run()
                 result["run_again_same_controller"] = controller is first.run()
                 result["main_same_controller"] = first.main() is controller
-                controller.open_link_window()
                 controller.open_reference_window()
-                controller.open_link_window()
                 controller.open_reference_window()
                 result["detail_windows_open"] = windows()
                 grab("detail-windows")
@@ -143,7 +141,6 @@ def _in_maya():
                 press(button)
                 reopened = sys.modules["MtoULiveLink"].run()
                 result["reopened_new_controller"] = reopened is not controller
-                reopened.open_link_window()
                 reopened.open_reference_window()
                 result["reopened"] = windows()
                 result["window_count"] = {

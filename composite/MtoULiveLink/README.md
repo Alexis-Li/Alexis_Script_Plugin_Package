@@ -115,18 +115,23 @@ on the Binding. All enabled parts pose and display under one connection:
    its Binding Actor. Its Details panel opens **MtoU · 运行状态** (separate Preview
    and connection states plus the next step), **角色组成** (Primary and expandable
    Additional Parts), and **预览控制** (Binding and generated mesh asset fields,
-   Refresh, Delete, and cache playback). Expand **高级设置与诊断** for the full selectable and
-   copyable raw error; an empty diagnostic does not occupy the daily view.
+   Refresh, Delete, and cache playback). Expand **高级设置与诊断** for the full
+   selectable report; **复制完整诊断** copies it, including the linkage and
+   scene-reference details, for a problem report. An empty diagnostic does not
+   occupy the daily view.
    The connection reads 未连接 before the first session, 已连接 while streaming,
    and 连接已中断 after a session ends; reconnect in Maya after an interruption.
 3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
    **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
    (模型) at the top. Below are Connection Controls (set character, connect,
    disconnect, and connection status), Scene Info (root, outfit, and frame rate
-   on the left; bone/BlendShape counts and cache on the right), Preview &
-   Playback (preview mode, transmission cap, and cache actions in Cached Playback),
-   Tools (Display and duplicate-bone selection), and Diagnostics (status and
-   诊断详情). The warning switch sits below Diagnostics.
+   on the left; bone/BlendShape counts and cache on the right; a long name is
+   shortened, hover it for the full name), Preview & Playback (preview mode,
+   transmission cap, and cache actions in Cached Playback), Camera Linkage (one
+   status line, the linkage buttons, and the scene-reference window), Tools
+   (Display and duplicate-bone selection), and Diagnostics (status and
+   诊断详情, whose **复制完整诊断** copies the whole report). The warning switch
+   sits below Diagnostics.
 4. Select **Animation** (动画) and click **Connect** (连接); the indicator turns
    green. Pose, scrub, or play in Maya to preview the result in Unreal. **Cap**
    (上限) on the preview row limits the real-time transmission rate. A disabled
@@ -174,15 +179,19 @@ Use this workflow to check Maya animation under the Unreal sequence camera and
 its timeline. It is optional: realtime preview, Cached Playback and garment
 comparison work without it.
 
-1. In Unreal, select the Binding Actor, pair the Maya object under **镜头联动**,
-   and open the Level Sequence you want to follow.
-2. In Maya, connect the character as usual, open **镜头联动** from the main panel,
-   and click **进入联动** (or click **进入联动** in the Unreal Details panel; Maya
-   follows either one). Maya stops its own playback, follows the sequence time
-   and the evaluated camera, and answers with the complete pose of the character.
-3. Unreal shows the time control owner, the target time, the latest complete
-   application time and the lag. A complete pose that is behind the current
-   sequence time is shown as lagging; it is not reported as synchronised.
+1. In Unreal, select the Binding Actor, click **配对** under **镜头联动** (the row
+   then reads 已配对 Maya 角色), and open the Level Sequence you want to follow.
+2. In Maya, connect the character as usual and click **进入联动** on the main
+   panel's **镜头联动** card (or click **进入联动** in the Unreal Details panel;
+   Maya follows either one). Maya stops its own playback, follows the sequence
+   time and the evaluated camera, and answers with the complete pose of the
+   character.
+3. Both hosts show one status line, for example
+   镜头联动中 · Unreal 控制时间 · 同步正常. When Maya cannot keep up, the line
+   says Maya 跟不上 with the lag; pause the Sequencer to let Maya catch up, or
+   close programs that load the machine. A lagging pose is never reported as
+   synchronised. The evaluation, sample and revision read-back stays in Maya's
+   诊断详情 and Unreal's **高级设置与诊断**, ready for **复制完整诊断**.
 4. **返回实时** restores Maya's timeline, view and gate and keeps Maya paused
    while Unreal keeps its takeover; user playback resumes in Maya. **结束预览**
    also returns the original writers to the sequence and stays available after
@@ -192,11 +201,15 @@ While linkage is active, a camera edit, a pause, a cut or an explicit jump
 cancels the old target; a continuously moving camera never cancels the answer
 already on its way. Unreal refuses a target whose writers cannot be isolated
 safely, and names the reason, instead of pausing the whole sequence. Cached
-Playback must be cleared before entering linkage, and a failed restore is
-reported per resource instead of being hidden. Closing or switching the Level
-Sequence, closing its level or deleting the paired actor ends linkage: Unreal
-returns the writers and Maya restores itself. Opening or creating another Maya
-scene ends the connection after linkage restored the scene it was started in.
+Playback must be cleared before entering linkage. A failed restore appears on
+both hosts only when it happens (恢复失败 in Maya, 恢复未完成 in Unreal):
+open Maya's 诊断详情 or Unreal's **高级设置与诊断** for the resources that were
+not restored, restore them by hand (for example unlock the camera or reset the
+time range in Maya, or check the track in the Sequencer), or reopen the level.
+Closing or switching the Level Sequence, closing its level or deleting the
+paired actor ends linkage: Unreal returns the writers and Maya restores itself.
+Opening or creating another Maya scene ends the connection after linkage
+restored the scene it was started in.
 If the Maya camera linkage drives is deleted or its camera shape replaced while
 linkage runs, Maya refuses the next target and writes no other camera; end the
 preview and start linkage again to use the current camera.
@@ -208,13 +221,17 @@ shows the same surroundings. The reference is a display aid: no preview
 workflow requires it, and the handoff never delivers image data.
 
 1. In Unreal, choose the level and the sublevels to include under **场景参考**
-   and run the export. Unreal reports the scope it resolved, including requested
-   sublevels the loaded world does not hold. Pair the target first (see camera
-   linkage) so the reference lines up with it.
-2. In Maya, open **场景参考** and click **导入/更新参考**. Maya validates the
-   transfer identity, the content digest, the space revision and the size
-   budgets before it touches the scene, imports into its own container, and
-   reports what it accepted, discarded or rolled back.
+   and run the export. Unreal reports the result, for example 已导出 152 个对象，
+   可在 Maya 导入, and says when a requested sublevel was not loaded. Pair the
+   target first (see camera linkage) so the reference lines up with it.
+2. In Maya, click **打开场景参考窗口** on the main panel's **镜头联动** card. The
+   window shows the source level and sublevels, the size (for example 152 个对象，
+   约 120 万三角面) and whether the handoff is 可导入, 已导入 (with the time) or
+   已过期 and needs a new export from Unreal. Click **导入/更新参考**: Maya
+   validates the handoff and its size budgets before it touches the scene,
+   imports into its own container, and states the result in one sentence.
+   Discarded nodes, rollback and leftovers are listed only when an import fails.
+   The handoff identity, digest, space revision and budgets are in 诊断详情.
 3. **移除参考** deletes only that container; **恢复上次更新** finishes or
    discards an interrupted update.
 
@@ -239,7 +256,7 @@ Maya origin until you do.
    to compare the same pose under the same actor transform, camera, and light.
    The body and enabled Additional Parts remain visible. This control requires
    a ready Generated Preview; if disabled, read the Preview status or hover the
-   button for the next step. A displayed Driver after a failed or invalidated
+   button for the next step. 当前显示：原始角色 after a failed or invalidated
    Preview is for inspection and is not a Model comparison result.
 
 ## Common problems

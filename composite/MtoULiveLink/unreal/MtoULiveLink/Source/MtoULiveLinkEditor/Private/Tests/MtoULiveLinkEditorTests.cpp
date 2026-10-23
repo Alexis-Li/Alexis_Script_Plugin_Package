@@ -74,6 +74,7 @@
 #include "Input/Reply.h"
 #include "Misc/ScopeExit.h"
 #include "MtoULiveLinkActorDetails.h"
+#include "MtoUSceneRefExport.h"
 
 #include <limits>
 
@@ -643,6 +644,165 @@ bool FMtoUDetailsLinkageCompactTextTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsLinkageStatusTextTest,
+    "MtoULiveLink.Editor.DetailsLinkageStatusText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsLinkageStatusTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString EvalId = TEXT("Main@1392000+000//Game/Level/Cam.CameraComponent#field_0=0.000000;~e3");
+    auto Status = [](const FMtoULinkageView& View)
+    {
+        return FMtoULiveLinkActorDetails::FormatLinkageStatus(View).ToString();
+    };
+
+    // Not in linkage: one line, nothing to report.
+    FMtoULinkageView Idle;
+    TestEqual(TEXT("realtime reads as not linked"), Status(Idle), FString(TEXT("未进入联动")));
+    TestTrue(TEXT("no lag row while not linked"), FMtoULiveLinkActorDetails::FormatLinkageLag(Idle).IsEmpty());
+    TestTrue(TEXT("no restore row without a residual"),
+        FMtoULiveLinkActorDetails::FormatLinkageRecovery(Idle).IsEmpty());
+    TestTrue(TEXT("an untouched linkage adds no diagnostics"),
+        FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Idle).IsEmpty());
+
+    FMtoULinkageView Cached;
+    Cached.Mode = TEXT("cached");
+    Cached.Control = TEXT("cache");
+    TestEqual(TEXT("cached playback names itself"), Status(Cached), FString(TEXT("未进入联动 · 缓存播放中")));
+
+    FMtoULinkageView Held;
+    Held.bTakeoverHeld = true;
+    TestTrue(TEXT("a held takeover says how to hand it back"), Status(Held).Contains(TEXT("结束预览")));
+
+    // In linkage and keeping up: control and mode in one line, no read-back.
+    FMtoULinkageView Synced;
+    Synced.Mode = TEXT("linkage");
+    Synced.Control = TEXT("unreal");
+    Synced.bPaired = true;
+    Synced.PairedObjectId = TEXT("character");
+    Synced.Identity.ModeRevision = 7;
+    Synced.TargetEvalId = EvalId;
+    Synced.TargetDisplayFrame = 1740.0;
+    Synced.AppliedEvalId = EvalId;
+    Synced.AppliedDisplayFrame = 1739.0;
+    Synced.AppliedSampleSerial = 412;
+    Synced.AppliedLagSeconds = 0.13;
+    TestEqual(TEXT("linkage that keeps up"), Status(Synced),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · 同步正常")));
+    TestTrue(TEXT("a small lag is not reported"), FMtoULiveLinkActorDetails::FormatLinkageLag(Synced).IsEmpty());
+    for (const TCHAR* Internal : {TEXT("Main@"), TEXT("revision"), TEXT("样本"), TEXT("eval")})
+    {
+        TestFalse(*FString::Printf(TEXT("the status line hides '%s'"), Internal), Status(Synced).Contains(Internal));
+    }
+
+    FMtoULinkageView Syncing = Synced;
+    Syncing.AppliedEvalId.Reset();
+    TestEqual(TEXT("before the first complete application"), Status(Syncing),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · 正在同步")));
+
+    FMtoULinkageView Transitioning = Synced;
+    Transitioning.bTransitioning = true;
+    TestTrue(TEXT("a transition says to wait"), Status(Transitioning).Contains(TEXT("请稍候")));
+
+    // Lagging: the status says so and the lag row gives the number and what to do.
+    FMtoULinkageView Lagging = Synced;
+    Lagging.AppliedLagSeconds = 0.8;
+    TestEqual(TEXT("a lagging linkage"), Status(Lagging),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · Maya 跟不上")));
+    const FString Lag = FMtoULiveLinkActorDetails::FormatLinkageLag(Lagging).ToString();
+    TestTrue(TEXT("the lag row names the lag"), Lag.StartsWith(TEXT("Maya 跟不上，滞后 0.8 秒")));
+    TestTrue(TEXT("the lag row says what to do"), Lag.Contains(TEXT("暂停 Sequencer")));
+
+    // An overdue target is reported from the view's own field, whatever the
+    // runtime detail currently says.
+    FMtoULinkageView Overdue = Synced;
+    Overdue.AppliedLagSeconds = 0.1;
+    Overdue.TargetOverdueSeconds = 2.4;
+    Overdue.Detail = TEXT("Offered reference handoff tx-1.");
+    TestEqual(TEXT("an overdue target makes the status lag"), Status(Overdue),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · Maya 跟不上")));
+    TestTrue(TEXT("an overdue target reports its wait"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(Overdue).ToString().StartsWith(TEXT("Maya 跟不上，滞后 2.4 秒")));
+    FMtoULinkageView WordedOverdue = Synced;
+    WordedOverdue.Detail = TEXT("Not converged: target x waiting 2.40 s.");
+    TestTrue(TEXT("the detail wording alone does not decide the lag row"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(WordedOverdue).IsEmpty());
+
+    // A failed restore is shown with what to do; the residual stays in the tooltip and diagnostics.
+    FMtoULinkageView Residual = Held;
+    Residual.RecoveryResidual = TEXT("BP_SequencePlayer transform track: still muted");
+    const FString Recovery = FMtoULiveLinkActorDetails::FormatLinkageRecovery(Residual).ToString();
+    TestTrue(TEXT("the restore row names the failure"), Recovery.StartsWith(TEXT("恢复未完成")));
+    TestTrue(TEXT("the restore row says where to look"), Recovery.Contains(TEXT("高级设置与诊断")));
+
+    // Everything the group leaves out is in the diagnostics.
+    const FString Diagnostics = FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Synced).ToString();
+    for (const FString& Expected : {FString(TEXT("mode_revision 7")), EvalId, FString(TEXT("样本 412")),
+             FString(TEXT("帧 1740")), FString(TEXT("character"))})
+    {
+        TestTrue(*FString::Printf(TEXT("diagnostics keep '%s'"), *Expected.Left(40)), Diagnostics.Contains(Expected));
+    }
+    TestTrue(TEXT("diagnostics keep the restore residual"),
+        FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Residual).ToString().Contains(Residual.RecoveryResidual));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSceneReferenceTextTest,
+    "MtoULiveLink.Editor.DetailsSceneReferenceText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsSceneReferenceTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUSceneRefExportResult Result;
+    TestEqual(TEXT("nothing exported yet"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString(),
+        FString(TEXT("场景参考：尚未导出。")));
+    TestTrue(TEXT("no diagnostics before an export"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceDiagnostics(Result).IsEmpty());
+
+    Result.bSucceeded = true;
+    Result.Directory = TEXT("Saved/MtoU/Handoff/tx-1");
+    Result.TransferId = TEXT("tx-20261022-0153-8f2c");
+    Result.ManifestDigest = TEXT("sha256:abcd");
+    Result.ExportedObjectCount = 152;
+    Result.TriangleCount = 1203344;
+    Result.GeometryBytes = 48000000;
+    Result.ManifestBytes = 213004;
+    const FString Line = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestEqual(TEXT("an export in the user's terms"), Line, FString(TEXT("已导出 152 个对象，可在 Maya 导入。")));
+    for (const TCHAR* Internal : {TEXT("tx-"), TEXT("字节"), TEXT("三角形"), TEXT("交付"), TEXT("sha256")})
+    {
+        TestFalse(*FString::Printf(TEXT("the result line hides '%s'"), Internal), Line.Contains(Internal));
+    }
+    const FString Diagnostics = FMtoULiveLinkActorDetails::FormatSceneReferenceDiagnostics(Result).ToString();
+    for (const TCHAR* Expected : {TEXT("tx-20261022-0153-8f2c"), TEXT("sha256:abcd"), TEXT("三角形 1203344"),
+             TEXT("字节 48213004")})
+    {
+        TestTrue(*FString::Printf(TEXT("diagnostics keep '%s'"), Expected), Diagnostics.Contains(Expected));
+    }
+
+    // A partial scope names its own reason.
+    Result.bScopeComplete = false;
+    Result.UnloadedSublevels = {TEXT("Level_D003CP6_Act01_FX")};
+    TestTrue(TEXT("an unloaded requested sublevel is named"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString().Contains(TEXT("1 个子关卡未加载")));
+    Result.UnloadedSublevels.Reset();
+    Result.ExcludedSublevels = {TEXT("Level_D003CP6_Act01_Light"), TEXT("Level_D003CP6_Act01_Prop")};
+    const FString Excluded = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("selected sublevels the world does not stream are named"),
+        Excluded.Contains(TEXT("勾选的 2 个子关卡不在当前世界中")));
+    TestTrue(TEXT("the remedy names the level streaming"), Excluded.Contains(TEXT("流式设置")));
+    TestFalse(TEXT("sublevels missing from the world are not called unloaded"), Excluded.Contains(TEXT("未加载，")));
+    Result.ExcludedSublevels.Reset();
+    const FString Partitioned = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("a World Partition scope says it holds loaded content only"),
+        Partitioned.Contains(TEXT("World Partition")));
+    TestFalse(TEXT("a World Partition scope mentions no sublevel"), Partitioned.Contains(TEXT("子关卡")));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
     "MtoULiveLink.Editor.DetailsStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -727,9 +887,9 @@ bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
 
     // The readout follows the public display selection.
     ReadoutActor->ShowDriverMesh();
-    TestTrue(TEXT("the status readout follows the Driver display selection"),
-        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Display.ToString()
-            .Contains(TEXT("Driver")));
+    TestEqual(TEXT("the status readout follows the Driver display selection in the user's terms"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Display.ToString(),
+        FString(TEXT("当前显示：原始角色")));
 
     // The panel shares one presenter: it starts from the actor's current state
     // and still matches the actor after that state moves.
