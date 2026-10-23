@@ -38,6 +38,11 @@ The PR owns the implementation diff, review findings and check results.
    that review. Recheck the head and target branch, assess changes since review
    and run affected checks. Use `gh pr merge --match-head-commit <reviewed-head>`.
    GitHub's **Automatically delete head branches** setting stays enabled.
+   It removes only the remote branch: after the merge, run
+   `git fetch --prune origin`, then remove the head branch's local worktree
+   and delete the local head branch when the worktree is clean and the branch
+   is contained in the target branch. Leave a dirty or unmerged checkout in
+   place and report it; do not remove another active session's worktree.
    Record the resulting `main` or integration-branch SHA in the issue's progress
    comment, together with the PR, covered ACs and pending acceptance. Do not
    add a separate post-merge SHA comment to the PR.

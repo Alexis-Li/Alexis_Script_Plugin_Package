@@ -177,7 +177,8 @@ exceptions, contracts, and useful commands.
   other work goes through a PR.
 - Every merge requires a published review of the latest PR head SHA; merge
   authorization does not replace review. Record the integration SHA on the
-  issue. GitHub automatically deletes merged head branches.
+  issue. GitHub automatically deletes merged remote head branches; prune and
+  remove the merged local branch and its worktree as the tracker specifies.
 - Progress, review and acceptance use ordinary comments. Edit errors or
   outdated content in one's own comment in place; new comments carry new facts
   and end with a one- to three-line `**当前状态**：…` footer giving the whole
