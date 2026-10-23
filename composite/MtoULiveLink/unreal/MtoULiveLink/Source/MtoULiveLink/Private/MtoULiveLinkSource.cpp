@@ -743,7 +743,20 @@ uint32 FMtoULiveLinkSource::Run()
         // Undelivered linkage intake belongs to the dead session; the game
         // thread drains whatever it already took before its own cleanup.
         PendingHellos.Empty();
-        PendingLinkageControls.Empty();
+        {
+            // Every leave is uncounted by whoever takes it off the queue:
+            // here for the dropped ones, on the game thread for those it took,
+            // so no exit of a dead session keeps dropping a later session's
+            // frames.
+            FMtoUPendingLinkageControl Dropped;
+            while (PendingLinkageControls.Dequeue(Dropped))
+            {
+                if (Dropped.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
+                {
+                    WorkerLinkageLeavesPending -= 1;
+                }
+            }
+        }
         PendingPoseGroups.Empty();
         QueuedLinkageControls.Store(0);
         if (ActiveSession != 0)

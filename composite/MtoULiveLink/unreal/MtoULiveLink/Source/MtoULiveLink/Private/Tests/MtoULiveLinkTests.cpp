@@ -13462,9 +13462,45 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
 
     const USkeletalMesh* Mesh = Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
     const FReferenceSkeleton* Skeleton = Mesh ? &Mesh->GetRefSkeleton() : nullptr;
-    FSocket* Client = Skeleton ? ConnectLoopback(*SocketSubsystem, Port) : nullptr;
-    TestNotNull(TEXT("Maya client connects"), Client);
-    if (!Client)
+    FSocket* Client = nullptr;
+    FMtoULinkageReplyReader Reader;
+    TArray<uint8> Payload;
+    int32 SessionId = 0;
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
+    // The game thread is not pumped while the worker reads a burst: this is
+    // the editor tick that has not processed Maya's exit yet.
+    const auto Hold = []() {};
+    // Greets and negotiates one connection; the same source numbers each
+    // accepted connection as a new session.
+    const auto Connect = [&](int32 ExpectedSession)
+    {
+        Reader = FMtoULinkageReplyReader();
+        Client = Skeleton ? ConnectLoopback(*SocketSubsystem, Port) : nullptr;
+        TestNotNull(TEXT("Maya client connects"), Client);
+        if (!Client)
+        {
+            return false;
+        }
+        const TArray<uint8> Hello = LinkageHelloPacket();
+        TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
+        TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
+        TSharedPtr<FJsonObject> Ack;
+        if (JsonObjectFromBytes(Payload, Ack))
+        {
+            TestEqual(TEXT("the connection is a new session"),
+                static_cast<int32>(Ack->GetNumberField(TEXT("session_id"))), ExpectedSession);
+        }
+        const TArray<uint8> Init = Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\","
+                 "\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\","
+                 "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+            *ReferenceSkeletonBonesJson(*Skeleton)));
+        TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
+        TestTrue(TEXT("negotiation reaches ready"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
+        SessionId = ExpectedSession;
+        return true;
+    };
+    if (!Connect(1))
     {
         Source->StopListener();
         LiveLinkClient.RemoveSource(Source);
@@ -13472,23 +13508,6 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
         GEngine->DestroyWorldContext(World);
         return false;
     }
-    FMtoULinkageReplyReader Reader;
-    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
-    // The game thread is not pumped while the worker reads a burst: this is
-    // the editor tick that has not processed Maya's exit yet.
-    const auto Hold = []() {};
-
-    const TArray<uint8> Hello = LinkageHelloPacket();
-    TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
-    TArray<uint8> Payload;
-    TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
-    const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\","
-             "\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\","
-             "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
-        *ReferenceSkeletonBonesJson(*Skeleton)));
-    TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
-    TestTrue(TEXT("negotiation reaches ready"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
 
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     FMtoULinkageTestHooks Hooks;
@@ -13506,9 +13525,9 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
         FString EnterError;
         TestTrue(TEXT("linkage entry is accepted"), MtoURequestLinkageEnter(Revision, EnterError));
         const TArray<uint8> Ready = Packet(FString::Printf(
-            TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":%d,\"mode\":\"linkage\","
+            TEXT("{\"type\":\"mode\",\"session_id\":%d,\"mode_revision\":%d,\"mode\":\"linkage\","
                  "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"),
-            Revision));
+            SessionId, Revision));
         TestTrue(TEXT("Maya confirms the transition"), SendBytes(*Client, Ready.GetData(), Ready.Num()));
         PollUntil([&]()
         {
@@ -13537,14 +13556,18 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
         }
         return FString();
     };
+    const auto LeavePacket = [&](int32 Revision)
+    {
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"leave_linkage\",\"session_id\":%d,\"mode_revision\":%d,"
+                 "\"target\":\"realtime\",\"detail\":\"\"}"),
+            SessionId, Revision));
+    };
     FString Message;
 
     // ---- Maya's exit followed at once by a live frame --------------------
     EnterLinkage(1);
-    const TArray<uint8> Leave = Packet(
-        TEXT("{\"type\":\"leave_linkage\",\"session_id\":1,\"mode_revision\":2,"
-             "\"target\":\"realtime\",\"detail\":\"\"}"));
-    TestTrue(TEXT("Maya's exit and its first live frame are sent"), SendBurst({Leave, LiveFrame}));
+    TestTrue(TEXT("Maya's exit and its first live frame are sent"), SendBurst({LeavePacket(2), LiveFrame}));
     TestEqual(TEXT("the frame behind the unapplied exit is dropped, not refused"),
         NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
     TestTrue(TEXT("the exit is confirmed"), Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
@@ -13567,10 +13590,7 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
 
     // A refused exit keeps linkage, and frames are refused again once the
     // game thread has answered it.
-    const TArray<uint8> StaleLeave = Packet(
-        TEXT("{\"type\":\"leave_linkage\",\"session_id\":1,\"mode_revision\":3,"
-             "\"target\":\"realtime\",\"detail\":\"\"}"));
-    TestTrue(TEXT("a stale exit and a live frame are sent"), SendBurst({StaleLeave, LiveFrame}));
+    TestTrue(TEXT("a stale exit and a live frame are sent"), SendBurst({LeavePacket(3), LiveFrame}));
     TestEqual(TEXT("the frame behind the unanswered exit is dropped"),
         NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
     TestEqual(TEXT("the stale exit is refused"),
@@ -13583,15 +13603,50 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
         NextErrorCode(Pump, Message), FString(TEXT("MODE_CONFLICT")));
     TestTrue(TEXT("that refusal says Unreal owns time"), Message.Contains(TEXT("owns the sequence time")));
 
+    // ---- an exit the connection loses before the game thread sees it -----
+    // The worker drops the dead session's queue; that exit must not drop the
+    // frames of the next session on the same source. A stale exit (it would
+    // have been refused) and a valid one (it would have been applied) are
+    // both lost this way.
+    const auto LoseExitThenReconnect = [&](int32 ExitRevision, const TCHAR* Kind)
+    {
+        TestTrue(FString::Printf(TEXT("the %s exit is sent"), Kind), SendBurst({LeavePacket(ExitRevision)}));
+        TestEqual(FString::Printf(TEXT("the worker staged the %s exit"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        DestroySocket(*SocketSubsystem, Client);
+        Client = nullptr;
+        TestTrue(FString::Printf(TEXT("the source listens again after the %s exit was lost"), Kind),
+            WaitForStatus(Source, TEXT("Listening on")));
+        Pump();
+        if (!Connect(SessionId + 1))
+        {
+            return;
+        }
+        EnterLinkage(1);
+        TestTrue(FString::Printf(TEXT("a live frame after the lost %s exit is sent"), Kind),
+            SendBurst({LiveFrame}));
+        TestEqual(FString::Printf(TEXT("a live frame after the lost %s exit is still refused"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("MODE_CONFLICT")));
+        TestTrue(FString::Printf(TEXT("the refusal after the lost %s exit says Unreal owns time"), Kind),
+            Message.Contains(TEXT("owns the sequence time")));
+        TestEqual(FString::Printf(TEXT("the marker follows the refusal after the lost %s exit"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    };
+    LoseExitThenReconnect(3, TEXT("stale"));
+    LoseExitThenReconnect(2, TEXT("valid"));
+
     FString EndError;
-    TestTrue(TEXT("ending the preview is accepted"), MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
+    TestTrue(TEXT("ending the preview is accepted"), MtoURequestLinkageLeave(TEXT("end"), 2, EndError));
     TestTrue(TEXT("no control message stayed undelivered"),
         Source->GetQueuedControlMessageCount() == 0);
 
     MtoUSetLinkageHooks(FMtoULinkageHooks());
     MtoUSetActiveSource(PreviousSource);
     MtoUClearLinkageTarget(*Actor);
-    DestroySocket(*SocketSubsystem, Client);
+    if (Client)
+    {
+        DestroySocket(*SocketSubsystem, Client);
+    }
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     World->DestroyWorld(false);
