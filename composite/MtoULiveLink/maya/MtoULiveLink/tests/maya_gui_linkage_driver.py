@@ -119,8 +119,11 @@ def key_test_motion():
     The keys change joint rotations only. In a rig whose joints are each
     point-constrained to their controls, such as the C01 production rig, no
     joint position moves, so the oracle's world and screen positions are the
-    same at every oracle frame and cannot show which frame a pose came from;
-    the keyed Morph weights do differ between oracle frames.
+    same at every oracle frame and cannot show which frame a pose came from.
+    The oracle joints' world rotations and the keyed Morph weights do differ
+    between oracle frames, and the oracle compares both. The keys alternate
+    every ``key_step`` frames, so no two oracle frames' Maya times may lie a
+    whole number of ``2 * key_step`` apart; the Unreal test fails if they do.
     """
     start, end = FIXTURE.get("key_range", [0, 2500])
     step = float(FIXTURE.get("key_step", 45))
@@ -256,6 +259,17 @@ def screen_point(record, world):
     return [film_x / (gate_w / 2.0), film_y / (gate_h / 2.0)]
 
 
+def world_axes(path):
+    """The joint's world X, Y and Z axes as unit vectors, flattened."""
+    matrix = cmds.xform(path, query=True, worldSpace=True, matrix=True)
+    axes = []
+    for row in range(3):
+        axis = matrix[row * 4:row * 4 + 3]
+        length = math.sqrt(sum(c * c for c in axis))
+        axes.extend(c / length for c in axis)
+    return axes
+
+
 def snapshot():
     record = camera_record()
     joints = {}
@@ -265,7 +279,8 @@ def snapshot():
             continue
         world = cmds.xform(path, query=True, worldSpace=True, translation=True)
         joints[short] = {"world": world,
-                         "screen": screen_point(record, world) if record else None}
+                         "screen": screen_point(record, world) if record else None,
+                         "axes": world_axes(path)}
     # The weights are evaluated at the current time itself, so the oracle does
     # not depend on whether Maya re-evaluated the scene after the time change.
     now = cmds.currentTime(query=True)
