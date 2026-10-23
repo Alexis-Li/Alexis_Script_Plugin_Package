@@ -115,6 +115,12 @@ def key_test_motion():
     Production rigs drive deform joints through constraint chains whose
     controls are themselves driven, so the joint's own rotate input is
     detached and keyed instead. Only this disposable, unsaved process changes.
+
+    The keys change joint rotations only. In a rig whose joints are each
+    point-constrained to their controls, such as the C01 production rig, no
+    joint position moves, so the oracle's world and screen positions are the
+    same at every oracle frame and cannot show which frame a pose came from;
+    the keyed Morph weights do differ between oracle frames.
     """
     start, end = FIXTURE.get("key_range", [0, 2500])
     step = float(FIXTURE.get("key_step", 45))
@@ -260,13 +266,16 @@ def snapshot():
         world = cmds.xform(path, query=True, worldSpace=True, translation=True)
         joints[short] = {"world": world,
                          "screen": screen_point(record, world) if record else None}
+    # The weights are evaluated at the current time itself, so the oracle does
+    # not depend on whether Maya re-evaluated the scene after the time change.
+    now = cmds.currentTime(query=True)
     morphs = {}
     for name in RESULT.get("keyed_morphs", []):
         plugs = morph_plugs(name)
         if plugs:
-            morphs[name] = cmds.getAttr(plugs[0])
+            morphs[name] = cmds.getAttr(plugs[0], time=now)
     status = CONTROLLER.linkage_status()
-    return {"time": cmds.currentTime(query=True), "camera": record, "joints": joints,
+    return {"time": now, "camera": record, "joints": joints,
             "morphs": morphs, "status": status}
 
 
