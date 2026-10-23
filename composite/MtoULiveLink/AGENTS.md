@@ -60,8 +60,12 @@ python composite/MtoULiveLink/maya/MtoULiveLink/tests/maya_prefs_template.py --m
 ```
 
 `minimal` (only `modelingToolkit`) is the comparable baseline; `maya-default`
-(the list a first Maya start saves) measures a default Maya install. Compare
-throughput only between runs with the same SHA-256.
+(the list a first Maya start saves) measures a default Maya install. A template
+holds `pluginPrefs.mel` and a `userPrefs.mel` with only Maya's one-time
+plug-in load markers; without those markers Maya loads its default set
+whatever `pluginPrefs.mel` says. Compare throughput only between runs with the
+same SHA-256; the loaded count shows how far autoloading had got at that stage
+and can still rise during playback with `maya-default`.
 
 `maya/MtoULiveLink/tests/maya_gui_install_check.py`, run with a host Python,
 checks a standalone install in real Maya GUI sessions: previous release with

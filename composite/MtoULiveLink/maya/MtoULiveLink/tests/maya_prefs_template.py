@@ -1,10 +1,14 @@
 """Maya preference templates for the Maya GUI acceptance tests.
 
 Maya's linkage throughput depends on which plug-ins its preferences load
-automatically (``prefs/pluginPrefs.mel``). Without that file Maya 2024 loads
-its default set of about 40 plug-ins on first start and then saves the list,
-so a reused ``MAYA_APP_DIR`` changes between runs. A template holds only that
-one file; the Unreal test copies it into each run's evidence directory.
+automatically (``prefs/pluginPrefs.mel``). On a first start Maya 2024 loads its
+default set of about 40 plug-ins and then saves the list, so a reused
+``MAYA_APP_DIR`` changes between runs. Maya also loads that default set on
+every start whose ``userPrefs.mel`` lacks its one-time plug-in load markers
+(``oneTimeDefaultPluginLoad<version>`` and related optionVars), whatever
+``pluginPrefs.mel`` says. A template therefore holds ``pluginPrefs.mel`` and a
+``userPrefs.mel`` with only those markers; the Unreal test copies it into each
+run's evidence directory.
 
 Build a template with a host Python (not mayapy):
 
@@ -13,7 +17,7 @@ Build a template with a host Python (not mayapy):
 
 ``minimal`` loads only ``modelingToolkit`` automatically; ``maya-default``
 keeps the list a first Maya start saves. Maya runs once with a disposable
-preference directory to place the file under the language folder this Maya
+preference directory to place the files under the language folder this Maya
 uses (for example ``2024/zh_CN/prefs``); nothing else from that run is kept.
 """
 
@@ -28,10 +32,12 @@ import tempfile
 from pathlib import Path
 
 PLUGIN_PREFS = "pluginPrefs.mel"
+USER_PREFS = "userPrefs.mel"
 MINIMAL_PLUGINS = ("modelingToolkit",)
 KINDS = ("minimal", "maya-default")
 _AUTOLOAD = re.compile(r'autoLoadPlugin\(\\"[^"\\]*\\", \\"[^"\\]+\\", \\"([^"\\]+)\\"')
 _HEADER = "//Maya Preference 2024 (Release 1)\n//\n//\n"
+_ONE_TIME = re.compile(r'^ -iv "(?:oneTime\w+|isFirstTimeRunningMaya)" -?\d+$', re.MULTILINE)
 _IN_MAYA = "MTOU_PREFS_TEMPLATE_IN_MAYA"
 # Maya saves only the plug-ins loaded when it quits, and autoloading continues
 # well after startup, so the in-Maya step waits for the list to stay unchanged.
@@ -73,15 +79,32 @@ def minimal_text(default_text):
     return _HEADER + "".join(line + "\n" for line in lines)
 
 
+def marker_text(user_prefs_text):
+    """A userPrefs.mel holding only Maya's one-time plug-in load markers."""
+    lines = _ONE_TIME.findall(user_prefs_text)
+    if not any("oneTimeDefaultPluginLoad" in line for line in lines):
+        raise ValueError("the saved userPrefs.mel has no one-time plug-in load markers")
+    return (_HEADER + "\noptionVar -version 3;\n\noptionVar\n"
+            + "".join(line + "\n" for line in lines) + " ;\n")
+
+
 def write_template(default_prefs, relative, kind, out):
-    """Write a template holding only ``relative`` (a pluginPrefs.mel path) under ``out``."""
+    """Write ``relative`` (the pluginPrefs.mel path) and its userPrefs.mel under ``out``.
+
+    ``default_prefs`` is the pluginPrefs.mel a first Maya start saved; the
+    userPrefs.mel beside it supplies the markers.
+    """
     if kind not in KINDS:
         raise ValueError("unknown kind " + kind)
-    text = Path(default_prefs).read_text(encoding="utf-8")
+    default_prefs = Path(default_prefs)
+    text = default_prefs.read_text(encoding="utf-8")
+    markers = marker_text((default_prefs.parent / USER_PREFS).read_text(
+        encoding="utf-8", errors="replace"))
     target = Path(out) / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text if kind == "maya-default" else minimal_text(text),
                       encoding="utf-8", newline="\n")
+    (target.parent / USER_PREFS).write_text(markers, encoding="utf-8", newline="\n")
     return target
 
 

@@ -17,6 +17,16 @@ DEFAULT = (
     'evalDeferred("autoLoadPlugin(\\"\\", \\"ufeSupport.py\\", \\"ufeSupport\\")");\n'
     'evalDeferred("autoLoadPlugin(\\"\\", \\"MASH\\", \\"MASH\\")");\n'
 )
+# A first start's userPrefs.mel: the markers sit among the user's own settings.
+SAVED_USER_PREFS = (
+    "//Maya Preference 2024 (Release 1)\n//\n//\n\noptionVar -version 3;\n\n"
+    'optionVar -cat "General"\n'
+    ' -iv "isFirstTimeRunningMaya" 0\n'
+    ' -sv "lastLocalWS" "C:/Users/someone/Documents/maya/projects/default"\n'
+    ' -iv "oneTimeDefaultPluginLoad2024" 1\n'
+    ' -iv "oneTimeAutoLoadPluginbifrostGraph" 1\n'
+    ' ;\n'
+)
 
 
 class PrefsTemplateTests(unittest.TestCase):
@@ -56,24 +66,41 @@ class PrefsTemplateTests(unittest.TestCase):
         self.assertIsNone(info["sha256"])
         self.assertIsNone(info["autoload"])
 
+    def _first_start(self, plugin_prefs=DEFAULT, user_prefs=SAVED_USER_PREFS):
+        self._write("work/2024/prefs/userPrefs.mel", user_prefs)
+        return self._write("work/2024/prefs/pluginPrefs.mel", plugin_prefs)
+
     def test_minimal_template_keeps_only_modeling_toolkit(self):
-        default = self._write("work/2024/prefs/pluginPrefs.mel", DEFAULT)
-        target = template.write_template(default, "2024/prefs/pluginPrefs.mel", "minimal",
-                                         self.root / "minimal")
+        target = template.write_template(self._first_start(), "2024/prefs/pluginPrefs.mel",
+                                         "minimal", self.root / "minimal")
         self.assertEqual(template.autoload_plugins(target.read_text(encoding="utf-8")),
                          ["modelingToolkit"])
         self.assertEqual(sorted(p.name for p in (self.root / "minimal").rglob("*") if p.is_file()),
-                         ["pluginPrefs.mel"])
+                         ["pluginPrefs.mel", "userPrefs.mel"])
+
+    def test_template_user_prefs_keep_only_the_one_time_markers(self):
+        target = template.write_template(self._first_start(), "2024/prefs/pluginPrefs.mel",
+                                         "minimal", self.root / "minimal")
+        text = (target.parent / "userPrefs.mel").read_text(encoding="utf-8")
+        self.assertIn(' -iv "oneTimeDefaultPluginLoad2024" 1\n', text)
+        self.assertIn(' -iv "oneTimeAutoLoadPluginbifrostGraph" 1\n', text)
+        self.assertIn(' -iv "isFirstTimeRunningMaya" 0\n', text)
+        self.assertNotIn("lastLocalWS", text)
+        self.assertNotIn("someone", text)
 
     def test_default_template_copies_the_saved_list(self):
-        default = self._write("work/2024/prefs/pluginPrefs.mel", DEFAULT)
-        target = template.write_template(default, "2024/prefs/pluginPrefs.mel", "maya-default",
-                                         self.root / "default")
+        target = template.write_template(self._first_start(), "2024/prefs/pluginPrefs.mel",
+                                         "maya-default", self.root / "default")
         self.assertEqual(target.read_text(encoding="utf-8"), DEFAULT)
 
+    def test_template_refuses_user_prefs_without_markers(self):
+        default = self._first_start(user_prefs=SAVED_USER_PREFS.replace("oneTimeDefault", "other"))
+        with self.assertRaises(ValueError):
+            template.write_template(default, "2024/prefs/pluginPrefs.mel", "maya-default",
+                                    self.root / "default")
+
     def test_minimal_template_refuses_a_list_without_modeling_toolkit(self):
-        default = self._write("work/2024/prefs/pluginPrefs.mel",
-                              DEFAULT.replace("modelingToolkit", "other"))
+        default = self._first_start(DEFAULT.replace("modelingToolkit", "other"))
         with self.assertRaises(ValueError):
             template.write_template(default, "2024/prefs/pluginPrefs.mel", "minimal",
                                     self.root / "minimal")
