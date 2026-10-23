@@ -122,11 +122,13 @@ def key_test_motion():
     same at every oracle frame and cannot show which frame a pose came from.
     The oracle joints' world rotations and the keyed Morph weights do differ
     between oracle frames, and the oracle compares both. The keys alternate
-    every ``key_step`` frames, so no two oracle frames' Maya times may lie a
-    whole number of ``2 * key_step`` apart; the Unreal test fails if they do.
+    every ``key_step`` frames, so the oracle frames' poses must differ: their
+    Maya times must not lie a whole number of ``2 * key_step`` apart, nor
+    symmetrically about a key. Those conditions are necessary, not sufficient;
+    the Unreal test fails when any two oracle frames' poses are too close.
     """
     start, end = FIXTURE.get("key_range", [0, 2500])
-    step = float(FIXTURE.get("key_step", 45))
+    step = float(FIXTURE.get("key_step", 42))
     degrees = float(FIXTURE.get("key_degrees", 25))
     keyed = []
     for index, short in enumerate(FIXTURE.get("keyed_joints", [])):
@@ -172,7 +174,7 @@ def key_test_morphs():
     phase so no oracle frame sees them all at one value.
     """
     start, end = FIXTURE.get("key_range", [0, 2500])
-    step = float(FIXTURE.get("key_step", 45))
+    step = float(FIXTURE.get("key_step", 42))
     low, high = FIXTURE.get("morph_range", [0.15, 0.85])
     keyed = []
     for index, name in enumerate(FIXTURE.get("keyed_morphs", [])):
@@ -259,9 +261,8 @@ def screen_point(record, world):
     return [film_x / (gate_w / 2.0), film_y / (gate_h / 2.0)]
 
 
-def world_axes(path):
-    """The joint's world X, Y and Z axes as unit vectors, flattened."""
-    matrix = cmds.xform(path, query=True, worldSpace=True, matrix=True)
+def world_axes(matrix):
+    """The world X, Y and Z axes of a row-major world matrix as unit vectors, flattened."""
     axes = []
     for row in range(3):
         axis = matrix[row * 4:row * 4 + 3]
@@ -272,18 +273,20 @@ def world_axes(path):
 
 def snapshot():
     record = camera_record()
+    # The joints and weights are evaluated at the current time itself, so the
+    # oracle does not depend on whether Maya re-evaluated the scene after the
+    # time change: xform and a plain getAttr return the last evaluated values.
+    now = cmds.currentTime(query=True)
     joints = {}
     for short in FIXTURE.get("oracle_joints", []):
         path = joint_path(short)
         if not path:
             continue
-        world = cmds.xform(path, query=True, worldSpace=True, translation=True)
+        matrix = cmds.getAttr(path + ".worldMatrix[0]", time=now)
+        world = list(matrix[12:15])
         joints[short] = {"world": world,
                          "screen": screen_point(record, world) if record else None,
-                         "axes": world_axes(path)}
-    # The weights are evaluated at the current time itself, so the oracle does
-    # not depend on whether Maya re-evaluated the scene after the time change.
-    now = cmds.currentTime(query=True)
+                         "axes": world_axes(matrix)}
     morphs = {}
     for name in RESULT.get("keyed_morphs", []):
         plugs = morph_plugs(name)
