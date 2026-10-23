@@ -398,6 +398,10 @@ void FMtoULiveLinkSource::Update()
 {
     check(IsInGameThread());
 
+    // Maya's leave_linkage messages this update takes off the intake queue;
+    // the worker drops frames behind them until the mirror below shows what
+    // they did.
+    int32 LeavesTaken = 0;
     uint64 DisconnectedSession = 0;
     while (DisconnectedSessions.Dequeue(DisconnectedSession))
     {
@@ -451,7 +455,7 @@ void FMtoULiveLinkSource::Update()
                     QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
                     if (Control.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
                     {
-                        WorkerLinkageLeavesPending -= 1;
+                        ++LeavesTaken;
                     }
                 }
                 FMtoUPendingPoseGroup Group;
@@ -502,7 +506,7 @@ void FMtoULiveLinkSource::Update()
     // Linkage intake and pump: the control messages and the staged pose groups
     // follow the greeting, and the camera/time pump asks the editor for the
     // current target on its bounded cadence.
-    const int32 LeavesDrained = DrainLinkageControlsOnGameThread();
+    LeavesTaken += DrainLinkageControlsOnGameThread();
     IntakeLinkageGroupsOnGameThread();
     // The editor is asked for the current target before published work is
     // resolved, at once while a group waits for its commit: a pause, jump,
@@ -519,10 +523,11 @@ void FMtoULiveLinkSource::Update()
     bWorkerLinkageActive.Store(LinkageSession.GetView().Mode == TEXT("linkage"));
     bWorkerLinkageAwaitingPeer.Store(LinkageSession.GetView().bTransitioning);
     // Only once the mirror shows what the leaves did may the worker refuse
-    // frames again: an applied exit accepts them, a refused one keeps linkage.
-    if (LeavesDrained > 0)
+    // frames again: an applied exit accepts them, a refused one keeps linkage,
+    // and a dead session's exit leaves realtime.
+    if (LeavesTaken > 0)
     {
-        WorkerLinkageLeavesPending -= LeavesDrained;
+        WorkerLinkageLeavesPending -= LeavesTaken;
     }
     if (LinkageSession.ConsumeSessionEndRequest())
     {
@@ -637,6 +642,11 @@ int32 FMtoULiveLinkSource::GetQueuedControlMessageCount() const
 {
     return QueuedLinkageControls.Load();
 }
+
+int32 FMtoULiveLinkSource::GetPendingLeaveCount() const
+{
+    return WorkerLinkageLeavesPending.Load();
+}
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 int32 FMtoULiveLinkSource::GetPendingCacheCommandCount() const
@@ -740,25 +750,10 @@ uint32 FMtoULiveLinkSource::Run()
         WorkerCacheUploadId = 0;
         bWorkerCacheUploadRejected = false;
         WorkerLastSeenClearId = 0;
-        // Undelivered linkage intake belongs to the dead session; the game
-        // thread drains whatever it already took before its own cleanup.
-        PendingHellos.Empty();
-        {
-            // Every leave is uncounted by whoever takes it off the queue:
-            // here for the dropped ones, on the game thread for those it took,
-            // so no exit of a dead session keeps dropping a later session's
-            // frames.
-            FMtoUPendingLinkageControl Dropped;
-            while (PendingLinkageControls.Dequeue(Dropped))
-            {
-                if (Dropped.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
-                {
-                    WorkerLinkageLeavesPending -= 1;
-                }
-            }
-        }
-        PendingPoseGroups.Empty();
-        QueuedLinkageControls.Store(0);
+        // Undelivered linkage intake belongs to the dead session, but the
+        // game thread is the only consumer of these single-consumer queues:
+        // it discards the dead session's messages and uncounts their leaves
+        // and queue slots, so each message is taken exactly once.
         if (ActiveSession != 0)
         {
             // Cancel every queued command of the dead session immediately so

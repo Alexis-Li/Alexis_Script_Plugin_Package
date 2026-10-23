@@ -199,6 +199,9 @@ public:
     // reads them; they exist so the behaviour tests need no wider
     // production-type exports.
     int32 GetQueuedControlMessageCount() const;
+    // Maya exits the worker staged that the game thread has not yet
+    // reflected in the mirror; never negative.
+    int32 GetPendingLeaveCount() const;
 #endif
 
 #if WITH_DEV_AUTOMATION_TESTS

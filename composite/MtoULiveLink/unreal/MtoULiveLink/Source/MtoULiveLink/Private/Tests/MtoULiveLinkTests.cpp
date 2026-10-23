@@ -13618,6 +13618,8 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
         TestTrue(FString::Printf(TEXT("the source listens again after the %s exit was lost"), Kind),
             WaitForStatus(Source, TEXT("Listening on")));
         Pump();
+        TestEqual(FString::Printf(TEXT("the game thread uncounted the lost %s exit"), Kind),
+            Source->GetPendingLeaveCount(), 0);
         if (!Connect(SessionId + 1))
         {
             return;
@@ -13635,8 +13637,69 @@ bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
     LoseExitThenReconnect(3, TEXT("stale"));
     LoseExitThenReconnect(2, TEXT("valid"));
 
+    // ---- a disconnect while the game thread applies an exit --------------
+    // Maya's 结束预览 restores the borrowed writers inside the drain, with the
+    // exit already taken off the queue and a second exit still behind it.
+    // The connection drops right there and the worker finishes its cleanup
+    // before the drain resumes: the game thread stays the queue's only
+    // consumer and uncounts each exit exactly once.
+    bool bDropInRestore = true;
+    bool bWorkerSawDrop = false;
+    int32 LeavesDuringRestore = INDEX_NONE;
+    FMtoULinkageHooks DropInRestore = Hooks.Hooks;
+    DropInRestore.RestoreTarget = [&](FString& OutError, FString& OutErrorCode) -> bool
+    {
+        ++Hooks.RestoreCalls;
+        OutError.Reset();
+        OutErrorCode.Reset();
+        if (bDropInRestore && Client)
+        {
+            bDropInRestore = false;
+            DestroySocket(*SocketSubsystem, Client);
+            Client = nullptr;
+            bWorkerSawDrop = WaitForStatus(Source, TEXT("Listening on"));
+            LeavesDuringRestore = Source->GetPendingLeaveCount();
+        }
+        return true;
+    };
+    MtoUSetLinkageHooks(DropInRestore);
+    const TArray<uint8> EndExit = Packet(FString::Printf(
+        TEXT("{\"type\":\"leave_linkage\",\"session_id\":%d,\"mode_revision\":2,"
+             "\"target\":\"end\",\"detail\":\"\"}"),
+        SessionId));
+    TestTrue(TEXT("Maya's end and a second exit are sent"), SendBurst({EndExit, LeavePacket(3)}));
+    TestEqual(TEXT("the worker staged both exits"),
+        NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    TestEqual(TEXT("both staged exits are counted"), Source->GetPendingLeaveCount(), 2);
+    const int32 RestoresBeforeDrop = Hooks.RestoreCalls;
+    Pump();
+    TestTrue(TEXT("the end restored the writers on the game thread"), Hooks.RestoreCalls > RestoresBeforeDrop);
+    TestTrue(TEXT("the worker noticed the drop while the game thread applied the exit"), bWorkerSawDrop);
+    TestEqual(TEXT("the worker's cleanup leaves the queued exits to the game thread"), LeavesDuringRestore, 2);
+    TestEqual(TEXT("each exit is uncounted exactly once"), Source->GetPendingLeaveCount(), 0);
+    Pump();
+    TestEqual(TEXT("the session end uncounts nothing more"), Source->GetPendingLeaveCount(), 0);
+    MtoUSetLinkageHooks(Hooks.Hooks);
+    if (Connect(SessionId + 1))
+    {
+        EnterLinkage(1);
+        TestTrue(TEXT("a live frame after the interleaved drop is sent"), SendBurst({LiveFrame}));
+        TestEqual(TEXT("a live frame after the interleaved drop is still refused"),
+            NextErrorCode(Hold, Message), FString(TEXT("MODE_CONFLICT")));
+        TestEqual(TEXT("the marker follows that refusal"),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        // The count did not go below zero: a new exit still covers its frame.
+        TestTrue(TEXT("a new exit and its frame are sent"), SendBurst({LeavePacket(2), LiveFrame}));
+        TestEqual(TEXT("the frame behind the new exit is dropped"),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        TestEqual(TEXT("the new exit is counted once"), Source->GetPendingLeaveCount(), 1);
+        TestTrue(TEXT("the new exit is confirmed"), Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+        TestEqual(TEXT("the applied exit is uncounted"), Source->GetPendingLeaveCount(), 0);
+        EnterLinkage(3);
+    }
+
     FString EndError;
-    TestTrue(TEXT("ending the preview is accepted"), MtoURequestLinkageLeave(TEXT("end"), 2, EndError));
+    TestTrue(TEXT("ending the preview is accepted"), MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
     TestTrue(TEXT("no control message stayed undelivered"),
         Source->GetQueuedControlMessageCount() == 0);
 
