@@ -449,6 +449,10 @@ void FMtoULiveLinkSource::Update()
                 while (PendingLinkageControls.Dequeue(Control))
                 {
                     QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+                    if (Control.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
+                    {
+                        WorkerLinkageLeavesPending -= 1;
+                    }
                 }
                 FMtoUPendingPoseGroup Group;
                 while (PendingPoseGroups.Dequeue(Group))
@@ -498,7 +502,7 @@ void FMtoULiveLinkSource::Update()
     // Linkage intake and pump: the control messages and the staged pose groups
     // follow the greeting, and the camera/time pump asks the editor for the
     // current target on its bounded cadence.
-    DrainLinkageControlsOnGameThread();
+    const int32 LeavesDrained = DrainLinkageControlsOnGameThread();
     IntakeLinkageGroupsOnGameThread();
     // The editor is asked for the current target before published work is
     // resolved, at once while a group waits for its commit: a pause, jump,
@@ -514,6 +518,12 @@ void FMtoULiveLinkSource::Update()
     // contradict the current time authority.
     bWorkerLinkageActive.Store(LinkageSession.GetView().Mode == TEXT("linkage"));
     bWorkerLinkageAwaitingPeer.Store(LinkageSession.GetView().bTransitioning);
+    // Only once the mirror shows what the leaves did may the worker refuse
+    // frames again: an applied exit accepts them, a refused one keeps linkage.
+    if (LeavesDrained > 0)
+    {
+        WorkerLinkageLeavesPending -= LeavesDrained;
+    }
     if (LinkageSession.ConsumeSessionEndRequest())
     {
         // A failed restore ended the session rather than hiding the residual.
@@ -1111,11 +1121,14 @@ uint32 FMtoULiveLinkSource::Run()
                     // Exactly one host owns time in each mode: while linkage
                     // is active, cache work and live frames contradict the
                     // authority statement and are refused with their code.
-                    if (bWorkerLinkageActive.Load() && bWorkerLinkageAwaitingPeer.Load()
+                    if (bWorkerLinkageActive.Load()
+                        && (bWorkerLinkageAwaitingPeer.Load() || WorkerLinkageLeavesPending.Load() > 0)
                         && MessageType == TEXT("frame"))
                     {
-                        // Maya has not seen the transition Unreal started yet;
-                        // its frames in flight are dropped, not refused.
+                        // Maya has not seen the transition Unreal started yet,
+                        // or Maya left linkage and the game thread has not
+                        // applied the exit yet; frames in flight are dropped,
+                        // not refused. Maya's sampling timer sends the next.
                         continue;
                     }
                     if (bWorkerLinkageActive.Load()
@@ -1188,6 +1201,12 @@ uint32 FMtoULiveLinkSource::Run()
                             // reference message tables).
                             SendLinkageError(LinkageErrorCode, LinkageError);
                             continue;
+                        }
+                        if (Control.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
+                        {
+                            // Counted before it is visible to the game thread,
+                            // so the drain can never undercount it.
+                            WorkerLinkageLeavesPending += 1;
                         }
                         PendingLinkageControls.Enqueue(MoveTemp(Control));
                         QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
@@ -1772,14 +1791,19 @@ void FMtoULiveLinkSource::DrainLinkageHellosOnGameThread()
     }
 }
 
-void FMtoULiveLinkSource::DrainLinkageControlsOnGameThread()
+int32 FMtoULiveLinkSource::DrainLinkageControlsOnGameThread()
 {
     check(IsInGameThread());
     const double NowSeconds = FPlatformTime::Seconds();
+    int32 LeavesDrained = 0;
     FMtoUPendingLinkageControl Control;
     while (PendingLinkageControls.Dequeue(Control))
     {
         QueuedLinkageControls.Store(FMath::Max(0, QueuedLinkageControls.Load() - 1));
+        if (Control.Kind == FMtoUPendingLinkageControl::EKind::LeaveLinkage)
+        {
+            ++LeavesDrained;
+        }
         int32 SessionId = INDEX_NONE;
         switch (Control.Kind)
         {
@@ -1827,6 +1851,7 @@ void FMtoULiveLinkSource::DrainLinkageControlsOnGameThread()
             break;
         }
     }
+    return LeavesDrained;
 }
 
 void FMtoULiveLinkSource::IntakeLinkageGroupsOnGameThread()
