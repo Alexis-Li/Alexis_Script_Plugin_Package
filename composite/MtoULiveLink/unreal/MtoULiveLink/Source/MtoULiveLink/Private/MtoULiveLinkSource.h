@@ -199,6 +199,9 @@ public:
     // reads them; they exist so the behaviour tests need no wider
     // production-type exports.
     int32 GetQueuedControlMessageCount() const;
+    // Maya exits the worker staged that the game thread has not yet
+    // reflected in the mirror; never negative.
+    int32 GetPendingLeaveCount() const;
 #endif
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -223,7 +226,8 @@ private:
     // negotiated; control messages and staged groups are applied on the game
     // thread and only then reported back to Maya.
     void DrainLinkageHellosOnGameThread();
-    void DrainLinkageControlsOnGameThread();
+    // Returns how many leave_linkage messages it took off the queue.
+    int32 DrainLinkageControlsOnGameThread();
     void IntakeLinkageGroupsOnGameThread();
     // Resolves the published group, finishes a display restore, or publishes
     // the next staged group; runs after the editor was asked for the target.
@@ -333,6 +337,10 @@ private:
     // True while an Unreal-started transition waits for Maya to confirm: the
     // live frames Maya sent before it saw the transition are still arriving.
     TAtomic<bool> bWorkerLinkageAwaitingPeer{false};
+    // Maya's leave_linkage messages the worker staged that the game thread has
+    // not yet reflected in the mirror: Maya resumes live frames right behind
+    // its exit, and those frames are dropped, not refused, until it applies.
+    TAtomic<int32> WorkerLinkageLeavesPending{0};
     FMtoUCacheCommandQueue CacheCommands;
 
     ILiveLinkClient* Client = nullptr;

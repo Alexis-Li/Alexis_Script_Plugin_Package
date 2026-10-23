@@ -62,7 +62,9 @@
   checks the revision of Unreal's statements itself, and it counts Unreal's
   `MODE_CONFLICT` refusal of a pose group that arrived during a transition or
   named an older revision as scheduling (#71, R-021), so neither shows a
-  镜头联动模式冲突 dialog and the Unreal 错误 row stays empty. Every other
+  镜头联动模式冲突 dialog and the Unreal 错误 row stays empty. A live frame
+  Maya sends right after its own 返回实时 or 结束预览 is dropped, not refused,
+  until Unreal has applied that exit (R-032). Every other
   `MODE_CONFLICT`, such as a refused 返回实时 or a group of a newer revision,
   is still reported.
 
