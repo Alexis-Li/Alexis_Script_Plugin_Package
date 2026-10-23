@@ -486,10 +486,17 @@ bool LinkageLagging(const FMtoULinkageView& View)
     {
         return false;
     }
-    // The runtime reports a target that waited past the convergence window in
-    // its detail; a slow but complete application reports its lag.
-    return View.Detail.StartsWith(TEXT("Not converged"))
+    // A target waiting past the convergence window, or a slow but complete
+    // application, both mean Maya is behind.
+    return View.TargetOverdueSeconds > 0.0
         || (!View.AppliedEvalId.IsEmpty() && View.AppliedLagSeconds >= LinkageLagNoticeSeconds);
+}
+
+/** The lag in effect: an overdue target has waited longer than the last application took. */
+double LinkageBehindSeconds(const FMtoULinkageView& View)
+{
+    return FMath::Max(View.TargetOverdueSeconds,
+        View.AppliedEvalId.IsEmpty() ? 0.0 : View.AppliedLagSeconds);
 }
 
 FText LinkageSecondsText(double Seconds)
@@ -531,11 +538,9 @@ FText LinkageLagText(const FMtoULinkageView& View)
     {
         return FText::GetEmpty();
     }
-    return View.AppliedEvalId.IsEmpty() || View.AppliedLagSeconds < LinkageLagNoticeSeconds
-        ? LOCTEXT("LinkageLagWaiting", "Maya 跟不上，正在等待完整姿势。可暂停 Sequencer 等待 Maya 追上，或关闭占用性能的程序。")
-        : FText::Format(
-            LOCTEXT("LinkageLagValue", "Maya 跟不上，滞后 {0} 秒。可暂停 Sequencer 等待 Maya 追上，或关闭占用性能的程序。"),
-            LinkageSecondsText(View.AppliedLagSeconds));
+    return FText::Format(
+        LOCTEXT("LinkageLagValue", "Maya 跟不上，滞后 {0} 秒。可暂停 Sequencer 等待 Maya 追上，或关闭占用性能的程序。"),
+        LinkageSecondsText(LinkageBehindSeconds(View)));
 }
 
 FText LinkageRestoreText(const FMtoULinkageView& View)
@@ -587,8 +592,10 @@ FText LinkageDiagnosticsText(const FMtoULinkageView& View)
     Lines.Add(FString::Printf(TEXT("最新完整应用时间：%s · 帧 %s · 样本 %d"),
         View.AppliedEvalId.IsEmpty() ? TEXT("—") : *View.AppliedEvalId,
         *FString::SanitizeFloat(View.AppliedDisplayFrame), View.AppliedSampleSerial));
-    Lines.Add(FString::Printf(TEXT("滞后：%s 秒（%s）"), *FString::SanitizeFloat(View.AppliedLagSeconds),
-        View.bConverged ? TEXT("已同步") : TEXT("未收敛")));
+    Lines.Add(FString::Printf(TEXT("滞后：%s 秒（%s）· 目标超时等待 %s 秒"),
+        *FString::SanitizeFloat(View.AppliedLagSeconds),
+        View.bConverged ? TEXT("已同步") : TEXT("未收敛"),
+        *FString::SanitizeFloat(View.TargetOverdueSeconds)));
     Lines.Add(FString::Printf(TEXT("恢复结果：%s"),
         !View.RecoveryResidual.IsEmpty() ? *View.RecoveryResidual
         : View.bWritersRestored ? TEXT("已恢复被接管的 writer") : TEXT("无待处理恢复")));
@@ -690,12 +697,27 @@ FText SceneReferenceResultText(const FMtoUSceneRefExportResult& Result)
     {
         return LOCTEXT("SceneReferenceIdle", "场景参考：尚未导出。");
     }
-    return Result.bScopeComplete
-        ? FText::Format(LOCTEXT("SceneReferenceValue", "已导出 {0} 个对象，可在 Maya 导入。"),
-            FText::AsNumber(Result.ExportedObjectCount))
-        : FText::Format(LOCTEXT("SceneReferencePartialValue",
-            "已导出 {0} 个对象，可在 Maya 导入；有子关卡未加载，未包含在内。"),
-            FText::AsNumber(Result.ExportedObjectCount));
+    const FText Objects = FText::AsNumber(Result.ExportedObjectCount);
+    if (Result.bScopeComplete)
+    {
+        return FText::Format(LOCTEXT("SceneReferenceValue", "已导出 {0} 个对象，可在 Maya 导入。"), Objects);
+    }
+    // The export names why its scope is partial; the panel says which reason
+    // applies so the user knows what to load or select.
+    if (!Result.UnloadedSublevels.IsEmpty())
+    {
+        return FText::Format(LOCTEXT("SceneReferenceUnloadedValue",
+            "已导出 {0} 个对象，可在 Maya 导入；勾选的 {1} 个子关卡未加载，未包含在内，加载后重新导出即可补上。"),
+            Objects, FText::AsNumber(Result.UnloadedSublevels.Num()));
+    }
+    if (!Result.ExcludedSublevels.IsEmpty())
+    {
+        return FText::Format(LOCTEXT("SceneReferenceExcludedValue",
+            "已导出 {0} 个对象，可在 Maya 导入；未勾选的 {1} 个已加载子关卡未包含在内。"),
+            Objects, FText::AsNumber(Result.ExcludedSublevels.Num()));
+    }
+    return FText::Format(LOCTEXT("SceneReferencePartitionedValue",
+        "已导出 {0} 个对象，可在 Maya 导入；World Partition 世界只包含当前已加载区域的内容。"), Objects);
 }
 
 FText SceneReferenceDiagnosticsText(const FMtoUSceneRefExportResult& Result)

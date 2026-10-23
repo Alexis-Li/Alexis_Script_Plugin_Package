@@ -175,6 +175,7 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
     View.AppliedDisplayFrame = LastAppliedDisplayFrame;
     View.AppliedLagSeconds = LastAppliedLagSeconds;
     View.bConverged = bConverged;
+    View.TargetOverdueSeconds = Mode == TEXT("linkage") && Issued.IsSet() ? OverdueWaitSeconds : 0.0;
     View.bTransitioning = bTransitioning;
     View.bTakeoverHeld = bWritersBorrowed;
     View.Detail = Detail;
@@ -517,7 +518,9 @@ bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
         if (bTransitioning)
         {
             // The gate is closed during a transition: nothing is accepted for
-            // the previous revision and the last complete display stays.
+            // the previous revision and the last complete display stays. Maya
+            // counts this details form, and the older-revision one below, as
+            // scheduling instead of a conflict dialog (linkage.py).
             SendError(
                 TEXT("MODE_CONFLICT"),
                 TEXT("A group arrived during a time-control transition."),
@@ -1170,6 +1173,7 @@ void FMtoULinkageSession::UpdateConvergence(double NowSeconds)
         && !Issued.IsSet()
         && !Desired.IsSet()
         && bLastApplied;
+    OverdueWaitSeconds = 0.0;
     if (bConvergedNow)
     {
         LastAppliedLagSeconds = 0.0;
@@ -1180,6 +1184,7 @@ void FMtoULinkageSession::UpdateConvergence(double NowSeconds)
     if (Mode == TEXT("linkage") && Issued.IsSet()
         && NowSeconds - IssuedSeconds > FMtoUProtocol::LinkageConvergenceSeconds)
     {
+        OverdueWaitSeconds = NowSeconds - IssuedSeconds;
         // Not converged: the last target and the elapsed time are reported
         // instead of claiming a synchronisation that did not happen.
         Detail = FString::Printf(

@@ -714,10 +714,20 @@ bool FMtoUDetailsLinkageStatusTextTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the lag row names the lag"), Lag.StartsWith(TEXT("Maya 跟不上，滞后 0.8 秒")));
     TestTrue(TEXT("the lag row says what to do"), Lag.Contains(TEXT("暂停 Sequencer")));
 
+    // An overdue target is reported from the view's own field, whatever the
+    // runtime detail currently says.
     FMtoULinkageView Overdue = Synced;
-    Overdue.AppliedLagSeconds = 0.0;
-    Overdue.Detail = TEXT("Not converged: target x waiting 2.40 s.");
-    TestFalse(TEXT("an overdue target is reported"), FMtoULiveLinkActorDetails::FormatLinkageLag(Overdue).IsEmpty());
+    Overdue.AppliedLagSeconds = 0.1;
+    Overdue.TargetOverdueSeconds = 2.4;
+    Overdue.Detail = TEXT("Offered reference handoff tx-1.");
+    TestEqual(TEXT("an overdue target makes the status lag"), Status(Overdue),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · Maya 跟不上")));
+    TestTrue(TEXT("an overdue target reports its wait"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(Overdue).ToString().StartsWith(TEXT("Maya 跟不上，滞后 2.4 秒")));
+    FMtoULinkageView WordedOverdue = Synced;
+    WordedOverdue.Detail = TEXT("Not converged: target x waiting 2.40 s.");
+    TestTrue(TEXT("the detail wording alone does not decide the lag row"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(WordedOverdue).IsEmpty());
 
     // A failed restore is shown with what to do; the residual stays in the tooltip and diagnostics.
     FMtoULinkageView Residual = Held;
@@ -773,9 +783,21 @@ bool FMtoUDetailsSceneReferenceTextTest::RunTest(const FString& Parameters)
         TestTrue(*FString::Printf(TEXT("diagnostics keep '%s'"), Expected), Diagnostics.Contains(Expected));
     }
 
+    // A partial scope names its own reason.
     Result.bScopeComplete = false;
-    TestTrue(TEXT("a partial scope is said"),
-        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString().Contains(TEXT("未加载")));
+    Result.UnloadedSublevels = {TEXT("Level_D003CP6_Act01_FX")};
+    TestTrue(TEXT("an unloaded requested sublevel is named"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString().Contains(TEXT("1 个子关卡未加载")));
+    Result.UnloadedSublevels.Reset();
+    Result.ExcludedSublevels = {TEXT("Level_D003CP6_Act01_Light"), TEXT("Level_D003CP6_Act01_Prop")};
+    const FString Excluded = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("unselected loaded sublevels are named"), Excluded.Contains(TEXT("未勾选的 2 个已加载子关卡")));
+    TestFalse(TEXT("unselected sublevels are not called unloaded"), Excluded.Contains(TEXT("未加载，")));
+    Result.ExcludedSublevels.Reset();
+    const FString Partitioned = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("a World Partition scope says it holds loaded content only"),
+        Partitioned.Contains(TEXT("World Partition")));
+    TestFalse(TEXT("a World Partition scope mentions no sublevel"), Partitioned.Contains(TEXT("子关卡")));
     return true;
 }
 

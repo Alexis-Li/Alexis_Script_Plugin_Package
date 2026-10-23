@@ -54,16 +54,17 @@
   displays, and the Maya panel follows Unreal's statements and notices a
   connection Unreal ends during linkage. Maya refuses an oversized group, an
   unknown or shared writer target is refused before any write, and a failed
-  restore is reported per resource instead of being hidden. The workflow is additive: the pairing is required only to enter
-  linkage, and the existing single-character realtime, cached playback and
-  Model comparison paths keep their defaults and connection steps. Messages of
-  a mode that ended while they were in flight are counted instead of reported,
-  on both hosts: Maya checks the revision of Unreal's statements itself, and it
-  counts Unreal's `MODE_CONFLICT` answer to a pose group that a mode change
-  overtook (an older revision, or a group that arrived during the transition)
-  as scheduling (#71, R-021), so neither shows a 镜头联动模式冲突 dialog and the
-  Unreal 错误 row stays empty. A conflict Maya did not cause by a group in
-  flight is still reported.
+  restore is reported per resource instead of being hidden. The workflow is
+  additive: the pairing is required only to enter linkage, and the existing
+  single-character realtime, cached playback and Model comparison paths keep
+  their defaults and connection steps. Messages of a mode that ended while
+  they were in flight are counted instead of reported, on both hosts: Maya
+  checks the revision of Unreal's statements itself, and it counts Unreal's
+  `MODE_CONFLICT` refusal of a pose group that arrived during a transition or
+  named an older revision as scheduling (#71, R-021), so neither shows a
+  镜头联动模式冲突 dialog and the Unreal 错误 row stays empty. Every other
+  `MODE_CONFLICT`, such as a refused 返回实时 or a group of a newer revision,
+  is still reported.
 
 - Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
   scope as static reference geometry and offers the finished handoff; Maya

@@ -698,82 +698,71 @@ class LinkagePanelTests(unittest.TestCase):
         with self.bindings:
             self.controller._on_runtime_reply(camera_time())
         self.run_timer()
-        self.assertTrue(self.controller._linkage.owes_group_reply())
 
-    def test_unreal_refusing_a_group_a_mode_change_overtook_is_counted(self):
-        # R-021: Unreal answers a group of an older revision, or one that
-        # arrived during its transition, with MODE_CONFLICT; that answer is
-        # scheduling and never a dialog.
-        self.enter_linkage()
-        self._send_one_group()
+    def _assert_counted(self, details, message="A group named a different mode revision."):
         self.show_error.reset_mock()
         refused = self.controller.linkage_status()["refused_count"]
-
         self._route({"type": "error", "code": "MODE_CONFLICT",
-                     "message": "A group arrived during a time-control transition.",
-                     "details": "target mode revision 2"})
+                     "message": message, "details": details})
         self.flush()
-
         self.show_error.assert_not_called()
         self.assertEqual(refused + 1, self.controller.linkage_status()["refused_count"])
-        self.assertFalse(self.controller._linkage.owes_group_reply())
 
-    def test_a_group_refusal_after_maya_left_linkage_is_counted(self):
+    def _assert_reported(self, details, message):
+        self.show_error.reset_mock()
+        self._route({"type": "error", "code": "MODE_CONFLICT",
+                     "message": message, "details": details})
+        self.flush()
+        self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
+
+    def test_unreal_refusing_a_group_during_its_transition_is_counted(self):
+        # R-021: a group that reached Unreal during a transition is scheduling.
+        self.enter_linkage()
+        self._send_one_group()
+        self._assert_counted("target mode revision 2",
+                             "A group arrived during a time-control transition.")
+
+    def test_unreal_refusing_a_group_of_an_older_revision_is_counted(self):
         # The group was in flight when Maya returned to realtime; the reply of
         # the old revision arrives afterwards.
         self.enter_linkage()
         self._send_one_group()
         with self.bindings:
             self.controller.leave_linkage("realtime")
-        self.show_error.reset_mock()
+        self._assert_counted("group mode revision 1, current 2")
 
-        self._route({"type": "error", "code": "MODE_CONFLICT",
-                     "message": "A group named a different mode revision.",
-                     "details": "group mode revision 1, current 2"})
-        self.flush()
-
-        self.show_error.assert_not_called()
-
-    def test_a_group_reply_owed_before_reentry_is_still_counted(self):
+    def test_a_group_of_a_newer_revision_is_still_a_conflict(self):
+        # R-022: Unreal treats a group ahead of its revision as a failure.
         self.enter_linkage()
         self._send_one_group()
-        with self.bindings:
-            self.controller.leave_linkage("realtime")
-        self.enter_linkage()
-        self.assertTrue(self.controller._linkage.owes_group_reply())
-        self.show_error.reset_mock()
+        self._assert_reported("group mode revision 9, current 3",
+                              "A group named a different mode revision.")
 
-        self._route({"type": "error", "code": "MODE_CONFLICT",
-                     "message": "A group named a different mode revision.",
-                     "details": "group mode revision 1, current 3"})
-        self.flush()
-
-        self.show_error.assert_not_called()
-
-    def test_a_mode_conflict_without_a_group_in_flight_is_reported(self):
-        self.enter_linkage()
-        self.show_error.reset_mock()
-
-        self._route({"type": "error", "code": "MODE_CONFLICT",
-                     "message": "Linkage is already active."})
-        self.flush()
-
-        self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
-
-    def test_an_answered_group_leaves_no_reply_owed(self):
+    def test_a_refused_mode_message_is_reported_while_a_group_is_in_flight(self):
+        # R-022: a conflict about Maya's own transition is never scheduling,
+        # however many groups are still on their way.
         self.enter_linkage()
         self._send_one_group()
-        with self.bindings:
-            self.controller._on_runtime_reply(
-                applied_message(eval_id="seq@10+0/cam#c1", sample_serial=1))
-        self.assertFalse(self.controller._linkage.owes_group_reply())
-        self.show_error.reset_mock()
+        self._assert_reported(
+            "current mode revision 3, message 2",
+            "A leave_linkage message named an older or repeated mode revision.")
+        self._assert_reported(
+            "message mode revision 5, current 3",
+            "A failed transition named a mode revision this session never entered.")
 
-        self._route({"type": "error", "code": "MODE_CONFLICT",
-                     "message": "Linkage is already active."})
-        self.flush()
+    def test_a_mode_conflict_without_group_details_is_reported(self):
+        self.enter_linkage()
+        self._assert_reported("", "Linkage is already active.")
 
-        self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
+    def test_only_the_two_group_forms_are_scheduling_conflicts(self):
+        scheduling = mtou_linkage.is_scheduling_conflict
+        self.assertTrue(scheduling("target mode revision 4"))
+        self.assertTrue(scheduling("group mode revision 1, current 2"))
+        self.assertFalse(scheduling("group mode revision 2, current 2"))
+        self.assertFalse(scheduling("group mode revision 3, current 2"))
+        self.assertFalse(scheduling("current mode revision 3, message 2"))
+        self.assertFalse(scheduling("prefix target mode revision 4"))
+        self.assertFalse(scheduling(None))
 
     def test_a_message_from_a_newer_mode_is_still_a_conflict(self):
         self.enter_linkage()

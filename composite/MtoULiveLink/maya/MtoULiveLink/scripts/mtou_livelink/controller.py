@@ -22,7 +22,7 @@ from .config import (
     WORKFLOWS,
 )
 from .diagnostics import DIAGNOSTICS, make_diagnostic
-from .linkage import LinkageError, LinkageSession
+from .linkage import LinkageError, LinkageSession, is_scheduling_conflict
 from .mayaapi import cmds, om, omui
 from .protocol import (
     exact_int,
@@ -1440,8 +1440,7 @@ class Controller(object):
         linkage = LinkageSession(
             host, session, on_event=self._on_linkage_event,
             object_id=object_id, set_revision=set_revision,
-            space_revision=space_revision, mode_revision=floor,
-            owed_replies=previous.owed_replies() if previous is not None else None)
+            space_revision=space_revision, mode_revision=floor)
         revision = remote_revision if remote else floor + 1
         try:
             linkage.set_session_id(session_id)
@@ -1747,14 +1746,14 @@ class Controller(object):
         linkage = self._linkage
         if linkage is not None and (
                 code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE")
-                or (code == "MODE_CONFLICT" and linkage.owes_group_reply())):
+                or (code == "MODE_CONFLICT"
+                    and is_scheduling_conflict(reply.get("details")))):
             # Unreal refused an answer to a target a pause, jump or camera edit
             # cancelled, a group still in flight when linkage ended, or a group
             # a mode change overtook (an older revision, or one that arrived
             # during the transition); that is normal scheduling, counted, not
-            # a dialog.
-            linkage.note_refused(reply.get("details") or reply.get("message") or "",
-                                 group_reply=True)
+            # a dialog. Every other MODE_CONFLICT is still reported.
+            linkage.note_refused(reply.get("details") or reply.get("message") or "")
             return
         message = reply.get("message") or "Unreal 报告了一个错误。"
         details = reply.get("details") or reply.get("message") or ""

@@ -164,8 +164,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
 原因，而不是暂停整个 Sequence。进入联动前必须先清除缓存播放。恢复失败只在发生时
 显示（Maya 显示“恢复失败”，Unreal 显示“恢复未完成”）：在 Maya 的诊断详情或 Unreal
 的 **高级设置与诊断** 中查看未恢复的资源，按记录手动恢复（例如在 Maya 中解锁相机、
-重设时间范围，或在 Sequencer 中检查对应轨道），也可以重新打开关卡。关闭或切换 Level Sequence、关闭其关卡或删除已配对
-的 Actor 都会结束联动：Unreal 交还 writer，Maya 恢复自身状态。在 Maya 打开或新建
+重设时间范围，或在 Sequencer 中检查对应轨道），也可以重新打开关卡。关闭或切换
+Level Sequence、关闭其关卡或删除已配对的 Actor 都会结束联动：Unreal 交还 writer，
+Maya 恢复自身状态。在 Maya 打开或新建
 其他场景时，联动会先恢复开始时的场景，再断开连接。若联动驱动的 Maya 相机在联动
 期间被删除或其相机 shape 被替换，Maya 会拒绝后续目标且不写入其他相机；结束预览
 后重新进入联动即可使用当前相机。

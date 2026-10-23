@@ -11,6 +11,7 @@ cancels the work in flight, because Unreal shows that complete result and marks
 it as lagging instead of losing the only sample that was going to arrive.
 """
 
+import re
 import threading
 import time
 
@@ -34,6 +35,24 @@ from .protocol import (
     make_mode_message,
     validate_reply,
 )
+
+# Unreal refuses a pose group a mode change overtook with MODE_CONFLICT and
+# names the group's revision in ``details`` (MtoULinkageSession's staged-group
+# gate). The code alone also covers real conflicts, so only these two forms are
+# scheduling: a group that arrived during the transition, and a group of an
+# older revision. A paired upgrade guarantees both hosts share these strings,
+# as ``note_refused`` already relies on for EVAL_STALE.
+_GROUP_DURING_TRANSITION = re.compile(r"^target mode revision -?\d+$")
+_GROUP_REVISION = re.compile(r"^group mode revision (-?\d+), current (-?\d+)$")
+
+
+def is_scheduling_conflict(details):
+    """True when a MODE_CONFLICT answers a group that a mode change overtook."""
+    text = str(details or "").strip()
+    if _GROUP_DURING_TRANSITION.match(text):
+        return True
+    match = _GROUP_REVISION.match(text)
+    return bool(match) and int(match.group(1)) < int(match.group(2))
 
 
 class LinkageError(RuntimeError):
@@ -177,7 +196,7 @@ class LinkageSession(object):
 
     def __init__(self, host, session, on_event=None, object_id=CHARACTER_OBJECT_ID,
                  space_revision=1, set_revision=1, clock=time.monotonic,
-                 mode_revision=0, owed_replies=None):
+                 mode_revision=0):
         self._host = host
         self._session = session
         self._on_event = on_event
@@ -212,13 +231,6 @@ class LinkageSession(object):
         # took over.
         self._awaiting_confirmation = False
         self._entered_at = None
-        # Groups sent that Unreal has not answered yet, and when the last one
-        # left. Unreal answers every group once, with ``applied`` or a refusal;
-        # a session created for a later entry inherits what the previous one
-        # still owes, because those answers arrive during the transition.
-        owed, last_sent = owed_replies or (0, None)
-        self._owed_group_replies = max(0, exact_int(owed) or 0)
-        self._last_group_sent = last_sent
 
     # ------------------------------------------------------------------ state
     @property
@@ -457,8 +469,6 @@ class LinkageSession(object):
         """Record Unreal's actual component completion evidence."""
         validate_reply(message)
         with self._lock:
-            if self._owed_group_replies > 0:
-                self._owed_group_replies -= 1
             self._check_identity_locked(message)
             sample_serial = exact_int(message.get("sample_serial"))
             if sample_serial is None:
@@ -633,36 +643,14 @@ class LinkageSession(object):
         except Exception as exc:  # the transport may already be gone
             self._record_recovery("announce", exc)
 
-    def owed_replies(self):
-        """``(count, last sent)`` of the groups Unreal has not answered yet."""
-        with self._lock:
-            return self._owed_group_replies, self._last_group_sent
-
-    def owes_group_reply(self):
-        """True while a recently sent group still waits for Unreal's answer.
-
-        Unreal refuses such a group with ``MODE_CONFLICT`` when a mode change
-        overtook it (an older revision, or a group arriving during the
-        transition); that answer is scheduling, not a conflict to report. The
-        window bounds a group Unreal dropped without answering.
-        """
-        with self._lock:
-            if self._owed_group_replies <= 0 or self._last_group_sent is None:
-                return False
-            return (self._clock() - self._last_group_sent
-                    <= LINKAGE_MODE_CONFIRMATION_SECONDS)
-
-    def note_refused(self, detail="", group_reply=False):
+    def note_refused(self, detail=""):
         """Count one answer Unreal refused because its target was cancelled.
 
         When the refusal names the issued sample, that sample will never be
         applied, so the issued slot is free for the newer target Unreal sent.
-        ``group_reply`` marks Unreal's answer to a group Maya sent.
         """
         with self._lock:
             self._refused_count += 1
-            if group_reply and self._owed_group_replies > 0:
-                self._owed_group_replies -= 1
             if self._issued is not None and detail \
                     and "group eval {0},".format(self._issued.eval_id) in detail:
                 self._issued = None
@@ -770,9 +758,6 @@ class LinkageSession(object):
                 details="group {0} bytes, budget {1} bytes".format(
                     size, MAX_LINKAGE_GROUP_BYTES))
         self._session.submit_linkage(message)
-        with self._lock:
-            self._owed_group_replies += 1
-            self._last_group_sent = self._clock()
         self._emit(LinkageEvent(
             "group", mode=LINKAGE_MODE, control=CONTROL_UNREAL,
             mode_revision=self._mode_revision,

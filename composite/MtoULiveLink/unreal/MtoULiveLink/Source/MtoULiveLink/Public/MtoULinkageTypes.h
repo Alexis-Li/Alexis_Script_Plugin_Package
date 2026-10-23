@@ -95,6 +95,8 @@ struct MTOULIVELINK_API FMtoULinkageView
     int32 AppliedSampleSerial = 0;
     double AppliedLagSeconds = 0.0;
     bool bConverged = false;
+    /** How long the current target has waited past the convergence window; 0 while Maya keeps up. */
+    double TargetOverdueSeconds = 0.0;
     bool bTransitioning = false;
     /** The paired target's writers are still muted (after 返回实时 too). */
     bool bTakeoverHeld = false;
