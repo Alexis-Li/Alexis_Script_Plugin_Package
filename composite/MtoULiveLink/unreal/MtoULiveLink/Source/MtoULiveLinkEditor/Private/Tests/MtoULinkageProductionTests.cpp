@@ -95,6 +95,31 @@ TSharedPtr<ISequencer> OpenSequencerOf(ULevelSequence* Sequence)
     return nullptr;
 }
 
+/**
+ * One Maya joint's world rotation in Unreal axes, placed by the anchor's
+ * rotation. Maya (x, y, z) is Unreal (x, z, y), so Unreal's X, Y and Z axes are
+ * Maya's X, Z and Y axes with their components swizzled the same way. A bone's
+ * own local axes may differ from the joint's by a fixed rotation, so compare
+ * rotation changes between frames rather than these values themselves.
+ */
+bool MayaWorldRotation(const TSharedPtr<FJsonObject>& Joint, const FQuat& Anchor, FQuat& Out)
+{
+    const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+    if (!Joint->TryGetArrayField(TEXT("axes"), A) || A->Num() != 9)
+    {
+        return false;
+    }
+    const auto Axis = [A](int32 Row)
+    {
+        return FVector((*A)[Row * 3]->AsNumber(), (*A)[Row * 3 + 2]->AsNumber(), (*A)[Row * 3 + 1]->AsNumber());
+    };
+    FMatrix Matrix = FMatrix::Identity;
+    const FVector X = Axis(0), Y = Axis(2), Z = Axis(1);
+    Matrix.SetAxes(&X, &Y, &Z);
+    Out = Anchor * FQuat(Matrix);
+    return true;
+}
+
 /** A /Temp copy of a sequence asset; the original package is never touched. */
 ULevelSequence* TempCopy(ULevelSequence* Original, const FString& Name)
 {
@@ -849,7 +874,9 @@ private:
         double MaxWorld = 0.0;
         double MaxScreen = 0.0;
         int32 Compared = 0;
+        int32 MissingAxes = 0;
         TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
+        TMap<FName, FOracleRotation>& Rotations = OracleRotations.FindOrAdd(FrameIndex);
         for (const TPair<FString, TSharedPtr<FJsonValue>>& Joint : Joints->Values)
         {
             const FName Bone(*Joint.Key);
@@ -864,6 +891,15 @@ private:
                 FVector(MayaWorld.X, MayaWorld.Z, MayaWorld.Y));
             const FVector Shown = Primary->GetSocketLocation(Bone);
             MaxWorld = FMath::Max(MaxWorld, FVector::Distance(Expected, Shown));
+            FQuat MayaRotation;
+            if (MayaWorldRotation(Entry, LinkageAnchor.GetRotation(), MayaRotation))
+            {
+                Rotations.Add(Bone, {MayaRotation, Primary->GetSocketQuaternion(Bone)});
+            }
+            else
+            {
+                ++MissingAxes;
+            }
             FVector2D UnrealScreen;
             const TArray<TSharedPtr<FJsonValue>>* MayaScreen = nullptr;
             if (Camera && ProjectThroughCamera(View, Shown, UnrealScreen)
@@ -907,6 +943,51 @@ private:
         }
         Record->SetObjectField(TEXT("morphs"), MorphRecord);
         Record->SetNumberField(TEXT("max_morph"), MaxMorph);
+        // Bone rotations: the C01 joints are point-constrained, so their
+        // positions are the same at every oracle frame; the keyed rotations are
+        // not. Each display's rotation change since the first oracle frame must
+        // be Maya's change, which a pose sampled at another frame would miss.
+        // That holds only if Maya's pose differs from every earlier oracle
+        // frame's, which the keyed motion's period can defeat.
+        double MaxRotation = 0.0;
+        double MinMayaChange = 0.0;
+        int32 ComparedRotations = 0;
+        const TMap<FName, FOracleRotation>* First = OracleRotations.Find(0);
+        if (FrameIndex > 0 && First)
+        {
+            TSharedRef<FJsonObject> RotationRecord = MakeShared<FJsonObject>();
+            for (const TPair<FName, FOracleRotation>& Pair : Rotations)
+            {
+                if (const FOracleRotation* Base = First->Find(Pair.Key))
+                {
+                    const FQuat MayaChange = Pair.Value.Maya * Base->Maya.Inverse();
+                    const FQuat ShownChange = Pair.Value.Shown * Base->Shown.Inverse();
+                    const double Error = FMath::RadiansToDegrees(MayaChange.AngularDistance(ShownChange));
+                    MaxRotation = FMath::Max(MaxRotation, Error);
+                    ++ComparedRotations;
+                    RotationRecord->SetNumberField(Pair.Key.ToString(), Error);
+                }
+            }
+            Record->SetObjectField(TEXT("rotation_error_deg"), RotationRecord);
+            MinMayaChange = TNumericLimits<double>::Max();
+            for (int32 Earlier = 0; Earlier < FrameIndex; ++Earlier)
+            {
+                double Change = 0.0;
+                if (const TMap<FName, FOracleRotation>* Before = OracleRotations.Find(Earlier))
+                {
+                    for (const TPair<FName, FOracleRotation>& Pair : Rotations)
+                    {
+                        if (const FOracleRotation* Then = Before->Find(Pair.Key))
+                        {
+                            Change = FMath::Max(Change, FMath::RadiansToDegrees(Pair.Value.Maya.AngularDistance(Then->Maya)));
+                        }
+                    }
+                }
+                MinMayaChange = FMath::Min(MinMayaChange, Change);
+            }
+        }
+        Record->SetNumberField(TEXT("max_rotation_error_deg"), MaxRotation);
+        Record->SetNumberField(TEXT("min_maya_rotation_change_deg"), MinMayaChange);
         Record->SetNumberField(TEXT("frame"), OracleFrames[FrameIndex]);
         Record->SetArrayField(TEXT("ue_view_location"), NumberArray({View.Location.X, View.Location.Y, View.Location.Z}));
         Record->SetArrayField(TEXT("ue_view_rotation_rpy"), NumberArray({View.Rotation.Roll, View.Rotation.Pitch, View.Rotation.Yaw}));
@@ -926,6 +1007,26 @@ private:
             OracleFrames[FrameIndex], Camera ? *Camera->GetOwner()->GetActorNameOrLabel() : TEXT("no camera"),
             Compared, MaxWorld, MaxScreen));
         Test->TestTrue(TEXT("oracle compares the character's bones"), Compared >= 3);
+        if (MissingAxes > 0)
+        {
+            Test->AddError(FString::Printf(TEXT("oracle frame %.1f: the Maya driver's snapshot has no world axes for %d bones; the fixture's maya.driver predates the bone-rotation oracle, so bone rotations are not compared"),
+                OracleFrames[FrameIndex], MissingAxes));
+        }
+        else if (FrameIndex > 0)
+        {
+            const double Tolerance = Fixture->HasField(TEXT("rotation_tolerance_deg"))
+                ? Fixture->GetNumberField(TEXT("rotation_tolerance_deg")) : 0.5;
+            Log(FString::Printf(TEXT("oracle frame %.1f: %d bone rotations since frame %.1f, max error %.4f deg; Maya's pose differs from every earlier oracle frame's by at least %.2f deg"),
+                OracleFrames[FrameIndex], ComparedRotations, OracleFrames[0], MaxRotation, MinMayaChange));
+            Test->TestTrue(TEXT("oracle compares the character's bone rotations"), ComparedRotations >= 3);
+            if (!Test->TestTrue(TEXT("the oracle bone rotations differ from every earlier oracle frame's"),
+                MinMayaChange > 10.0 * Tolerance))
+            {
+                Log(FString::Printf(TEXT("oracle frame %.1f cannot be told from an earlier oracle frame: their Maya times lie a whole number of key periods (2 * maya.key_step) apart or symmetrically about a key. Change maya.key_step or oracle_frames in the fixture."),
+                    OracleFrames[FrameIndex]));
+            }
+            Test->TestTrue(TEXT("the displays show Maya's bone rotations of the oracle frame"), MaxRotation < Tolerance);
+        }
         const TArray<TSharedPtr<FJsonValue>>* KeyedMorphs = nullptr;
         if (Fixture->GetObjectField(TEXT("maya"))->TryGetArrayField(TEXT("keyed_morphs"), KeyedMorphs)
             && KeyedMorphs->Num() > 0)
@@ -1212,6 +1313,12 @@ private:
     FGuid TargetGuid;
     FTransform AnchorTransform;
     TArray<double> OracleFrames;
+    struct FOracleRotation
+    {
+        FQuat Maya;
+        FQuat Shown;
+    };
+    TMap<int32, TMap<FName, FOracleRotation>> OracleRotations;
     TArray<TWeakObjectPtr<UMovieSceneTrack>> WriterTracks;
     TArray<FString> ProtectedPackages;
     TMap<FName, FVector> BeforePose;

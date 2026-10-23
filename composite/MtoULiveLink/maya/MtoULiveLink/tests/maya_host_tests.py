@@ -930,7 +930,19 @@ class MayaHostTests(unittest.TestCase):
 
         return link_host.MayaLinkageHost(None, ["character"], 24.0)
 
-    def test_linkage_samples_the_pose_of_the_applied_frame(self):
+    # Each evaluation mode keeps a different part of the last evaluated pose
+    # until the scene is evaluated again: DG mode the bones, the Evaluation
+    # Manager modes the Morph weights. A stale sample is certain in every mode.
+    def test_linkage_samples_the_pose_of_the_applied_frame_in_dg_mode(self):
+        self._assert_linkage_samples_the_applied_frame("off")
+
+    def test_linkage_samples_the_pose_of_the_applied_frame_in_serial_mode(self):
+        self._assert_linkage_samples_the_applied_frame("serial")
+
+    def test_linkage_samples_the_pose_of_the_applied_frame_in_parallel_mode(self):
+        self._assert_linkage_samples_the_applied_frame("parallel")
+
+    def _assert_linkage_samples_the_applied_frame(self, evaluation_mode):
         import test_mtou_camera as payloads
         from mtou_livelink import link_host
 
@@ -946,11 +958,11 @@ class MayaHostTests(unittest.TestCase):
             for frame, value in zip((0, 100), values):
                 cmds.setKeyframe(plug, time=frame, value=value,
                                  inTangentType="linear", outTangentType="linear")
-        # The serial Evaluation Manager keeps the last evaluated values until
-        # the scene is evaluated again, which makes a stale sample certain.
         mode = cmds.evaluationManager(query=True, mode=True)[0]
         self.addCleanup(cmds.evaluationManager, mode=mode)
-        cmds.evaluationManager(mode="serial")
+        cmds.evaluationManager(mode=evaluation_mode)
+        self.assertEqual(evaluation_mode,
+                         cmds.evaluationManager(query=True, mode=True)[0])
         cmds.currentTime(0, edit=True)
         scene = mtou_scene.CharacterScene.capture(cmds.ls(root, long=True)[0])
         self.addCleanup(scene.close)
