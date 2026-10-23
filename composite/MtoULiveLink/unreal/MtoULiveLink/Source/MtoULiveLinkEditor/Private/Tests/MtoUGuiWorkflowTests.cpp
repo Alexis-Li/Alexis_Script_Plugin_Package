@@ -559,6 +559,7 @@ private:
         {
             MtoUGuiAcceptance::CheckMayaDialogs(*Test, Driver.Poll(), ExpectedDialogs(),
                 [this](const FString& Line) { Log(Line); });
+            Log(Driver.DescribePreferences());
             WriteJsonFile(FPaths::Combine(EvidenceDir, TEXT("maya-final.json")), MayaResult.ToSharedRef());
         }
         Driver.Terminate();

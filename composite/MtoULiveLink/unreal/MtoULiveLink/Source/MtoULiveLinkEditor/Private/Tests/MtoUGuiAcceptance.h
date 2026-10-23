@@ -13,6 +13,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "IDetailsView.h"
@@ -65,9 +66,18 @@ inline void WriteJsonFile(const FString& Path, const TSharedRef<FJsonObject>& Va
 class FMayaGuiDriver
 {
 public:
-    /** Starts Maya with the fixture's `maya` object; paths go into the evidence directory. */
+    /**
+     * Starts Maya with the fixture's `maya` object; paths go into the evidence directory.
+     * With `app_dir_template` the template is copied to `<evidence>/mayaapp` and Maya
+     * starts from that copy, so every run begins with the same preferences; otherwise
+     * Maya uses `app_dir` in place and saves its preferences back into it.
+     */
     bool Start(FAutomationTestBase& Test, const TSharedPtr<FJsonObject>& MayaFixture, const FString& EvidenceDir)
     {
+        if (!PreparePreferences(Test, MayaFixture, EvidenceDir))
+        {
+            return false;
+        }
         CommandPath = FPaths::Combine(EvidenceDir, TEXT("maya-command.json"));
         ResultPath = FPaths::Combine(EvidenceDir, TEXT("maya-result.json"));
         FFileHelper::SaveStringToFile(TEXT("{}"), *CommandPath);
@@ -78,7 +88,7 @@ public:
         const FString DriverFixture = FPaths::Combine(EvidenceDir, TEXT("maya-driver-fixture.json"));
         WriteJsonFile(DriverFixture, MayaFixture.ToSharedRef());
         FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LINKAGE_DRIVER_FIXTURE"), *DriverFixture);
-        FPlatformMisc::SetEnvironmentVar(TEXT("MAYA_APP_DIR"), *MayaFixture->GetStringField(TEXT("app_dir")));
+        FPlatformMisc::SetEnvironmentVar(TEXT("MAYA_APP_DIR"), *AppDir);
         const FString Args = FString::Printf(
             TEXT("-log \"%s\" -command \"python(\\\"import runpy; runpy.run_path(r'%s')\\\")\""),
             *FPaths::Combine(EvidenceDir, TEXT("maya.log")), *MayaFixture->GetStringField(TEXT("driver")));
@@ -129,7 +139,95 @@ public:
         }
     }
 
+    /**
+     * Where Maya's preferences came from, what its `pluginPrefs.mel` loads automatically
+     * (the driver reads that before Maya can save it again) and which plug-ins were
+     * loaded at the driver's latest stage.
+     */
+    TSharedRef<FJsonObject> PreferencesRecord() const
+    {
+        TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
+        Record->SetStringField(TEXT("source"), PrefsTemplate.IsEmpty() ? TEXT("app_dir") : TEXT("template"));
+        Record->SetStringField(TEXT("template"), PrefsTemplate);
+        Record->SetStringField(TEXT("app_dir"), AppDir);
+        const TSharedPtr<FJsonObject>* Prefs = nullptr;
+        if (Result.IsValid() && Result->TryGetObjectField(TEXT("prefs"), Prefs))
+        {
+            FString Value;
+            Record->SetStringField(TEXT("plugin_prefs"),
+                (*Prefs)->TryGetStringField(TEXT("plugin_prefs"), Value) ? Value : FString());
+            Record->SetStringField(TEXT("plugin_prefs_sha256"),
+                (*Prefs)->TryGetStringField(TEXT("sha256"), Value) ? Value : FString());
+            const TArray<TSharedPtr<FJsonValue>>* Autoload = nullptr;
+            Record->SetNumberField(TEXT("autoload_plugins"),
+                (*Prefs)->TryGetArrayField(TEXT("autoload"), Autoload) ? Autoload->Num() : -1);
+        }
+        const TSharedPtr<FJsonObject>* Plugins = nullptr;
+        if (Result.IsValid() && Result->TryGetObjectField(TEXT("plugins"), Plugins))
+        {
+            Record->SetStringField(TEXT("loaded_at_stage"), (*Plugins)->GetStringField(TEXT("stage")));
+            Record->SetNumberField(TEXT("loaded_plugins"), (*Plugins)->GetArrayField(TEXT("loaded")).Num());
+        }
+        return Record;
+    }
+
+    /** One log line for PreferencesRecord(); -1 plug-ins means Maya had no saved list. */
+    FString DescribePreferences() const
+    {
+        const TSharedRef<FJsonObject> Record = PreferencesRecord();
+        double Autoload = -1.0;
+        double Loaded = -1.0;
+        Record->TryGetNumberField(TEXT("autoload_plugins"), Autoload);
+        Record->TryGetNumberField(TEXT("loaded_plugins"), Loaded);
+        FString Stage;
+        Record->TryGetStringField(TEXT("loaded_at_stage"), Stage);
+        FString Sha;
+        Record->TryGetStringField(TEXT("plugin_prefs_sha256"), Sha);
+        const FString Source = PrefsTemplate.IsEmpty()
+            ? FString(TEXT("app_dir used in place"))
+            : FString::Printf(TEXT("template %s copied"), *PrefsTemplate);
+        if (Sha.IsEmpty())
+        {
+            Sha = TEXT("none (Maya's default set)");
+        }
+        return FString::Printf(
+            TEXT("Maya preferences: %s, MAYA_APP_DIR %s; pluginPrefs.mel sha256 %s, %d autoload plug-ins; %d plug-ins loaded at stage '%s'"),
+            *Source, *AppDir, *Sha, static_cast<int32>(Autoload), static_cast<int32>(Loaded), *Stage);
+    }
+
 private:
+    bool PreparePreferences(FAutomationTestBase& Test, const TSharedPtr<FJsonObject>& MayaFixture,
+        const FString& EvidenceDir)
+    {
+        PrefsTemplate.Reset();
+        if (MayaFixture->TryGetStringField(TEXT("app_dir_template"), PrefsTemplate) && !PrefsTemplate.IsEmpty())
+        {
+            PrefsTemplate = FPaths::ConvertRelativePathToFull(PrefsTemplate);
+            AppDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(EvidenceDir, TEXT("mayaapp")));
+            if (!Test.TestTrue(TEXT("the Maya preference template exists"),
+                    IFileManager::Get().DirectoryExists(*PrefsTemplate))
+                || !Test.TestFalse(TEXT("the Maya preference template lies outside the evidence copy"),
+                    FPaths::IsUnderDirectory(PrefsTemplate, AppDir) || FPaths::IsUnderDirectory(AppDir, PrefsTemplate)))
+            {
+                return false;
+            }
+            IFileManager::Get().DeleteDirectory(*AppDir, false, true);
+            if (!Test.TestTrue(TEXT("the Maya preference template is copied for this run"),
+                    FPlatformFileManager::Get().GetPlatformFile().CopyDirectoryTree(*AppDir, *PrefsTemplate, true)))
+            {
+                return false;
+            }
+            MayaFixture->SetStringField(TEXT("app_dir"), AppDir);
+            return true;
+        }
+        PrefsTemplate.Reset();
+        AppDir.Reset();
+        MayaFixture->TryGetStringField(TEXT("app_dir"), AppDir);
+        return Test.TestFalse(TEXT("the fixture names app_dir or app_dir_template"), AppDir.IsEmpty());
+    }
+
+    FString PrefsTemplate;
+    FString AppDir;
     FString CommandPath;
     FString ResultPath;
     FProcHandle Process;

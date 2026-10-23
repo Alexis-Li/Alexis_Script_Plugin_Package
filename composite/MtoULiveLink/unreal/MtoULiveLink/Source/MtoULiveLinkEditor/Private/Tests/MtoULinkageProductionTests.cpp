@@ -1081,6 +1081,9 @@ private:
                 const double Span = AppliedFrames.Num() > 1 ? AppliedFrames.Last() - AppliedFrames[0] : 0.0;
                 Log(FString::Printf(TEXT("playback: %.1f s, %d editor ticks, %d complete applications spanning %.1f frames, max lag %.3f s"),
                     Seconds, PlayTicks, AppliedFrames.Num(), Span, MaxLag));
+                // Throughput depends on the plug-ins Maya loads; runs compare only with the same preferences.
+                Log(Driver.DescribePreferences());
+                Evidence->SetObjectField(TEXT("maya_prefs"), Driver.PreferencesRecord());
                 Test->TestTrue(TEXT("several complete groups were applied while playing"), AppliedFrames.Num() >= 3);
                 Test->TestTrue(TEXT("the applied time keeps advancing"), bMonotonic && Span > 0.0);
                 Test->TestTrue(TEXT("Maya answers slower than the editor frame rate"),
