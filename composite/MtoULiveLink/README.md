@@ -207,8 +207,9 @@ open Maya's 诊断详情 or Unreal's **高级设置与诊断** for the resources
 not restored, restore them by hand (for example unlock the camera or reset the
 time range in Maya, or check the track in the Sequencer), or reopen the level.
 Closing or switching the Level Sequence, closing its level or deleting the
-paired actor ends linkage: Unreal returns the writers and Maya restores itself. Opening or creating another Maya
-scene ends the connection after linkage restored the scene it was started in.
+paired actor ends linkage: Unreal returns the writers and Maya restores itself.
+Opening or creating another Maya scene ends the connection after linkage
+restored the scene it was started in.
 If the Maya camera linkage drives is deleted or its camera shape replaced while
 linkage runs, Maya refuses the next target and writes no other camera; end the
 preview and start linkage again to use the current camera.

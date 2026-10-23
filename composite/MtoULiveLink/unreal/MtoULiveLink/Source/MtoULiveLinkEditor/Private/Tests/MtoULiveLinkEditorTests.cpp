@@ -791,8 +791,10 @@ bool FMtoUDetailsSceneReferenceTextTest::RunTest(const FString& Parameters)
     Result.UnloadedSublevels.Reset();
     Result.ExcludedSublevels = {TEXT("Level_D003CP6_Act01_Light"), TEXT("Level_D003CP6_Act01_Prop")};
     const FString Excluded = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
-    TestTrue(TEXT("unselected loaded sublevels are named"), Excluded.Contains(TEXT("未勾选的 2 个已加载子关卡")));
-    TestFalse(TEXT("unselected sublevels are not called unloaded"), Excluded.Contains(TEXT("未加载，")));
+    TestTrue(TEXT("selected sublevels the world does not stream are named"),
+        Excluded.Contains(TEXT("勾选的 2 个子关卡不在当前世界中")));
+    TestTrue(TEXT("the remedy names the level streaming"), Excluded.Contains(TEXT("流式设置")));
+    TestFalse(TEXT("sublevels missing from the world are not called unloaded"), Excluded.Contains(TEXT("未加载，")));
     Result.ExcludedSublevels.Reset();
     const FString Partitioned = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
     TestTrue(TEXT("a World Partition scope says it holds loaded content only"),

@@ -712,8 +712,9 @@ FText SceneReferenceResultText(const FMtoUSceneRefExportResult& Result)
     }
     if (!Result.ExcludedSublevels.IsEmpty())
     {
+        // Excluded names were selected but the world does not stream them.
         return FText::Format(LOCTEXT("SceneReferenceExcludedValue",
-            "已导出 {0} 个对象，可在 Maya 导入；未勾选的 {1} 个已加载子关卡未包含在内。"),
+            "已导出 {0} 个对象，可在 Maya 导入；勾选的 {1} 个子关卡不在当前世界中，未包含在内。请检查关卡的流式设置，或重新选择子关卡。"),
             Objects, FText::AsNumber(Result.ExcludedSublevels.Num()));
     }
     return FText::Format(LOCTEXT("SceneReferencePartitionedValue",
