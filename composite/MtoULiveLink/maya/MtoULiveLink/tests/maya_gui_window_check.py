@@ -95,12 +95,19 @@ def _in_maya():
         names = cmds.lsUI(windows=True) or []
         return {name: names.count(name) for name in (MAIN, REFERENCE)}
 
-    baseline_jobs = len(cmds.scriptJob(listJobs=True) or [])
+    # Errors raised inside a clicked control only reach the Script Editor.
+    cmds.scriptEditorInfo(historyFilename=str(evidence / (step + "-script-editor.txt")),
+                          writeHistory=True)
+
+    def panel_jobs():
+        """Script jobs that call the panel; Maya keeps adding its own."""
+        return [job for job in cmds.scriptJob(listJobs=True) or [] if "Controller" in job]
 
     def snapshot(label):
         controller = panel.CONTROLLER
-        entry = {"label": label, "windows": windows(),
-                 "script_jobs": len(cmds.scriptJob(listJobs=True) or []) - baseline_jobs,
+        if not result.get("all_jobs_sample"):
+            result["all_jobs_sample"] = cmds.scriptJob(listJobs=True) or []
+        entry = {"label": label, "windows": windows(), "script_jobs": len(panel_jobs()),
                  "reference_held": bool(controller and controller._reference_window),
                  "scene_replace_callbacks":
                      len(controller._scene_replace_callbacks) if controller else 0}
@@ -139,6 +146,12 @@ def _in_maya():
         if not ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
             raise RuntimeError("WM_CLOSE was not posted to " + name)
         yield wait(name + " closed", lambda: not cmds.window(name, exists=True))
+
+    def until_idle(label):
+        """Wait for Maya's idle queue, where its scene-change script jobs run."""
+        done = []
+        cmds.evalDeferred(lambda: done.append(True), lowestPriority=True)
+        yield wait(label + " settled", lambda: bool(done))
 
     def click_workflow(attribute):
         stage("workflow " + attribute)
@@ -205,13 +218,13 @@ def _in_maya():
             yield from open_reference()
             stage("new scene")
             cmds.file(new=True, force=True)
-            yield wait("new scene", lambda: True)
+            yield from until_idle("new scene")
             expect(label + " new scene closes the reference", not cmds.window(
                 REFERENCE, exists=True))
             yield from open_reference()
             stage("open scene")
             cmds.file(str(scene), open=True, force=True)
-            yield wait("open scene", lambda: True)
+            yield from until_idle("open scene")
             expect(label + " open scene closes the reference", not cmds.window(
                 REFERENCE, exists=True))
             entry = snapshot(label)
@@ -250,7 +263,26 @@ def _in_maya():
             quit_maya()
         except Exception:
             result["errors"].append(traceback.format_exc()[-1500:])
+            diagnose()
             quit_maya()
+
+    def diagnose():
+        """What the panel saw when a step failed, and a direct open attempt."""
+        controller = panel.CONTROLLER
+        report = {"windows": windows(), "all_windows": cmds.lsUI(windows=True) or []}
+        try:
+            button = widget(controller._reference_window_button, "findControl")
+            report["button"] = {"name": controller._reference_window_button,
+                                "found": button is not None,
+                                "enabled": bool(button and button.isEnabled()),
+                                "visible": bool(button and button.isVisible())}
+            report["held"] = repr(controller._reference_window)
+            controller.open_reference_window()
+            report["direct_open_exists"] = cmds.window(REFERENCE, exists=True)
+        except Exception:
+            report["direct_open_error"] = traceback.format_exc()[-1500:]
+        result["diagnosis"] = report
+        write()
 
     def when_ready():
         stage("ready")
