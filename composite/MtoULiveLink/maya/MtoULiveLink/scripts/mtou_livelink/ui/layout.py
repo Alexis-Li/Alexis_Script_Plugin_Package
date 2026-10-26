@@ -200,3 +200,24 @@ def apply_panel_theme(window_name, cards, roles, divider_card=None):
         widget.style().unpolish(widget)
         widget.style().polish(widget)
     return decorations, styled_controls
+
+
+def release_panel_theme(decorations):
+    """Detach and delete card decorations while Python is still running.
+
+    A decoration is a Python object Qt calls back into; one still installed
+    when Maya tears down its windows at exit would call into a finished
+    interpreter. Decorations Qt already deleted with their window are skipped,
+    so releasing twice is safe.
+    """
+    if not decorations or mayaapi.omui is None:
+        return
+    import shiboken2
+
+    for decoration in decorations:
+        if not shiboken2.isValid(decoration):
+            continue
+        watched = decoration.parent()
+        if watched is not None:
+            watched.removeEventFilter(decoration)
+        shiboken2.delete(decoration)

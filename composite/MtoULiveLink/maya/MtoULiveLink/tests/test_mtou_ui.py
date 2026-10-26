@@ -1343,7 +1343,7 @@ class DetailWindowTests(unittest.TestCase):
         fake.control.return_value = True
         fake.currentUnit.return_value = "film"
         fake.confirmDialog.return_value = "确定"
-        windows = set()
+        windows = self.windows = set()
 
         def window(*args, **kwargs):
             name = args[0] if args else kwargs.get("name")
@@ -1383,32 +1383,141 @@ class DetailWindowTests(unittest.TestCase):
         self.assertEqual(1, len(self.created_windows(
             mtou_reference_window.REFERENCE_WINDOW_NAME)))
 
-    def test_closing_a_window_releases_only_that_window(self):
+    def close_natively(self, window):
+        """The title-bar close: Maya notifies the window, then deletes it."""
+        window._on_closed()
+        self.windows.discard(mtou_reference_window.REFERENCE_WINDOW_NAME)
+
+    def test_native_close_forgets_the_window_without_deleting_it_again(self):
         with self.bindings:
             window = self.controller.open_reference_window()
             window._on_closed()
 
+        # Maya is still running the close event: deleting the window from
+        # inside it made Maya read the destroyed window.
+        self.fake_cmds.deleteUI.assert_not_called()
         self.assertIsNone(self.controller._reference_window)
-        self.fake_cmds.deleteUI.assert_called_with(
-            mtou_reference_window.REFERENCE_WINDOW_NAME)
         # The session survives a detail window's close.
         self.assertIs(self.session, self.controller._session)
+        self.windows.discard(mtou_reference_window.REFERENCE_WINDOW_NAME)
         with self.bindings:
             reopened = self.controller.open_reference_window()
         self.assertIsNot(window, reopened)
+        self.assertIs(reopened, self.controller._reference_window)
 
-    def test_reference_window_close_keeps_the_offer_and_the_session(self):
+    def test_repeated_native_close_and_reopen_keeps_one_live_window(self):
+        windows = []
+        with self.bindings:
+            for _ in range(20):
+                window = self.controller.open_reference_window()
+                self.assertIs(window, self.controller.open_reference_window())
+                windows.append(window)
+                self.close_natively(window)
+
+        self.assertEqual(20, len(set(map(id, windows))))
+        self.assertEqual(20, len(self.created_windows(
+            mtou_reference_window.REFERENCE_WINDOW_NAME)))
+        self.fake_cmds.deleteUI.assert_not_called()
+        self.assertIsNone(self.controller._reference_window)
+
+    def test_requested_close_deletes_the_window_once(self):
+        with self.bindings:
+            window = self.controller.open_reference_window()
+            self.controller.close_reference_window()
+            # Maya's close notification for the deletion it just did.
+            window._on_closed()
+            self.controller.close_reference_window()
+            window.close()
+
+        self.fake_cmds.deleteUI.assert_called_once_with(
+            mtou_reference_window.REFERENCE_WINDOW_NAME)
+        self.assertIsNone(self.controller._reference_window)
+        self.assertIs(self.session, self.controller._session)
+
+    def test_close_button_closes_through_the_controller(self):
+        with self.bindings:
+            window = self.controller.open_reference_window()
+            command = [call[1]["command"] for call in self.fake_cmds.button.call_args_list
+                       if call[1].get("label") == "关闭窗口"][0]
+            command()
+            self.assertFalse(window.exists())
+
+        self.fake_cmds.deleteUI.assert_called_once_with(
+            mtou_reference_window.REFERENCE_WINDOW_NAME)
+        self.assertIsNone(self.controller._reference_window)
+
+    def test_a_window_maya_deleted_unannounced_is_rebuilt(self):
+        with self.bindings:
+            stale = self.controller.open_reference_window()
+            self.windows.discard(mtou_reference_window.REFERENCE_WINDOW_NAME)
+            reopened = self.controller.open_reference_window()
+            self.assertTrue(reopened.exists())
+
+        self.assertIsNot(stale, reopened)
+
+    def test_an_old_window_never_closes_or_renders_its_successor(self):
+        with self.bindings:
+            old = self.controller.open_reference_window()
+            self.close_natively(old)
+            current = self.controller.open_reference_window()
+            rendered = len(self.fake_cmds.text.call_args_list)
+            old.refresh()
+            old.close()
+            old._on_closed()
+            self.assertTrue(current.exists())
+
+        self.assertEqual(rendered, len(self.fake_cmds.text.call_args_list))
+        self.fake_cmds.deleteUI.assert_not_called()
+        self.assertIs(current, self.controller._reference_window)
+
+    def test_reference_window_close_keeps_the_handoff_session_and_linkage(self):
+        linkage = mock.Mock(is_active=True)
+        self.controller._linkage = linkage
+        report = {"action": "import", "transfer_id": "tx-3", "time": 0.0,
+                  "report": {"accepted": True, "counts": {"objects": 4}}}
+        self.controller._reference_report = report
         with self.bindings:
             self.controller.offer_reference({
                 "transfer_id": "tx-3", "directory": "handoff/tx-3",
                 "manifest_digest": "ef56", "space_revision": 1})
             self.flush()
             window = self.controller.open_reference_window()
-            window._on_closed()
+            self.close_natively(window)
+            reopened = self.controller.open_reference_window()
 
-        self.assertIsNone(self.controller._reference_window)
         self.assertEqual("tx-3", self.controller.reference_offer()["transfer_id"])
+        self.assertIs(report, self.controller._reference_report)
+        self.assertEqual(report, self.controller.reference_report())
         self.assertIs(self.session, self.controller._session)
+        self.assertIs(linkage, self.controller._linkage)
+        linkage.close.assert_not_called()
+        self.assertIn("已导入 4 个对象。", [
+            call[1].get("label") for call in self.fake_cmds.text.call_args_list])
+        self.assertIs(reopened, self.controller._reference_window)
+        state = "状态：{0}".format(self.controller.reference_state()[0])
+        self.assertEqual(2, sum(1 for call in self.fake_cmds.text.call_args_list
+                                if call[1].get("label") == state))
+
+    def test_panel_close_and_maya_exit_release_the_panel_theme(self):
+        released = []
+        with mock.patch.object(mtou_controller, "release_panel_theme",
+                               side_effect=released.append):
+            self.controller._card_decorations = ["card"]
+            self.controller._styled_controls = {"button": "widget"}
+            with self.bindings:
+                self.controller.close()
+            # Qt deletes the decorations with the panel it is closing.
+            self.assertEqual([], released)
+            self.assertEqual(([], {}), (self.controller._card_decorations,
+                                        self.controller._styled_controls))
+
+            self.controller._card_decorations = ["card"]
+            with self.bindings:
+                self.controller._on_maya_exiting()
+                self.controller._on_maya_exiting()
+
+        self.assertEqual([["card"], []], released)
+        self.assertEqual([], self.controller._card_decorations)
 
     def flush(self):
         while self.deferred:

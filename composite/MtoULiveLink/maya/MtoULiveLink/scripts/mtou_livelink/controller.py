@@ -34,7 +34,13 @@ from .scene import CharacterScene, CharacterSceneError, long_transform, require_
 from .session import StreamingSession, StreamingSessionError, bind_conflict_status
 from .space import format_fps, frames_per_second, validate_frame_rate
 from .timeline import load_playback_cap, save_playback_cap
-from .ui.layout import apply_panel_theme, elide_text, grid_row, text_units
+from .ui.layout import (
+    apply_panel_theme,
+    elide_text,
+    grid_row,
+    release_panel_theme,
+    text_units,
+)
 from .ui.reference_window import (
     REFERENCE_WINDOW_NAME,
     ReferenceWindow,
@@ -1311,6 +1317,15 @@ class Controller(object):
         del unused
         self._discard_cached_playback()
         self._shutdown_linkage()
+        # Maya tears the panel down after this callback; no Python object Qt
+        # calls back into may outlive it.
+        decorations = self._card_decorations
+        self._forget_panel_widgets()
+        release_panel_theme(decorations)
+
+    def _forget_panel_widgets(self):
+        self._card_decorations = []
+        self._styled_controls = {}
 
     def _remove_maya_exit_callback(self):
         callback_id, self._maya_exit_callback = self._maya_exit_callback, None
@@ -1947,9 +1962,10 @@ class Controller(object):
     def open_reference_window(self):
         """Show the scene-reference detail window, reusing the instance."""
         window = self._reference_window
-        if window is not None:
+        if window is not None and window.exists():
             window.show()
             return window
+        self._reference_window = None
         if cmds is not None and cmds.window(REFERENCE_WINDOW_NAME, exists=True):
             cmds.deleteUI(REFERENCE_WINDOW_NAME)
         window = ReferenceWindow(self)
@@ -1957,10 +1973,15 @@ class Controller(object):
         return window
 
     def close_reference_window(self):
-        """Release this detail window only; the reference state survives."""
+        """Delete this detail window only; the reference state survives."""
         window, self._reference_window = self._reference_window, None
         if window is not None:
             window.close()
+
+    def reference_window_closed(self, window):
+        """Maya closed ``window`` itself: forget it without deleting anything."""
+        if self._reference_window is window:
+            self._reference_window = None
 
     def _close_sub_windows(self):
         self.close_reference_window()
@@ -2225,9 +2246,12 @@ class Controller(object):
             pass
 
     def close(self, *unused):
+        """Maya is closing the panel: release what it owns, never delete it again."""
         self._remove_maya_exit_callback()
         self._remove_scene_replace_callbacks()
         self._clear_role()
+        # Qt deletes the decorations with the panel.
+        self._forget_panel_widgets()
 
 CONTROLLER = None
 

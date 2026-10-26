@@ -42,6 +42,7 @@
 
 ### Fixed
 
+- Closing the **MtoU 场景参考** window from its title bar no longer crashes Maya. (#80)
 - Linkage could show a stale pose at the target time. (#57)
 - Bone mapping depended on Maya's sibling order; duplicate short names now
   connect in any order, and a real ambiguity names the bones involved. (#55)
