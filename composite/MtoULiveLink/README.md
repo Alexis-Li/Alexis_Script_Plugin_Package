@@ -189,7 +189,8 @@ comparison work without it.
 3. Both hosts show one status line, for example
    镜头联动中 · Unreal 控制时间 · 同步正常. When Maya cannot keep up, the line
    says Maya 跟不上 with the lag; pause the Sequencer to let Maya catch up, or
-   close programs that load the machine. A lagging pose is never reported as
+   close programs that load the machine. If it happens often, see
+   [Common problems](#common-problems). A lagging pose is never reported as
    synchronised. The evaluation, sample and revision read-back stays in Maya's
    诊断详情 and Unreal's **高级设置与诊断**, ready for **复制完整诊断**.
 4. **返回实时** restores Maya's timeline, view and gate and keeps Maya paused
@@ -269,6 +270,7 @@ Maya origin until you do.
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |
 | Auto garment selection rejects an intentionally reduced mesh | Inspect the source for duplicates or mixed garment/body slots. If the reduction is intentional, set **Driver Garment Slot Override** on the Binding to the garment's separate slots, then refresh and inspect the result. |
 | BlendShapes do not appear | Check **Transfer BS**, matching names, the selected outfit, and the connection diagnostics. Refresh the Model preview after changing its source assets. |
+| Camera linkage often shows Maya 跟不上 with a lag | In Maya open **Windows > Settings/Preferences > Plug-in Manager** (Chinese UI: **窗口 > 设置/首选项 > 插件管理器**), clear **Auto load** for the plug-ins you do not use, for example MASH, XGen (`xgenToolkit`), GPU Cache, Scene Assembly, LookdevX and Type, then restart Maya. Plug-ins a scene needs are still loaded when you open it. |
 | Connection ends after a change | Reconnect after changing the outfit, mode, **Transfer BS**, or the character parts. Refreshing also disconnects the session. After changing or reimporting the Primary Driver or the Preview Static Mesh, or changing **Driver Garment Slot Override**, refresh the Model preview and reconnect. Undo/Redo of these changes follows the same rule. |
 
 Keep the Binding Actor and its level loaded while previewing; deleting the actor

@@ -264,12 +264,17 @@ private:
                 bStarted = Test->TestTrue(TEXT("播放 starts"), Actor->StartCachedPlayback());
                 return !bStarted;
             }
+            // Maya may still be loading plug-ins; record what is loaded while the cache plays.
+            const bool bSampled = SendOnce(TEXT("sample_plugins"),
+                Field(TEXT("name"), MakeShared<FJsonValueString>(TEXT("playback"))));
             const FMtoUCachePlaybackView Cache = Actor->GetCachePlaybackView();
-            if (Cache.State != EMtoUCacheState::Completed)
+            if (Cache.State != EMtoUCacheState::Completed || !bSampled)
             {
                 return false;
             }
             bStarted = false;
+            Test->TestTrue(TEXT("Maya sampled its loaded plug-ins during playback"),
+                Driver.PreferencesRecord(TEXT("playback"))->GetNumberField(TEXT("loaded_plugins")) >= 0.0);
             Log(FString::Printf(TEXT("cache playback completed: %d frames applied, last source frame %d"),
                 Cache.AppliedFrames, Cache.CurrentSourceFrame));
             Test->TestEqual(TEXT("playback applies every frame"), Cache.AppliedFrames, Last - First + 1);
@@ -559,6 +564,7 @@ private:
         {
             MtoUGuiAcceptance::CheckMayaDialogs(*Test, Driver.Poll(), ExpectedDialogs(),
                 [this](const FString& Line) { Log(Line); });
+            Log(Driver.DescribePreferences(TEXT("playback")));
             WriteJsonFile(FPaths::Combine(EvidenceDir, TEXT("maya-final.json")), MayaResult.ToSharedRef());
         }
         Driver.Terminate();
