@@ -22,20 +22,46 @@ Install the Maya and Unreal components from the same release.
 
 The component paths below are relative to this product directory.
 
-1. Copy the whole `maya/MtoULiveLink/scripts/` directory — `MtoULiveLink.py` and
-   its `mtou_livelink/` package — into a Maya scripts directory, or run
-   `MtoULiveLink.py` directly in Maya's Python Script Editor. The package must
-   stay beside the entry file; copying the single file alone no longer runs.
-2. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
-3. Compile the Unreal project. For Topia Engine, use the instructions below.
-4. Enable **Live Link** and **MtoU_LiveLink**, then restart Unreal Editor.
+**Maya**
+
+1. Put the Maya component folder (`maya/MtoULiveLink/`, or the extracted
+   `MtoULiveLink-<version>.zip`) in a location you will keep.
+2. Open Maya and drag the folder's `install.mel` into a viewport.
+3. Confirm the prompt. An **MtoU** button appears on the shelf (an existing one
+   is kept); click it to open the tool.
+
+The installation registers the folder as a Maya module (`MtoULiveLink.mod` in
+the `modules` folder of the user Maya directory, usually `Documents/maya`), so
+do not move or delete the folder afterwards. Maya cannot load a module from a
+path with non-English characters such as Chinese; for such a path the
+installation copies the tool to `modules/MtoULiveLink`, and the original folder
+can then be deleted. When it finds an earlier installation, such as
+`MtoULiveLink.py` in a Maya scripts directory, the installation asks before
+moving it to the `MtoULiveLink_backup` folder of the user Maya directory. If
+the current Maya session has already opened an earlier version, restart Maya
+when prompted.
+
+**Unreal**
+
+1. Copy `unreal/MtoULiveLink/` to `<Project>/Plugins/MtoULiveLink/`.
+2. Compile the Unreal project. For Topia Engine, use the instructions below.
+3. Enable **Live Link** and **MtoU_LiveLink**, then restart Unreal Editor.
+
+**Upgrade, rollback and removal**
 
 Maya and Unreal components upgrade and roll back as a pair: both hosts speak
-the same protocol version and refuse a mixed pair before touching a scene. To
-upgrade, replace both components and reconnect; to roll back, restore the
-previous release's `scripts/` directory (entry file **and** package) and the
-previous plugin build, then reconnect. Close the current session or restart
-Maya before replacing files.
+the same protocol version and refuse a mixed pair before touching a scene.
+End the current session first, then:
+
+- Upgrade: drag the new Maya component's `install.mel` into Maya, replace the
+  Unreal plugin, and reconnect.
+- Roll back: drag the previous Maya component's `install.mel` into Maya. If
+  the previous release has no `install.mel`, first delete the files listed
+  under removal, then install it as its instructions describe. Restore the
+  previous Unreal plugin build and reconnect.
+- Remove the Maya component: delete `MtoULiveLink.mod` and any
+  `MtoULiveLink` folder from the `modules` folder of the user Maya directory,
+  delete the MtoU shelf button, then restart Maya.
 
 ### Topia Engine 5.7.4
 
@@ -121,7 +147,7 @@ on the Binding. All enabled parts pose and display under one connection:
    occupy the daily view.
    The connection reads 未连接 before the first session, 已连接 while streaming,
    and 连接已中断 after a session ends; reconnect in Maya after an interruption.
-3. In Maya, run `MtoULiveLink.py`, select the deformation root joint, and click
+3. In Maya, click the **MtoU** shelf button, select the deformation root joint, and click
    **Set Character** (设置角色). Switch between **Animation** (动画) and **Model**
    (模型) at the top. Below are Connection Controls (set character, connect,
    disconnect, and connection status), Scene Info (root, outfit, and frame rate
@@ -264,7 +290,8 @@ Maya origin until you do.
 
 | Problem | What to do |
 | --- | --- |
-| Maya reports an incomplete MtoU_LiveLink install | A part of the `scripts` directory is missing; the message names it. Copy the whole `scripts` directory (`MtoULiveLink.py` and the `mtou_livelink` folder) into one Maya scripts directory again, then restart Maya. |
+| Maya reports an incomplete MtoU_LiveLink install | The message names the missing file. Extract the whole Maya component again, drag its `install.mel` into a Maya viewport, then restart Maya. |
+| The MtoU button still opens the earlier version after installation | The current Maya session had already loaded the earlier version; restart Maya. |
 | Skeleton mismatch | Start from the reported root cause: the first unmapped Maya path and parent, the blocked Maya and unreached Unreal counts, and any suggested import rename. When the details report that one required bone is claimed by two Maya bones, rename one of them in Maya. Then check the selected Maya root, the hierarchy, and whether the Unreal Driver mesh is up to date. |
 | An Additional Part is rejected | The diagnostics name the part and the reason. Check the shared **Skeleton** asset, the reported required bones and their parent chains in Maya, and the shared reference poses. If skin weights cannot be read, rebuild or reimport the mesh with CPU skin data available. |
 | Preview refresh fails | Check mesh alignment and separate garment/body material slots. Correct the reported issue and refresh again. |

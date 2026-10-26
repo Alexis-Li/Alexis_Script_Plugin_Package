@@ -156,7 +156,7 @@ class IncompleteInstallTests(unittest.TestCase):
 
         self.assertNotEqual(0, code)
         self.assertIn("MtoU_LiveLink 安装不完整：找不到 mtou_livelink", stderr)
-        self.assertIn("Copy the whole scripts directory", stderr)
+        self.assertIn("drag its install.mel into a Maya viewport", stderr)
 
     def test_missing_module_is_named_in_the_report(self):
         code, stderr = self.import_entry(keep_package=True, drop_module="linkage.py")

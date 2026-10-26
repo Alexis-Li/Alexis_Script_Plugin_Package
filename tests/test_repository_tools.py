@@ -385,6 +385,8 @@ class RepositoryToolTests(unittest.TestCase):
             self.assertIn("scripts/MtoULiveLink.py", names)
             self.assertIn("scripts/mtou_livelink/controller.py", names)
             self.assertIn("scripts/mtou_livelink/ui/style.py", names)
+            self.assertIn("install.mel", names)
+            self.assertIn("scripts/mtou_livelink/install.py", names)
             self.assertFalse(
                 [name for name in names if "__pycache__" in name or name.endswith(".pyc")]
             )

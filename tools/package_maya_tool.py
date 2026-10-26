@@ -28,6 +28,7 @@ def package(name: str, output_dir: Path, apply: bool = False) -> dict:
         project / "plug-ins",
         project / "icons",
         project / "presets",
+        project / "install.mel",
         project / "README.md",
         project / "README_CN.md",
         project / "CHANGELOG.md",
