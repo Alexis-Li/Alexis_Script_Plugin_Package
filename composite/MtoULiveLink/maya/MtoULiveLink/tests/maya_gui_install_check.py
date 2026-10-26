@@ -18,8 +18,8 @@ dialogs are answered with their first button and recorded.
 1. ``install_old``: the previous single-file release is installed; a saved
    shelf button runs ``import MtoULiveLink; MtoULiveLink.run()``.
 2. ``drag_install``: the saved button opens the old release, then the
-   Chinese-path package's ``install.mel`` is dropped. The old file is moved
-   to the backup, the copy and ``.mod`` are written, the existing button is
+   Chinese-path package's ``install.mel`` is dropped. The old file is deleted
+   without a backup, the copy and ``.mod`` are written, the existing button is
    kept and a restart is requested because the old release is loaded.
 3. ``upgrade``: after the restart the saved button opens the new release from
    the module; ``run()`` and ``main()`` reuse one panel, closing and reopening
@@ -216,6 +216,9 @@ def _in_maya():
             drop_install_mel()
             result["loaded"] = loaded()
             result["tool_buttons_after"] = [shelf for shelf, _ in tool_buttons()]
+            app_dir = Path(cmds.internalVar(userAppDir=True))
+            result["legacy_entry_left"] = (app_dir / "scripts" / "MtoULiveLink.py").exists()
+            result["app_dir_listing"] = sorted(path.name for path in app_dir.iterdir())
         elif step in ("upgrade", "rollback", "clean_restart"):
             press_saved()
             result["loaded"] = loaded()

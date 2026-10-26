@@ -35,11 +35,11 @@ the `modules` folder of the user Maya directory, usually `Documents/maya`), so
 do not move or delete the folder afterwards. Maya cannot load a module from a
 path with non-English characters such as Chinese; for such a path the
 installation copies the tool to `modules/MtoULiveLink`, and the original folder
-can then be deleted. When it finds an earlier installation, such as
-`MtoULiveLink.py` in a Maya scripts directory, the installation asks before
-moving it to the `MtoULiveLink_backup` folder of the user Maya directory. If
-the current Maya session has already opened an earlier version, restart Maya
-when prompted.
+can then be deleted. When it finds an earlier version that
+`install.mel` did not install, such as `MtoULiveLink.py` in a Maya scripts
+directory, the installation lists it and deletes it after you confirm;
+cancelling changes nothing. If the current Maya session has already opened an
+earlier version, restart Maya when prompted.
 
 **Unreal**
 

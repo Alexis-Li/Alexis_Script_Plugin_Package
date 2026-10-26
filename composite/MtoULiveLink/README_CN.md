@@ -30,9 +30,9 @@ MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 May
 安装会把这个文件夹登记为 Maya 模块（用户 Maya 目录 `modules` 文件夹中的
 `MtoULiveLink.mod`，用户 Maya 目录通常是 `文档/maya`），之后不要移动或删除
 该文件夹。文件夹路径包含中文等非英文字符时，Maya 无法从该路径加载，安装会把
-工具复制到 `modules/MtoULiveLink`，原文件夹之后可以删除。发现旧版安装（例如
-Maya scripts 目录中的 `MtoULiveLink.py`）时，安装会先询问，再把它们移到
-用户 Maya 目录的 `MtoULiveLink_backup` 文件夹。当前 Maya 已打开过旧版本时，
+工具复制到 `modules/MtoULiveLink`，原文件夹之后可以删除。发现不是用 `install.mel`
+装上的旧版本（例如 Maya scripts 目录中的 `MtoULiveLink.py`）时，安装会列出
+它们并询问，确认后删除，取消则不做任何修改。当前 Maya 已打开过旧版本时，
 按提示重启 Maya。
 
 **Unreal**

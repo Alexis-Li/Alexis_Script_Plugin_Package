@@ -10,7 +10,6 @@ a component extracted under such a path is copied into the Maya `modules`
 folder and registered there by a relative path.
 """
 
-import datetime
 import importlib
 import os
 import re
@@ -22,7 +21,6 @@ ENTRY_FILE = "MtoULiveLink.py"
 PACKAGE_DIR = "mtou_livelink"
 MOD_FILE = MODULE_NAME + ".mod"
 COPY_MARKER = ".mtou_module_copy"
-BACKUP_DIR = MODULE_NAME + "_backup"
 SHELF_COMMAND = "import MtoULiveLink\nMtoULiveLink.run()"
 SHELF_LABEL = "MtoU"
 TITLE = "MtoU_LiveLink"
@@ -169,24 +167,17 @@ def plan_install(root, modules_dir, script_dirs, module_dirs):
     return plan
 
 
-def apply_install(plan, backup_root, now=None):
-    """Move conflicts to a backup, write the copy and `.mod`; return the backup folder."""
-    backup = None
-    if plan.conflicts:
-        stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
-        backup = os.path.join(backup_root, stamp)
-        suffix = 1
-        while os.path.exists(backup):
-            suffix += 1
-            backup = os.path.join(backup_root, "{0}-{1}".format(stamp, suffix))
-        os.makedirs(backup)
-        lines = []
-        for index, path in enumerate(plan.conflicts, 1):
-            target = os.path.join(backup, "{0:02d}_{1}".format(index, os.path.basename(path)))
-            shutil.move(path, target)
-            lines.append("{0}\t{1}".format(os.path.basename(target), path))
-        with open(os.path.join(backup, "sources.txt"), "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
+def _remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+
+
+def apply_install(plan):
+    """Delete the conflicts, write the copy and `.mod`; return the deleted paths."""
+    for path in plan.conflicts:
+        _remove(path)
     if plan.remove_copy:
         shutil.rmtree(os.path.join(os.path.dirname(plan.mod_path), MODULE_NAME))
     if plan.copy_dir:
@@ -199,7 +190,7 @@ def apply_install(plan, backup_root, now=None):
     os.makedirs(os.path.dirname(plan.mod_path), exist_ok=True)
     with open(plan.mod_path, "w", encoding="ascii", newline="\n") as handle:
         handle.write(plan.mod_text)
-    return backup
+    return list(plan.conflicts)
 
 
 def opens_tool(command):
@@ -275,7 +266,7 @@ def _ensure_shelf_button(cmds, mel):
     return "added"
 
 
-def _message(plan, restart_file, shelf, backup):
+def _message(plan, restart_file, shelf, removed):
     lines = ["MtoU_LiveLink {0} 已安装。".format(plan.version)]
     if restart_file:
         lines.append("当前 Maya 已加载其他位置的 MtoU（{0}），请重启 Maya 后再打开。".format(
@@ -289,8 +280,8 @@ def _message(plan, restart_file, shelf, backup):
                      "解压目录可以删除。".format(plan.copy_dir))
     else:
         lines.append("请保留解压目录 {0}：移动或删除它会使工具无法加载。".format(plan.module_dir))
-    if backup:
-        lines.append("旧版安装已移到 {0}。".format(backup))
+    if removed:
+        lines.append("已删除 {0} 处旧版安装。".format(len(removed)))
     return "\n".join(lines)
 
 
@@ -317,24 +308,24 @@ def install_from_maya(root):
     if plan.conflicts and interactive:
         listed = "\n".join("  " + path for path in plan.conflicts)
         answer = cmds.confirmDialog(
-            title=TITLE, button=["移到备份并继续", "取消"], defaultButton="移到备份并继续",
+            title=TITLE, button=["删除并继续", "取消"], defaultButton="删除并继续",
             cancelButton="取消", dismissString="取消",
-            message="发现会与新版本冲突的旧安装：\n{0}\n\n继续会把它们移到 {1}，"
-                    "之后可从那里恢复。".format(listed, os.path.join(app_dir, BACKUP_DIR)))
-        if answer != "移到备份并继续":
+            message="发现会与新版本冲突的旧版安装：\n{0}\n\n继续将删除它们；"
+                    "取消则不做任何修改。".format(listed))
+        if answer != "删除并继续":
             return {"installed": False, "cancelled": True, "conflicts": plan.conflicts}
 
     try:
-        backup = apply_install(plan, os.path.join(app_dir, BACKUP_DIR))
+        removed = apply_install(plan)
     except OSError as error:
         message = "安装失败：{0}\nInstallation failed: {0}".format(error)
         tell(message)
         return {"installed": False, "error": message}
     restart_file = activate(plan)
     shelf = _ensure_shelf_button(cmds, mel) if interactive else None
-    message = _message(plan, restart_file, shelf, backup)
+    message = _message(plan, restart_file, shelf, removed)
     tell(message)
     return {"installed": True, "version": plan.version, "mod_path": plan.mod_path,
             "mod_text": plan.mod_text, "module_dir": plan.module_dir,
-            "copied": bool(plan.copy_dir), "backup": backup, "conflicts": plan.conflicts,
+            "copied": bool(plan.copy_dir), "removed": removed,
             "restart_required": restart_file, "shelf": shelf, "message": message}

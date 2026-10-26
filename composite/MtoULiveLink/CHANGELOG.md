@@ -4,8 +4,8 @@
 
 - Install the Maya component by dragging its `install.mel` into a Maya
   viewport (Issue #78). It registers the folder as a Maya module, keeps or adds
-  the MtoU shelf button and offers to move an earlier installation to a
-  backup; the README describes upgrade, rollback and removal.
+  the MtoU shelf button and offers to delete an earlier manual installation;
+  the README describes upgrade, rollback and removal.
 
 - Document what to do when camera linkage often shows Maya 跟不上 (Issue #76):
   Maya's default automatically loaded plug-ins (MASH, XGen, GPU Cache, Scene

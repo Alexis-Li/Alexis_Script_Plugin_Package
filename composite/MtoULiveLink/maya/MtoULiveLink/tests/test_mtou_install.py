@@ -1,7 +1,6 @@
 # ruff: noqa: E402
 """Drag-and-drop installer: the `.mod`, the copy, conflicts and activation."""
 
-import datetime
 import os
 import pathlib
 import shutil
@@ -45,7 +44,7 @@ class InstallTests(unittest.TestCase):
     def test_ascii_path_registers_the_extracted_folder(self):
         root = self.component("Tools/MtoU 0.10")
         plan = self.plan(root)
-        install.apply_install(plan, str(self.app / "backup"))
+        install.apply_install(plan)
 
         text = (self.modules / "MtoULiveLink.mod").read_text(encoding="ascii")
         self.assertEqual("+ MtoULiveLink {0} {1}\n".format(mtou_config.__version__,
@@ -58,7 +57,7 @@ class InstallTests(unittest.TestCase):
     def test_non_ascii_path_is_copied_into_modules_by_relative_path(self):
         root = self.component("发布 目录/MtoULiveLink")
         plan = self.plan(root)
-        install.apply_install(plan, str(self.app / "backup"))
+        install.apply_install(plan)
 
         copy = self.modules / "MtoULiveLink"
         self.assertEqual("+ MtoULiveLink {0} MtoULiveLink\n".format(mtou_config.__version__),
@@ -72,16 +71,15 @@ class InstallTests(unittest.TestCase):
         (copy / "scripts" / "stale.py").write_text("", encoding="utf-8")
         plan = self.plan(root)
         self.assertEqual([], plan.conflicts)
-        install.apply_install(plan, str(self.app / "backup"))
+        install.apply_install(plan)
         self.assertFalse((copy / "scripts" / "stale.py").exists())
 
     def test_ascii_install_removes_an_earlier_managed_copy(self):
-        install.apply_install(self.plan(self.component("中文/MtoULiveLink")),
-                              str(self.app / "backup"))
+        install.apply_install(self.plan(self.component("中文/MtoULiveLink")))
         root = self.component("plain/MtoULiveLink")
         plan = self.plan(root)
         self.assertTrue(plan.remove_copy)
-        install.apply_install(plan, str(self.app / "backup"))
+        install.apply_install(plan)
         self.assertFalse((self.modules / "MtoULiveLink").exists())
         self.assertIn(root.as_posix(), (self.modules / "MtoULiveLink.mod").read_text())
 
@@ -103,7 +101,7 @@ class InstallTests(unittest.TestCase):
             self.plan(root)
         self.assertFalse(self.modules.exists())
 
-    def test_earlier_installs_are_conflicts_moved_to_a_backup(self):
+    def test_earlier_installs_are_conflicts_deleted_without_a_backup(self):
         (self.user_scripts / "MtoULiveLink.py").write_text("old", encoding="utf-8")
         (self.user_scripts / "mtou_livelink").mkdir()
         other_modules = self.app / "2024" / "modules"
@@ -121,27 +119,14 @@ class InstallTests(unittest.TestCase):
                     other_modules / "Old.mod"]),
             sorted(pathlib.Path(path) for path in plan.conflicts))
 
-        backup = install.apply_install(plan, str(self.app / "backup"),
-                                       now=datetime.datetime(2026, 10, 26, 9, 30, 0))
-        self.assertEqual(self.app / "backup" / "20261026-093000", pathlib.Path(backup))
+        removed = install.apply_install(plan)
+        self.assertEqual(plan.conflicts, removed)
         self.assertFalse((self.user_scripts / "MtoULiveLink.py").exists())
+        self.assertFalse((self.user_scripts / "mtou_livelink").exists())
         self.assertFalse((other_modules / "Old.mod").exists())
         self.assertTrue((other_modules / "Other.mod").exists())
-        sources = (pathlib.Path(backup) / "sources.txt").read_text(encoding="utf-8")
-        self.assertIn(str(self.user_scripts / "MtoULiveLink.py"), sources)
-        self.assertEqual(3, len(sources.splitlines()))
-        self.assertEqual("old", (pathlib.Path(backup) / "01_MtoULiveLink.py").read_text())
-
-    def test_backups_in_the_same_second_do_not_collide(self):
-        now = datetime.datetime(2026, 10, 26, 9, 30, 0)
-        root = self.component("again/MtoULiveLink")
-        backups = []
-        for _ in range(2):
-            (self.user_scripts / "MtoULiveLink.py").write_text("old", encoding="utf-8")
-            backups.append(install.apply_install(self.plan(root), str(self.app / "backup"),
-                                                 now=now))
-        self.assertEqual(["20261026-093000", "20261026-093000-2"],
-                         [pathlib.Path(path).name for path in backups])
+        self.assertEqual(["MtoULiveLink.mod"], sorted(path.name for path in self.modules.iterdir()))
+        self.assertEqual([], sorted(self.app.glob("*backup*")))
 
     def test_component_inside_the_copy_target_is_refused(self):
         root = self.component("maya-app/modules/MtoULiveLink/发布/MtoULiveLink")
@@ -151,7 +136,7 @@ class InstallTests(unittest.TestCase):
 
     def test_reinstall_has_no_conflict_with_its_own_mod(self):
         root = self.component("same/MtoULiveLink")
-        install.apply_install(self.plan(root), str(self.app / "backup"))
+        install.apply_install(self.plan(root))
         self.assertEqual([], self.plan(root).conflicts)
 
     def test_an_unmanaged_modules_folder_is_a_conflict_for_a_copy(self):
