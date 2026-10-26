@@ -98,6 +98,15 @@ and a host loop (the `maya_*_peer.py` scripts) must call
 - Wait on the reply or state a test needs, not on a fixed read timeout per
   step; only a protocol window that is itself under test may set the duration.
 
+## Versions
+
+The product version (Maya `__version__`, Unreal `VersionName` and `Version`)
+names the next release and changes only in the release change, for both
+components together; PRs leave it alone. It is 0.10.0 until that release.
+The protocol version both hosts negotiate still changes with the wire
+contract; the PR that changes it adds an `Upgrade notes` entry under
+`Unreleased` instead of bumping the product version.
+
 ## Changelog
 
 Write `CHANGELOG.md` for users upgrading. Group each version's entries under
