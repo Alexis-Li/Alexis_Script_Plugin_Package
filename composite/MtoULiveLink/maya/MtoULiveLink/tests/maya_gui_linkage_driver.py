@@ -26,15 +26,18 @@ Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``disconnect``,
 ``capture`` (``range`` ``[start, end]``), ``time`` (``frame``), ``snapshot``,
 ``panel_shot`` (with ``name``), ``stage`` (with ``name``: every dialog is
 recorded with the latest stage, so the test can tell which ones a scenario
-expects), ``quit``. Each runs the handler of the panel
-control it names. The result file always carries the latest linkage status
-and the panel's workflow, mode, cache state and status line; ``ack`` names
-the last finished command.
+expects), ``sample_plugins`` (with ``name``), ``quit``. Each runs the handler
+of the panel control it names. The result file always carries the latest
+linkage status and the panel's workflow, mode, cache state and status line;
+``ack`` names the last finished command.
 
-``prefs`` describes the ``MAYA_APP_DIR`` this Maya started with, read before
-Maya can save it again: its ``pluginPrefs.mel``, that file's SHA-256 and the
-plug-ins it loads automatically. ``plugins`` lists the plug-ins loaded when the
-latest ``stage`` or ``snapshot`` command ran, with that stage.
+``prefs`` describes the preferences this Maya started with, read before Maya
+can save them again: the ``pluginPrefs.mel`` in this Maya's own preference
+folder (``internalVar(userPrefDir=True)``), that file's SHA-256 and the
+plug-ins it loads automatically. ``plugin_samples`` keeps, under each
+``sample_plugins`` name, the plug-ins loaded when that command ran, its stage
+and the seconds since the driver started; a later command never replaces it.
+``plugins`` lists the plug-ins loaded at the latest ``stage`` or ``snapshot``.
 """
 
 import json
@@ -62,7 +65,9 @@ import maya_prefs_template
 RESULT = {"phase": "starting", "ok": True, "ack": -1, "dialogs": [], "errors": [],
           "events": [], "shots": [], "maya_version": cmds.about(version=True),
           "pid": os.getpid(),
-          "prefs": maya_prefs_template.describe(os.environ.get("MAYA_APP_DIR", ""))}
+          "prefs": maya_prefs_template.describe(cmds.internalVar(userPrefDir=True),
+                                                os.environ.get("MAYA_APP_DIR", ""))}
+STARTED = time.time()
 
 
 def write_result():
@@ -356,6 +361,10 @@ def run_command(command):
     elif action == "snapshot":
         RESULT["snapshot"] = snapshot()
         record_plugins()
+    elif action == "sample_plugins":
+        maya_prefs_template.record_plugin_sample(
+            RESULT, command.get("name") or "sample", RESULT.get("stage", "startup"),
+            cmds.pluginInfo(query=True, listPlugins=True) or [], time.time() - STARTED)
     elif action == "panel_shot":
         CONTROLLER.show_diagnostics()
         grab_windows(command.get("name", "panel"))

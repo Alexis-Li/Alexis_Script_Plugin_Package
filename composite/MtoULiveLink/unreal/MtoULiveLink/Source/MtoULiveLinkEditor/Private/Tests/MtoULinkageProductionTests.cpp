@@ -1064,7 +1064,13 @@ private:
             }
             ++PlayTicks;
             bAnchorMoved |= !Actor->GetActorTransform().Equals(LinkageAnchor, 0.01);
-            return Now - PlayStarted > Fixture->GetNumberField(TEXT("play_seconds"));
+            const double PlaySeconds = Fixture->GetNumberField(TEXT("play_seconds"));
+            if (PluginSampleId < 0 && Now - PlayStarted >= 0.25 * PlaySeconds)
+            {
+                // Maya may still be loading plug-ins; record what is loaded while it plays.
+                PluginSampleId = SendMaya(TEXT("sample_plugins"), FString(), TEXT("playback"));
+            }
+            return Now - PlayStarted > PlaySeconds && PluginSampleId >= 0 && MayaAcked(PluginSampleId);
         });
         Add(TEXT("stopping converges on the last target"), 60.0, [this]()
         {
@@ -1082,8 +1088,11 @@ private:
                 Log(FString::Printf(TEXT("playback: %.1f s, %d editor ticks, %d complete applications spanning %.1f frames, max lag %.3f s"),
                     Seconds, PlayTicks, AppliedFrames.Num(), Span, MaxLag));
                 // Throughput depends on the plug-ins Maya loads; runs compare only with the same preferences.
-                Log(Driver.DescribePreferences());
-                Evidence->SetObjectField(TEXT("maya_prefs"), Driver.PreferencesRecord());
+                const TSharedRef<FJsonObject> Prefs = Driver.PreferencesRecord(TEXT("playback"));
+                Log(MtoUGuiAcceptance::DescribeMayaPreferences(Prefs));
+                Evidence->SetObjectField(TEXT("maya_prefs"), Prefs);
+                Test->TestTrue(TEXT("Maya sampled its loaded plug-ins during playback"),
+                    Prefs->GetNumberField(TEXT("loaded_plugins")) >= 0.0);
                 Test->TestTrue(TEXT("several complete groups were applied while playing"), AppliedFrames.Num() >= 3);
                 Test->TestTrue(TEXT("the applied time keeps advancing"), bMonotonic && Span > 0.0);
                 Test->TestTrue(TEXT("Maya answers slower than the editor frame rate"),
@@ -1331,6 +1340,7 @@ private:
     FString MayaCameraBefore, LeaveIssued, LastApplied;
     double PlayStarted = 0.0, MaxLag = 0.0;
     int32 PlayTicks = 0;
+    int32 PluginSampleId = -1;
     TArray<double> AppliedFrames;
     bool bStopped = false;
     bool Reconnected = true;

@@ -7,8 +7,9 @@
   Assembly, LookdevX, Type and others together) make its viewport stall
   during linkage; the README Common problems explain how to turn off their
   Auto load. The Maya GUI acceptance tests accept `maya.app_dir_template`,
-  copied into each run's evidence, and record the preference source,
-  `pluginPrefs.mel` SHA-256 and plug-in counts; `maya_prefs_template.py` builds
+  copied into each run's evidence, and record the preference source, the
+  SHA-256 of the running Maya's own `pluginPrefs.mel`, its autoload count and
+  the plug-ins loaded during playback; `maya_prefs_template.py` builds
   the `minimal` and `maya-default` templates.
 
 - Show only state, actions, problems and their remedy on the MtoU panels

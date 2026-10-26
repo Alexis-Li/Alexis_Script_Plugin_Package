@@ -47,24 +47,66 @@ class PrefsTemplateTests(unittest.TestCase):
         self.assertEqual(template.autoload_plugins(DEFAULT),
                          ["mayaHIK", "modelingToolkit", "ufeSupport", "MASH"])
 
-    def test_describe_finds_a_language_folder_and_hashes_the_bytes(self):
+    def test_describe_reads_the_given_folder_and_hashes_the_bytes(self):
         path = self._write("app/2024/zh_CN/prefs/pluginPrefs.mel", DEFAULT)
-        info = template.describe(self.root / "app")
+        info = template.describe(self.root / "app/2024/zh_CN/prefs", self.root / "app")
         self.assertEqual(info["plugin_prefs"], "2024/zh_CN/prefs/pluginPrefs.mel")
         self.assertEqual(info["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertEqual(len(info["autoload"]), 4)
 
-    def test_describe_finds_the_english_folder(self):
-        self._write("app/2024/prefs/pluginPrefs.mel", DEFAULT)
-        self.assertEqual(template.describe(self.root / "app")["plugin_prefs"],
-                         "2024/prefs/pluginPrefs.mel")
+    def test_describe_keeps_to_the_running_version(self):
+        self._write("app/2022/prefs/pluginPrefs.mel", DEFAULT.replace("MASH", "other2022"))
+        path = self._write("app/2024/prefs/pluginPrefs.mel", DEFAULT)
+        info = template.describe(self.root / "app/2024/prefs", self.root / "app")
+        self.assertEqual(info["plugin_prefs"], "2024/prefs/pluginPrefs.mel")
+        self.assertEqual(info["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
-    def test_describe_reports_a_directory_without_a_saved_list(self):
-        (self.root / "app").mkdir()
-        info = template.describe(self.root / "app")
+    def test_describe_keeps_to_the_running_language(self):
+        self._write("app/2024/prefs/pluginPrefs.mel", DEFAULT.replace("MASH", "english"))
+        path = self._write("app/2024/zh_CN/prefs/pluginPrefs.mel", DEFAULT)
+        info = template.describe(self.root / "app/2024/zh_CN/prefs", self.root / "app")
+        self.assertEqual(info["plugin_prefs"], "2024/zh_CN/prefs/pluginPrefs.mel")
+        self.assertEqual(info["autoload"][-1], "MASH")
+        self.assertEqual(info["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_describe_never_borrows_another_folders_list(self):
+        self._write("app/2022/prefs/pluginPrefs.mel", DEFAULT)
+        self._write("app/2024/prefs/pluginPrefs.mel", DEFAULT)
+        (self.root / "app/2024/zh_CN/prefs").mkdir(parents=True)
+        info = template.describe(self.root / "app/2024/zh_CN/prefs", self.root / "app")
         self.assertIsNone(info["plugin_prefs"])
         self.assertIsNone(info["sha256"])
         self.assertIsNone(info["autoload"])
+
+    def test_saved_list_lookup_refuses_an_ambiguous_directory(self):
+        self._write("work/2022/prefs/pluginPrefs.mel", DEFAULT)
+        self._write("work/2024/prefs/pluginPrefs.mel", DEFAULT)
+        with self.assertRaises(ValueError):
+            template.find_saved_plugin_prefs(self.root / "work")
+        self._write("one/2024/zh_CN/prefs/pluginPrefs.mel", DEFAULT)
+        self._write("one/2024/prefs/pluginPrefs.mel", DEFAULT)
+        with self.assertRaises(ValueError):
+            template.find_saved_plugin_prefs(self.root / "one")
+
+    def test_saved_list_lookup_finds_the_single_file(self):
+        path = self._write("work/2024/zh_CN/prefs/pluginPrefs.mel", DEFAULT)
+        self.assertEqual(template.find_saved_plugin_prefs(self.root / "work"), path)
+        (self.root / "empty").mkdir()
+        self.assertIsNone(template.find_saved_plugin_prefs(self.root / "empty"))
+
+    def test_playback_sample_survives_later_stages(self):
+        result = {}
+        self.assertTrue(template.record_plugin_sample(
+            result, "playback", "realtime", ["b", "a"] + ["late%d" % i for i in range(7)], 41.5))
+        # The oracle snapshots saw fewer plug-ins; a later stage and a repeated
+        # command must not replace what playback saw.
+        result["plugins"] = {"stage": "close_world", "loaded": ["a"]}
+        self.assertFalse(template.record_plugin_sample(result, "playback", "end", ["a"], 90.0))
+        sample = result["plugin_samples"]["playback"]
+        self.assertEqual(sample["stage"], "realtime")
+        self.assertEqual(len(sample["loaded"]), 9)
+        self.assertEqual(sample["loaded"][:2], ["a", "b"])
+        self.assertEqual(sample["elapsed_s"], 41.5)
 
     def _first_start(self, plugin_prefs=DEFAULT, user_prefs=SAVED_USER_PREFS):
         self._write("work/2024/prefs/userPrefs.mel", user_prefs)

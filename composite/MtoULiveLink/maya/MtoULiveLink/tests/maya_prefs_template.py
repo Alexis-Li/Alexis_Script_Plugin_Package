@@ -45,9 +45,16 @@ _SETTLE_SECONDS = 10.0
 _SETTLE_LIMIT_SECONDS = 300.0
 
 
-def find_plugin_prefs(app_dir):
-    """The ``pluginPrefs.mel`` under ``app_dir``, or None when Maya has not saved one."""
-    found = sorted(Path(app_dir).glob("*/**/prefs/" + PLUGIN_PREFS))
+def find_saved_plugin_prefs(root):
+    """The one ``pluginPrefs.mel`` a single Maya start saved under ``root``.
+
+    Only for a disposable directory one Maya used: None when there is none,
+    ValueError when several versions or languages leave the choice open.
+    """
+    found = sorted(Path(root).glob("*/**/prefs/" + PLUGIN_PREFS))
+    if len(found) > 1:
+        raise ValueError("several {0} under {1}: {2}".format(
+            PLUGIN_PREFS, root, ", ".join(p.relative_to(root).as_posix() for p in found)))
     return found[0] if found else None
 
 
@@ -56,17 +63,41 @@ def autoload_plugins(text):
     return _AUTOLOAD.findall(text)
 
 
-def describe(app_dir):
-    """What a preference directory loads: the file, its SHA-256 and its plug-ins."""
-    path = find_plugin_prefs(app_dir)
-    if path is None:
-        return {"app_dir": str(app_dir), "plugin_prefs": None, "sha256": None,
+def describe(pref_dir, app_dir=""):
+    """What ``pref_dir`` (the running Maya's ``internalVar(userPrefDir=True)``) loads.
+
+    Reads only ``pref_dir/pluginPrefs.mel``, never a sibling version or
+    language folder; ``plugin_prefs`` is relative to ``app_dir`` when inside it.
+    """
+    path = Path(pref_dir) / PLUGIN_PREFS
+    shown = path.as_posix()
+    if app_dir:
+        try:
+            shown = path.resolve().relative_to(Path(app_dir).resolve()).as_posix()
+        except ValueError:
+            pass
+    if not path.is_file():
+        return {"pref_dir": Path(pref_dir).as_posix(), "plugin_prefs": None, "sha256": None,
                 "autoload": None}
     data = path.read_bytes()
-    return {"app_dir": str(app_dir),
-            "plugin_prefs": path.relative_to(app_dir).as_posix(),
+    return {"pref_dir": Path(pref_dir).as_posix(),
+            "plugin_prefs": shown,
             "sha256": hashlib.sha256(data).hexdigest(),
             "autoload": autoload_plugins(data.decode("utf-8", "replace"))}
+
+
+def record_plugin_sample(result, label, stage, loaded, elapsed):
+    """Keep the plug-ins loaded at one named moment in ``result["plugin_samples"]``.
+
+    The first sample under a label stays: later stages, snapshots or a repeated
+    command never replace what was loaded at that moment. Returns whether it was
+    stored.
+    """
+    samples = result.setdefault("plugin_samples", {})
+    if label in samples:
+        return False
+    samples[label] = {"stage": stage, "loaded": sorted(loaded), "elapsed_s": round(elapsed, 2)}
+    return True
 
 
 def minimal_text(default_text):
@@ -146,7 +177,7 @@ def first_start_prefs(maya, work, timeout):
     except subprocess.TimeoutExpired:
         process.kill()  # only the process started here
         raise RuntimeError("Maya did not quit within {0} s".format(timeout))
-    path = find_plugin_prefs(work)
+    path = find_saved_plugin_prefs(work)
     if path is None:
         raise RuntimeError("Maya saved no " + PLUGIN_PREFS)
     return path
@@ -168,7 +199,7 @@ def main(argv=None):
         target = write_template(default, default.relative_to(work), args.kind, out)
     finally:
         shutil.rmtree(str(work), ignore_errors=True)
-    info = describe(out)
+    info = describe(target.parent, out)
     print("{0}: {1} ({2} autoload plug-ins, sha256 {3})".format(
         args.kind, target, len(info["autoload"]), info["sha256"]))
     return 0

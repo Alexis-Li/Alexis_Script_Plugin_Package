@@ -50,9 +50,12 @@ expected dialog is added to that list, not skipped.
 Maya's linkage throughput depends on the plug-ins its preferences load
 automatically, so give both tests `maya.app_dir_template` instead of a reused
 `maya.app_dir`. The test copies the template to `<evidence>/mayaapp` for every
-run and records the source, the `pluginPrefs.mel` SHA-256 and the autoload and
-loaded plug-in counts in its log (`ProductionSequence` also in `ue-run.json` as
-`maya_prefs`). Build the templates once per machine outside the repository with
+run and records in its log the source, the SHA-256 and autoload count of the
+`pluginPrefs.mel` in the running Maya's own preference folder, and the plug-ins
+loaded during playback (`ProductionSequence` also in `ue-run.json` as
+`maya_prefs`). The driver's `sample_plugins` command takes that sample a
+quarter into `ProductionSequence` playback and during `GuiRegression` cached
+playback; a later stage never replaces it. Build the templates once per machine outside the repository with
 a host Python:
 
 ```powershell
@@ -64,8 +67,8 @@ python composite/MtoULiveLink/maya/MtoULiveLink/tests/maya_prefs_template.py --m
 holds `pluginPrefs.mel` and a `userPrefs.mel` with only Maya's one-time
 plug-in load markers; without those markers Maya loads its default set
 whatever `pluginPrefs.mel` says. Compare throughput only between runs with the
-same SHA-256; the loaded count shows how far autoloading had got at that stage
-and can still rise during playback with `maya-default`.
+same SHA-256; with `maya-default` the loaded count varies between runs because
+Maya is still autoloading while it plays.
 
 `maya/MtoULiveLink/tests/maya_gui_install_check.py`, run with a host Python,
 checks a standalone install in real Maya GUI sessions: previous release with

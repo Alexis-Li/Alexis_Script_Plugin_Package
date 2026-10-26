@@ -59,6 +59,81 @@ inline void WriteJsonFile(const FString& Path, const TSharedRef<FJsonObject>& Va
 }
 
 /**
+ * Where Maya's preferences came from, what the `pluginPrefs.mel` Maya started with
+ * loads automatically (the driver reads it before Maya can save it again) and the
+ * plug-ins the driver's `sample_plugins` command found loaded under `SampleLabel`.
+ * Without that sample `loaded_plugins` stays -1: the latest stage's count is never
+ * reported in its place.
+ */
+inline TSharedRef<FJsonObject> MayaPreferencesRecord(const FString& Template, const FString& AppDir,
+    const TSharedPtr<FJsonObject>& MayaResult, const FString& SampleLabel)
+{
+    TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
+    Record->SetStringField(TEXT("source"), Template.IsEmpty() ? TEXT("app_dir") : TEXT("template"));
+    Record->SetStringField(TEXT("template"), Template);
+    Record->SetStringField(TEXT("app_dir"), AppDir);
+    Record->SetStringField(TEXT("plugin_prefs"), FString());
+    Record->SetStringField(TEXT("plugin_prefs_sha256"), FString());
+    Record->SetNumberField(TEXT("autoload_plugins"), -1);
+    Record->SetStringField(TEXT("sample"), SampleLabel);
+    Record->SetNumberField(TEXT("loaded_plugins"), -1);
+    const TSharedPtr<FJsonObject>* Prefs = nullptr;
+    if (MayaResult.IsValid() && MayaResult->TryGetObjectField(TEXT("prefs"), Prefs))
+    {
+        FString Value;
+        if ((*Prefs)->TryGetStringField(TEXT("plugin_prefs"), Value))
+        {
+            Record->SetStringField(TEXT("plugin_prefs"), Value);
+        }
+        if ((*Prefs)->TryGetStringField(TEXT("sha256"), Value))
+        {
+            Record->SetStringField(TEXT("plugin_prefs_sha256"), Value);
+        }
+        const TArray<TSharedPtr<FJsonValue>>* Autoload = nullptr;
+        if ((*Prefs)->TryGetArrayField(TEXT("autoload"), Autoload))
+        {
+            Record->SetNumberField(TEXT("autoload_plugins"), Autoload->Num());
+        }
+    }
+    const TSharedPtr<FJsonObject>* Samples = nullptr;
+    const TSharedPtr<FJsonObject>* Sample = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* Loaded = nullptr;
+    if (MayaResult.IsValid() && MayaResult->TryGetObjectField(TEXT("plugin_samples"), Samples)
+        && (*Samples)->TryGetObjectField(SampleLabel, Sample)
+        && (*Sample)->TryGetArrayField(TEXT("loaded"), Loaded))
+    {
+        Record->SetNumberField(TEXT("loaded_plugins"), Loaded->Num());
+        Record->SetStringField(TEXT("sampled_at_stage"), (*Sample)->GetStringField(TEXT("stage")));
+        Record->SetNumberField(TEXT("sampled_at_seconds"), (*Sample)->GetNumberField(TEXT("elapsed_s")));
+    }
+    return Record;
+}
+
+/** One log line for a MayaPreferencesRecord(). */
+inline FString DescribeMayaPreferences(const TSharedRef<FJsonObject>& Record)
+{
+    const FString Template = Record->GetStringField(TEXT("template"));
+    const FString Source = Template.IsEmpty()
+        ? FString(TEXT("app_dir used in place"))
+        : FString::Printf(TEXT("template %s copied"), *Template);
+    FString Sha = Record->GetStringField(TEXT("plugin_prefs_sha256"));
+    if (Sha.IsEmpty())
+    {
+        Sha = TEXT("none (Maya's default set)");
+    }
+    const FString Label = Record->GetStringField(TEXT("sample"));
+    FString Stage;
+    const FString Loaded = Record->TryGetStringField(TEXT("sampled_at_stage"), Stage)
+        ? FString::Printf(TEXT("%d plug-ins loaded at sample '%s' (stage '%s', %.1f s after the driver started)"),
+            static_cast<int32>(Record->GetNumberField(TEXT("loaded_plugins"))), *Label, *Stage,
+            Record->GetNumberField(TEXT("sampled_at_seconds")))
+        : FString::Printf(TEXT("no '%s' plug-in sample"), *Label);
+    return FString::Printf(TEXT("Maya preferences: %s, MAYA_APP_DIR %s; pluginPrefs.mel sha256 %s, %d autoload plug-ins; %s"),
+        *Source, *Record->GetStringField(TEXT("app_dir")), *Sha,
+        static_cast<int32>(Record->GetNumberField(TEXT("autoload_plugins"))), *Loaded);
+}
+
+/**
  * One Maya GUI process running the driver. Commands go through a command
  * file the driver polls; the driver's result file carries its latest state
  * and the id of the last command it finished.
@@ -139,60 +214,15 @@ public:
         }
     }
 
-    /**
-     * Where Maya's preferences came from, what its `pluginPrefs.mel` loads automatically
-     * (the driver reads that before Maya can save it again) and which plug-ins were
-     * loaded at the driver's latest stage.
-     */
-    TSharedRef<FJsonObject> PreferencesRecord() const
+    /** MayaPreferencesRecord() for this run, with the plug-ins sampled under `SampleLabel`. */
+    TSharedRef<FJsonObject> PreferencesRecord(const FString& SampleLabel) const
     {
-        TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
-        Record->SetStringField(TEXT("source"), PrefsTemplate.IsEmpty() ? TEXT("app_dir") : TEXT("template"));
-        Record->SetStringField(TEXT("template"), PrefsTemplate);
-        Record->SetStringField(TEXT("app_dir"), AppDir);
-        const TSharedPtr<FJsonObject>* Prefs = nullptr;
-        if (Result.IsValid() && Result->TryGetObjectField(TEXT("prefs"), Prefs))
-        {
-            FString Value;
-            Record->SetStringField(TEXT("plugin_prefs"),
-                (*Prefs)->TryGetStringField(TEXT("plugin_prefs"), Value) ? Value : FString());
-            Record->SetStringField(TEXT("plugin_prefs_sha256"),
-                (*Prefs)->TryGetStringField(TEXT("sha256"), Value) ? Value : FString());
-            const TArray<TSharedPtr<FJsonValue>>* Autoload = nullptr;
-            Record->SetNumberField(TEXT("autoload_plugins"),
-                (*Prefs)->TryGetArrayField(TEXT("autoload"), Autoload) ? Autoload->Num() : -1);
-        }
-        const TSharedPtr<FJsonObject>* Plugins = nullptr;
-        if (Result.IsValid() && Result->TryGetObjectField(TEXT("plugins"), Plugins))
-        {
-            Record->SetStringField(TEXT("loaded_at_stage"), (*Plugins)->GetStringField(TEXT("stage")));
-            Record->SetNumberField(TEXT("loaded_plugins"), (*Plugins)->GetArrayField(TEXT("loaded")).Num());
-        }
-        return Record;
+        return MayaPreferencesRecord(PrefsTemplate, AppDir, Result, SampleLabel);
     }
 
-    /** One log line for PreferencesRecord(); -1 plug-ins means Maya had no saved list. */
-    FString DescribePreferences() const
+    FString DescribePreferences(const FString& SampleLabel) const
     {
-        const TSharedRef<FJsonObject> Record = PreferencesRecord();
-        double Autoload = -1.0;
-        double Loaded = -1.0;
-        Record->TryGetNumberField(TEXT("autoload_plugins"), Autoload);
-        Record->TryGetNumberField(TEXT("loaded_plugins"), Loaded);
-        FString Stage;
-        Record->TryGetStringField(TEXT("loaded_at_stage"), Stage);
-        FString Sha;
-        Record->TryGetStringField(TEXT("plugin_prefs_sha256"), Sha);
-        const FString Source = PrefsTemplate.IsEmpty()
-            ? FString(TEXT("app_dir used in place"))
-            : FString::Printf(TEXT("template %s copied"), *PrefsTemplate);
-        if (Sha.IsEmpty())
-        {
-            Sha = TEXT("none (Maya's default set)");
-        }
-        return FString::Printf(
-            TEXT("Maya preferences: %s, MAYA_APP_DIR %s; pluginPrefs.mel sha256 %s, %d autoload plug-ins; %d plug-ins loaded at stage '%s'"),
-            *Source, *AppDir, *Sha, static_cast<int32>(Autoload), static_cast<int32>(Loaded), *Stage);
+        return DescribeMayaPreferences(PreferencesRecord(SampleLabel));
     }
 
 private:
