@@ -54,150 +54,47 @@
 
 ## 0.5.0 - 2026-09-22
 
-Milestone accepted by the project owner after practical use with no issues
-reported. Frozen as `composite-mtou-livelink-v0.5.0`; no installation packages
-or new host-version certification are part of this milestone. Existing scoped
-acceptance records retain their validation limits.
+Milestone accepted after practical use and tagged
+`composite-mtou-livelink-v0.5.0`; no installation packages were published.
 
-- Keep every actor that uses a Binding in step with the Binding's undo and redo
-  (Issue #45 review): an unnamed property change - which is how a transaction
-  restore reaches its objects, because `PostEditUndo` reports an empty
-  `FPropertyChangedEvent` - is now classified against what each actor has
-  already applied instead of being ignored. A restored Additional Parts list
-  ends the running session and resynchronizes the display components while a
-  generated garment Preview stays ready, a restored Primary Driver, Preview
-  Static Mesh, or Garment Slot Override still invalidates the Preview revision,
-  and renaming or reordering a part still changes nothing. Part edits are also
-  recognized when they arrive as one field of one list entry, and the regression
-  drives real editor transactions through undo and redo rather than calling the
-  notification by hand.
+### Added
 
-- Accept the hash-suffixed import rename for duplicated Maya short names
-  (Issue #46): a target bone named `<complete short name>_<exactly 32
-  hexadecimal digits>` below the already mapped parent now maps like the
-  numeric suffix, so a hash-renamed head or shoulder branch no longer fails
-  while its whole subtree is skipped. Partial names, other separators, other
-  hash lengths, non-hexadecimal digits, an unduplicated Maya name, a different
-  parent, and several candidates stay blocking, and Unreal keeps owning the
-  published bone name. Numeric suffixes and every other mapping rule are
-  unchanged.
+- **Additional Parts** in a Binding: the existing Skeletal Mesh becomes the
+  Primary Driver, and parts such as a separate head move with it, show their
+  own Morphs and appear in Model preview. An incompatible part is rejected with
+  the part, bone or pose difference. (#45)
+- Maya streams the BlendShapes of a separately skinned part, such as a Head
+  mesh, together with the body's. (#45)
+- Maya 2024 is the current workflow; Maya 2022.4 remains supported.
+- A double-click Chinese wizard, `tools/build_mtou_topia_gui.cmd`, builds the
+  plugin for Topia Engine.
+- Skeleton mismatch details name the first unmapped Maya bone, its parent and
+  possible import renames. (#46)
 
-- Lead the skeleton diagnostics with the mapping root cause (Issue #46): the
-  first unmapped Maya path, its parent, the blocked Maya descendant and
-  unreached Unreal counts, and import-rename shaped candidates with the reason
-  each was not applied. Unmatched Unreal bones behind an ancestor that was never
-  successfully mapped are reported as unreached instead of extra, so one broken
-  ancestor no longer claims that Maya lacks its descendants, while confirmed
-  extra bones remain listed. The Maya `SKELETON_MISMATCH` advice now points at
-  those details instead of asking for a different asset.
+### Changed
 
-- Fix opening saved levels containing Additional Parts with asset Post Process
-  animation blueprints: defer display/component restoration until registration
-  after PostLoad, and disable Post Process evaluation before assigning part
-  meshes. Saved C02 level loading is now covered independently from placement.
+- Adding, removing or switching a part ends the connection but keeps a
+  generated garment Preview; renaming or reordering parts changes nothing. (#45)
+- README Common problems explain how to use **Driver Garment Slot Override**
+  for an intentionally reduced model that automatic garment detection
+  rejects. (#40)
 
-- Fix split Head/Hair rejection when an unrelated, unweighted branch of the
-  complete exported skeleton has a different reference pose. Pose checks cover
-  skinning palettes from every LOD and their ancestors; bone-name and parent
-  compatibility remain mandatory. Parent matching uses names rather than
-  coincident numeric indices.
-- Add Maya 2024 as the current supported workflow while retaining Maya 2022.4.
+### Fixed
 
-- Support a Primary Driver plus enabled Additional Parts in one Binding
-  (Issue #45): the Binding keeps its existing `SkeletalMesh` field as the
-  Primary Driver and adds a labelled list of parts with a stable internal
-  identity. One shared resolution validates each enabled part against the
-  Primary - same Skeleton asset, bones mapped by name and parent path,
-  compatible reference pose and import space, no bone the Primary lacks - and
-  reports the offending part, bone, or pose delta before any frame is
-  published. Placement, connection, and the Details panel consume that one
-  resolution instead of restating its rules.
-
-- Pose, Morph, and Preview behavior for a composed character (Issue #45): every
-  enabled part owns a transient display component that evaluates the one
-  `MtoU_Character` subject, so body, head, and face bones move all parts
-  together under the Actor transform. The streamed Morph library becomes the
-  deduplicated union of the Primary and the enabled parts, so a part-only Morph
-  is no longer filtered out and a shared name receives the same value on each
-  mesh that owns it. Model preview shows the Generated garment, the hidden-slot
-  Driver, and every part, while garment identification, weight transfer, and
-  Preview Morph transfer stay Primary-only.
-
-- Separate character-composition changes from Preview revision changes (Issue
-  #45, extends ADR-0002): adding, removing, enabling, disabling, or replacing a
-  part ends the active session at the existing idempotent boundary and rebuilds
-  only the affected display components, while an already generated garment
-  Preview and its readiness survive. Renaming a part or reordering the list
-  changes neither the session nor the Preview. Disabled or replaced components
-  are destroyed with their Morph state, and components the current composition
-  does not claim never survive a resynchronization, so duplication, reload, and
-  reimport leave no ghost or duplicate part.
-
-- Maya publishes an independent part's BlendShapes through the existing
-  discovery rule (Issue #45): a separately named Head mesh skinned to the same
-  joints is already a visible skinned mesh, so its aliases join one manifest,
-  a shared alias is transmitted once for every mesh that owns it, and
-  disagreeing values for one alias stay a hard sampling error. Protocol v6 is
-  unchanged.
-
-- Remove the superseded v5 conformance corpus from the source tree. Keep v6 as
-  the active contract and consolidate corpus ownership and historical lookup
-  guidance in the architecture record and ADR 0013.
-
-- Add a Windows double-click Chinese wizard for the Topia build helper, with
-  project/engine file pickers, a validated installation preview, and result dialogs.
-  Use the built-in Windows PowerShell runtime without requiring PowerShell 7.
-
-- Fix Issue #44 connection rejection for non-zero tiny pupil scales: UE now uses
-  checked finite matrix inversion instead of an absolute determinant tolerance,
-  bypasses the engine's tiny-axis identity fallback, and preserves tiny scales
-  during output TRS decomposition. Zero scales remain rejected. Regression tests
-  cover tiny current/bind scales, mirrored scales and tiny parents with children;
-  Maya host coverage independently reconstructs bind and animated world matrices
-  through multi-level non-unit TRS chains (Maya centimeters, tolerance `1e-6`).
-  Add opt-in real-character Maya/UE rendered acceptance for strict remaps,
-  Animation/Model poses, geometric Refresh and explicit reconnect; isolate the
-  SocketFlow fixture from pending worlds left by preceding tests. See the
-  complete-skeleton acceptance record for results and the retained weight warning.
-
-- Preserve joint-to-joint structural transforms in the Maya capture (Issue #44):
-  the publish traversal keeps every joint under the selected root plus the
-  intermediate `transform` nodes that connect them, preserving real DAG paths
-  and parent-before-child order while excluding branches without joints. Realtime
-  and bind-local transforms are rebuilt over the same published parents, with
-  joint-only bind queries guarded so plain transforms fall back to the existing
-  capture-time re-anchoring rule. Role setup verifies that every related joint
-  entered the description and reports the first missing path with its parent and
-  reason (`INCOMPLETE_SKELETON`) instead of failing later with a generic
-  handshake error. Strict one-to-one negotiation, namespace normalization, and
-  the parent-scoped numeric-suffix rule are unchanged; the MetaHuman sample now
-  publishes 1471 joints plus `joints_grp` (1472 nodes) and maps its 5 duplicate
-  short names without UE or protocol changes.
-
-- Encapsulate the Maya chunked upload in an internal transfer module (Issue #43):
-  one upload pass owns the exact byte declaration, the bounded chunk pump, the
-  frames-file iterator lifetime, the backpressure wait, and the post-drain
-  Ready deadline behind start/advance/close in the same directly runnable
-  module, returning upload progress, corruption, transport-failure, and
-  payload-limit outcomes for the owner to route. Cached Playback keeps cache
-  retention, upload/play ID allocation, Ready identity verification, and the
-  capture/replay/detach views; protocol v6 and the upload-then-replay order
-  are unchanged.
-
-- Consolidate Unreal Cached Playback transitions in the cache-session module:
-  initialize negotiated counts and revision atomically, return identity-bearing
-  outcomes and realtime-override demands, and emit completion/performance failure
-  once from the playback tick. The Live Link source retains transport admission,
-  synchronous session publication gates, protocol encoding, and editor effects.
-  Protocol v6, playback timing, and viewport behavior are unchanged.
-
-- Complete the Issue #37 reconnect acceptance coverage with deterministic delayed old-session command/outcome delivery and an opt-in real Maya-to-Unreal retained-cache replay check. Preserve the three-connection and same-session stale-ID regression; record accepted poses and negative controls in the project history.
-
-- Extend Preview RefreshBenchmark with deterministic 2,400/27,744-triangle garments and 13,200/147,744-triangle full-character Drivers at independently varied 4/32/64 Morphs (Issue #41). Retain the small geometry baselines, measure the public actor refresh with first-process and repeated warmed runs, verify generated output each time, and document process-memory instrumentation limits. Seconds-long waits on the larger measured corpus warrant a separate responsiveness follow-up; synchronous production behavior is unchanged.
-
-- Validate same-surface Preview reduction across Auto's 1.70x triangle-density limit (Issue #40). Retain the conservative selection safeguards, explain that this limit can reject legitimate reduction without proving duplicate or foreign geometry, and document the verified manual garment-slot remedy. The deterministic full-character corpus covers 1.00x, 1.636x, 1.714x, and 3.00x density ratios through preparation and public Refresh readiness.
-- Scope Cached Playback upload/play identities to each Streaming session (Issue #37): a newly negotiated connection accepts its own fresh upload/play sequence starting at 1, while duplicate or stale attempts within the same session stay rejected after clear and old-session commands/outcomes can never advance the new session. Protocol v6 shapes and monotonic identity semantics are unchanged.
-- End the active Streaming session before explicit Preview refresh replaces its display (Issue #39): refresh requests termination through the existing idempotent boundary before releasing the mesh, and old queued frames plus cached commands fail the synchronous publish gate from that point without waiting for the worker to close the socket. Success still shows the Generated Preview immediately while disconnected and failure still keeps Error readiness with the Driver restored; Animation reconnect selects the Driver and Model reconnect renegotiates Morph coverage on the new display. Protocol v6 and the explicit refresh/reconnect boundary are unchanged.
+- Undo and redo of a Binding edit now update every actor that uses it. (#45)
+- Bones the importer renamed with a 32-digit hash suffix map like numeric
+  suffixes. (#46)
+- Saved levels with Additional Parts that use Post Process animation
+  blueprints failed to open correctly.
+- Split Head/Hair characters were rejected when an unrelated, unweighted
+  skeleton branch had a different reference pose.
+- Characters with very small non-zero bone scales, such as pupils, were
+  rejected on connect. (#44)
+- Joints under intermediate transform groups were left out of the capture; a
+  missing joint is now reported by its path. (#44)
+- Cached Playback uploads were refused after reconnecting. (#37)
+- Refreshing the Preview while connected could apply old frames to the new
+  mesh; Refresh now ends the connection first. (#39)
 
 ## 0.4.0 - 2026-09-03
 

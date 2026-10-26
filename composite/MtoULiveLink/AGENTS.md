@@ -112,5 +112,5 @@ its issue:
 ```
 
 Leave out implementation, review finding IDs, tests, tooling and prototypes;
-the issue, PR and project history hold them. Released versions stay as
-published.
+the issue, PR and project history hold them. Rewriting a released version
+in this format keeps what it shipped and adds nothing it did not ship.
