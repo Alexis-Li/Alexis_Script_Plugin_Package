@@ -20,18 +20,39 @@ MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 May
 
 以下组件路径均相对于本产品目录。
 
-1. 将整个 `maya/MtoULiveLink/scripts/` 目录（`MtoULiveLink.py` 与其
-   `mtou_livelink/` 包）复制到 Maya 脚本目录，或直接在 Maya 的 Python
-   脚本编辑器中执行 `MtoULiveLink.py`。包必须与入口文件放在一起，
-   只复制单个文件已无法运行。
-2. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
-3. 编译 Unreal 项目。Topia Engine 用户请按下方说明操作。
-4. 启用 **Live Link** 和 **MtoU_LiveLink**，然后重启 Unreal Editor。
+**Maya**
+
+1. 把 Maya 组件文件夹（`maya/MtoULiveLink/`，或 `MtoULiveLink-<版本>.zip`
+   解压后的文件夹）放在一个长期保留的位置。
+2. 打开 Maya，把文件夹中的 `install.mel` 拖入视口。
+3. 在提示中确认。工具架上会出现 **MtoU** 按钮（已有按钮会沿用），点击即可打开。
+
+安装会把这个文件夹登记为 Maya 模块（用户 Maya 目录 `modules` 文件夹中的
+`MtoULiveLink.mod`，用户 Maya 目录通常是 `文档/maya`），之后不要移动或删除
+该文件夹。文件夹路径包含中文等非英文字符时，Maya 无法从该路径加载，安装会把
+工具复制到 `modules/MtoULiveLink`，原文件夹之后可以删除。发现不是用 `install.mel`
+装上的旧版本（例如 Maya scripts 目录中的 `MtoULiveLink.py`）时，安装会列出
+它们并询问，确认后删除，取消则不做任何修改。当前 Maya 已打开过旧版本时，
+按提示重启 Maya。
+
+**Unreal**
+
+1. 将 `unreal/MtoULiveLink/` 复制到 `<Project>/Plugins/MtoULiveLink/`。
+2. 编译 Unreal 项目。Topia Engine 用户请按下方说明操作。
+3. 启用 **Live Link** 和 **MtoU_LiveLink**，然后重启 Unreal Editor。
+
+**升级、回退与卸载**
 
 Maya 与 Unreal 组件成对升级和回退：两端使用同一协议版本，混用时会在
-触碰场景之前拒绝连接。升级时替换两端组件并重新连接；回退时恢复上一版本的
-`scripts/` 目录（入口文件**与**包）和上一版本插件构建，再重新连接。
-替换文件前请先关闭当前会话或重启 Maya。
+触碰场景之前拒绝连接。先结束当前会话，然后：
+
+- 升级：把新版 Maya 组件的 `install.mel` 拖入 Maya，替换 Unreal 插件，
+  再重新连接。
+- 回退：拖入上一版本 Maya 组件的 `install.mel`。上一版本没有 `install.mel`
+  时，先删除下方卸载列出的文件，再按该版本的说明安装。最后恢复上一版本的
+  Unreal 插件构建并重新连接。
+- 卸载 Maya 组件：删除用户 Maya 目录 `modules` 中的 `MtoULiveLink.mod` 和
+  `MtoULiveLink` 文件夹（如有），删除工具架上的 MtoU 按钮，然后重启 Maya。
 
 ### Topia Engine 5.7.4
 
@@ -103,7 +124,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
    没有诊断时日常界面不会显示空白日志。
    连接状态在首次连接前显示“未连接”，流式连接中显示“已连接”，会话结束后显示
    “连接已中断”；中断后需在 Maya 重新连接。
-3. 在 Maya 中运行 `MtoULiveLink.py`，选择变形根骨骼，点击“设置角色”。
+3. 在 Maya 中点击工具架上的 **MtoU** 按钮，选择变形根骨骼，点击“设置角色”。
    顶部切换“动画”／“模型”，下方依次是连接控制（设置角色、连接、断开与连接
    状态）、场景信息（左列根骨骼、衣服、帧率；右列骨骼／BlendShape 数量与缓存；
    名称过长时会省略，悬停可看全文）、预览与播放（预览模式、传输上限，缓存按钮仅在
@@ -209,7 +230,8 @@ Unreal 导出时已配对目标所在的位置。目标被移动或旋转之后�
 
 | 问题 | 处理方法 |
 | --- | --- |
-| Maya 提示 MtoU_LiveLink 安装不完整 | `scripts` 目录缺少部分文件，提示中写明了缺少的内容。重新把整个 `scripts` 目录（`MtoULiveLink.py` 和 `mtou_livelink` 文件夹）复制到同一个 Maya scripts 目录，然后重启 Maya。 |
+| Maya 提示 MtoU_LiveLink 安装不完整 | 提示中写明了缺少的文件。重新完整解压 Maya 组件，把其中的 `install.mel` 拖入 Maya 视口，然后重启 Maya。 |
+| 安装后点击 MtoU 仍打开旧版本 | 安装时当前 Maya 已加载旧版本，重启 Maya 即可。 |
 | 骨架不匹配 | 先按详情中的根因排查：首个未映射骨骼的完整路径与父级、受阻的 Maya 后代与未访问的 Unreal 骨骼数量，以及提示的导入改名候选；若详情指出同一必要骨骼由两根 Maya 骨骼竞争，请在 Maya 中重命名其中一根。再检查 Maya 选择的根骨骼、层级，以及 Unreal Driver 网格是否为最新版本。 |
 | 附加部件被拒绝 | 诊断信息会指出具体部件和原因。请检查是否共用同一个 **Skeleton** 资产、Maya 中提示的必要骨骼及父链是否完整，以及共有参考姿势是否一致。若无法读取蒙皮权重，保留 CPU 蒙皮数据后重新构建或导入网格。 |
 | 预览刷新失败 | 检查网格对齐情况、服装与身体的材质槽是否分离，修正提示的问题后重新刷新。 |

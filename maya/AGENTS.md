@@ -18,8 +18,11 @@ templates. Composite roots own their shared metadata.
 - Prefer copying runtime files for simple installs. Use Maya module deployment
   (`.mod`) when isolation, resources, or deployment needs justify it; document
   installation without hardcoded machine paths and include the descriptor in
-  project packaging. The shared packager currently includes runtime folders and
-  metadata, so extend it or use project packaging when introducing a descriptor.
+  project packaging. The shared packager includes runtime folders, a root
+  `install.mel` and metadata; extend it or use project packaging for another
+  descriptor. A drag-and-drop `install.mel` that writes a `.mod` must handle
+  Maya ignoring any `.mod` path with non-ASCII characters, and keeps its MEL
+  ASCII because Maya 2022 misreads UTF-8 text in MEL files.
 - Declare one consistent runtime version through `__version__` or
   `PLUGIN_VERSION`. Keep tests beside the owning implementation; shelf script
   tests may use `tests/` without changing the runtime classification.

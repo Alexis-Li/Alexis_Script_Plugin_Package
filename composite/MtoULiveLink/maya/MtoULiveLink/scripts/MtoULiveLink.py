@@ -1,8 +1,9 @@
 """MtoU_LiveLink Maya entry point.
 
-Run this file in Maya's Script Editor or install the whole `scripts` directory so
-that `MtoULiveLink.py` and its `mtou_livelink` package stay together. The file
-keeps the historical entry points `run()` and `main()`.
+Install by dragging the component's `install.mel` into a Maya viewport, which
+registers the component as a Maya module, or run this file in Maya's Script
+Editor with its `mtou_livelink` package beside it. The file keeps the
+historical entry points `run()` and `main()`.
 """
 
 import os
@@ -13,11 +14,10 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 INCOMPLETE_INSTALL = (
-    "MtoU_LiveLink 安装不完整：找不到 {0}。请把完整的 scripts 目录（MtoULiveLink.py "
-    "和 mtou_livelink 文件夹）一起复制到同一个 Maya scripts 目录，然后重启 Maya。\n"
-    "Incomplete MtoU_LiveLink install: {0} is missing. Copy the whole scripts "
-    "directory (MtoULiveLink.py and the mtou_livelink folder) into one Maya "
-    "scripts directory, then restart Maya.")
+    "MtoU_LiveLink 安装不完整：找不到 {0}。请重新完整解压 Maya 组件，把其中的 "
+    "install.mel 拖入 Maya 视口重新安装，然后重启 Maya。\n"
+    "Incomplete MtoU_LiveLink install: {0} is missing. Extract the whole Maya "
+    "component again, drag its install.mel into a Maya viewport, then restart Maya.")
 
 try:
     from mtou_livelink import controller  # noqa: E402
