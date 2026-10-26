@@ -97,3 +97,20 @@ and a host loop (the `maya_*_peer.py` scripts) must call
   report.
 - Wait on the reply or state a test needs, not on a fixed read timeout per
   step; only a protocol window that is itself under test may set the duration.
+
+## Changelog
+
+Write `CHANGELOG.md` for users upgrading. Group each version's entries under
+`### Upgrade notes`, `### Added`, `### Changed`, `### Fixed` and `### Removed`,
+in that order, omitting empty groups. Upgrade notes say what the user must do:
+update both hosts together, reinstall, redo a setting or replace a removed
+control. Each entry is one or two lines in the panels' own terms and ends with
+its issue:
+
+```markdown
+- Long root and outfit names no longer widen the Maya panel; the full name is in the tooltip. (#71)
+```
+
+Leave out implementation, review finding IDs, tests, tooling and prototypes;
+the issue, PR and project history hold them. Released versions stay as
+published.

@@ -2,247 +2,55 @@
 
 ## Unreleased
 
-- Install the Maya component by dragging its `install.mel` into a Maya
-  viewport (Issue #78). It registers the folder as a Maya module, keeps or adds
-  the MtoU shelf button and offers to delete an earlier manual installation;
-  the README describes upgrade, rollback and removal.
+### Upgrade notes
 
-- Document what to do when camera linkage often shows Maya 跟不上 (Issue #76):
-  Maya's default automatically loaded plug-ins (MASH, XGen, GPU Cache, Scene
-  Assembly, LookdevX, Type and others together) make its viewport stall
-  during linkage; the README Common problems explain how to turn off their
-  Auto load. The Maya GUI acceptance tests accept `maya.app_dir_template`,
-  copied into each run's evidence, and record the preference source, the
-  SHA-256 of the running Maya's own `pluginPrefs.mel`, its autoload count and
-  the plug-ins loaded during playback; `maya_prefs_template.py` builds
-  the `minimal` and `maya-default` templates.
+- Update the Maya and Unreal components together: protocol v10 refuses a mixed
+  pair before it touches either scene. (#57)
+- Install the Maya component by dragging its `install.mel` into a Maya viewport.
+  The first time, it offers to delete the copied `MtoULiveLink.py` and
+  `mtou_livelink` from your Maya scripts directory; your MtoU shelf button keeps
+  working. (#78)
+- Cached Playback is now played, stopped and located from the Unreal Binding
+  Actor's **预览控制**; Maya only captures and uploads the cache. (#49, #50)
 
-- Show only state, actions, problems and their remedy on the MtoU panels
-  (Issue #71). The Maya 镜头联动 card shows one status line, such as
-  镜头联动中 · Unreal 控制时间 · 同步正常 or 未进入联动; it adds the lag only when
-  Maya cannot keep up (Maya 跟不上，滞后 0.8 秒) and a failed restore only when
-  it happens, with what to do in the tooltip. The 打开镜头联动窗口 button and
-  its window are removed: the evaluation identities, sample serial, applied
-  age, applied/refused counts, targets in flight, revisions and per-resource
-  restore records are in 诊断详情, whose button now reads 复制完整诊断. The
-  scene-reference window shows the source level and sublevels, the size (for
-  example 152 个对象，约 120 万三角面) and one state, 可导入, 已导入（time） or
-  已过期，请在 UE 重新导出; the import result is one sentence, and discarded
-  nodes, rollback and leftovers appear only on failure. The handoff identity,
-  digest, space revision and frozen budgets are in 诊断详情. In the Unreal
-  Details, 当前显示 reads 原始角色 instead of the Driver term; 镜头联动 pairs
-  the Maya character with one 配对/解除配对 button and no object-id field, and
-  shows one status line, with the lag, restore and error rows only when there
-  is a problem; its tooltips use the user's terms; and 场景参考 reports
-  已导出 152 个对象，可在 Maya 导入. Every value removed from these groups is in
-  高级设置与诊断 and its 复制完整诊断. The Maya scene card's root, outfit and
-  frame-rate labels keep a fixed width and are shortened in the middle, with
-  the full value in the tooltip, so a long name never widens the panel (R-020).
-  The wire protocol and its codes are unchanged.
+### Added
 
-- Add the single-character camera/time linkage workflow (Issue #57, protocol
-  v10). A new 镜头联动 card in Maya and Details group in Unreal pair the Maya
-  character with the Unreal target, enter linkage, follow the Level Sequence
-  time and evaluated camera, and leave through 返回实时 or 结束预览 from either
-  host; 结束预览 stays available after 返回实时 until the writers are back.
-  Unreal confirms a pose group only once the Live Link subject holds it and
-  every display component evaluated its bones and Morph values, so a pose
-  behind the sequence time is reported as lagging, never as synchronised;
-  Maya restores its timeline, view and gate and stays paused on the way back.
-  The whole character is verified against a group before any display shows
-  it and then switches in one step; a group with a missing or disagreeing
-  display part is never shown, so the displays never mix two groups. A camera
-  edit, pause (also exactly on the target in flight), cut or explicit jump
-  (also within one shot) cancels the old target, including a group already on
-  its way to the displays, while a continuously advancing camera never cancels
-  the work already issued. Closing or switching the sequence, closing its level or
-  deleting the paired actor ends linkage on both hosts, and opening another
-  Maya scene restores the scene linkage started in before it is replaced.
-  The Maya camera linkage borrows or creates is followed by identity: a rename
-  keeps every write and the restore on it, and a camera that was deleted or
-  whose shape was replaced is refused instead of writing into another camera
-  that took its name. The linked camera stands relative to the paired actor
-  in the common space and uses square pixels, so Maya frames the character
-  exactly as Unreal renders it even when the actor is moved or rotated; a
-  camera whose focus is off still applies. A Level Sequence binding that
-  possesses the Binding Actor is taken over and restored with all its
-  displays, and the Maya panel follows Unreal's statements and notices a
-  connection Unreal ends during linkage. Maya refuses an oversized group, an
-  unknown or shared writer target is refused before any write, and a failed
-  restore is reported per resource instead of being hidden. The workflow is
-  additive: the pairing is required only to enter linkage, and the existing
-  single-character realtime, cached playback and Model comparison paths keep
-  their defaults and connection steps. Messages of a mode that ended while
-  they were in flight are counted instead of reported, on both hosts: Maya
-  checks the revision of Unreal's statements itself, and it counts Unreal's
-  `MODE_CONFLICT` refusal of a pose group that arrived during a transition or
-  named an older revision as scheduling (#71, R-021), so neither shows a
-  镜头联动模式冲突 dialog and the Unreal 错误 row stays empty. A live frame
-  Maya sends right after its own 返回实时 or 结束预览 is dropped, not refused,
-  until Unreal has applied that exit (R-032). Every other
-  `MODE_CONFLICT`, such as a refused 返回实时 or a group of a newer revision,
-  is still reported.
+- Camera linkage (**镜头联动**): pair the Maya character with its Unreal target to
+  follow the Level Sequence's time and camera in Maya, and leave through
+  **返回实时** or **结束预览** from either host. (#57)
+- Scene reference: export a level from Unreal as static reference geometry and
+  import it into Maya, lined up with the character; a failed update keeps the
+  previous reference. (#57)
+- **暂停**/**继续**, **定位** to a sampled source frame, and **循环** for Cached
+  Playback in the Binding Actor. (#50)
+- **Custom Capture Range** in Maya, or capture the current playback range. (#49)
+- **显示原始服装** and **显示生成服装** switch the outfit in the same Model session
+  to compare garment deformation under the same pose. (#51)
+- Additional Parts with their own secondary bones stream in real time and in
+  Cached Playback. (#55)
 
-- Add the scene-reference handoff (Issue #57). Unreal exports an explicit level
-  scope as static reference geometry and offers the finished handoff; Maya
-  validates the transfer identity, content digest, space revision, file/object/
-  triangle budgets and the image-data rule before it touches the scene, then
-  imports into a tool-owned container with a staged swap, rollback, recovery
-  and an ownership mark, so a failed or interrupted update never loses the
-  previous reference. The reference is a display aid; the single-character
-  realtime and cached workflows still run without it. The manifest's new
-  optional `world.anchor` (digest-covered) holds the paired target's placement
-  at export time, identity when nothing is paired, and Maya places the verified
-  container in that frame, so the reference lines up with the character and the
-  linked camera when the target is moved or rotated; a manifest without it
-  imports at the Maya origin and says so, and moving the target later needs a
-  new export.
+### Changed
 
-- Move to protocol v10 as a paired upgrade (Issue #57). The connection now
-  starts with a version and capability greeting, the object description carries
-  a stable object id plus set and space revisions, and every later message
-  repeats the session, set, space and mode identity. A mixed pair is refused
-  before a target is discovered, a writer is muted or a handoff is read, and
-  the frozen budgets (message and group size, control queue, reference size and
-  counts) are enforced by both adapters against the shared corpus.
+- Redesigned Maya panel and Chinese Unreal Details groups; the same warning
+  interrupts only once per connection. (#48)
+- Panels show only state, actions and problems; detailed values are in
+  **诊断详情** and **高级设置与诊断**, copied by **复制完整诊断**. (#71)
+- Long root, outfit, frame-rate and cache names no longer widen the Maya panel;
+  the full text is in the tooltip. (#57, #71)
+- README Common problems explain how to fix a frequent **Maya 跟不上** during
+  linkage by turning off unused plug-ins' Auto load. (#76)
 
-- Split the Maya component into a thin `MtoULiveLink.py` entry and the
-  `mtou_livelink` package (Issue #57). Installation copies the whole `scripts`
-  directory instead of a single file; `run()`, `main()` and the installed
-  shelf entry are unchanged, and the package keeps one module per lifecycle
-  (config, diagnostics, protocol, space, scene, timeline, session, cache,
-  linkage, reference, controller and the panel widgets). Behaviour is
-  unchanged: the same tests pass before and after the split. An entry copied
-  without its package, or a package with a missing module, reports the
-  incomplete install and the missing part in Chinese and English instead of a
-  bare import error.
+### Fixed
 
-- Keep the Maya panel at its normal width once a cache exists (Issue #57,
-  R-018). The 场景信息 cache summary shows the captured range and frame count
-  inside its column, with the full summary, frame rate and capture time in the
-  tooltip; before, the long summary widened the panel and kept it wide after
-  returning to 实时预览.
-- Send the pose of the applied frame during linkage (Issue #57 follow-up).
-  Maya now evaluates the scene at each linkage target before sampling it;
-  before, a target could carry the Morph weights or bones Maya had last
-  evaluated for another frame, so Unreal showed a stale pose at that time.
+- Linkage could show a stale pose at the target time. (#57)
+- Bone mapping depended on Maya's sibling order; duplicate short names now
+  connect in any order, and a real ambiguity names the bones involved. (#55)
+- A lost connection reads as **连接已中断** instead of **未连接**. (#48)
 
-- Fix the independent Issue #54 two-subject prototype's bone negotiation
-  (R-005/R-008) and its real-pair world placement (R-009). Mapping now runs in
-  two phases per mapped parent scope: the *necessary* targets - the positive
-  skin weights of every LOD and their ancestors - decide acceptance, so
-  competing sources, competing targets and several covering assignments there
-  are refused in every declaration order instead of being settled by capture
-  order, and an exact name still wins over an importer rename. Everything
-  outside that set is resolved afterwards, can never change a necessary
-  assignment and can never veto a declaration: an unresolved optional bone keeps
-  its reference pose and its reason is reported (`optional_ambiguities`). The
-  importer's rename forms now require the product's applicability condition - a
-  short name the declaration repeats - so a globally unique short name is no
-  longer renamed onto a suffixed target. A bind difference on a bone that
-  deforms nothing still does not reject the declaration. The opt-in real-asset
-  run places both targets with one common anchor and verifies landmark bones'
-  actual world positions against Maya's own evaluated world poses of the same
-  bones (`--probe-bones`) placed by that anchor, so an import convention applied
-  twice or a second root application is measured in world space instead of being
-  hidden by small per-bone residuals. The real C01 animation plus the C02 second
-  character stream against their production meshes with common frames,
-  independent removal, renegotiation, disconnect restore and BaseColor evidence.
-  Product components and protocol v9 are unchanged.
+### Removed
 
-- Fix the independent Issue #52 camera prototype's Maya failure cleanup.
-  Public run/setup exits now release session resources and restore scene/undo
-  state. Driven or protected borrowed cameras/gates are refused before writes;
-  projection evidence uses host read-back values and mismatched applications
-  are rejected and rolled back. Product components and protocol v9 are unchanged.
-
-- Drive cached playback interactively from the Unreal Binding Actor (Issue #50).
-  After a validated upload, the 预览控制 group adds 暂停, 继续, a Maya source
-  frame field with 定位, and a 循环 selection beside 播放/停止. Pause holds the
-  pose and the cache, so any wait is safe; resume rebuilds the timing baseline
-  and never replays the paused interval. Seek displays the target sampled frame
-  and holds it paused; an unsampled frame is refused with the requested frame
-  and the sampled range instead of being silently clamped. Loop wraps from the
-  accepted last frame to the first, and turning it off completes the current
-  round. Stop also ends a paused attempt. Playback is organized in segments, so
-  completion evidence is scoped: only an unbroken whole-cache run reports
-  `scope: "cache"`, while a seek or a completed loop round reports
-  `scope: "segment"` with its own source range, and paused time is excluded from
-  the measured duration. Protocol v9 adds `cache_paused`, `cache_resumed`,
-  `cache_seeked`, `cache_looped`, and `cache_loop_changed`, and extends
-  `cache_playing` (loop selection) and `cache_complete` (scope and range). Maya
-  renders pause, seek, loop round, stop, and completion from those outcomes
-  without a re-upload. Recapture, clear, disconnect, and character or Preview
-  input changes drop the attempt's loop selection, positioned pose, and segment
-  state. The UE Details seek field rejects malformed and overflowing integers
-  before applying a frame. Both components identify as 0.9.0.
-- Add an Unreal Binding Actor garment comparison control (Issue #51). The
-  original outfit and Generated Preview alternate in the same Model session,
-  retaining the pose, Morph values, body, enabled Additional Parts, and actor
-  placement. Comparison does not regenerate or invalidate Preview readiness;
-  invalidated or failed previews still follow their existing cleanup rules.
-  The existing Model Morph negotiation already covers the Generated Preview,
-  Primary Driver, and enabled parts, so the wire protocol remains v8. Both host
-  components identify as 0.8.0.
-
-- Move Cached Playback preparation to Maya and playback control to the Unreal
-  Binding Actor (Issue #49). Maya can capture an inclusive custom integer range
-  or the current Playback Range, freezes range and scene rate at start, and
-  uploads without auto-play. UE shows source range, rate, last applied source
-  frame, and state; it starts, stops, and restarts only a fully validated
-  transient cache. Recapture waits for its own UE clear acknowledgement before
-  sampling and can be cancelled while waiting. The Details readout distinguishes
-  an applied source frame −1 from no applied pose. Protocol v8 binds each clear
-  request and acknowledgement with `clear_id`, alongside the identity-scoped
-  `cache_playing` outcome; both components now identify as 0.7.0. Temporary
-  cache creation failures clear UE cached ownership before live poses resume.
-
-- Redesign both host panels without changing workflows (Issue #48). Maya uses
-  a compact dark card layout with a blue two-tab workflow switch, connection
-  controls and status, two-column Scene Info with spacing between its divider
-  and labels, green preview selection, contextual cache actions, Tools, and
-  Diagnostics. The window resizes when cached actions appear or disappear.
-  UE Details now opens Chinese Runtime, Character, and Preview Controls groups.
-  A Preview failure has an actionable summary independent of connection state;
-  collapsed Advanced Settings and Diagnostics keeps one selectable, copyable raw
-  error, actual garment-slot override values, and dynamic section candidates.
-  Repeated same-session warnings interrupt once; new warnings and blocking
-  errors still interrupt. The connection row now separates an actor that never
-  streamed from one whose session ended, which the wire status cannot express,
-  so a lost session reads as 连接已中断 instead of 未连接. The summary and the
-  next step follow one priority order, in which a blocking connection error
-  outranks a non-blocking Preview quality warning. No protocol, cache, or
-  recovery change.
-
-- Negotiate the required skinning bones and ancestors of every enabled part
-  (Issue #55). Ignore unrelated exported branches and stream part-only secondary
-  bones through the same subject in real-time and Cached Playback. Shared
-  hierarchy/reference-pose conflicts and missing required Maya bones still
-  reject the connection with part diagnostics. Binding and protocol v6 remain
-  compatible; garment Preview data continues to come only from Primary.
-
-- Resolve required-bone sources independently of Maya sibling capture order
-  (Issue #55 reviews). In each mapped parent scope, exact names reserve targets
-  before numeric/hash importer renames are considered; two indistinguishable
-  siblings cannot silently divide a plain and a free suffixed target. Equal
-  claims reject with `Mapping ambiguities` naming the target, parent, and Maya
-  paths. Unrelated branches and duplicate short names under different mapped
-  parents remain supported. Real-time and Cached Playback continue to use the
-  same frozen source-index projection.
-
-- Resolve a whole mapped parent scope's importer renames as one relation
-  (Issue #55 review). A connection now requires exactly one assignment of Maya
-  sources to the scope's required targets, so two duplicated short names that
-  only resolve together connect in any sibling capture order, while several
-  possible assignments, a contested target, and a source whose feasible targets
-  the relation does not settle all reject with `Mapping ambiguities`. Exact-name
-  reservation, same-parent duplicate rejection, and unrelated-branch support are
-  unchanged.
-- Move the Unreal tests that need a real Maya process, a production fixture
-  or a long measurement, including the Preview refresh benchmark, to the
-  `MtoUOptIn.` prefix so `RunTests MtoULiveLink` runs only self-contained
-  tests. Shorten idle reads in `Linkage.Session`, declare the warnings tests
-  trigger on purpose, and disable the frozen prototypes in ToolsLab.
+- The **打开镜头联动窗口** button and its window; their details are in
+  **诊断详情**. (#71)
 
 ## 0.5.0 - 2026-09-22
 
