@@ -22,7 +22,7 @@ SAVED_USER_PREFS = (
     "//Maya Preference 2024 (Release 1)\n//\n//\n\noptionVar -version 3;\n\n"
     'optionVar -cat "General"\n'
     ' -iv "isFirstTimeRunningMaya" 0\n'
-    ' -sv "lastLocalWS" "C:/Users/someone/Documents/maya/projects/default"\n'
+    ' -sv "lastLocalWS" "<user-workspace>/projects/default"\n'
     ' -iv "oneTimeDefaultPluginLoad2024" 1\n'
     ' -iv "oneTimeAutoLoadPluginbifrostGraph" 1\n'
     ' ;\n'
@@ -86,7 +86,7 @@ class PrefsTemplateTests(unittest.TestCase):
         self.assertIn(' -iv "oneTimeAutoLoadPluginbifrostGraph" 1\n', text)
         self.assertIn(' -iv "isFirstTimeRunningMaya" 0\n', text)
         self.assertNotIn("lastLocalWS", text)
-        self.assertNotIn("someone", text)
+        self.assertNotIn("<user-workspace>", text)
 
     def test_default_template_copies_the_saved_list(self):
         target = template.write_template(self._first_start(), "2024/prefs/pluginPrefs.mel",
