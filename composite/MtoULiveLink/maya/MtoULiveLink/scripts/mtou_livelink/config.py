@@ -3,7 +3,7 @@
 
 __version__ = "0.10.0"
 
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 
 WORKFLOW_ANIMATION = "animation"
 
@@ -73,7 +73,7 @@ CACHED_MODE = "cached"
 
 # The third exclusive time-control state: Unreal drives the Level Sequence
 # time and the evaluated camera while Maya follows and answers with complete
-# pose groups. See protocol/v10.md.
+# pose groups. See protocol/v11.md.
 LINKAGE_MODE = "linkage"
 
 MODES = (REALTIME_MODE, CACHED_MODE, LINKAGE_MODE)
@@ -82,7 +82,7 @@ CONTROL_MAYA = "maya"
 
 CONTROL_UNREAL = "unreal"
 
-# Frozen v10 budgets. The linkage group is metered as one message, not per
+# Frozen v11 budgets. The linkage group is metered as one message, not per
 # object, so the framing ceiling is also the group ceiling.
 MAX_LINKAGE_GROUP_BYTES = MAX_MESSAGE_BYTES
 
@@ -120,10 +120,16 @@ REFERENCE_GRAY_SHADER = "MtoU_UE_SceneRef_Gray"
 # Tool-owned temporary camera that follows the Unreal evaluated camera.
 LINK_CAMERA_NAME = "MtoU_LinkCamera"
 
-# Stable object identifier of the single character the product pairs. It is not
-# a display name, a bone short name or a list position, so a reordered scene
-# cannot silently re-target the wrong object.
+# Stable object identifiers of the object set: the primary character and the
+# one independent object beside it. They are not display names, bone short
+# names or list positions, so a reordered scene cannot silently re-target the
+# wrong object.
 CHARACTER_OBJECT_ID = "character"
+
+SECONDARY_OBJECT_ID = "secondary"
+
+# A set holds the primary character and at most one independent object.
+MAX_SET_OBJECTS = 2
 
 TIME_UNIT_FPS = {
     "game": 15.0,

@@ -27,7 +27,7 @@ def close(test, first, second, places=9, message=""):
 
 
 def camera_payload(**overrides):
-    """One v10 ``camera_time`` camera payload, with both basis and rotation."""
+    """One v11 ``camera_time`` camera payload, with both basis and rotation."""
     payload = {
         "name": "CineCameraActor",
         "location": {"x": 100.0, "y": 200.0, "z": 300.0},
@@ -54,7 +54,7 @@ def camera_payload(**overrides):
 
 
 def gate_payload(**overrides):
-    """One v10 ``camera_time`` resolution gate, with the restore mirror."""
+    """One v11 ``camera_time`` resolution gate, with the restore mirror."""
     payload = {
         "output_resolution": {"x": 1920, "y": 1080},
         "aperture_resolution": {"x": 1920, "y": 1080},
@@ -69,7 +69,7 @@ def gate_payload(**overrides):
 class AxisConversionTest(unittest.TestCase):
 
     def test_known_vectors(self):
-        # The v10 common space: Maya (x, y, z) is Unreal (x, z, y), the same
+        # The v11 common space: Maya (x, y, z) is Unreal (x, z, y), the same
         # mapping the character stream uses.
         self.assertEqual(mtou_camera.ue_to_maya_point(1, 0, 0), (1.0, 0.0, 0.0))
         self.assertEqual(mtou_camera.ue_to_maya_point(0, 1, 0), (0.0, 0.0, 1.0))

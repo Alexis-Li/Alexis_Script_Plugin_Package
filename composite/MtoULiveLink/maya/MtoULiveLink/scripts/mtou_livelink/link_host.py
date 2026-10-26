@@ -35,9 +35,15 @@ def camera_module():
 class MayaLinkageHost(object):
     """Applies linkage targets in one Maya scene."""
 
-    def __init__(self, scene, object_ids, fps, camera=None, link_camera_name=None):
+    def __init__(self, scene, object_ids, fps, camera=None, link_camera_name=None,
+                 scenes=None):
         self._scene = scene
         self._object_ids = tuple(object_ids)
+        # Object id to its own scene; the primary character is the default.
+        # A removed object leaves the map when the set changes.
+        self._scenes = dict(scenes or {})
+        for object_id in self._object_ids:
+            self._scenes.setdefault(object_id, scene)
         self._fps = float(fps)
         self._camera = camera
         self._link_camera_name = link_camera_name
@@ -109,10 +115,19 @@ class MayaLinkageHost(object):
         return self._time_report(maya_time, time_payload), camera.readback()
 
     def sample_group(self, object_ids):
-        """Sample the complete pose of every object of the current set."""
+        """Sample the complete pose of every object of the current set.
+
+        Every object is read after the one time change of ``apply_target``, so
+        the whole group comes from one Maya evaluation; an object of each id
+        is read from its own scene, so same-name bones never cross objects.
+        """
         rows = []
         for object_id in object_ids:
-            frame = self._scene.sample()
+            scene = self._scenes.get(object_id)
+            if scene is None:
+                raise ValueError(
+                    "linkage object {0!r} has no Maya scene".format(object_id))
+            frame = scene.sample()
             rows.append({
                 "object_id": object_id,
                 "transforms": [list(transform) for transform in frame.transforms],

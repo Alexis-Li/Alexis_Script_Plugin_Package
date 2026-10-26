@@ -1,9 +1,9 @@
-"""Unreal -> Maya camera application for the v10 linkage contract.
+"""Unreal -> Maya camera application for the v11 linkage contract.
 
 Two layers live here. The upper one is pure Python: the mapping frozen in the
 camera-sync prototype (``composite/MtoULiveLink/prototypes/camera-sync``) ported
 into the product package so nothing imports the prototype at runtime, and the
-payload validation one v10 ``camera_time`` message has to pass. The lower one is
+payload validation one v11 ``camera_time`` message has to pass. The lower one is
 :class:`LinkCamera`, the Maya host adapter that writes one target to one
 tool-owned camera plus the resolution gate, reads the values Maya actually
 holds back for the ``applied`` evidence, and restores the scene it borrowed.
@@ -12,7 +12,7 @@ Conventions (identical to the prototype)
 ----------------------------------------
 Unreal is left-handed, centimetres, ``+X`` forward, ``+Y`` right, ``+Z`` up.
 Maya is right-handed, centimetres, ``+X`` right, ``+Y`` up, ``-Z`` forward.
-The axis conversion is the v10 common space ``C``: ``maya (x, y, z)`` is
+The axis conversion is the v11 common space ``C``: ``maya (x, y, z)`` is
 ``ue (x, z, y)``, the mapping the character stream uses, so a camera stands
 where the character's own space puts it.
 
@@ -452,7 +452,7 @@ _GATE_ALIASES = {
 # ``focus_method`` values that mean Maya's depth of field stays off.
 _DISABLED_FOCUS_METHODS = ("disable", "disabled", "none", "off")
 
-# Required fields of one v10 ``camera_time`` payload, with their categories.
+# Required fields of one v11 ``camera_time`` payload, with their categories.
 _CAMERA_TIME_FIELDS = ("session_id", "set_revision", "mode_revision", "space_revision",
                        "eval_id", "eval_serial", "transport_serial", "frame_serial",
                        "time", "camera", "gate")
@@ -572,7 +572,7 @@ def _gate_pair(gate, ladder, label):
 def gate_extent_pixels(gate):
     """The rendered pixel extent the gate declares: ``(width, height)``.
 
-    ``output_resolution{x, y}`` is the v10 spelling; ``output_width``/
+    ``output_resolution{x, y}`` is the v11 spelling; ``output_width``/
     ``output_height`` and the ``width``/``height`` mirror the Unreal side also
     writes for the restore shape are accepted, so one payload serves both.
     """
@@ -722,7 +722,7 @@ def _validate_time(time_payload):
 
 
 def validate_camera_time(payload):
-    """Validate one v10 ``camera_time`` payload; returns it unchanged when valid.
+    """Validate one v11 ``camera_time`` payload; returns it unchanged when valid.
 
     Rejects unknown message types, non-finite numbers, wrong shapes and missing
     fields with a stable ``PayloadError.category`` and actionable detail text.

@@ -147,7 +147,7 @@ class FakeStreamingSession(object):
     def __init__(self, ready=True, session_id=7, set_revision=1,
                  space_revision=1):
         self._ready = ready
-        self.hello = {"session_id": session_id, "version": 10}
+        self.hello = {"session_id": session_id, "version": 11}
         self.messages = []
         self.begun = []
         self.resumed = 0

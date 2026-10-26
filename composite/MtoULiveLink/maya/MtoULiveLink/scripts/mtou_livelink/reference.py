@@ -12,7 +12,7 @@ then lets the staging namespace take the container's name, with the previous
 owned reference renamed aside so a failure anywhere before the takeover is
 proven can put it back. :class:`ReferenceContainer` removes or recovers the
 tool-owned container, and :class:`ReferenceRefused` carries the frozen refusal
-codes of ``protocol/v10.md``.
+codes of ``protocol/v11.md``.
 
 Conventions (identical to the prototype)
 ----------------------------------------
@@ -55,7 +55,7 @@ permutation inside tolerance (``transform_check.decided_by`` says which decided,
 because the engine's FBX level export and the camera sync *prototype* use
 different Unreal to Maya maps: the handoff map is ``maya = (ue_x, ue_z, ue_y)``
 (determinant -1), the prototype documented ``maya = (ue_y, ue_z, -ue_x)``. The
-product's linked camera uses the handoff's map, the v10 common space
+product's linked camera uses the handoff's map, the v11 common space
 ``C(x, y, z) = (x, z, y)``, applied to a camera expressed relative to the
 anchor, so the prototype's map is only a diagnostic: the report scores it on
 the same handoff in ``transform_check.camera_contract`` so the divergence is on
@@ -145,7 +145,7 @@ PERMUTATION_TOLERANCE = 1e-6
 SINGULAR_RELATIVE_EPSILON = 1e-12
 
 #: The camera sync prototype's Unreal to Maya map. The product's camera does not
-#: use it: v10 maps every camera and reference point with ``C(x, y, z) =
+#: use it: v11 maps every camera and reference point with ``C(x, y, z) =
 #: (x, z, y)`` after expressing it relative to the anchor. It stays as the
 #: diagnostic ``transform_check.camera_contract`` scores.
 CAMERA_SYNC_CANDIDATE = "maya_x=ue_y, maya_y=ue_z, maya_z=-ue_x"
@@ -154,7 +154,7 @@ CAMERA_SYNC_CANDIDATE = "maya_x=ue_y, maya_y=ue_z, maya_z=-ue_x"
 #: 2026-09-28 with Unreal 5.7.4 and Maya 2024: the engine writes the node
 #: translation with Y negated and Maya converts the file's Z-up axis system to
 #: Y-up, so an Unreal world point (x, y, z) arrives at (x, z, y). Its
-#: determinant is -1, and it is the v10 common space ``C`` the linked camera
+#: determinant is -1, and it is the v11 common space ``C`` the linked camera
 #: also uses; the prototype's map above is its mirror.
 ENGINE_HANDOFF_CANDIDATE = "maya_x=ue_x, maya_y=ue_z, maya_z=ue_y"
 
@@ -1883,7 +1883,7 @@ MANAGED_TIME_UNITS = frozenset((
 #: ``<scope>.manifest.json`` beside the ``<scope>.fbx`` geometry.
 MANIFEST_SUFFIX = ".manifest.json"
 
-#: The frozen refusal codes of protocol/v10.md. Only these leave this module as
+#: The frozen refusal codes of protocol/v11.md. Only these leave this module as
 #: :class:`ReferenceRefused`; every other refusal is carried by a report whose
 #: ``problems`` names it, so the panel can render the outcome either way.
 CODE_STALE = "REFERENCE_STALE"
@@ -2134,7 +2134,7 @@ def _new_handoff_report(action):
 def _handoff_validation(handoff, report, budget):
     """Validate one offered handoff and fill ``report``; raises frozen refusals.
 
-    The checks own the frozen contract of ``protocol/v10.md``: the offer must
+    The checks own the frozen contract of ``protocol/v11.md``: the offer must
     name a space revision, the directory content must match the offered digest,
     it must not deliver image data, and it must stay inside the frozen file,
     object and triangle budgets. Everything else the handoff declares -- scope,

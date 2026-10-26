@@ -126,7 +126,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
 
 
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v10.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v11.json")
     .read_text(encoding="utf-8")
 )
 
@@ -1529,8 +1529,8 @@ class SenderLifecycleTests(unittest.TestCase):
             "type": "hello_ack", "version": mtou_config.PROTOCOL_VERSION,
             "session_id": 4242,
             "capabilities": dict(mtou_protocol.DEFAULT_CAPABILITIES),
-            "target": {"object_id": "character", "kind": "skeletal_mesh",
-                       "binding_path": "/Game/Characters/Hero", "generation": "1"},
+            "targets": [{"object_id": "character", "kind": "skeletal_mesh",
+                         "binding_path": "/Game/Characters/Hero", "generation": "1"}],
             "space": {"space_revision": 1,
                       "anchor": {"translation": [0, 0, 0],
                                  "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}},
@@ -4288,13 +4288,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(mtou_config.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v10_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v11_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
 
-        def worker_factory(init_message, hello_message=None):
-            captured["init"] = init_message
+        def worker_factory(init_messages, hello_message=None):
+            # One init per object of the set; a one-character set sends one.
+            self.assertEqual(1, len(init_messages))
+            captured["init"] = init_messages[0]
             captured["hello"] = hello_message
             return worker
 
@@ -4328,7 +4330,7 @@ class WorkflowTests(unittest.TestCase):
                                   side_effect=worker_factory):
             session = mtou_session.StreamingSession.start(
                 scene, 24.0, None, workflow=mtou_config.WORKFLOW_MODEL,
-                blendshapes_enabled=False, object_id="hero", set_revision=3,
+                blendshapes_enabled=False, object_id="character", set_revision=3,
                 space_revision=2, scene_units=("m", 100.0),
                 maya_version="2025")
             session.stop()
@@ -4339,13 +4341,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
         # The object identity travels with the negotiation so a reordered scene
-        # can never re-target the wrong object.
-        self.assertEqual("hero", init_message["object_id"])
+        # can never re-target the wrong object; the set lists every object.
+        self.assertEqual("character", init_message["object_id"])
         self.assertEqual(3, init_message["set_revision"])
         self.assertEqual(2, init_message["space_revision"])
+        self.assertEqual(["character"], init_message["set_objects"])
         self.assertEqual(mtou_config.WORKFLOW_MODEL, session.workflow)
         self.assertFalse(session.blendshapes_enabled)
-        self.assertEqual("hero", session.object_id)
+        self.assertEqual("character", session.object_id)
         self.assertEqual(3, session.set_revision)
         self.assertEqual(2, session.space_revision)
 
@@ -4533,14 +4536,15 @@ class ProtocolTests(unittest.TestCase):
                 payload["bones"], payload["curves"], payload["revision"],
                 payload["workflow"], payload["blendshapes_enabled"],
                 payload["object_id"], payload["set_revision"],
-                payload["space_revision"])
+                payload["space_revision"], payload["set_objects"])
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
             return
         if operation == "frame":
             payload = case["payload"]
-            actual = mtou_protocol.make_frame_message(payload["transforms"], payload["curves"])
+            actual = mtou_protocol.make_frame_message(
+                payload["transforms"], payload["curves"], payload.get("objects"))
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
@@ -4641,7 +4645,36 @@ class ProtocolTests(unittest.TestCase):
         if operation == "resource_limit":
             self._assert_resource_limit_case(case)
             return
+        if operation == "remove_object":
+            self._assert_remove_object_case(case)
+            return
+        if operation == "object_removed":
+            payload = case["payload"]
+            if expected["accepted"]:
+                self.assertEqual(payload, mtou_protocol.validate_reply(payload))
+                return
+            with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                mtou_protocol.validate_reply(payload)
+            return
         self.fail("Unsupported Maya conformance operation: " + operation)
+
+    def _assert_remove_object_case(self, case):
+        """Maya's removal request names the second object and the new set."""
+        payload = case["payload"]
+        expected = case["expected"]
+
+        def build():
+            return mtou_protocol.make_remove_object_message(
+                payload["session_id"], payload["object_id"],
+                payload["set_revision"], payload["detail"])
+
+        if expected["accepted"]:
+            self.assertEqual(payload, build())
+            self.assertEqual(case["linkage"]["set_revision"] + 1, payload["set_revision"])
+            self.assertTrue(mtou_protocol.encode_message(build()))
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            build()
 
     # ------------------------------------------------------------- v10 linkage
     def _assert_hello_case(self, case):

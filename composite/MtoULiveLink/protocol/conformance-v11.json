@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "protocol_version": 10,
+  "protocol_version": 11,
   "cases": [
     {
       "id": "framing-partial-packet",
@@ -107,7 +107,194 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-two-object-set-primary",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-two-object-set-secondary",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "prop_jnt",
+            0,
+            [
+              0,
+              0,
+              5,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-missing-set-objects-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -153,8 +340,342 @@
         "space_revision": 1
       },
       "expected": {
-        "accepted": true,
-        "close": false
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-object-outside-set-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-set-primary-not-first-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "secondary",
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "character"
+        ]
+      }
+    },
+    {
+      "id": "init-set-duplicate-object-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "init-set-over-budget-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary",
+          "third"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "OBJECT_SET_UNSUPPORTED",
+        "close": true,
+        "keywords": [
+          "max_set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-model-two-object-set-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "OBJECT_SET_UNSUPPORTED",
+        "close": true,
+        "keywords": [
+          "Model"
+        ]
       }
     },
     {
@@ -166,7 +687,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": false,
@@ -193,7 +714,10 @@
         ],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": true,
@@ -209,7 +733,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": true,
@@ -234,7 +758,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": true,
@@ -250,7 +777,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -312,7 +839,10 @@
         },
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": true,
@@ -527,7 +1057,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "blendshapes_enabled": true,
         "bones": [
@@ -551,7 +1081,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -570,7 +1103,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": 7,
         "blendshapes_enabled": true,
@@ -595,7 +1128,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -614,7 +1150,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "preview",
         "blendshapes_enabled": true,
@@ -639,7 +1175,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -658,7 +1197,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "model",
         "bones": [
@@ -682,7 +1221,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -701,7 +1243,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "model",
         "blendshapes_enabled": "true",
@@ -726,7 +1268,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -745,7 +1290,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -769,7 +1314,10 @@
         ],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -788,7 +1336,7 @@
       ],
       "payload": {
         "type": "init",
-        "version": 10,
+        "version": 11,
         "revision": 7,
         "workflow": "animation",
         "blendshapes_enabled": true,
@@ -829,7 +1377,10 @@
         "curves": [],
         "object_id": "character",
         "set_revision": 1,
-        "space_revision": 1
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
       },
       "expected": {
         "accepted": false,
@@ -925,6 +1476,324 @@
       "expected": {
         "accepted": true,
         "close": false
+      }
+    },
+    {
+      "id": "frame-two-object-set",
+      "operation": "frame",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.25
+            ]
+          }
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 2,
+            "curves": 1
+          }
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "frame-object-row-names-primary-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.5
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "object"
+        ]
+      }
+    },
+    {
+      "id": "frame-object-row-duplicated-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": []
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": []
+          }
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "frame-secondary-count-mismatch",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.25
+            ]
+          }
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 2,
+            "curves": 1
+          }
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "frame-secondary-missing-from-set-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 1,
+            "curves": 0
+          }
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
       }
     },
     {
@@ -3349,6 +4218,42 @@
       }
     },
     {
+      "id": "error-object-set-unsupported",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "OBJECT_SET_UNSUPPORTED",
+        "message": "Bad payload",
+        "details": "Field curves is required"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-anchor-mismatch",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "ANCHOR_MISMATCH",
+        "message": "Bad payload",
+        "details": "Field curves is required"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
       "id": "error-missing-details",
       "operation": "error",
       "applies_to": [
@@ -3431,6 +4336,47 @@
       }
     },
     {
+      "id": "mixed-version-v10-init-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 10,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
       "id": "mixed-version-v9-frame-refused",
       "operation": "frame",
       "applies_to": [
@@ -3439,6 +4385,42 @@
       "payload": {
         "type": "frame",
         "version": 9,
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-frame-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "version": 10,
         "transforms": [
           [
             1,
@@ -3493,6 +4475,32 @@
       }
     },
     {
+      "id": "mixed-version-v10-cache-begin-refused",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "version": 10,
+        "upload_id": 3,
+        "revision": 7,
+        "fps": 30.0,
+        "start_frame": 1,
+        "end_frame": 3,
+        "frame_count": 3,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": false,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
       "id": "mixed-version-v9-hello-ack-refused",
       "operation": "hello_ack",
       "applies_to": [
@@ -3507,12 +4515,6 @@
           "reference": true,
           "cache": true,
           "model": true
-        },
-        "target": {
-          "object_id": "",
-          "kind": "",
-          "binding_path": "",
-          "generation": ""
         },
         "space": {
           "space_revision": 1,
@@ -3534,6 +4536,65 @@
               1
             ]
           }
+        },
+        "target": {
+          "object_id": "",
+          "kind": "",
+          "binding_path": "",
+          "generation": ""
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-hello-ack-refused",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 10,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "target": {
+          "object_id": "",
+          "kind": "",
+          "binding_path": "",
+          "generation": ""
         }
       },
       "expected": {
@@ -3553,7 +4614,7 @@
       ],
       "payload": {
         "type": "hello",
-        "version": 10,
+        "version": 11,
         "host": "maya",
         "maya_version": "2024",
         "scene": {
@@ -3581,7 +4642,7 @@
       ],
       "payload": {
         "type": "hello",
-        "version": 10,
+        "version": 11,
         "host": "maya",
         "maya_version": "2024",
         "scene": {
@@ -3613,7 +4674,7 @@
       ],
       "payload": {
         "type": "hello",
-        "version": 10,
+        "version": 11,
         "host": "maya",
         "maya_version": "2024",
         "scene": {
@@ -3646,7 +4707,7 @@
       ],
       "payload": {
         "type": "hello",
-        "version": 10,
+        "version": 11,
         "host": "maya",
         "maya_version": "2024",
         "scene": {
@@ -3679,19 +4740,13 @@
       ],
       "payload": {
         "type": "hello_ack",
-        "version": 10,
+        "version": 11,
         "session_id": 4242,
         "capabilities": {
           "linkage": true,
           "reference": true,
           "cache": true,
           "model": true
-        },
-        "target": {
-          "object_id": "character",
-          "kind": "skeletal_mesh",
-          "binding_path": "/Game/Characters/Hero",
-          "generation": "1"
         },
         "space": {
           "space_revision": 1,
@@ -3713,7 +4768,15 @@
               1
             ]
           }
-        }
+        },
+        "targets": [
+          {
+            "object_id": "character",
+            "kind": "skeletal_mesh",
+            "binding_path": "/Game/Characters/Hero",
+            "generation": "1"
+          }
+        ]
       },
       "expected": {
         "accepted": true,
@@ -3728,19 +4791,13 @@
       ],
       "payload": {
         "type": "hello_ack",
-        "version": 10,
+        "version": 11,
         "session_id": 4242,
         "capabilities": {
           "linkage": true,
           "reference": true,
           "cache": true,
           "model": true
-        },
-        "target": {
-          "object_id": "",
-          "kind": "",
-          "binding_path": "",
-          "generation": ""
         },
         "space": {
           "space_revision": 1,
@@ -3762,7 +4819,65 @@
               1
             ]
           }
-        }
+        },
+        "targets": []
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "hello-ack-two-paired-targets-is-accepted",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 11,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "targets": [
+          {
+            "object_id": "character",
+            "kind": "skeletal_mesh",
+            "binding_path": "/Game/Characters/Hero",
+            "generation": "1"
+          },
+          {
+            "object_id": "secondary",
+            "kind": "binding_actor",
+            "binding_path": "/Game/Props/Sword",
+            "generation": "2"
+          }
+        ]
       },
       "expected": {
         "accepted": true,
@@ -4870,6 +5985,331 @@
       }
     },
     {
+      "id": "group-two-object-set-is-accepted",
+      "operation": "group",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1001-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected_counts": {
+        "objects": 2,
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "group-partial-set-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1002-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "group-duplicate-object-refused",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1001-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "group-object-outside-set-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1003-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
       "id": "group-missing-object-refused",
       "operation": "group",
       "applies_to": [
@@ -5155,6 +6595,49 @@
             "bones": 2,
             "morphs": 1,
             "parts": 1
+          }
+        ],
+        "reason": ""
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "applied-two-object-evidence-is-accepted",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": true,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "components": [
+          {
+            "object_id": "character",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 1
+          },
+          {
+            "object_id": "secondary",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 0
           }
         ],
         "reason": ""
@@ -5617,6 +7100,197 @@
           "max_control_queue"
         ]
       }
+    },
+    {
+      "id": "remove-object-is-accepted",
+      "operation": "remove_object",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "remove-object-primary-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "character",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "character"
+        ]
+      }
+    },
+    {
+      "id": "remove-object-stale-set-revision-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 3,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SET_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "set revision"
+        ]
+      }
+    },
+    {
+      "id": "remove-object-outside-set-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "object-removed-is-accepted",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "restored": true,
+        "detail": "the secondary target was restored"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "object-removed-with-residual-is-accepted",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "restored": false,
+        "detail": "the muted writer 'transform:Sword' no longer exists"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "object-removed-missing-set-revision-refused",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "restored": true,
+        "detail": "the secondary target was restored"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "set_revision"
+        ]
+      }
     }
   ],
   "limits": {
@@ -5627,6 +7301,7 @@
     "max_reference_objects": 20000,
     "max_reference_triangles": 20000000,
     "max_cache_payload_bytes": 1073741824,
-    "max_cache_frame_count": 20000
+    "max_cache_frame_count": 20000,
+    "max_set_objects": 2
   }
 }

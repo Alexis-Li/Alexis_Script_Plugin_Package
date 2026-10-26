@@ -17,6 +17,7 @@ from .config import (
     PLAYBACK_CAP_CHOICES,
     REALTIME_MODE,
     REFERENCE_CONTAINER,
+    SECONDARY_OBJECT_ID,
     WORKFLOW_ANIMATION,
     WORKFLOW_MODEL,
     WORKFLOWS,
@@ -29,6 +30,7 @@ from .protocol import (
     make_mode_message,
     make_reference_removed_message,
     make_reference_result_message,
+    validate_reply,
 )
 from .scene import CharacterScene, CharacterSceneError, long_transform, require_maya, selected_root
 from .session import StreamingSession, StreamingSessionError, bind_conflict_status
@@ -41,6 +43,7 @@ from .ui.layout import (
     release_panel_theme,
     text_units,
 )
+from .ui.objects_window import OBJECTS_WINDOW_NAME, ObjectsWindow
 from .ui.reference_window import (
     REFERENCE_WINDOW_NAME,
     ReferenceWindow,
@@ -144,6 +147,12 @@ class Controller(object):
         self._end_linkage_button = None
         self._reference_window_button = None
         self._link_status_text = None
+        # The independent object beside the primary character; it joins the
+        # set the next connection negotiates. The pairing window shows it.
+        self._secondary_scene = None
+        self._objects_window = None
+        self._objects_window_button = None
+        self._object_set_detail = ""
 
     @staticmethod
     def _grid_row(controls, spans=None, height=BUTTON_HEIGHT, top=0):
@@ -293,11 +302,15 @@ class Controller(object):
                         self._end_linkage_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.formLayout(width=CARD_CONTENT)
+        self._objects_window_button = cmds.button(
+            label="打开对象配对窗口", height=BUTTON_HEIGHT,
+            annotation="设置或移除与主角色一起预览的副对象。",
+            command=lambda *_: self.open_objects_window())
         self._reference_window_button = cmds.button(
             label="打开场景参考窗口", height=BUTTON_HEIGHT,
             annotation="查看、导入、移除或恢复 UE 场景参考。",
             command=lambda *_: self.open_reference_window())
-        self._grid_row([self._reference_window_button],
+        self._grid_row([self._objects_window_button, self._reference_window_button],
                        height=BUTTON_HEIGHT + GRID_GAP, top=GRID_GAP)
         cmds.setParent("..")
         cmds.setParent("..")
@@ -479,13 +492,14 @@ class Controller(object):
         can_leave = bool(view and view.can_leave)
         connected = self._session_ready()
         linking = self._linkage_active()
+        two_objects = self._session_has_secondary()
         self._set_enabled(self._playback_cap_menu, realtime and not can_cancel)
         self._set_enabled(self._capture_button, not realtime and can_capture)
         self._set_enabled(self._upload_button, not realtime and can_upload)
         self._set_enabled(self._cancel_capture_button, not realtime and can_cancel)
         self._set_enabled(self._realtime_mode_button, realtime or can_leave)
         self._set_enabled(self._cached_mode_button,
-                          connected and not can_cancel and not linking)
+                          connected and not can_cancel and not linking and not two_objects)
         self._set_enabled(self._connect_button, not connected)
         self._set_enabled(self._disconnect_button, connected or self._scene is not None)
         self._set_tooltip(
@@ -497,7 +511,8 @@ class Controller(object):
         self._set_tooltip(
             self._cached_mode_button,
             "先设置角色并连接 Unreal。" if not connected else
-            ("镜头联动进行中：请先“返回实时”或“结束预览”。" if linking else
+            ("缓存播放只支持单个角色：先在对象配对窗口中移除副对象。" if two_objects else
+             "镜头联动进行中：请先“返回实时”或“结束预览”。" if linking else
              ("等待捕获完成，或取消捕获。" if can_cancel else "捕获并上传范围，在 UE 开始播放。")))
         self._set_tooltip(
             self._realtime_mode_button,
@@ -628,6 +643,15 @@ class Controller(object):
         if mode == CACHED_MODE and self._workflow != WORKFLOW_ANIMATION:
             return
         if mode == CACHED_MODE:
+            if self._session_has_secondary():
+                self._mode = REALTIME_MODE
+                self._update_mode_selection()
+                self._update_mode_controls()
+                self._show_error(make_diagnostic(
+                    "OBJECT_SET_UNSUPPORTED",
+                    "缓存播放只支持单个角色。",
+                    solution="在“对象配对”窗口中移除副对象后，再进入缓存播放。"))
+                return
             if not self._session_ready():
                 self._mode = REALTIME_MODE
                 self._update_mode_selection()
@@ -924,6 +948,10 @@ class Controller(object):
         self._clear_role()
         try:
             root = selected_root()
+            secondary = self._secondary_scene
+            if secondary is not None and roots_overlap(secondary.snapshot().root, root):
+                raise ValueError(
+                    "主角色不能是副对象本身，也不能与副对象的骨骼层级重叠。")
             self._pending_root = root
             snapshot = self._capture_scene(root).snapshot()
             status = "角色已设置，可以连接"
@@ -1046,10 +1074,20 @@ class Controller(object):
             self._set_connected(False, diagnostic["summary"])
             self._show_error(diagnostic)
             return
+        secondary = self._secondary_scene
+        if secondary is not None and self._workflow != WORKFLOW_ANIMATION:
+            diagnostic = make_diagnostic(
+                "OBJECT_SET_UNSUPPORTED",
+                "模型工作流只支持单个角色。",
+                solution="切换到动画工作流，或在“对象配对”窗口中移除副对象后再连接。")
+            self._set_connected(False, diagnostic["summary"])
+            self._show_error(diagnostic)
+            return
         self._last_warning = {"missing_in_unreal": [], "missing_in_maya": [],
                               "bone_name_remaps": [],
                               "has_warning": False}
         self._shown_warning_signatures = set()
+        self._object_set_detail = ""
         self._set_connected(False, "正在连接 Unreal…")
         holder = {}
 
@@ -1060,7 +1098,8 @@ class Controller(object):
             session = StreamingSession.start(
                 self._scene, fps, on_event, playback_cap=self._playback_cap,
                 workflow=self._workflow,
-                blendshapes_enabled=self._blendshapes_enabled)
+                blendshapes_enabled=self._blendshapes_enabled,
+                secondary_scene=secondary)
         except StreamingSessionError as error:
             diagnostic = make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
@@ -1074,6 +1113,7 @@ class Controller(object):
         self._session = session
         self._mode = REALTIME_MODE
         self._update_mode_controls()
+        self._refresh_objects_window()
 
     def _on_streaming_session_event(self, session, event):
         if session is None or self._session is not session:
@@ -1082,7 +1122,9 @@ class Controller(object):
             # Mode revisions belong to one connection.
             self._linkage_revision = 0
             self._cached_reply_sink = None
-            if self._workflow == WORKFLOW_ANIMATION:
+            # Cached Playback keeps the single-character contract; a two-object
+            # set streams realtime and linkage only.
+            if self._workflow == WORKFLOW_ANIMATION and not self._session_has_secondary():
                 try:
                     cached_playback = CachedPlayback(
                         self._scene, session, on_change=self._on_cached_playback_view,
@@ -1106,10 +1148,13 @@ class Controller(object):
                 "missing_in_unreal": [], "missing_in_maya": [],
                 "bone_name_remaps": [], "has_warning": False}
             self._last_warning = warning
+            objects = "主角色和副对象的" if self._session_has_secondary() else ""
             if warning["has_warning"]:
-                self._set_connected(True, "已连接（有警告）：UE 显示实时姿势，请检查差异")
+                self._set_connected(
+                    True, "已连接（有警告）：UE 显示{0}实时姿势，请检查差异".format(objects))
             else:
-                self._set_connected(True, "已连接：UE 显示实时姿势")
+                self._set_connected(True, "已连接：UE 显示{0}实时姿势".format(objects))
+            self._refresh_objects_window()
             if warning["has_warning"] \
                     and cmds.checkBox(self._warning_checkbox, query=True, value=True):
                 signature = self._warning_signature(warning)
@@ -1126,6 +1171,7 @@ class Controller(object):
         # targets: release the pump, the session and every borrowed resource.
         self._shutdown_linkage()
         self._mode = REALTIME_MODE
+        self._refresh_objects_window()
         if event.kind == "failed":
             diagnostic = event.diagnostic or make_diagnostic("INTERNAL_ERROR")
             self._last_diagnostic = diagnostic
@@ -1151,6 +1197,7 @@ class Controller(object):
         ]
         if details and details not in (summary, solution):
             sections.append("错误详情：\n{0}".format(details))
+        sections.append(self._objects_diagnostic_text())
         sections.append(self._linkage_diagnostic_text())
         sections.append(self._reference_diagnostic_text())
         return "\n\n".join(sections)
@@ -1292,6 +1339,7 @@ class Controller(object):
 
     def _on_scene_change(self, *unused):
         self._clear_role()
+        self._clear_secondary()
 
     def _on_before_scene_replaced(self, *unused):
         """Release the session while the scene it captured is still open.
@@ -1302,6 +1350,7 @@ class Controller(object):
         """
         del unused
         self._clear_role()
+        self._clear_secondary()
 
     def _remove_scene_replace_callbacks(self):
         callbacks, self._scene_replace_callbacks = self._scene_replace_callbacks, []
@@ -1442,10 +1491,17 @@ class Controller(object):
                                    details=str(exc)))
             return
         object_id = getattr(session, "object_id", None) or CHARACTER_OBJECT_ID
+        object_ids = list(getattr(session, "set_objects", None) or (object_id,))
         set_revision = getattr(session, "set_revision", None) or 1
         space_revision = getattr(session, "space_revision", None) or 1
+        if getattr(session, "removal_pending", False):
+            refuse(make_diagnostic(
+                "MODE_CONFLICT",
+                "正在移除副对象。",
+                solution="等待 Unreal 确认移除副对象后，再进入镜头联动。"))
+            return
         try:
-            host = self._linkage_host(self._scene, [object_id], fps)
+            host = self._linkage_host(self._scene, object_ids, fps)
         except ImportError as exc:
             refuse(make_diagnostic("INTERNAL_ERROR", str(exc), details=str(exc)))
             return
@@ -1455,7 +1511,8 @@ class Controller(object):
         linkage = LinkageSession(
             host, session, on_event=self._on_linkage_event,
             object_id=object_id, set_revision=set_revision,
-            space_revision=space_revision, mode_revision=floor)
+            space_revision=space_revision, mode_revision=floor,
+            object_ids=object_ids)
         revision = remote_revision if remote else floor + 1
         try:
             linkage.set_session_id(session_id)
@@ -1634,7 +1691,9 @@ class Controller(object):
         """
         from .link_host import MayaLinkageHost
 
-        return MayaLinkageHost(scene, object_ids, frame_rate)
+        scenes = getattr(self._session, "object_scenes", None)
+        return MayaLinkageHost(scene, object_ids, frame_rate,
+                               scenes=scenes() if callable(scenes) else None)
 
     def _start_linkage_pump(self):
         """Apply waiting targets on Maya's main thread at a bounded rate."""
@@ -1726,6 +1785,9 @@ class Controller(object):
             if kind == "reference_offer":
                 self.offer_reference(reply)
                 return True
+            if kind == "object_removed":
+                self._on_object_removed(reply)
+                return True
             if self._linkage is not None:
                 if kind == "error":
                     self._report_runtime_error(reply)
@@ -1760,7 +1822,7 @@ class Controller(object):
         code = reply.get("code") or "STREAM_INTERRUPTED"
         linkage = self._linkage
         if linkage is not None and (
-                code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE")
+                code in ("EVAL_STALE", "LINKAGE_NOT_ACTIVE", "SET_REVISION_STALE")
                 or (code == "MODE_CONFLICT"
                     and is_scheduling_conflict(reply.get("details")))):
             # Unreal refused an answer to a target a pause, jump or camera edit
@@ -1957,6 +2019,11 @@ class Controller(object):
             if held else "进入镜头联动后可结束预览。")
         self._set_tooltip(
             self._reference_window_button, "查看、导入、移除或恢复 UE 场景参考。")
+        self._set_tooltip(
+            self._objects_window_button,
+            "设置或移除与主角色一起预览的副对象（当前：主角色和副对象）。"
+            if self._secondary_scene is not None else
+            "设置或移除与主角色一起预览的副对象（当前：只有主角色）。")
 
     # ---------------------------------------------------------- linkage UI
     def open_reference_window(self):
@@ -1985,6 +2052,279 @@ class Controller(object):
 
     def _close_sub_windows(self):
         self.close_reference_window()
+
+    # ------------------------------------------------------------ object set
+    def _session_has_secondary(self):
+        """True while the connection's negotiated set holds the second object."""
+        return bool(getattr(self._session, "secondary_scene", None))
+
+    def _primary_root(self):
+        snapshot = getattr(self._scene, "snapshot", None)
+        if callable(snapshot):
+            try:
+                return snapshot().root
+            except CharacterSceneError:
+                return None
+        return self._pending_root
+
+    def set_secondary_object(self):
+        """Capture the selected root as the second object of the set.
+
+        The set is negotiated when the connection starts, so a change while
+        connected ends the connection and the user connects again.
+        """
+        require_maya()
+        try:
+            root, display = selected_secondary_root()
+            primary = self._primary_root()
+            if primary and roots_overlap(primary, root):
+                raise ValueError(
+                    "副对象不能是主角色本身，也不能在主角色的骨骼层级里。")
+        except (RuntimeError, ValueError) as exc:
+            self._show_error(make_diagnostic(
+                "ROLE_SETUP_FAILED", str(exc), solution=str(exc), details=str(exc)))
+            return
+        if self._session is not None:
+            self.disconnect(status="对象集合已变更：请重新连接")
+        self._clear_secondary()
+        try:
+            scene = self._capture_secondary(root, display)
+        except CharacterSceneError as error:
+            self._show_error(self._scene_diagnostic(error))
+            self._refresh_objects_window()
+            return
+        self._secondary_scene = scene
+        snapshot = scene.snapshot()
+        self._set_connected(
+            self._session_ready(),
+            "副对象已设置（{0} 根骨骼），连接后与主角色一起预览".format(len(snapshot.bones)))
+        self._refresh_objects_window()
+
+    def _capture_secondary(self, root, display=None, display_attribute=None):
+        try:
+            return CharacterScene.capture(
+                root, display=display, display_attribute=display_attribute,
+                on_event=self._on_secondary_scene_event, display_optional=True)
+        except CharacterSceneError as error:
+            if error.code == "AMBIGUOUS_DISPLAY_ATTRIBUTE" and display is not None:
+                attribute = self._choose_enum(
+                    error.context.get("attribute_candidates", ()))
+                return self._capture_secondary(root, display, attribute)
+            raise
+
+    def remove_secondary_object(self):
+        """Remove the second object; inside a connection Unreal restores it first."""
+        if self._secondary_scene is None:
+            self._refresh_objects_window()
+            return
+        session = self._session
+        if session is None or not self._session_has_secondary():
+            self._clear_secondary()
+            self._set_connected(self._session_ready(), "已移除副对象")
+            self._refresh_objects_window()
+            return
+        if getattr(session, "removal_pending", False):
+            return
+        try:
+            session.request_secondary_removal(
+                self._session_id_of(session), "removed in the Maya pairing window")
+        except StreamingSessionError as error:
+            self._show_error(make_diagnostic(
+                error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
+                error.message, details=error.details))
+            return
+        if self._linkage is not None:
+            self._linkage.begin_set_removal()
+        self._set_connected(True, "正在移除副对象，等待 Unreal 恢复它原来的状态…")
+        self._refresh_objects_window()
+
+    def _on_object_removed(self, reply):
+        """Unreal confirmed a removal (Maya's or its own user's); sender thread.
+
+        The linkage state adopts the new set at once, so the next target is
+        answered by the new set; the scene and panel follow on Maya's main
+        thread.
+        """
+        try:
+            validate_reply(reply)
+        except ValueError as error:
+            self._defer_ui(lambda error=error: self._report_linkage_failure(
+                make_diagnostic("INVALID_MESSAGE", str(error), details=str(error))))
+            return
+        session = self._session
+        linkage = self._linkage
+        if linkage is not None and reply.get("object_id") == SECONDARY_OBJECT_ID:
+            try:
+                linkage.adopt_set(reply.get("set_revision"), [CHARACTER_OBJECT_ID])
+            except LinkageError as error:
+                self._defer_ui(lambda error=error: self._report_linkage_failure(error))
+        self._defer_ui(lambda reply=dict(reply), session=session:
+                       self._finish_object_removal(reply, session))
+
+    def _finish_object_removal(self, reply, session):
+        if session is None or session is not self._session:
+            return
+        try:
+            removed = session.adopt_removal(reply)
+        except StreamingSessionError as error:
+            self._show_error(make_diagnostic(
+                error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
+                error.message, details=error.details))
+            return
+        if removed is not None and removed is self._secondary_scene:
+            self._clear_secondary()
+        detail = reply.get("detail") or ""
+        if reply.get("restored"):
+            self._object_set_detail = "已移除副对象，Unreal 已恢复它原来的状态"
+            status = "已移除副对象：主角色继续预览"
+        else:
+            self._object_set_detail = "移除副对象未能完整恢复：{0}".format(detail or "—")
+            status = self._object_set_detail
+        if self._workflow == WORKFLOW_ANIMATION and self._cached_playback is None:
+            try:
+                cached_playback = CachedPlayback(
+                    self._scene, session, on_change=self._on_cached_playback_view,
+                    retention=self._cached_retention)
+            except CachedPlaybackError:
+                cached_playback = None
+            if cached_playback is not None:
+                self._cached_retention = None
+                self._cached_playback = cached_playback
+                self._on_cached_playback_view(cached_playback.view)
+        self._set_connected(self._session_ready(), status)
+        self._update_linkage_status()
+        self._refresh_objects_window()
+
+    def _clear_secondary(self):
+        scene, self._secondary_scene = self._secondary_scene, None
+        if scene is not None:
+            scene.close()
+        self._refresh_objects_window()
+
+    def _on_secondary_scene_event(self, event):
+        """The second object changed: the negotiated set no longer describes it."""
+        if event.kind == "character_change_started":
+            if self._session_has_secondary():
+                self.disconnect(status="副对象的衣服正在切换：连接已结束，请重新连接")
+            return
+        if event.kind == "outfit_changed":
+            self._refresh_objects_window()
+            return
+        if event.kind == "character_invalidated":
+            was_connected = self._session_has_secondary()
+            error = event.error
+            self._secondary_scene = None
+            if was_connected:
+                self.disconnect(status="副对象已删除或卸载：连接已结束，请重新连接")
+                diagnostic = self._scene_diagnostic(error, "SAMPLING_FAILED")
+                mayaapi.run_deferred(lambda: self._show_error(diagnostic, session=True),
+                                     cmds.evalDeferred)
+            self._refresh_objects_window()
+
+    def objects_state(self):
+        """The object set the pairing window renders; one source for every view."""
+        session = self._session
+        scene = self._secondary_scene
+        state = {"primary": self._primary_root(), "secondary": None,
+                 "secondary_detail": "副对象骨骼：—", "state": "只连接主角色",
+                 "state_tooltip": "", "set_revision": getattr(session, "set_revision", None)}
+        if scene is not None:
+            try:
+                snapshot = scene.snapshot()
+                state["secondary"] = snapshot.root
+                outfit = snapshot.outfit or "无 Display 控制器"
+                state["secondary_detail"] = "副对象：{0} 根骨骼 · BlendShape {1} · 衣服 {2}".format(
+                    len(snapshot.bones), len(snapshot.curve_names), outfit)
+            except CharacterSceneError as error:
+                state["secondary_detail"] = "副对象：{0}".format(error.message)
+        negotiated = self._session_has_secondary()
+        if getattr(session, "removal_pending", False):
+            state["state"] = "正在移除副对象，等待 Unreal 确认"
+        elif negotiated and self._session_ready():
+            state["state"] = "已连接：主角色和副对象一起预览"
+            state["state_tooltip"] = "移除副对象后主角色继续预览，不需要重新连接。"
+        elif negotiated:
+            state["state"] = "正在连接主角色和副对象…"
+        elif scene is not None and self._workflow != WORKFLOW_ANIMATION:
+            state["state"] = "模型工作流只支持单个角色"
+            state["state_tooltip"] = "切换到动画工作流，或移除副对象后再连接。"
+        elif scene is not None and session is not None:
+            state["state"] = "副对象不在当前连接中：重新连接后生效"
+        elif scene is not None:
+            state["state"] = "已设置副对象：连接后与主角色一起预览"
+        elif self._object_set_detail:
+            state["state"] = self._object_set_detail
+        return state
+
+    def objects_window_controls(self):
+        """Enablement and tooltips of the pairing window's actions."""
+        session = self._session
+        pending = bool(getattr(session, "removal_pending", False))
+        negotiated = self._session_has_secondary()
+        set_tooltip = ("先选择副对象的变形根骨骼（可同时选中它的 Display 控制器）。"
+                       if session is None else
+                       "设置副对象会结束当前连接，之后需要重新连接。")
+        if negotiated:
+            remove_tooltip = "在当前连接内移除副对象：Unreal 恢复它原来的动画后，主角色继续预览。"
+        elif self._secondary_scene is not None:
+            remove_tooltip = "清除副对象设置。"
+        else:
+            remove_tooltip = "当前没有副对象。"
+        return {
+            "set": (not pending, "正在移除副对象，请稍候。" if pending else set_tooltip),
+            "remove": (self._secondary_scene is not None and not pending,
+                       "正在移除副对象，请稍候。" if pending else remove_tooltip),
+        }
+
+    def _objects_diagnostic_text(self):
+        """对象集合 for 诊断详情: the negotiated set, its revision and the removal.
+
+        Scene paths stay in the pairing window; the diagnostics name only the
+        set identity the two hosts negotiated.
+        """
+        state = self.objects_state()
+        session = self._session
+        objects = getattr(session, "set_objects", None)
+        lines = [
+            "对象集合：",
+            "副对象：{0}".format("已设置" if self._secondary_scene is not None else "未设置"),
+            "状态：{0}".format(state.get("state") or "—"),
+            "连接中的对象：{0} · set：{1}".format(
+                "、".join(objects) if objects else "—",
+                "—" if state.get("set_revision") is None else state.get("set_revision")),
+        ]
+        if self._object_set_detail:
+            lines.append("上次移除：{0}".format(self._object_set_detail))
+        return "\n".join(lines)
+
+    def open_objects_window(self):
+        """Show the object pairing window, reusing the instance."""
+        window = self._objects_window
+        if window is not None and window.exists():
+            window.show()
+            return window
+        self._objects_window = None
+        if cmds is not None and cmds.window(OBJECTS_WINDOW_NAME, exists=True):
+            cmds.deleteUI(OBJECTS_WINDOW_NAME)
+        window = ObjectsWindow(self)
+        self._objects_window = window
+        return window
+
+    def close_objects_window(self):
+        """Delete the pairing window only; the object set survives."""
+        window, self._objects_window = self._objects_window, None
+        if window is not None:
+            window.close()
+
+    def objects_window_closed(self, window):
+        """Maya closed ``window`` itself: forget it without deleting anything."""
+        if self._objects_window is window:
+            self._objects_window = None
+
+    def _refresh_objects_window(self):
+        window = self._objects_window
+        if window is not None and window.exists():
+            window.refresh()
 
     def _refresh_reference_window(self):
         window = self._reference_window
@@ -2250,6 +2590,8 @@ class Controller(object):
         self._remove_maya_exit_callback()
         self._remove_scene_replace_callbacks()
         self._clear_role()
+        self._clear_secondary()
+        self.close_objects_window()
         # Qt deletes the decorations with the panel.
         self._forget_panel_widgets()
 
@@ -2301,6 +2643,32 @@ LINK_STATUS_UNITS = 2 * CACHE_LABEL_UNITS + 4
 # The applied lag the status line reports: below it Maya keeps up and the line
 # says 同步正常. Display only; the protocol's convergence window is unchanged.
 LINKAGE_LAG_NOTICE_SECONDS = 0.5
+
+
+def selected_secondary_root():
+    """Return ``(root, display)`` for the second object from Maya's selection.
+
+    One deformation root joint, optionally with its Display controller when
+    the object has several; a prop without one is fine.
+    """
+    selected = cmds.ls(selection=True, long=True) or []
+    joints = [path for path in selected if cmds.nodeType(path) == "joint"]
+    others = [path for path in selected if path not in joints]
+    if len(joints) != 1 or len(others) > 1:
+        raise ValueError(
+            "请只选择副对象的一个变形根骨骼（可同时选中它的 Display 控制器）。")
+    display = long_transform(others[0]) if others else None
+    return joints[0], display
+
+
+def roots_overlap(first, second):
+    """True when one DAG root is the other or lies below it."""
+    first = str(first or "")
+    second = str(second or "")
+    if not first or not second:
+        return False
+    return (first == second or first.startswith(second + "|")
+            or second.startswith(first + "|"))
 
 
 def scene_label_text(prefix, value):

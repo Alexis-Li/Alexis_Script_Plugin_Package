@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORPUS_PATH = HERE / "conformance-v10.json"
+CORPUS_PATH = HERE / "conformance-v11.json"
 OUTPUT_PATH = (
     HERE.parent
     / "unreal"
@@ -18,9 +18,10 @@ OUTPUT_PATH = (
     / "Tests"
     / "MtoUConformanceCorpus.inl"
 )
-# Every wire operation the frozen v10 contract defines: the v9 message set plus
+# Every wire operation the frozen v11 contract defines: the v9 message set plus
 # the linkage pairing, the exclusive time-control state, the complete pose
-# group, the application acknowledgement and the scene-reference handoff.
+# group, the application acknowledgement, the scene-reference handoff and the
+# removal of the second object of a set.
 OPERATIONS = {
     "framing", "init", "frame", "ready", "error",
     "cache_enter",
@@ -37,10 +38,11 @@ OPERATIONS = {
     "applied",
     "reference_offer", "reference_result", "reference_removed",
     "reference_query",
+    "remove_object", "object_removed",
     "resource_limit",
 }
 HOSTS = {"maya", "unreal"}
-# The frozen v10 budgets. A resource case names one of these keys and compares
+# The frozen v11 budgets. A resource case names one of these keys and compares
 # its measured size against the value the corpus publishes, so an oversized
 # case never carries a multi-megabyte payload of its own.
 LIMIT_KEYS = (
@@ -52,13 +54,15 @@ LIMIT_KEYS = (
     "max_reference_triangles",
     "max_cache_payload_bytes",
     "max_cache_frame_count",
+    "max_set_objects",
 )
-# Stable rejection codes from the v10 contract; the message text is diagnostic
+# Stable rejection codes from the v11 contract; the message text is diagnostic
 # only, so a rejected corpus case must name one of these.
 ERROR_CODES = {
     "PROTOCOL_VERSION_MISMATCH", "INVALID_MESSAGE",
     "PAIRING_REQUIRED", "TARGET_UNKNOWN", "TARGET_ALREADY_PAIRED",
     "WRITER_NOT_ISOLATABLE", "SHARED_WRITER", "MOVING_SOCKET",
+    "ANCHOR_MISMATCH", "OBJECT_SET_UNSUPPORTED",
     "MODE_CONFLICT", "CACHE_NOT_CLEARED",
     "SET_REVISION_STALE", "SPACE_REVISION_STALE", "EVAL_STALE",
     "RESOURCE_LIMIT",
@@ -70,10 +74,13 @@ ERROR_CODES = {
     "CACHE_NOT_READY", "CACHE_REVISION_MISMATCH", "CACHE_INVALID_STATE",
 }
 # Message types a linkage case may declare the pre-state of. Each one carries
-# the identity a v10 adapter must match before it answers.
+# the identity a v11 adapter must match before it answers.
 LINKAGE_OPERATIONS = {
     "camera_time", "applied", "mode_state", "reference_offer", "leave_linkage",
+    "remove_object",
 }
+# Stable object ids of a set: the primary character and the second object.
+OBJECT_IDS = {"character", "secondary"}
 
 
 def load_corpus(path: Path = CORPUS_PATH) -> dict:
@@ -93,8 +100,8 @@ def validate_corpus(corpus: object) -> list[str]:
         return ["corpus must be a JSON object"]
     if corpus.get("schema_version") != 1:
         errors.append("schema_version must equal 1")
-    if corpus.get("protocol_version") != 10:
-        errors.append("protocol_version must equal 10")
+    if corpus.get("protocol_version") != 11:
+        errors.append("protocol_version must equal 11")
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["cases must be a non-empty array"]
@@ -146,7 +153,7 @@ def validate_corpus(corpus: object) -> list[str]:
         if not isinstance(expected.get("close"), bool):
             errors.append(prefix + " expected.close must be boolean")
         if not expected.get("accepted") and expected.get("error_code") not in ERROR_CODES:
-            errors.append(prefix + " rejected case needs a stable v10 error_code")
+            errors.append(prefix + " rejected case needs a stable v11 error_code")
         keywords = expected.get("keywords", [])
         if not isinstance(keywords, list) or any(not isinstance(value, str) for value in keywords):
             errors.append(prefix + " expected.keywords must be a string array")
@@ -157,6 +164,8 @@ def validate_corpus(corpus: object) -> list[str]:
         session = case.get("session")
         if session is not None and session not in {"fresh", "uploaded"}:
             errors.append(prefix + " session must be 'fresh' or 'uploaded'")
+        if "negotiated_set" in case:
+            errors.extend(validate_negotiated_set(prefix, case["negotiated_set"]))
         if operation in LINKAGE_OPERATIONS:
             errors.extend(validate_linkage_state(prefix, case))
         if operation == "resource_limit":
@@ -179,6 +188,16 @@ def validate_linkage_state(prefix: str, case: dict) -> list[str]:
     if not isinstance(state.get("active"), bool):
         errors.append(prefix + " linkage.active must be boolean")
     return errors
+
+
+def validate_negotiated_set(prefix: str, value: object) -> list[str]:
+    """The object set a case runs against: the primary first, no repeats."""
+    if (not isinstance(value, list) or not value
+            or any(item not in OBJECT_IDS for item in value)):
+        return [prefix + " negotiated_set must list known object ids"]
+    if value[0] != "character" or len(set(value)) != len(value):
+        return [prefix + " negotiated_set must start with character and repeat no id"]
+    return []
 
 
 def validate_resource_case(prefix: str, case: dict, limits: dict) -> list[str]:
