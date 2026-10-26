@@ -1189,6 +1189,36 @@ class MayaHostTests(unittest.TestCase):
         # ...and the opened scene keeps its own camera, gate and frame.
         self._assert_foreign_state_kept()
 
+    def test_releasing_the_panel_theme_deletes_its_python_event_filters(self):
+        import shiboken2
+        from mtou_livelink.ui.layout import release_panel_theme
+        from PySide2 import QtCore
+
+        events = []
+
+        class Decoration(QtCore.QObject):
+            def eventFilter(self, watched, event):
+                events.append(event.type())
+                return False
+
+        card = QtCore.QObject()
+        self.addCleanup(shiboken2.delete, card)
+        decoration = Decoration(card)
+        card.installEventFilter(decoration)
+        closed_card = QtCore.QObject()
+        gone = Decoration(closed_card)
+        shiboken2.delete(closed_card)  # Qt deleted it with its window
+        self.assertFalse(shiboken2.isValid(gone))
+
+        release_panel_theme([decoration, gone])
+        release_panel_theme([decoration, gone])
+
+        self.assertFalse(shiboken2.isValid(decoration))
+        self.assertTrue(shiboken2.isValid(card))
+        self.assertEqual([], card.children())
+        QtCore.QCoreApplication.sendEvent(card, QtCore.QEvent(QtCore.QEvent.User))
+        self.assertEqual([], events)
+
 
 if __name__ == "__main__":
     unittest.main()

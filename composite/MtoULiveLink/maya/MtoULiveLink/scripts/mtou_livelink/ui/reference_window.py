@@ -14,6 +14,7 @@ from .layout import (
     apply_panel_theme,
     elide_text,
     grid_row,
+    release_panel_theme,
     set_enabled,
     set_text,
     set_tooltip,
@@ -243,6 +244,7 @@ class ReferenceWindow(object):
         self._close_button = None
         self._card_decorations = []
         self._styled_controls = {}
+        self._closed = False
         self._build()
 
     # --------------------------------------------------------------- build
@@ -289,8 +291,9 @@ class ReferenceWindow(object):
         grid_row([self._import_button, self._remove_button, self._recover_button],
                  height=34 + GRID_GAP, top=GRID_GAP)
         cmds.formLayout(width=WINDOW_CONTENT)
-        self._close_button = cmds.button(label="关闭窗口", height=34,
-                                         command=lambda *_: self.close())
+        self._close_button = cmds.button(
+            label="关闭窗口", height=34,
+            command=lambda *_: self._controller.close_reference_window())
         grid_row([self._close_button], height=34 + GRID_GAP, top=GRID_GAP)
         cmds.setParent("..")
         cmds.setParent("..")
@@ -305,6 +308,8 @@ class ReferenceWindow(object):
     # ------------------------------------------------------------- actions
     def refresh(self):
         """Render the controller's current handoff, state and last result."""
+        if self._closed:
+            return
         offer = self._controller.reference_offer()
         if offer:
             level, sublevels, tooltip = reference_source_lines(offer)
@@ -329,21 +334,44 @@ class ReferenceWindow(object):
             set_enabled(button, control[0])
             set_tooltip(button, control[1])
 
+    def exists(self):
+        """True while this instance's Maya window is still open."""
+        cmds = mayaapi.cmds
+        return bool(not self._closed and cmds is not None
+                    and cmds.window(REFERENCE_WINDOW_NAME, exists=True))
+
     def show(self):
         cmds = mayaapi.cmds
         if cmds is not None:
             cmds.showWindow(REFERENCE_WINDOW_NAME)
 
     def close(self):
+        """Delete this window; Maya then sends its close notification."""
+        if self._closed:
+            return
+        decorations = self._card_decorations
+        self._forget_widgets()
+        release_panel_theme(decorations)
         cmds = mayaapi.cmds
         if cmds is not None and cmds.window(REFERENCE_WINDOW_NAME, exists=True):
             cmds.deleteUI(REFERENCE_WINDOW_NAME)
 
     # ------------------------------------------------------------- internals
+    def _forget_widgets(self):
+        self._closed = True
+        self._card_decorations = []
+        self._styled_controls = {}
+
     def _on_closed(self, *unused):
+        """Maya is closing this window; its close event is still running.
+
+        Deleting the window again from here makes Maya read the destroyed
+        window once the event returns, so this only tells the controller.
+        Closing this window must never leave, import or remove anything.
+        """
         del unused
-        # Closing this window must never leave, import or remove anything.
-        self._controller.close_reference_window()
+        self._forget_widgets()
+        self._controller.reference_window_closed(self)
 
 
 def import_time_label(seconds):

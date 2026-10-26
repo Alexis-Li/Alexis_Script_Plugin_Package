@@ -77,6 +77,17 @@ reinstall, an update while the tool is open, a broken and a partial package,
 missing parts, rollback and a clean install. Pass
 `--old-entry` the 0.9.0 `MtoULiveLink.py` (`git show 799fb07^:composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`).
 
+`maya/MtoULiveLink/tests/maya_gui_window_check.py`, also run with a host
+Python, closes the panel and the scene-reference window from their title bars
+(`WM_CLOSE`), repeats close and reopen, switches workflow and scenes, and
+quits Maya in each state; a scenario passes only when Maya exits with code 0,
+in time and without a crash log. Run it after changing window or panel
+lifecycle. Pass `--app-dir-template` a Maya 2024 preference directory a person
+has started Maya with once and whose first-start dialogs they answered; the
+check copies it for every process and never answers those dialogs. Without
+such a template, report it as a missing prerequisite instead of starting Maya
+with an empty preference directory.
+
 Before 2026-10-19 these tests used the `MtoULiveLink.` prefix with the same
 remaining path; acceptance records use the old names.
 
