@@ -31,8 +31,9 @@ through Qt, so Maya runs its own close and click handling.
 
 Maya quits through ``cmds.quit`` or, with ``--quit title-bar``, by closing
 its main window as a person does. A scenario passes when every expectation
-held, Maya ran the quit, exited with code 0 within the timeout and wrote no
-crash log. Inside Maya the same
+held, Maya ran the quit, exited with code 0 within the timeout, wrote no
+crash log and its Script Editor history has no Python traceback or line
+naming ``mtou_livelink``. Inside Maya the same
 file runs one scenario, chosen by ``MTOU_WINDOW_STEP``, and keeps
 ``<scenario>.json`` current after every stage, so a crash leaves the stage
 it happened in.
@@ -96,10 +97,6 @@ def _in_maya():
     def windows():
         names = cmds.lsUI(windows=True) or []
         return {name: names.count(name) for name in (MAIN, REFERENCE)}
-
-    # Errors raised inside a clicked control only reach the Script Editor.
-    cmds.scriptEditorInfo(historyFilename=str(evidence / (step + "-script-editor.txt")),
-                          writeHistory=True)
 
     def panel_jobs():
         """Script jobs that call the panel; Maya keeps adding its own."""
@@ -296,6 +293,11 @@ def _in_maya():
         write()
 
     def when_ready():
+        # Errors raised inside a clicked control only reach the Script
+        # Editor. Recording starts here, after Maya has echoed the startup
+        # command's result.
+        cmds.scriptEditorInfo(historyFilename=str(evidence / (step + "-script-editor.txt")),
+                              writeHistory=True)
         stage("ready")
         advance()
 
@@ -315,6 +317,20 @@ def check_template(template):
             "--app-dir-template has no 2024/<language>/prefs/userPrefs.mel: start Maya 2024 "
             "once with MAYA_APP_DIR set to it, answer its first-start dialogs and quit.")
     return [path.relative_to(template).as_posix() for path in prefs]
+
+
+def script_errors(history):
+    """Lines of a Script Editor history that report a Python error or the tool.
+
+    A failing callback (close command, button, script job) leaves the window
+    closed and the scenario running; only its traceback shows it. The markers
+    are ASCII, so Maya's interface language does not matter.
+    """
+    if not history.exists():
+        return ["no Script Editor history"]
+    text = history.read_bytes().decode("utf-8", errors="replace")
+    return [line.strip() for line in text.splitlines()
+            if "Traceback" in line or "mtou_livelink" in line]
 
 
 def crash_files(*folders):
@@ -350,13 +366,15 @@ def run_step(maya, template, evidence, release, step, timeout, quit_mode="comman
         outcome["exit_code"] = process.wait()
     outcome["seconds"] = round(time.time() - started, 1)
     outcome["crash_files"] = crash_files(temp, app_dir)
+    outcome["script_errors"] = script_errors(evidence / (step + "-script-editor.txt"))
     path = evidence / (step + ".json")
     outcome["maya"] = json.loads(path.read_text(encoding="utf-8")) if path.exists() \
         else {"errors": ["no result"]}
     maya_result = outcome["maya"]
     outcome["passed"] = bool(
         not outcome["timed_out"] and outcome["exit_code"] == 0
-        and not outcome["crash_files"] and maya_result.get("quit_requested")
+        and not outcome["crash_files"] and not outcome["script_errors"]
+        and maya_result.get("quit_requested")
         and not maya_result.get("errors"))
     return outcome
 
@@ -393,7 +411,7 @@ def main(argv):
     (evidence / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps({step: {key: outcome[key] for key in (
-        "passed", "exit_code", "timed_out", "crash_files", "seconds")}
+        "passed", "exit_code", "timed_out", "crash_files", "script_errors", "seconds")}
         | {"stage": outcome["maya"].get("stage"), "errors": outcome["maya"].get("errors")}
         for step, outcome in summary["steps"].items()}, ensure_ascii=False, indent=1))
     return 0 if summary["passed"] else 1

@@ -1470,7 +1470,12 @@ class DetailWindowTests(unittest.TestCase):
         self.fake_cmds.deleteUI.assert_not_called()
         self.assertIs(current, self.controller._reference_window)
 
-    def test_reference_window_close_keeps_the_offer_and_the_session(self):
+    def test_reference_window_close_keeps_the_handoff_session_and_linkage(self):
+        linkage = mock.Mock(is_active=True)
+        self.controller._linkage = linkage
+        report = {"action": "import", "transfer_id": "tx-3", "time": 0.0,
+                  "report": {"accepted": True, "counts": {"objects": 4}}}
+        self.controller._reference_report = report
         with self.bindings:
             self.controller.offer_reference({
                 "transfer_id": "tx-3", "directory": "handoff/tx-3",
@@ -1481,7 +1486,13 @@ class DetailWindowTests(unittest.TestCase):
             reopened = self.controller.open_reference_window()
 
         self.assertEqual("tx-3", self.controller.reference_offer()["transfer_id"])
+        self.assertIs(report, self.controller._reference_report)
+        self.assertEqual(report, self.controller.reference_report())
         self.assertIs(self.session, self.controller._session)
+        self.assertIs(linkage, self.controller._linkage)
+        linkage.close.assert_not_called()
+        self.assertIn("已导入 4 个对象。", [
+            call[1].get("label") for call in self.fake_cmds.text.call_args_list])
         self.assertIs(reopened, self.controller._reference_window)
         state = "状态：{0}".format(self.controller.reference_state()[0])
         self.assertEqual(2, sum(1 for call in self.fake_cmds.text.call_args_list
