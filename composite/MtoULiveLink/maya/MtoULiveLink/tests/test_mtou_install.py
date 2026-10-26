@@ -109,7 +109,8 @@ class InstallTests(unittest.TestCase):
         other_modules = self.app / "2024" / "modules"
         other_modules.mkdir(parents=True)
         (other_modules / "Old.mod").write_text(
-            "+ MAYAVERSION:2024 PLATFORM:win64 MtoULiveLink 0.9.0 old/MtoULiveLink\n", encoding="utf-8")
+            "+ MAYAVERSION:2024 PLATFORM:win64 MtoULiveLink 0.9.0 old/MtoULiveLink\n",
+            encoding="utf-8")
         (other_modules / "Other.mod").write_text("+ OtherTool 1.0 other\n",
                                                  encoding="utf-8")
         root = self.component("new/MtoULiveLink")
@@ -130,6 +131,23 @@ class InstallTests(unittest.TestCase):
         self.assertIn(str(self.user_scripts / "MtoULiveLink.py"), sources)
         self.assertEqual(3, len(sources.splitlines()))
         self.assertEqual("old", (pathlib.Path(backup) / "01_MtoULiveLink.py").read_text())
+
+    def test_backups_in_the_same_second_do_not_collide(self):
+        now = datetime.datetime(2026, 10, 26, 9, 30, 0)
+        root = self.component("again/MtoULiveLink")
+        backups = []
+        for _ in range(2):
+            (self.user_scripts / "MtoULiveLink.py").write_text("old", encoding="utf-8")
+            backups.append(install.apply_install(self.plan(root), str(self.app / "backup"),
+                                                 now=now))
+        self.assertEqual(["20261026-093000", "20261026-093000-2"],
+                         [pathlib.Path(path).name for path in backups])
+
+    def test_component_inside_the_copy_target_is_refused(self):
+        root = self.component("maya-app/modules/MtoULiveLink/发布/MtoULiveLink")
+        with self.assertRaisesRegex(install.InstallError, "Extract the Maya component outside"):
+            self.plan(root)
+        self.assertFalse((self.modules / "MtoULiveLink.mod").exists())
 
     def test_reinstall_has_no_conflict_with_its_own_mod(self):
         root = self.component("same/MtoULiveLink")

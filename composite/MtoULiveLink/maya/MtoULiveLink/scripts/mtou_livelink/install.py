@@ -130,9 +130,14 @@ def plan_install(root, modules_dir, script_dirs, module_dirs):
             os.path.basename(root)):
         module_path = os.path.basename(root)
     else:
+        if _inside(root, copy_target):
+            raise InstallError(
+                "请把 Maya 组件解压到 {0} 以外的文件夹后再拖入 install.mel。\n"
+                "Extract the Maya component outside {0}, then drag install.mel in.".format(
+                    copy_target))
         copy_dir = copy_target
         module_path = MODULE_NAME
-    plan = InstallPlan(root, version, modules_dir, module_path, copy_dir, [], False)
+    plan =InstallPlan(root, version, modules_dir, module_path, copy_dir, [], False)
     module_dir = plan.module_dir
     plan.remove_copy = (copy_dir is None and os.path.isdir(copy_target)
                         and _is_managed_copy(copy_target) and not _inside(module_dir, copy_target))
@@ -170,6 +175,10 @@ def apply_install(plan, backup_root, now=None):
     if plan.conflicts:
         stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
         backup = os.path.join(backup_root, stamp)
+        suffix = 1
+        while os.path.exists(backup):
+            suffix += 1
+            backup = os.path.join(backup_root, "{0}-{1}".format(stamp, suffix))
         os.makedirs(backup)
         lines = []
         for index, path in enumerate(plan.conflicts, 1):
