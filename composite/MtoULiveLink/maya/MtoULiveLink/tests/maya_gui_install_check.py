@@ -26,14 +26,19 @@ dialogs are answered with their first button and recorded.
    the panel and the scene-reference window leaves one window each.
 4. ``reinstall``: dropping the same ``install.mel`` again changes nothing
    that matters: no conflict, no restart, one ``.mod``, one button.
-5. ``broken_package``: dropping ``install.mel`` from a package without its
-   ``mtou_livelink`` folder reports it and writes nothing.
-6. ``missing_module`` and ``missing_package``: one module, then the whole
+5. ``same_session``: with the tool open, dropping the same package needs no
+   restart; dropping a package whose version marker differs (written into the
+   same module copy) requests a restart and the session keeps the old code.
+6. ``broken_package`` and ``partial_package``: dropping ``install.mel`` from a
+   package without its ``mtou_livelink`` folder, or without one module the
+   entry imports, reports it and leaves the installed copy and ``.mod`` as
+   they were.
+7. ``missing_module`` and ``missing_package``: one module, then the whole
    package, is removed from the installed copy; the shelf button must report
    what is missing.
-7. ``rollback``: the README rollback (remove ``MtoULiveLink.mod`` and the
+8. ``rollback``: the README rollback (remove ``MtoULiveLink.mod`` and the
    copy, restore the previous single file) opens the previous release again.
-8. ``clean_install`` and ``clean_restart`` (a second, empty app directory):
+9. ``clean_install`` and ``clean_restart`` (a second, empty app directory):
    the ASCII-path package's ``install.mel`` adds a button to the current shelf
    and opens the new release without a restart; after a restart the module
    loads from the extracted folder.
@@ -54,12 +59,15 @@ from pathlib import Path
 SHELF = "MtoU"
 SHELF_COMMAND = "import MtoULiveLink\nMtoULiveLink.run()"
 WINDOWS = ("MtoULiveLinkWindow", "MtoULiveLinkReferenceWindow")
-STEPS = ("install_old", "drag_install", "upgrade", "reinstall", "broken_package",
-         "missing_module", "missing_package", "rollback", "clean_install", "clean_restart")
+STEPS = ("install_old", "drag_install", "upgrade", "reinstall", "same_session",
+         "broken_package", "partial_package", "missing_module", "missing_package", "rollback",
+         "clean_install", "clean_restart")
 CLEAN_STEPS = ("clean_install", "clean_restart")
 # Steps that start by pressing a button saved by an earlier step.
-SAVED_BUTTON_STEPS = ("drag_install", "upgrade", "missing_module", "missing_package",
-                      "rollback", "clean_restart")
+SAVED_BUTTON_STEPS = ("drag_install", "upgrade", "same_session", "missing_module",
+                      "missing_package", "rollback", "clean_restart")
+# Version marker of the package `same_session` writes over the installed copy.
+CHANGED_VERSION = "0.10.0+install-check"
 
 
 # ------------------------------------------------------------------ in Maya
@@ -146,7 +154,7 @@ def _in_maya():
                                    if "Alexis_Script_Plugin_Package" in entry],
         }
 
-    def drop_install_mel():
+    def drop_install_mel(source=None):
         """Source install.mel as a viewport drop does; answer dialogs with their first button."""
         original = cmds.confirmDialog
 
@@ -157,7 +165,8 @@ def _in_maya():
 
         cmds.confirmDialog = answer
         try:
-            maya.mel.eval('source "{0}"'.format((Path(release) / "install.mel").as_posix()))
+            maya.mel.eval('source "{0}"'.format(
+                (Path(source or release) / "install.mel").as_posix()))
         finally:
             cmds.confirmDialog = original
         import __main__
@@ -226,6 +235,19 @@ def _in_maya():
             grab("open")
             if step == "upgrade":
                 check_upgrade(sys.modules["MtoULiveLink"])
+        elif step == "same_session":
+            press_saved()
+            result["loaded_before"] = loaded()
+            result["same_package"] = drop_install_mel()
+            result["changed_package"] = drop_install_mel(os.environ["MTOU_INSTALL_RELEASE2"])
+            result["loaded"] = loaded()
+            result["imported_version_after"] = __import__("importlib").import_module(
+                "mtou_livelink.config").__version__
+        elif step == "partial_package":
+            drop_install_mel()
+            copy = Path(cmds.internalVar(userAppDir=True)) / "modules" / "MtoULiveLink"
+            result["copy_linkage_kept"] = (copy / "scripts" / "mtou_livelink"
+                                           / "linkage.py").exists()
         elif step in ("reinstall", "broken_package", "clean_install"):
             drop_install_mel()
             show_saved_shelves()
@@ -296,10 +318,11 @@ def _extract(archive, folder):
     return folder
 
 
-def _run_maya(maya, app_dir, evidence, step, release, timeout):
+def _run_maya(maya, app_dir, evidence, step, release, timeout, release2=None):
     env = dict(os.environ)
     env.update({"MAYA_APP_DIR": str(app_dir), "MTOU_INSTALL_STEP": step,
-                "MTOU_INSTALL_EVIDENCE": str(evidence), "MTOU_INSTALL_RELEASE": str(release)})
+                "MTOU_INSTALL_EVIDENCE": str(evidence), "MTOU_INSTALL_RELEASE": str(release),
+                "MTOU_INSTALL_RELEASE2": str(release2 or "")})
     env.pop("PYTHONPATH", None)
     command = ('python("import runpy; runpy.run_path(r\'{0}\', '
                'run_name=\'mtou_install_step\')")').format(Path(__file__).resolve().as_posix())
@@ -332,6 +355,15 @@ def main(argv):
     ascii_release = _extract(archive, evidence / "release ascii" / "MtoULiveLink")
     broken = _extract(archive, evidence / "broken" / "MtoULiveLink")
     shutil.rmtree(broken / "scripts" / "mtou_livelink")
+    partial = _extract(archive, evidence / "partial" / "MtoULiveLink")
+    (partial / "scripts" / "mtou_livelink" / "linkage.py").unlink()
+    changed = _extract(archive, evidence / "发布 目录2" / "MtoULiveLink")
+    config = changed / "scripts" / "mtou_livelink" / "config.py"
+    text = config.read_text(encoding="utf-8")
+    marker = '__version__ = "{0}"'
+    version = text.split('__version__ = "', 1)[1].split('"', 1)[0]
+    config.write_text(text.replace(marker.format(version), marker.format(CHANGED_VERSION)),
+                      encoding="utf-8")
     app_dir = evidence / "maya-app"
     clean_app_dir = evidence / "maya-app-clean"
     scripts = app_dir / "scripts"
@@ -345,6 +377,8 @@ def main(argv):
             shutil.copy2(args.old_entry, scripts / "MtoULiveLink.py")
         elif step == "broken_package":
             release = broken
+        elif step == "partial_package":
+            release = partial
         elif step == "missing_module":
             (copy / "scripts" / "mtou_livelink" / "linkage.py").unlink()
         elif step == "missing_package":
@@ -358,7 +392,7 @@ def main(argv):
         started = time.time()
         summary["pids"][step] = _run_maya(
             args.maya, clean_app_dir if step in CLEAN_STEPS else app_dir, evidence, step,
-            release, args.timeout)
+            release, args.timeout, release2=changed if step == "same_session" else None)
         path = evidence / (step + ".json")
         summary["steps"][step] = json.loads(path.read_text(encoding="utf-8")) if path.exists() \
             else {"errors": ["no result"]}

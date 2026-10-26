@@ -73,7 +73,8 @@ Maya is still autoloading while it plays.
 `maya/MtoULiveLink/tests/maya_gui_install_check.py`, run with a host Python,
 checks the packaged `install.mel` in real Maya GUI sessions: upgrade from the
 0.9.0 single file with a saved shelf button, Chinese and ASCII install paths,
-reinstall, a broken package, missing parts, rollback and a clean install. Pass
+reinstall, an update while the tool is open, a broken and a partial package,
+missing parts, rollback and a clean install. Pass
 `--old-entry` the 0.9.0 `MtoULiveLink.py` (`git show 799fb07^:composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`).
 
 Before 2026-10-19 these tests used the `MtoULiveLink.` prefix with the same
