@@ -120,7 +120,9 @@ contract; the PR that changes it adds an `Upgrade notes` entry under
 
 ## Changelog
 
-Write `CHANGELOG.md` for users upgrading. Group each version's entries under
+Write `CHANGELOG.md` for users upgrading. Every PR with a user-visible change
+adds its entry under `## Unreleased`; the release change only renames that
+heading to the version and date. Group each version's entries under
 `### Upgrade notes`, `### Added`, `### Changed`, `### Fixed` and `### Removed`,
 in that order, omitting empty groups. Upgrade notes say what the user must do:
 update both hosts together, reinstall, redo a setting or replace a removed
