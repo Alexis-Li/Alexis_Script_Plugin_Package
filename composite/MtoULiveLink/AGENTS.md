@@ -82,7 +82,8 @@ Python, closes the panel and the scene-reference window from their title bars
 (`WM_CLOSE`), repeats close and reopen, switches workflow and scenes, and
 quits Maya in each state; a scenario passes only when Maya exits with code 0,
 in time and without a crash log. Run it after changing window or panel
-lifecycle. Pass `--app-dir-template` a Maya 2024 preference directory a person
+lifecycle, once with the default quit and once with `--quit title-bar`
+(closing Maya's main window). Pass `--app-dir-template` a Maya 2024 preference directory a person
 has started Maya with once and whose first-start dialogs they answered; the
 check copies it for every process and never answers those dialogs. Without
 such a template, report it as a missing prerequisite instead of starting Maya

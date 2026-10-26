@@ -29,8 +29,10 @@ through Qt, so Maya runs its own close and click handling.
    workflow, a new scene and opening a scene, each with the reference window
    open; then Maya quits with both open.
 
-A scenario passes when every expectation held, Maya ran the quit, exited
-with code 0 within the timeout and wrote no crash log. Inside Maya the same
+Maya quits through ``cmds.quit`` or, with ``--quit title-bar``, by closing
+its main window as a person does. A scenario passes when every expectation
+held, Maya ran the quit, exited with code 0 within the timeout and wrote no
+crash log. Inside Maya the same
 file runs one scenario, chosen by ``MTOU_WINDOW_STEP``, and keeps
 ``<scenario>.json`` current after every stage, so a crash leaves the stage
 it happened in.
@@ -243,6 +245,15 @@ def _in_maya():
         snapshot("before quit")
         result["quit_requested"] = True
         stage("quit")
+        if os.environ.get("MTOU_WINDOW_QUIT") == "title-bar":
+            import ctypes
+
+            main = widget("MayaWindow", "findWindow")
+            if main is not None and ctypes.windll.user32.PostMessageW(
+                    int(main.winId()), WM_CLOSE, 0, 0):
+                return
+            result["errors"].append("WM_CLOSE was not posted to MayaWindow")
+            write()
         cmds.quit(force=True)
 
     def advance(pending=None, deadline=None):
@@ -316,7 +327,7 @@ def crash_files(*folders):
     return sorted(found)
 
 
-def run_step(maya, template, evidence, release, step, timeout):
+def run_step(maya, template, evidence, release, step, timeout, quit_mode="command"):
     app_dir = evidence / ("mayaapp-" + step)
     temp = evidence / ("temp-" + step)
     shutil.copytree(str(template), str(app_dir))
@@ -324,7 +335,7 @@ def run_step(maya, template, evidence, release, step, timeout):
     env = dict(os.environ)
     env.update({"MAYA_APP_DIR": str(app_dir), "TEMP": str(temp), "TMP": str(temp),
                 "MTOU_WINDOW_STEP": step, "MTOU_WINDOW_EVIDENCE": str(evidence),
-                "MTOU_WINDOW_RELEASE": str(release)})
+                "MTOU_WINDOW_RELEASE": str(release), "MTOU_WINDOW_QUIT": quit_mode})
     env.pop("PYTHONPATH", None)
     command = ('python("import runpy; runpy.run_path(r\'{0}\', '
                'run_name=\'mtou_window_step\')")').format(Path(__file__).resolve().as_posix())
@@ -361,11 +372,13 @@ def main(argv):
     parser.add_argument("--evidence", required=True)
     parser.add_argument("--step", action="append", choices=STEPS,
                         help="run only these scenarios (repeatable)")
+    parser.add_argument("--quit", choices=("command", "title-bar"), default="command",
+                        help="quit with cmds.quit, or close Maya's main window")
     parser.add_argument("--timeout", type=float, default=300.0)
     args = parser.parse_args(argv)
 
     template = Path(args.app_dir_template).resolve()
-    summary = {"template_prefs": check_template(template), "steps": {}}
+    summary = {"template_prefs": check_template(template), "quit": args.quit, "steps": {}}
     evidence = Path(args.evidence).resolve()
     if evidence.exists():
         shutil.rmtree(evidence)
@@ -375,7 +388,7 @@ def main(argv):
     summary["archive"] = archive.name
     for step in args.step or STEPS:
         summary["steps"][step] = run_step(
-            args.maya, template, evidence, release, step, args.timeout)
+            args.maya, template, evidence, release, step, args.timeout, args.quit)
     summary["passed"] = all(outcome["passed"] for outcome in summary["steps"].values())
     (evidence / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
