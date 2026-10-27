@@ -1248,6 +1248,45 @@ class ReferenceActionTests(unittest.TestCase):
         self.assertTrue(results[0]["accepted"])
         self.assertEqual(4, results[0]["counts"]["objects"])
 
+    def test_reference_actions_hold_live_sampling_while_they_run(self):
+        # The FBX import and the container swap can let Maya run this tool's
+        # timers; a pose read from the half-built scene would end the session.
+        self.offer()
+        held = []
+        self.session.held = 0
+
+        @contextlib.contextmanager
+        def holding_samples():
+            self.session.held += 1
+            try:
+                yield
+            finally:
+                self.session.held -= 1
+
+        self.session.holding_samples = holding_samples
+        self.reference.import_report = {
+            "accepted": True, "detail": "ok", "counts": {"objects": 4,
+            "triangles": 900, "bytes": 4096}, "container": {"name": "MtoU_UE_SceneRef"},
+            "discarded": False, "rolled_back": False, "residual": {}}
+        for name in ("inspect", "import_handoff", "remove", "recover"):
+            original = getattr(self.reference, name)
+
+            def recorded(*args, _name=name, _original=original):
+                held.append((_name, self.session.held, self.controller._reference_busy))
+                return _original(*args)
+
+            setattr(self.reference, name, recorded)
+
+        with self.bindings:
+            self.controller.import_reference()
+            self.controller.remove_reference()
+            self.controller.recover_reference()
+
+        self.assertEqual([("inspect", 1, 1), ("import_handoff", 1, 1), ("remove", 1, 1),
+                          ("recover", 1, 1)], held)
+        self.assertEqual(0, self.session.held)
+        self.assertEqual(0, self.controller._reference_busy)
+
     def test_an_import_without_an_anchor_is_reported_in_the_status_line(self):
         text = self.controller._reference_outcome_text({
             "accepted": True, "counts": {"objects": 4},

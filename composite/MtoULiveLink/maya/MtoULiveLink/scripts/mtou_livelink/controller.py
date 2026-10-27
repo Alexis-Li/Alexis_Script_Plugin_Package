@@ -1,5 +1,6 @@
 """Product controller: panel, session and scene state authority."""
 
+import contextlib
 import time
 
 from . import mayaapi
@@ -130,6 +131,7 @@ class Controller(object):
         self._linkage = None
         self._linkage_pump = None
         self._linkage_pump_generation = 0
+        self._reference_busy = 0
         self._linkage_last_recovery = []
         self._linkage_event = None
         self._reported_linkage_failure = None
@@ -1736,6 +1738,9 @@ class Controller(object):
             # Unreal ended the connection; the session's terminal event then
             # restores Maya on the main thread.
             return
+        if self._reference_busy:
+            # A reference action is running; the next pump step samples.
+            return
         if linkage.confirmation_overdue():
             linkage.expire_unconfirmed()
             self._finish_linkage_exit(
@@ -2412,7 +2417,8 @@ class Controller(object):
             return
         budget = self.reference_budget()
         try:
-            report = reference.inspect(handoff, budget)
+            with self._holding_live_samples():
+                report = reference.inspect(handoff, budget)
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error, record=True)
             return
@@ -2425,7 +2431,8 @@ class Controller(object):
             self._refresh_reference_window()
             return
         try:
-            report = reference.import_handoff(handoff, budget)
+            with self._holding_live_samples():
+                report = reference.import_handoff(handoff, budget)
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error, record=True)
             return
@@ -2441,7 +2448,8 @@ class Controller(object):
         if reference is None:
             return
         try:
-            report = self._reference_container(reference).remove()
+            with self._holding_live_samples():
+                report = self._reference_container(reference).remove()
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error)
             return
@@ -2457,13 +2465,30 @@ class Controller(object):
         if reference is None:
             return
         try:
-            report = self._reference_container(reference).recover()
+            with self._holding_live_samples():
+                report = self._reference_container(reference).recover()
         except reference.ReferenceRefused as error:
             self._report_reference_refusal(error)
             return
         self._reference_report = self._reference_outcome("recover", report)
         self._set_text(self._status_text, self._reference_outcome_text(report))
         self._refresh_reference_window()
+
+    @contextlib.contextmanager
+    def _holding_live_samples(self):
+        """No live sample or linkage group while a reference action runs.
+
+        The FBX import and the container swap are long Maya commands during
+        which Maya can run this tool's timers; a pose read from the half-built
+        scene would fail and end the connection.
+        """
+        self._reference_busy += 1
+        hold = getattr(self._session, "holding_samples", None)
+        try:
+            with hold() if callable(hold) else contextlib.nullcontext():
+                yield
+        finally:
+            self._reference_busy -= 1
 
     def _reference_module_or_report(self):
         """The scene-reference module, or None after reporting why it is gone."""

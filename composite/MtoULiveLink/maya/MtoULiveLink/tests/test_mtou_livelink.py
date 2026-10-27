@@ -780,6 +780,89 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(2, scene.sample.call_count)
         self.assertEqual(2, len(FakeWorker.instance.submitted))
 
+    def test_held_sampling_skips_ticks_until_released(self):
+        # A scene-reference import holds live sampling: Maya may run the
+        # timer inside the import, while the scene is only half built.
+        events = []
+        timer_callbacks = []
+
+        class FakeWorker(object):
+            instance = None
+
+            def __init__(self, init_message, hello_message=None):
+                del init_message
+                self.hello_message = hello_message
+                self.submitted = []
+                self.__class__.instance = self
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("ready", "Connected", {
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "has_warning": False,
+                }, None)
+
+            def submit(self, frame):
+                self.submitted.append(frame)
+
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                self.submitted.append(frame)
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            7, "|root", "Clothes01", [("root", -1)], ["Smile"])
+        scene.sample.return_value = mtou_scene.CharacterFrame(7, [[1, 2, 3]], [0.25])
+
+        with patch_global("om", fake_om), \
+             patch_global("SenderWorker", FakeWorker), \
+             mock.patch.object(time, "time", side_effect=[100.0, 100.05]):
+            session = mtou_session.StreamingSession.start(scene, 24.0, events.append)
+            with session.holding_samples():
+                timer_callbacks[0](0.0, 0.0, None)
+                held_samples = scene.sample.call_count
+            timer_callbacks[0](0.0, 0.0, None)
+            session.stop()
+
+        self.assertEqual(0, held_samples)
+        self.assertEqual(1, scene.sample.call_count)
+        self.assertEqual(1, len(FakeWorker.instance.submitted))
+
     def test_time_changed_event_streams_without_idle_timer_and_caps_burst(self):
         time_callbacks = []
         timer_callbacks = []

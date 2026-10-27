@@ -1,5 +1,6 @@
 """Real-time streaming session, sender worker and negotiation events."""
 
+import contextlib
 import errno
 import json
 import queue
@@ -601,6 +602,7 @@ class StreamingSession(object):
         self._cleaned = False
         self._cleanup_error = None
         self._sampling_paused = False
+        self._samples_held = 0
 
     @property
     def object_id(self):
@@ -616,6 +618,19 @@ class StreamingSession(object):
     @property
     def secondary_scene(self):
         return self._secondary_scene
+
+    @contextlib.contextmanager
+    def holding_samples(self):
+        """Skip live samples for the duration; the connection is still watched.
+
+        A scene-reference import runs long Maya commands that can let this
+        session's timer fire while the scene is only half built.
+        """
+        self._samples_held += 1
+        try:
+            yield
+        finally:
+            self._samples_held -= 1
 
     @property
     def removal_pending(self):
@@ -1044,6 +1059,8 @@ class StreamingSession(object):
             self._emit(StreamingSessionEvent("ready", warning=warning))
         if self._removal_pending is not None:
             # The old set is closed; the new one starts with Unreal's answer.
+            return
+        if self._samples_held:
             return
         now = time.time()
         sample_interval = 1.0 / self._effective_rate()
