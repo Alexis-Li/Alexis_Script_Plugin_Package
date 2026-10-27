@@ -436,7 +436,8 @@ FText GarmentComparisonTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
         : LOCTEXT("ComparisonShowOriginal", "显示原始服装；保持当前会话、姿势和角色部件。");
 }
 
-// Longest run without a space or '/' one line shows. An eval_id carries the
+// Longest run without a space one line shows; the row wraps only at spaces,
+// so an object path's '/' is no break. An eval_id carries the
 // whole camera description and runs to kilobytes; the row keeps both ends of
 // each long run and its tooltip keeps the full text.
 constexpr int32 LinkageRunLimit = 52;
@@ -450,7 +451,7 @@ FText CompactLinkageRuns(const FText& Text)
     while (Start < Full.Len())
     {
         int32 End = Start;
-        while (End < Full.Len() && Full[End] != TEXT(' ') && Full[End] != TEXT('/') && Full[End] != TEXT('\n'))
+        while (End < Full.Len() && Full[End] != TEXT(' ') && Full[End] != TEXT('\n'))
         {
             ++End;
         }
