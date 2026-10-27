@@ -242,6 +242,32 @@ class LinkageHostTests(unittest.TestCase):
             target(5.0), {}, {})
         self.assertEqual(7.0, applied_time["maya_frame"])
 
+    def test_linkage_entry_captures_the_origin_for_every_later_target(self):
+        # Each target moves Maya's clock; the next one must still map from the
+        # frame linkage started on, not from where the previous sample left it.
+        host, camera, commands, state, patchers = build(time_value=3.0)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        host.capture_state()
+        first, unused_readback = host.apply_target(target(5.0), {}, {})
+        second, unused_readback = host.apply_target(target(9.0), {}, {})
+        self.assertEqual(7.0, first["maya_frame"])
+        self.assertEqual(11.0, second["maya_frame"])
+
+    def test_restore_forgets_the_origin_of_the_ended_linkage(self):
+        host, camera, commands, state, patchers = build(time_value=3.0)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        captured = host.capture_state()
+        host.restore_state(captured)
+        state["time"] = 20.0
+        host.capture_state()
+        applied_time, unused_readback = host.apply_target(target(5.0), {}, {})
+        # origin 20.0 + (5.0 - 1) * 24 / 24
+        self.assertEqual(24.0, applied_time["maya_frame"])
+
     def test_sample_group_returns_one_complete_row_per_object(self):
         scene = FakeScene()
         camera = FakeCamera()

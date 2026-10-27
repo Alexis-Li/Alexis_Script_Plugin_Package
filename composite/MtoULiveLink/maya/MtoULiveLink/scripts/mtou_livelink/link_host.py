@@ -49,6 +49,7 @@ class MayaLinkageHost(object):
         self._link_camera_name = link_camera_name
         self._scene_replaced = False
         self._scene_callbacks = []
+        self._origin = None
 
     # ------------------------------------------------------------- capture
     def capture_state(self):
@@ -61,6 +62,9 @@ class MayaLinkageHost(object):
             "camera": self._camera_adapter().capture_state(),
             "scene": self._scene_identity(),
         }
+        # Every target of this linkage maps from the frame it started on;
+        # each sample moves Maya's clock, so the current time would drift.
+        self._origin = state["time"]
         self._watch_scene_replacement()
         return state
 
@@ -72,6 +76,7 @@ class MayaLinkageHost(object):
         camera values would overwrite the new scene's own data.
         """
         self._release_scene_callbacks()
+        self._origin = None
         if self._scene_replaced or not self._same_scene(state):
             self._scene_replaced = True
             return ["scene: the scene was replaced before linkage restored it; "
@@ -189,7 +194,8 @@ class MayaLinkageHost(object):
 
     # ------------------------------------------------------------ internals
     def _origin_frame(self):
-        return getattr(self, "_origin", self._current_time())
+        origin = getattr(self, "_origin", None)
+        return self._current_time() if origin is None else origin
 
     def _scene_fps(self):
         return self._fps
