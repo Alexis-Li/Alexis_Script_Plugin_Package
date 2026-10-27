@@ -21,6 +21,33 @@ bool IsEligiblePairingActor(const AMtoULiveLinkActor& Actor)
     const UWorld* World = Actor.GetWorld();
     return World && World->WorldType == EWorldType::Editor;
 }
+
+bool IsSetObjectId(const FString& ObjectId)
+{
+    return ObjectId == FMtoUObjectIds::Character || ObjectId == FMtoUObjectIds::Secondary;
+}
+}
+
+// The common anchor of a set is one placement: a translation within 0.01 cm
+// and a rotation within 0.01 degrees of the primary target's.
+constexpr double MtoUAnchorTranslationToleranceCm = 0.01;
+constexpr double MtoUAnchorRotationToleranceDeg = 0.01;
+
+bool MtoUSharesAnchor(const FTransform& Primary, const FTransform& Other, FString& OutDifference)
+{
+    const double Distance = FVector::Distance(Primary.GetLocation(), Other.GetLocation());
+    const double Angle = FMath::RadiansToDegrees(
+        Primary.GetRotation().AngularDistance(Other.GetRotation()));
+    const bool bScale = Primary.GetScale3D().Equals(Other.GetScale3D(), 1.0e-4);
+    if (Distance <= MtoUAnchorTranslationToleranceCm
+        && Angle <= MtoUAnchorRotationToleranceDeg && bScale)
+    {
+        return true;
+    }
+    OutDifference = FString::Printf(
+        TEXT("%.3f cm and %.3f degrees from the primary target%s"),
+        Distance, Angle, bScale ? TEXT("") : TEXT(", at another scale"));
+    return false;
 }
 
 // The one module-level hooks seam. A source that starts before the editor
@@ -54,9 +81,11 @@ bool FMtoULinkageSession::PairTarget(
 {
     OutError.Reset();
     OutErrorCode = TEXT("PAIRING_REQUIRED");
-    if (ObjectId.IsEmpty())
+    if (ObjectId.IsEmpty() || !IsSetObjectId(ObjectId))
     {
-        OutError = TEXT("A linkage pairing requires a non-empty Maya object id.");
+        OutError = FString::Printf(
+            TEXT("A linkage pairing names the primary '%s' or the second object '%s'."),
+            FMtoUObjectIds::Character, FMtoUObjectIds::Secondary);
         OutErrorCode = TEXT("INVALID_MESSAGE");
         return false;
     }
@@ -138,6 +167,18 @@ bool FMtoULinkageSession::IsPaired(const FString& ObjectId) const
     return FindPairing(ObjectId) != nullptr;
 }
 
+FString FMtoULinkageSession::PairedObjectOf(const AMtoULiveLinkActor& Actor) const
+{
+    for (const FMtoULinkagePairing& Pairing : GMtoULinkagePairings)
+    {
+        if (Pairing.Actor.Get() == &Actor)
+        {
+            return Pairing.ObjectId;
+        }
+    }
+    return FString();
+}
+
 FMtoULinkageView FMtoULinkageSession::GetView() const
 {
     FMtoULinkageView View;
@@ -147,12 +188,10 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
     View.Identity.SetRevision = SetRevision;
     View.Identity.SpaceRevision = SpaceRevision;
     View.Identity.ModeRevision = ModeRevision;
-    // Before a session negotiates, the panel still needs the pairing this
-    // source would use, so an unnegotiated session falls back to the one
-    // paired target exactly as the greeting answer does.
-    const FMtoULinkagePairing* Pairing = SessionObjectId.IsEmpty()
-        ? (GMtoULinkagePairings.Num() == 1 ? &GMtoULinkagePairings[0] : nullptr)
-        : FindPairing(SessionObjectId);
+    // The primary character's pairing is what the panel's linkage actions
+    // need, before and after a session negotiates.
+    const FMtoULinkagePairing* Pairing = FindPairing(
+        SessionObjectId.IsEmpty() ? FString(FMtoUObjectIds::Character) : SessionObjectId);
     View.bPaired = Pairing != nullptr;
     if (Pairing)
     {
@@ -160,6 +199,23 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
         View.TargetPath = Pairing->BindingPath;
         View.TargetKind = TEXT("binding_actor");
     }
+    // The objects the panel lists: the negotiated set while connected, plus
+    // any paired object the set does not hold yet.
+    for (const TCHAR* ObjectId : {FMtoUObjectIds::Character, FMtoUObjectIds::Secondary})
+    {
+        const FMtoULinkagePairing* ObjectPairing = FindPairing(ObjectId);
+        const bool bNegotiated = SetObjectIds.Contains(ObjectId);
+        if (!ObjectPairing && !bNegotiated)
+        {
+            continue;
+        }
+        FMtoULinkageObjectView& Object = View.Objects.AddDefaulted_GetRef();
+        Object.ObjectId = ObjectId;
+        Object.bPaired = ObjectPairing != nullptr;
+        Object.TargetPath = ObjectPairing ? ObjectPairing->BindingPath : FString();
+        Object.bNegotiated = bNegotiated;
+    }
+    View.bRemovingObject = !PendingRemovalObjectId.IsEmpty();
     if (Issued.IsSet())
     {
         View.TargetEvalId = Issued->EvalId;
@@ -195,6 +251,9 @@ void FMtoULinkageSession::BeginSession(int32 InSessionId)
     SetRevision = 0;
     SpaceRevision = 1;
     SessionObjectId.Reset();
+    SetObjectIds.Reset();
+    PendingRemovalObjectId.Reset();
+    PendingRemovalSetRevision = 0;
     Mode = TEXT("realtime");
     Control = TEXT("maya");
     ModeRevision = 0;
@@ -250,6 +309,9 @@ void FMtoULinkageSession::EndSession()
     Desired.Reset();
     Staged.Reset();
     bConverged = false;
+    SetObjectIds.Reset();
+    PendingRemovalObjectId.Reset();
+    PendingRemovalSetRevision = 0;
     Detail = TEXT("Disconnected; the linkage takeover was restored.");
     PublishView();
 }
@@ -264,11 +326,20 @@ void FMtoULinkageSession::NoteHello(const FMtoUHelloMessage& Hello)
     {
         return !Pairing.Actor.IsValid() || !IsEligiblePairingActor(*Pairing.Actor);
     });
-    // Exactly one paired target can be named before the greeting answers; a
-    // peer with several pairings hears that none was selected yet.
-    const FMtoULinkagePairing* Pairing = GMtoULinkagePairings.Num() == 1
-        ? &GMtoULinkagePairings[0]
-        : nullptr;
+    // Every explicitly paired target, primary first; the list stays empty
+    // until the user pairs one.
+    TArray<FMtoUHelloTarget> Targets;
+    for (const TCHAR* ObjectId : {FMtoUObjectIds::Character, FMtoUObjectIds::Secondary})
+    {
+        if (const FMtoULinkagePairing* Pairing = FindPairing(ObjectId))
+        {
+            FMtoUHelloTarget& Target = Targets.AddDefaulted_GetRef();
+            Target.ObjectId = Pairing->ObjectId;
+            Target.Kind = TEXT("binding_actor");
+            Target.BindingPath = Pairing->BindingPath;
+            Target.Generation = Pairing->Generation;
+        }
+    }
     const TSharedRef<FJsonObject> Anchor = MakeShared<FJsonObject>();
     SendControl(FMtoUProtocol::EncodeHelloAck(
         SessionId,
@@ -276,10 +347,7 @@ void FMtoULinkageSession::NoteHello(const FMtoUHelloMessage& Hello)
         true,
         true,
         true,
-        Pairing ? Pairing->ObjectId : FString(),
-        Pairing ? TEXT("binding_actor") : FString(),
-        Pairing ? Pairing->BindingPath : FString(),
-        Pairing ? Pairing->Generation : FString(),
+        Targets,
         SpaceRevision,
         Anchor));
     Detail = FString::Printf(TEXT("Greeted %s (Maya %s)."), *Hello.Host, *Hello.MayaVersion);
@@ -290,9 +358,158 @@ void FMtoULinkageSession::NegotiateIdentity(
     const FString& ObjectId, int32 InSetRevision, int32 InSpaceRevision)
 {
     SessionObjectId = ObjectId;
+    SetObjectIds = {ObjectId};
     SetRevision = InSetRevision;
     SpaceRevision = InSpaceRevision;
     PublishView();
+}
+
+void FMtoULinkageSession::NegotiateObject(const FString& ObjectId)
+{
+    SetObjectIds.AddUnique(ObjectId);
+    PublishView();
+}
+
+void FMtoULinkageSession::NoteRemoveObject(const FMtoURemoveObjectMessage& Message)
+{
+    if (Message.SessionId != SessionId)
+    {
+        SendError(
+            TEXT("INVALID_MESSAGE"),
+            TEXT("A remove_object message named another session."),
+            FString::Printf(TEXT("message session %d, current session %d"),
+                Message.SessionId, SessionId));
+        return;
+    }
+    if (Message.ObjectId == FMtoUObjectIds::Character)
+    {
+        SendError(
+            TEXT("INVALID_MESSAGE"),
+            TEXT("The primary character cannot be removed inside a connection."),
+            TEXT("Removing the 'character' object ends the connection instead."));
+        return;
+    }
+    if (!SetObjectIds.Contains(Message.ObjectId))
+    {
+        SendError(
+            TEXT("INVALID_MESSAGE"),
+            TEXT("remove_object names an object outside the current set."),
+            FString::Printf(TEXT("object '%s' is not part of the current set"), *Message.ObjectId));
+        return;
+    }
+    if (Message.SetRevision != SetRevision + 1)
+    {
+        SendError(
+            TEXT("SET_REVISION_STALE"),
+            TEXT("remove_object must name the next set revision."),
+            FString::Printf(TEXT("remove_object set revision %d, current %d"),
+                Message.SetRevision, SetRevision));
+        return;
+    }
+    PendingRemovalObjectId = Message.ObjectId;
+    PendingRemovalSetRevision = Message.SetRevision;
+    // The old set's work is closed at once: nothing in flight or waiting for
+    // set N is published or confirmed any more.
+    Issued.Reset();
+    Desired.Reset();
+    Staged.Reset();
+    bConverged = false;
+    Detail = FString::Printf(TEXT("Removing object '%s' from the set."), *Message.ObjectId);
+    PublishView();
+}
+
+bool FMtoULinkageSession::RequestRemoveObject(FString& OutError)
+{
+    OutError.Reset();
+    if (SessionId == 0 || !SetObjectIds.Contains(FMtoUObjectIds::Secondary))
+    {
+        OutError = TEXT("The running set has no second object to remove.");
+        return false;
+    }
+    if (!PendingRemovalObjectId.IsEmpty() || bTransitioning)
+    {
+        OutError = TEXT("A transition of the set or the mode is still in progress.");
+        return false;
+    }
+    FMtoURemoveObjectMessage Request;
+    Request.SessionId = SessionId;
+    Request.ObjectId = FMtoUObjectIds::Secondary;
+    Request.SetRevision = SetRevision + 1;
+    Request.Detail = TEXT("removed in the Unreal Details panel");
+    NoteRemoveObject(Request);
+    return PendingRemovalObjectId == FMtoUObjectIds::Secondary;
+}
+
+bool FMtoULinkageSession::ConsumeRemovalRequest(FString& OutObjectId, int32& OutSetRevision)
+{
+    if (PendingRemovalObjectId.IsEmpty())
+    {
+        return false;
+    }
+    OutObjectId = PendingRemovalObjectId;
+    OutSetRevision = PendingRemovalSetRevision;
+    return true;
+}
+
+void FMtoULinkageSession::CompleteObjectRemoval(
+    const FString& ObjectId, int32 NewSetRevision, const FString& Residual)
+{
+    PendingRemovalObjectId.Reset();
+    PendingRemovalSetRevision = 0;
+    SetObjectIds.Remove(ObjectId);
+    SetRevision = NewSetRevision;
+    Issued.Reset();
+    Desired.Reset();
+    Staged.Reset();
+    bConverged = false;
+    // The display holds the old set's last group; the current target is
+    // issued again so the next complete application belongs to the new set.
+    LastAppliedEvalId.Reset();
+    LastAppliedSampleSerial = 0;
+    bLastApplied = false;
+    LastPumpSeconds = 0.0;
+    const bool bRestored = Residual.IsEmpty();
+    Detail = bRestored
+        ? FString::Printf(TEXT("Object '%s' was removed and restored; the set continues."), *ObjectId)
+        : FString::Printf(TEXT("Object '%s' could not be restored: %s"), *ObjectId, *Residual);
+    if (!bRestored)
+    {
+        Error = Detail;
+        ErrorCode = TEXT("RECOVERY_REFUSED");
+    }
+    PublishView();
+}
+
+bool FMtoULinkageSession::ValidateCommonAnchor(FString& OutReason) const
+{
+    OutReason.Reset();
+    const FMtoULinkagePairing* Primary = FindPairing(FMtoUObjectIds::Character);
+    if (!Primary || !Primary->Actor.IsValid())
+    {
+        return true;
+    }
+    for (const FString& ObjectId : SetObjectIds)
+    {
+        if (ObjectId == FMtoUObjectIds::Character)
+        {
+            continue;
+        }
+        const FMtoULinkagePairing* Other = FindPairing(ObjectId);
+        if (!Other || !Other->Actor.IsValid())
+        {
+            continue;
+        }
+        FString Difference;
+        if (!MtoUSharesAnchor(Primary->Actor->GetActorTransform(),
+                Other->Actor->GetActorTransform(), Difference))
+        {
+            OutReason = FString::Printf(
+                TEXT("the target of object '%s' (%s) stands %s; the targets of one set share one placement"),
+                *ObjectId, *Other->BindingPath, *Difference);
+            return false;
+        }
+    }
+    return true;
 }
 
 void FMtoULinkageSession::NoteMode(const FMtoUModeMessage& Message, double NowSeconds)
@@ -550,11 +767,52 @@ bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
         }
         if (Group.SetRevision != SetRevision)
         {
+            // A group of the set a removal just closed was in flight; only a
+            // newer set is a real conflict.
             SendError(
                 TEXT("SET_REVISION_STALE"),
                 TEXT("A group named an older object set."),
-                FString::Printf(TEXT("group set revision %d, current %d"), Group.SetRevision, SetRevision));
+                FString::Printf(TEXT("group set revision %d, current %d"), Group.SetRevision, SetRevision),
+                Group.SetRevision < SetRevision ? ESendErrorKind::Scheduling : ESendErrorKind::Failure);
             continue;
+        }
+        {
+            // The group answers for exactly the negotiated set: every object
+            // once, none outside it. A partial group is never applied.
+            FString SetMismatch;
+            TArray<FString> Named;
+            for (const FMtoUPoseGroup& Row : Group.Objects)
+            {
+                if (Named.Contains(Row.ObjectId))
+                {
+                    SetMismatch = FString::Printf(
+                        TEXT("the group names the duplicate object '%s'"), *Row.ObjectId);
+                    break;
+                }
+                Named.Add(Row.ObjectId);
+                if (!SetObjectIds.Contains(Row.ObjectId))
+                {
+                    SetMismatch = FString::Printf(
+                        TEXT("the group names object '%s' outside the current set"), *Row.ObjectId);
+                    break;
+                }
+            }
+            for (const FString& ObjectId : SetObjectIds)
+            {
+                if (SetMismatch.IsEmpty() && !Named.Contains(ObjectId))
+                {
+                    SetMismatch = FString::Printf(
+                        TEXT("the group lacks object '%s' of the current set"), *ObjectId);
+                }
+            }
+            if (!SetMismatch.IsEmpty())
+            {
+                SendError(
+                    TEXT("INVALID_MESSAGE"),
+                    TEXT("A group does not carry exactly the negotiated object set."),
+                    SetMismatch);
+                continue;
+            }
         }
         if (Group.SpaceRevision != SpaceRevision)
         {
@@ -663,6 +921,16 @@ void FMtoULinkageSession::Tick(double NowSeconds, bool bAskEditorNow)
         if (!Hooks.ValidateTakeover(LostReason))
         {
             EndForLostTakeover(LostReason);
+        }
+    }
+    if (bWritersBorrowed)
+    {
+        // The anchor is static: a target moved apart from the others while
+        // linkage holds them ends the linkage instead of showing two spaces.
+        FString AnchorReason;
+        if (!ValidateCommonAnchor(AnchorReason))
+        {
+            EndForLostTakeover(AnchorReason, TEXT("ANCHOR_MISMATCH"));
         }
     }
     if (Mode == TEXT("linkage") && !bTransitioning)
@@ -1026,8 +1294,7 @@ bool FMtoULinkageSession::IsCutChange(
 bool FMtoULinkageSession::BeginTakeover(
     int32 InModeRevision, FString& OutError, FString& OutErrorCode, bool bAwaitPeerConfirmation)
 {
-    const FMtoULinkagePairing* Pairing = FindPairing(SessionObjectId);
-    const auto Refuse = [&](const TCHAR* Code, const TCHAR* Message)
+    const auto Refuse = [&](const TCHAR* Code, const FString& Message)
     {
         // The pairing is the consent to take the target over; its absence is
         // reported on the panel like any other refused transition.
@@ -1038,15 +1305,44 @@ bool FMtoULinkageSession::BeginTakeover(
         PublishView();
         return false;
     };
-    if (!Pairing)
+    if (!PendingRemovalObjectId.IsEmpty())
     {
-        return Refuse(TEXT("PAIRING_REQUIRED"),
-            TEXT("Pair this actor's Binding with the Maya object before entering linkage."));
+        return Refuse(TEXT("MODE_CONFLICT"),
+            TEXT("The second object is being removed; enter linkage once the set is confirmed."));
     }
-    if (!Pairing->Actor.IsValid() || !IsEligiblePairingActor(*Pairing->Actor))
+    // Every object of the negotiated set (the primary alone before a session
+    // negotiated) must be paired with a placed target: the pairing is the
+    // consent to take each target over.
+    TArray<FString> Objects = SetObjectIds;
+    if (Objects.IsEmpty())
     {
-        return Refuse(TEXT("TARGET_UNKNOWN"),
-            TEXT("The paired target no longer resolves in the Editor world."));
+        Objects.Add(SessionObjectId.IsEmpty() ? FString(FMtoUObjectIds::Character) : SessionObjectId);
+    }
+    for (const FString& ObjectId : Objects)
+    {
+        const FMtoULinkagePairing* Pairing = FindPairing(ObjectId);
+        if (!Pairing)
+        {
+            return Refuse(TEXT("PAIRING_REQUIRED"), ObjectId == FMtoUObjectIds::Character
+                ? FString(TEXT("Pair this actor's Binding with the Maya object before entering linkage."))
+                : FString::Printf(
+                    TEXT("Pair a second Binding actor with the Maya object '%s' before entering linkage."),
+                    *ObjectId));
+        }
+        if (!Pairing->Actor.IsValid() || !IsEligiblePairingActor(*Pairing->Actor))
+        {
+            return Refuse(TEXT("TARGET_UNKNOWN"), FString::Printf(
+                TEXT("The paired target of object '%s' no longer resolves in the Editor world."),
+                *ObjectId));
+        }
+    }
+    {
+        FString AnchorReason;
+        if (!ValidateCommonAnchor(AnchorReason))
+        {
+            return Refuse(TEXT("ANCHOR_MISMATCH"), FString::Printf(
+                TEXT("The targets do not share one placement: %s."), *AnchorReason));
+        }
     }
 
     bTransitioning = true;
@@ -1107,7 +1403,7 @@ void FMtoULinkageSession::FailTransition(const FString& Code, const FString& InD
     PublishView();
 }
 
-void FMtoULinkageSession::EndForLostTakeover(const FString& Reason)
+void FMtoULinkageSession::EndForLostTakeover(const FString& Reason, const TCHAR* Code)
 {
     if (Mode == TEXT("linkage"))
     {
@@ -1137,7 +1433,7 @@ void FMtoULinkageSession::EndForLostTakeover(const FString& Reason)
         : Reason;
     Detail = FString::Printf(TEXT("Linkage ended: %s."), *Lost);
     Error = Residual.IsEmpty() ? Detail : FString::Printf(TEXT("%s %s"), *Detail, *Residual);
-    ErrorCode = Residual.IsEmpty() ? TEXT("TARGET_UNKNOWN") : TEXT("RECOVERY_REFUSED");
+    ErrorCode = Residual.IsEmpty() ? Code : TEXT("RECOVERY_REFUSED");
     SendControl(FMtoUProtocol::EncodeModeState(
         SessionId, ModeRevision, Mode, Control, Error));
     PublishView();
@@ -1270,6 +1566,41 @@ void MtoUClearLinkageTarget(const AMtoULiveLinkActor& Actor)
     {
         Source->GetLinkageSession().ClearTarget(Actor);
     }
+}
+
+FString MtoUGetLinkagePairedObject(const AMtoULiveLinkActor& Actor)
+{
+    for (const FMtoULinkagePairing& Pairing : GMtoULinkagePairings)
+    {
+        if (Pairing.Actor.Get() == &Actor)
+        {
+            return Pairing.ObjectId;
+        }
+    }
+    return FString();
+}
+
+AMtoULiveLinkActor* MtoUFindLinkagePairedActor(const FString& ObjectId)
+{
+    for (const FMtoULinkagePairing& Pairing : GMtoULinkagePairings)
+    {
+        if (Pairing.ObjectId == ObjectId && Pairing.Actor.IsValid()
+            && IsEligiblePairingActor(*Pairing.Actor))
+        {
+            return Pairing.Actor.Get();
+        }
+    }
+    return nullptr;
+}
+
+bool MtoURequestRemoveSecondaryObject(FString& OutError)
+{
+    if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
+    {
+        return Source->GetLinkageSession().RequestRemoveObject(OutError);
+    }
+    OutError = TEXT("The MtoU_LiveLink listener is unavailable.");
+    return false;
 }
 
 FMtoULinkageView MtoUGetLinkageView()

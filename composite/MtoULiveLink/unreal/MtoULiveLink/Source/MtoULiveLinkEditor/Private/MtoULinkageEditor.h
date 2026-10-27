@@ -121,7 +121,8 @@ public:
         const TArray<UObject*>& TargetObjects,
         const AActor* TargetAnchor,
         FString& OutError,
-        FString& OutErrorCode);
+        FString& OutErrorCode,
+        const FString& ObjectId = TEXT("character"));
 
     /**
      * Restores every writer this module muted, per resource and idempotently,
@@ -129,6 +130,13 @@ public:
      * names the resource that could not be restored instead of hiding it.
      */
     static bool RestoreTarget(FString& OutError, FString& OutErrorCode);
+
+    /**
+     * Restores only the writers muted for one object of the set, for the
+     * removal of the second object; the other object's writers stay muted and
+     * the takeover stays active. Idempotent per resource like RestoreTarget.
+     */
+    static bool RestoreObject(const FString& ObjectId, FString& OutError, FString& OutErrorCode);
 
     /**
      * True while the current takeover can still be driven: its Level Sequence

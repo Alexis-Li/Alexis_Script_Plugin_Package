@@ -14,7 +14,15 @@ struct FMtoUPoseGroupMessage;
 struct FMtoUReferenceResultMessage;
 struct FMtoUReferenceRemovedMessage;
 struct FMtoUReferenceQueryMessage;
+struct FMtoURemoveObjectMessage;
 struct FMtoUAppliedComponent;
+
+/**
+ * True when two targets share one placement (the common anchor of a set);
+ * false names how far the second stands from the primary.
+ */
+MTOULIVELINK_API bool MtoUSharesAnchor(
+    const FTransform& Primary, const FTransform& Other, FString& OutDifference);
 
 /**
  * The one Live Link source that owns the active linkage session. The cached
@@ -66,6 +74,8 @@ public:
     /** The pairing that owns one object id, or nullptr. */
     const FMtoULinkagePairing* FindPairing(const FString& ObjectId) const;
     bool IsPaired(const FString& ObjectId) const;
+    /** The object id one actor is paired as, or empty. */
+    FString PairedObjectOf(const AMtoULiveLinkActor& Actor) const;
 
     /** True while this eval is the issued target; a cancelled one is not. */
     bool IsIssued(const FString& EvalId) const
@@ -114,8 +124,34 @@ public:
     /** Maya asks for the handoff of a scope the user selected in Unreal. */
     void NoteReferenceQuery(const FMtoUReferenceQueryMessage& Message);
 
-    /** The negotiated identity of the streaming session. */
+    /** The negotiated identity of the streaming session: its primary object. */
     void NegotiateIdentity(const FString& ObjectId, int32 SetRevision, int32 SpaceRevision);
+    /** One more object of the set negotiated after the primary. */
+    void NegotiateObject(const FString& ObjectId);
+    /** The negotiated object ids, primary first. */
+    const TArray<FString>& GetSetObjects() const { return SetObjectIds; }
+
+    /** Maya asks to remove the second object; a valid request waits for the source. */
+    void NoteRemoveObject(const FMtoURemoveObjectMessage& Message);
+    /** The Unreal user removes the second object from the running set. */
+    bool RequestRemoveObject(FString& OutError);
+    /**
+     * The removal the source must perform now: the old set's targets are
+     * cancelled already. Consuming never loses a second request.
+     */
+    bool ConsumeRemovalRequest(FString& OutObjectId, int32& OutSetRevision);
+    /**
+     * The source removed the object and confirms the new set to Maya itself:
+     * the current target is issued again for the new set. A residual is
+     * reported; the source then ends the session.
+     */
+    void CompleteObjectRemoval(const FString& ObjectId, int32 NewSetRevision,
+        const FString& Residual);
+    /**
+     * True while the takeover's targets share one placement; false names the
+     * target that moved. Linkage ends then, because the anchor is static.
+     */
+    bool ValidateCommonAnchor(FString& OutReason) const;
 
     /**
      * Take the next staged group that passed the identity checks; a refused
@@ -187,7 +223,8 @@ private:
     // The takeover's sequence, world or target went away: every borrowed
     // writer is restored, the stale synchronisation is dropped and Maya hears
     // that linkage ended so it restores its own state too.
-    void EndForLostTakeover(const FString& Reason);
+    void EndForLostTakeover(const FString& Reason,
+        const TCHAR* Code = TEXT("TARGET_UNKNOWN"));
     void RestoreBorrowedWriters(FString& OutResidual);
 
     FMtoULinkageHooks Hooks;
@@ -196,6 +233,11 @@ private:
     int32 SetRevision = 0;
     int32 SpaceRevision = 1;
     FString SessionObjectId;
+    // The negotiated objects, primary first.
+    TArray<FString> SetObjectIds;
+    // A confirmed removal request the source has not performed yet.
+    FString PendingRemovalObjectId;
+    int32 PendingRemovalSetRevision = 0;
 
     FString Mode = TEXT("realtime");
     FString Control = TEXT("maya");

@@ -557,11 +557,35 @@ void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Compo
     Component.SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
     if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component.GetAnimInstance()))
     {
-        // Every part evaluates the one character subject, so the whole composed
-        // character poses from the single streaming session.
-        Instance->SetSubject(
-            FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
+        // Every part evaluates this actor's one object subject, so the whole
+        // composed character poses from the same session and the second object
+        // of a set never reads the primary's values.
+        Instance->SetSubject(FLiveLinkSubjectName(LiveLinkSubjectName));
         Instance->EnableLiveLinkEvaluation(true);
+    }
+}
+
+void AMtoULiveLinkActor::SetLiveLinkSubject(FName Subject)
+{
+    if (Subject.IsNone() || Subject == LiveLinkSubjectName)
+    {
+        return;
+    }
+    LiveLinkSubjectName = Subject;
+    const auto Retarget = [Subject](USkeletalMeshComponent* Component)
+    {
+        if (Component)
+        {
+            if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance()))
+            {
+                Instance->SetSubject(FLiveLinkSubjectName(Subject));
+            }
+        }
+    };
+    Retarget(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        Retarget(Part.Get());
     }
 }
 

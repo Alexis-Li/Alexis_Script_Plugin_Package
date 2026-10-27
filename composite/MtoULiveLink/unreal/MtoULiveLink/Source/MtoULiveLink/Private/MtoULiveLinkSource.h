@@ -66,7 +66,15 @@ struct FMtoUOutgoing
     TArray<uint8> Packet;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
+    // A ready for ReadyObjectId: the worker validates that object's frame
+    // rows with the counts above. bSetComplete marks the set's last ready,
+    // after which the worker accepts frames.
     bool bReady = false;
+    FString ReadyObjectId;
+    bool bSetComplete = false;
+    // The object this reply removes from the set; once the packet reached the
+    // socket, the worker no longer expects that object's frame rows.
+    FString RemovedObjectId;
     bool bCloseAfter = false;
     // Control messages (greeting, mode, camera/time, applied evidence,
     // reference offers and errors) count against the frozen per-direction
@@ -91,6 +99,7 @@ struct FMtoUPendingLinkageControl
     {
         Mode,
         LeaveLinkage,
+        RemoveObject,
         ReferenceResult,
         ReferenceRemoved,
         ReferenceQuery
@@ -99,6 +108,7 @@ struct FMtoUPendingLinkageControl
     EKind Kind = EKind::Mode;
     FMtoUModeMessage Mode;
     FMtoULeaveLinkageMessage LeaveLinkage;
+    FMtoURemoveObjectMessage RemoveObject;
     FMtoUReferenceResultMessage ReferenceResult;
     FMtoUReferenceRemovedMessage ReferenceRemoved;
     FMtoUReferenceQueryMessage ReferenceQuery;
@@ -110,11 +120,23 @@ struct FMtoUPendingPoseGroup
     FMtoUPoseGroupMessage Message;
 };
 
+/** One object's share of a published linkage group. */
+struct FMtoUPendingObjectApplication
+{
+    // The published (retargeted) local pose per target bone and the published
+    // value per accepted Morph curve: what this object's displays must hold.
+    TArray<FTransform> ExpectedTransforms;
+    TArray<float> ExpectedCurves;
+    // The published frame itself, kept so a committed group becomes the
+    // display a later failure or cancellation returns to.
+    FLiveLinkFrameDataStruct Frame;
+};
+
 /**
- * One published linkage group whose display is not confirmed yet. The group
- * is stamped with its generation; `applied` is answered only once the Live
- * Link subject holds that generation and every display component evaluated
- * exactly its bones and Morph values.
+ * One published linkage group whose display is not confirmed yet. Every
+ * object's subject receives the group under one generation; `applied` is
+ * answered only once every subject holds that generation and every display
+ * component of every object evaluated exactly its bones and Morph values.
  */
 struct FMtoUPendingApplication
 {
@@ -122,17 +144,13 @@ struct FMtoUPendingApplication
     int32 SampleSerial = 0;
     double DisplayFrame = 0.0;
     int32 ModeRevision = 0;
+    int32 SetRevision = 0;
     // The issue of the target this group answers; a cancelled issue of the
     // same evaluation never confirms it.
     int32 IssueSerial = 0;
     FString Generation;
-    // The published (retargeted) local pose per target bone and the published
-    // value per accepted Morph curve: what a display must hold.
-    TArray<FTransform> ExpectedTransforms;
-    TArray<float> ExpectedCurves;
-    // The published frame itself, kept so a committed group becomes the
-    // display a later failure or cancellation returns to.
-    FLiveLinkFrameDataStruct Frame;
+    // One entry per object of the set, in the set's order.
+    TArray<FMtoUPendingObjectApplication> Objects;
     double PublishedSeconds = 0.0;
 };
 
@@ -143,6 +161,47 @@ struct FMtoUExpectedDisplayPart
     TWeakObjectPtr<USkeletalMesh> Mesh;
     FString Name;
 };
+
+/**
+ * One negotiated object of the set: its Binding actor, its own skeleton
+ * mapping and Morph set, and its own Live Link subject. Index 0 is always the
+ * primary character; same-name bones and Morph Targets of two objects never
+ * route to each other because each object publishes only its own subject.
+ */
+struct FMtoUSessionObject
+{
+    FString ObjectId;
+    FLiveLinkSubjectKey SubjectKey;
+    TWeakObjectPtr<AMtoULiveLinkActor> Actor;
+    int32 ExpectedBoneCount = 0;
+    int32 ExpectedCurveCount = 0;
+    int32 NegotiatedRevision = 0;
+    TArray<FTransform> SourceBindLocalPose;
+    TArray<FTransform> TargetRefLocalPose;
+    TArray<int32> BoneParents;
+    TArray<int32> SourceBoneIndices;
+    TArray<int32> AcceptedCurveIndices;
+    TArray<FName> AcceptedCurveNames;
+    // Target bone names in the order of the published transforms.
+    TArray<FName> TargetBoneNames;
+    // The displays the negotiated object consists of.
+    TWeakObjectPtr<USkeletalMesh> ExpectedPrimaryMesh;
+    TArray<FMtoUExpectedDisplayPart> ExpectedDisplayParts;
+    // The last frame every display of this object showed completely (a
+    // confirmed group or the last live frame) and its accepted Morph values.
+    FLiveLinkFrameDataStruct LastCompleteFrame;
+    TArray<float> LastCompleteCurves;
+};
+
+/** One display component of one object of the set. */
+struct FMtoULinkageDisplay
+{
+    int32 ObjectIndex = INDEX_NONE;
+    USkeletalMeshComponent* Display = nullptr;
+};
+
+/** The Live Link subject name an object of the set publishes as. */
+MTOULIVELINK_API FName MtoUSubjectNameForObject(const FString& ObjectId);
 
 struct FMtoUPendingInit
 {
@@ -220,7 +279,9 @@ private:
     // Editor integration coverage for explicit refresh during a session.
     friend class FMtoURefreshEndsSessionTestAccess;
 #endif
-    void HandleInitOnGameThread(FMtoUInitMessage&& Message);
+    // Negotiates one object of the set; false when it refused the object and
+    // the connection ends.
+    bool HandleInitOnGameThread(FMtoUInitMessage&& Message);
     void HandleCacheCommandsOnGameThread();
     // Linkage intake and pump. The greeting is answered before any object is
     // negotiated; control messages and staged groups are applied on the game
@@ -232,6 +293,10 @@ private:
     // Resolves the published group, finishes a display restore, or publishes
     // the next staged group; runs after the editor was asked for the target.
     void CommitLinkageGroupOnGameThread();
+    // Removes the second object the linkage session confirmed a request for:
+    // the old set's work is cancelled, the object's writers and displays are
+    // restored, its subject leaves the stream and the new set is confirmed.
+    void RemoveSecondaryObjectOnGameThread(const FString& ObjectId, int32 SetRevision);
     void SendLinkageControlPacketOnGameThread(TArray<uint8> Packet, bool bControl);
     bool ApplyPoseGroupOnGameThread(
         const FMtoUPoseGroupMessage& Group,
@@ -245,36 +310,50 @@ private:
         bool& bOutApplied,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutReason);
-    // Every display the negotiated character needs, ready to show a group;
-    // checked before a group is published so a missing part never shows half.
+    // Every display every object of the set needs, ready to show a group;
+    // checked before a group is published so a missing part or object never
+    // shows half.
     bool CollectLinkageDisplaysOnGameThread(
-        TArray<USkeletalMeshComponent*>& OutDisplays,
+        TArray<FMtoULinkageDisplay>& OutDisplays,
         FString& OutReason) const;
-    // Evaluates every display against the subject without changing what it
-    // shows, and compares the result with the group: the whole group is
-    // verified before any display commits it.
+    // Evaluates every display against its object's subject without changing
+    // what it shows, and compares the result with the group: the whole group
+    // of every object is verified before any display commits it.
     bool StageDisplaysOnGameThread(
         const FMtoUPendingApplication& Pending,
-        const TArray<USkeletalMeshComponent*>& Displays,
+        const TArray<FMtoULinkageDisplay>& Displays,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutMismatch);
     // Compares what the committed displays hold with the group.
     bool VerifyDisplaysOnGameThread(
         const FMtoUPendingApplication& Pending,
-        const TArray<USkeletalMeshComponent*>& Displays,
+        const TArray<FMtoULinkageDisplay>& Displays,
         TArray<FMtoUAppliedComponent>& OutComponents,
         FString& OutMismatch) const;
     bool MatchDisplayPose(
-        const FMtoUPendingApplication& Pending,
+        const FMtoUSessionObject& Object,
+        const FMtoUPendingObjectApplication& Pending,
         const USkeletalMeshComponent& Display,
         const TArray<FTransform>& Local,
         TFunctionRef<float(const UMorphTarget&, FName)> MorphWeight,
         FMtoUAppliedComponent& InOutComponent,
         TSet<int32>& InOutDisplayedBones,
         FString& OutMismatch) const;
-    bool CoversNegotiatedSkeleton(const TSet<int32>& DisplayedBones, FString& OutMismatch) const;
-    // The generation of the frame the Live Link subject holds now.
-    FString SubjectGenerationOnGameThread() const;
+    bool CoversNegotiatedSkeleton(const FMtoUSessionObject& Object,
+        const TSet<int32>& DisplayedBones, FString& OutMismatch) const;
+    // The generation of the frame one object's Live Link subject holds now.
+    FString SubjectGenerationOnGameThread(int32 ObjectIndex) const;
+    // Retargets one object's sampled pose into a Live Link frame; false names
+    // the transform that cannot be inverted.
+    bool MakeObjectFrameOnGameThread(
+        const FMtoUSessionObject& Object,
+        const TArray<FMtoUTransform>& Transforms,
+        const TArray<double>& Curves,
+        FLiveLinkFrameDataStruct& OutFrame,
+        FString& OutError) const;
+    // Removes one object's subject and hands its displays back to their own
+    // Binding state, as a disconnect does for the whole set.
+    void ReleaseSessionObjectOnGameThread(FMtoUSessionObject& Object, const TCHAR* ActorStatus);
     // A published group that will not be confirmed (cancelled, failed, mode
     // left) gives the subject back the last complete frame; the displays
     // follow once the subject holds it.
@@ -286,9 +365,10 @@ private:
     void HoldLinkageDisplaysOnGameThread(bool bHold);
     bool IsSessionActiveOnGameThread(uint64 SessionId) const;
     void ApplyCacheTransitionOnGameThread(uint64 SessionId, const FMtoUCacheTransition& Transition);
-    bool PublishFrameOnGameThread(
-        const FMtoUFrameMessage& Frame,
-        FMtoUPendingApplication* OutLinkage = nullptr);
+    // Publishes one live or cached frame of the whole set: every object is
+    // retargeted first and only then pushed, so a frame that cannot be
+    // retargeted for one object changes no display.
+    bool PublishFrameOnGameThread(const FMtoUFrameMessage& Frame);
     void PublishLatestFrameOnGameThread();
     void EnqueueReplyPacketOnGameThread(uint64 SessionId, TArray<uint8> Packet, bool bCloseAfter);
     void EnqueueErrorOnGameThread(
@@ -315,7 +395,8 @@ private:
 
     mutable FCriticalSection PendingMutex;
     uint64 CurrentWorkerSession = 0;
-    TOptional<FMtoUPendingInit> PendingInit;
+    // The set's inits in arrival order; the game thread negotiates each.
+    TArray<FMtoUPendingInit> PendingInits;
     TOptional<FMtoUPendingFrame> PendingFrame;
     TQueue<uint64, EQueueMode::Spsc> DisconnectedSessions;
     TQueue<FMtoUOutgoing, EQueueMode::Spsc> OutgoingReplies;
@@ -345,48 +426,31 @@ private:
 
     ILiveLinkClient* Client = nullptr;
     FGuid SourceGuid;
-    FLiveLinkSubjectKey SubjectKey;
     uint64 GameThreadSession = 0;
     // Termination-counter value observed when GameThreadSession was
     // negotiated. An explicit refresh increments the counter before replacing
     // the display, so any later publish for the older epoch fails closed even
     // before the worker closes the socket.
     uint64 GameThreadSessionEndEpoch = 0;
-    int32 ExpectedBoneCount = 0;
-    int32 ExpectedCurveCount = 0;
-    // Authoritative character snapshot revision from the accepted init.
-    int32 NegotiatedRevision = 0;
-    // v10 identity of the negotiated session: the paired Maya object, its
-    // object-set revision and the common space both adapters must match.
-    FString NegotiatedObjectId;
+    // v11 identity of the negotiated session: the declared object set, its
+    // revision and the common space both adapters must match.
+    TArray<FString> SetObjects;
     int32 NegotiatedSetRevision = 0;
     int32 NegotiatedSpaceRevision = 1;
-    TArray<FTransform> SourceBindLocalPose;
-    TArray<FTransform> TargetRefLocalPose;
-    TArray<int32> BoneParents;
-    TArray<int32> SourceBoneIndices;
-    TArray<int32> AcceptedCurveIndices;
-    TArray<FName> AcceptedCurveNames;
-    // Target bone names in the order of the published transforms.
-    TArray<FName> TargetBoneNames;
+    // The objects negotiated so far, primary first; streaming starts once it
+    // holds every object of SetObjects.
+    TArray<FMtoUSessionObject> SessionObjects;
     TArray<TWeakObjectPtr<AMtoULiveLinkActor>> ParticipatingActors;
     // The linkage group published and still awaiting its display evidence;
     // one generation is in flight at a time.
     TOptional<FMtoUPendingApplication> PendingApplication;
     int32 LinkageGeneration = 0;
-    // The last frame every display showed completely (a confirmed group or the
-    // last live frame) and its accepted Morph values.
-    FLiveLinkFrameDataStruct LastCompleteFrame;
-    TArray<float> LastCompleteCurves;
-    // The restored frame the subject must hold before the displays are
-    // evaluated again, and when it was pushed.
+    // The restored frames every subject must hold before the displays are
+    // evaluated again, and when they were pushed.
     FString RestoreGeneration;
     double RestoreSeconds = 0.0;
     // Displays whose own tick linkage holds, given back when linkage ends.
     TArray<TWeakObjectPtr<USkeletalMeshComponent>> HeldDisplays;
-    // The displays the negotiated character consists of.
-    TWeakObjectPtr<USkeletalMesh> ExpectedPrimaryMesh;
-    TArray<FMtoUExpectedDisplayPart> ExpectedDisplayParts;
 
     // Game-thread-only transient cache owner scoped to GameThreadSession.
     FMtoUCacheSession CacheSession;

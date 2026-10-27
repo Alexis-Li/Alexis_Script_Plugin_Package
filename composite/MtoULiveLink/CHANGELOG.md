@@ -4,8 +4,8 @@
 
 ### Upgrade notes
 
-- Update the Maya and Unreal components together: protocol v10 refuses a mixed
-  pair before it touches either scene. (#57)
+- Update the Maya and Unreal components together: protocol v11 refuses a mixed
+  pair before it touches either scene. (#57, #58)
 - Install the Maya component by dragging its `install.mel` into a Maya viewport.
   The first time, it offers to delete the copied `MtoULiveLink.py` and
   `mtou_livelink` from your Maya scripts directory; your MtoU shelf button keeps
@@ -18,6 +18,9 @@
 - Camera linkage (**镜头联动**): pair the Maya character with its Unreal target to
   follow the Level Sequence's time and camera in Maya, and leave through
   **返回实时** or **结束预览** from either host. (#57)
+- Second object: preview a skeletal prop or a second character together with the
+  main character in realtime preview and camera linkage, set up in Maya's
+  **对象配对** window and removed with **移除副对象** without reconnecting. (#58)
 - Scene reference: export a level from Unreal as static reference geometry and
   import it into Maya, lined up with the character; a failed update keeps the
   previous reference. (#57)
@@ -31,6 +34,8 @@
 
 ### Changed
 
+- The Binding Actor's **镜头联动** pairs with **配对为主角色** or **配对为副对象**
+  instead of **配对**. (#58)
 - Redesigned Maya panel and Chinese Unreal Details groups; the same warning
   interrupts only once per connection. (#48)
 - Panels show only state, actions and problems; detailed values are in

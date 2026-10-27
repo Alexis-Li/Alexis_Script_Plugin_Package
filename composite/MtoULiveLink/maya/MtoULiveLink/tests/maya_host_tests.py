@@ -531,8 +531,10 @@ class MayaHostTests(unittest.TestCase):
         class FakeWorker(object):
             instance = None
 
-            def __init__(self, init_message, hello_message=None):
-                self.init_message = init_message
+            def __init__(self, init_messages, hello_message=None):
+                # One init per object of the set; this session has one object.
+                self.init_message = init_messages[0]
+                self.init_count = len(init_messages)
                 self.hello_message = hello_message
                 self.stopped = False
                 self.joined = None
@@ -564,9 +566,11 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(1.0, FakeWorker.instance.joined)
         self.assertEqual(mtou_config.PROTOCOL_VERSION,
                          FakeWorker.instance.init_message["version"])
-        self.assertEqual(10, FakeWorker.instance.init_message["version"])
+        self.assertEqual(11, FakeWorker.instance.init_message["version"])
         self.assertEqual("character", FakeWorker.instance.init_message["object_id"])
-        self.assertEqual(10, FakeWorker.instance.hello_message["version"])
+        self.assertEqual(["character"], FakeWorker.instance.init_message["set_objects"])
+        self.assertEqual(1, FakeWorker.instance.init_count)
+        self.assertEqual(11, FakeWorker.instance.hello_message["version"])
         self.assertEqual("cm", FakeWorker.instance.hello_message["scene"]["linear_unit"])
         self.assertEqual("animation", FakeWorker.instance.init_message["workflow"])
         self.assertTrue(FakeWorker.instance.init_message["blendshapes_enabled"])

@@ -5988,8 +5988,7 @@
       "id": "group-two-object-set-is-accepted",
       "operation": "group",
       "applies_to": [
-        "maya",
-        "unreal"
+        "maya"
       ],
       "negotiated_set": [
         "character",
