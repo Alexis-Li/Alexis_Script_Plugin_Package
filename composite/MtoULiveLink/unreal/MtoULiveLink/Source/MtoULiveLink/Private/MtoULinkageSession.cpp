@@ -1554,7 +1554,12 @@ bool MtoUPairLinkageTarget(
     if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
     {
         FString ErrorCode;
-        return Source->GetLinkageSession().PairTarget(Actor, ObjectId, OutError, ErrorCode);
+        if (!Source->GetLinkageSession().PairTarget(Actor, ObjectId, OutError, ErrorCode))
+        {
+            return false;
+        }
+        Source->NotePairingChangedOnGameThread();
+        return true;
     }
     OutError = TEXT("The MtoU_LiveLink listener is unavailable.");
     return false;
@@ -1565,6 +1570,7 @@ void MtoUClearLinkageTarget(const AMtoULiveLinkActor& Actor)
     if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
     {
         Source->GetLinkageSession().ClearTarget(Actor);
+        Source->NotePairingChangedOnGameThread();
     }
 }
 
@@ -1582,6 +1588,15 @@ FString MtoUGetLinkagePairedObject(const AMtoULiveLinkActor& Actor)
 
 AMtoULiveLinkActor* MtoUFindLinkagePairedActor(const FString& ObjectId)
 {
+    // While a session streams the object, its target is the actor it
+    // negotiated, so a takeover never follows a pairing the stream ignores.
+    if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
+    {
+        if (AMtoULiveLinkActor* Negotiated = Source->FindNegotiatedActorOnGameThread(ObjectId))
+        {
+            return IsEligiblePairingActor(*Negotiated) ? Negotiated : nullptr;
+        }
+    }
     for (const FMtoULinkagePairing& Pairing : GMtoULinkagePairings)
     {
         if (Pairing.ObjectId == ObjectId && Pairing.Actor.IsValid()

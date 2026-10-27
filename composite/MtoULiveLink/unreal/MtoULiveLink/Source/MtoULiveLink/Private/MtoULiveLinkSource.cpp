@@ -225,6 +225,18 @@ void MtoUSetDeferStreamingSessionEndCleanup(bool bDefer)
 {
     GDeferStreamingSessionEndCleanup.Store(bDefer);
 }
+
+namespace
+{
+TFunction<bool(EMtoULinkageApplyStage, const FString&, const FString&)> GLinkageApplyProbe;
+}
+
+void MtoUSetLinkageApplyProbe(
+    TFunction<bool(EMtoULinkageApplyStage Stage, const FString& ObjectId, const FString& Generation)> Probe)
+{
+    check(IsInGameThread());
+    GLinkageApplyProbe = MoveTemp(Probe);
+}
 #endif
 
 void MtoUNotifyEditorWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
@@ -436,6 +448,7 @@ void FMtoULiveLinkSource::Update()
             {
                 if (Actor.IsValid())
                 {
+                    Actor->ReleaseLiveLinkSubject();
                     Actor->ReapplyDisplayTarget();
                     Actor->SetConnectionStatus(TEXT("Disconnected"));
                     Actor->NoteSessionEnded();
@@ -653,6 +666,7 @@ void FMtoULiveLinkSource::StopListener()
         {
             if (Actor.IsValid())
             {
+                Actor->ReleaseLiveLinkSubject();
                 Actor->ReapplyDisplayTarget();
                 Actor->SetConnectionStatus(TEXT("Disconnected"));
                 Actor->NoteSessionEnded();
@@ -1838,6 +1852,7 @@ bool FMtoULiveLinkSource::HandleInitOnGameThread(FMtoUInitMessage&& Message)
     Object.ObjectId = Message.ObjectId;
     Object.SubjectKey = FLiveLinkSubjectKey(SourceGuid, MtoUSubjectNameForObject(Message.ObjectId));
     Object.Actor = Actor;
+    Object.bPairedAtNegotiation = Pairing != nullptr;
     Object.ExpectedBoneCount = Message.Bones.Num();
     Object.ExpectedCurveCount = Message.Curves.Num();
     Object.NegotiatedRevision = Message.Revision;
@@ -2206,6 +2221,54 @@ void FMtoULiveLinkSource::RemoveSecondaryObjectOnGameThread(
     }
 }
 
+AMtoULiveLinkActor* FMtoULiveLinkSource::FindNegotiatedActorOnGameThread(const FString& ObjectId) const
+{
+    check(IsInGameThread());
+    if (GameThreadSession == 0)
+    {
+        return nullptr;
+    }
+    for (const FMtoUSessionObject& Object : SessionObjects)
+    {
+        if (Object.ObjectId == ObjectId)
+        {
+            return Object.Actor.Get();
+        }
+    }
+    return nullptr;
+}
+
+void FMtoULiveLinkSource::NotePairingChangedOnGameThread()
+{
+    check(IsInGameThread());
+    if (GameThreadSession == 0)
+    {
+        return;
+    }
+    for (const FMtoUSessionObject& Object : SessionObjects)
+    {
+        const FMtoULinkagePairing* Pairing = LinkageSession.FindPairing(Object.ObjectId);
+        const AMtoULiveLinkActor* Paired = Pairing ? Pairing->Actor.Get() : nullptr;
+        if (Paired == Object.Actor.Get() || (!Paired && !Object.bPairedAtNegotiation))
+        {
+            continue;
+        }
+        // The stream would keep driving the negotiated actor while a takeover
+        // followed the new pairing; ending the connection restores whatever
+        // linkage holds and makes Maya negotiate the set again.
+        const AMtoULiveLinkActor* Negotiated = Object.Actor.Get();
+        EnqueueErrorOnGameThread(
+            TEXT("PAIRING_REQUIRED"),
+            TEXT("A paired target of the connected set changed; connect again."),
+            FString::Printf(
+                TEXT("Maya object '%s' was negotiated with %s and is now %s."),
+                *Object.ObjectId,
+                Negotiated ? *Negotiated->GetPathName() : TEXT("a removed actor"),
+                Paired ? *FString::Printf(TEXT("paired with %s"), *Paired->GetPathName()) : TEXT("unpaired")));
+        return;
+    }
+}
+
 void FMtoULiveLinkSource::ReleaseSessionObjectOnGameThread(
     FMtoUSessionObject& Object, const TCHAR* ActorStatus)
 {
@@ -2216,6 +2279,7 @@ void FMtoULiveLinkSource::ReleaseSessionObjectOnGameThread(
     }
     if (AMtoULiveLinkActor* Actor = Object.Actor.Get())
     {
+        Actor->ReleaseLiveLinkSubject();
         Actor->ReapplyDisplayTarget();
         Actor->SetConnectionStatus(ActorStatus);
         Actor->NoteSessionEnded();
@@ -2450,7 +2514,14 @@ bool FMtoULiveLinkSource::ResolvePendingApplicationOnGameThread(
     //    show it. The displays are held meanwhile, so none consumes it alone.
     for (int32 Index = 0; Index < SessionObjects.Num(); ++Index)
     {
-        const FString Seen = SubjectGenerationOnGameThread(Index);
+        FString Seen = SubjectGenerationOnGameThread(Index);
+#if WITH_DEV_AUTOMATION_TESTS
+        if (GLinkageApplyProbe && !GLinkageApplyProbe(
+                EMtoULinkageApplyStage::Published, SessionObjects[Index].ObjectId, Pending.Generation))
+        {
+            Seen = TEXT("a held earlier group");
+        }
+#endif
         if (Seen != Pending.Generation)
         {
             if (!bTimedOut)
@@ -2493,6 +2564,12 @@ bool FMtoULiveLinkSource::ResolvePendingApplicationOnGameThread(
             TEXT("Group %s was not displayed completely: %s"), *Pending.Generation, *Mismatch);
         return true;
     }
+#if WITH_DEV_AUTOMATION_TESTS
+    if (GLinkageApplyProbe)
+    {
+        GLinkageApplyProbe(EMtoULinkageApplyStage::Staged, FString(), Pending.Generation);
+    }
+#endif
 
     // 4. One commit for the whole set in this game-thread step, before the
     //    frame renders, together with the Model follower's Morph overrides.
@@ -2776,6 +2853,15 @@ bool FMtoULiveLinkSource::VerifyDisplaysOnGameThread(
     for (const FMtoULinkageDisplay& Entry : Displays)
     {
         USkeletalMeshComponent* Display = Entry.Display;
+        // A display that left the world after staging shows nothing, whatever
+        // pose it still holds.
+        if (!Display->IsRegistered())
+        {
+            OutMismatch = FString::Printf(TEXT("object '%s' display %s is no longer registered"),
+                *SessionObjects[Entry.ObjectIndex].ObjectId, *Display->GetName());
+            OutComponents.Reset();
+            return false;
+        }
         if (!MatchDisplayPose(
                 SessionObjects[Entry.ObjectIndex], Pending.Objects[Entry.ObjectIndex],
                 *Display, Display->GetBoneSpaceTransforms(),

@@ -47,6 +47,26 @@ uint64 MtoUGetStreamingSessionEndCount();
  * Production builds never see this; automation must always release it.
  */
 MTOULIVELINK_API void MtoUSetDeferStreamingSessionEndCleanup(bool bDefer);
+
+/** Where a linkage group is when the apply probe sees it. */
+enum class EMtoULinkageApplyStage : uint8
+{
+    /** Published to the subjects; asked once per object before its subject is checked. */
+    Published,
+    /** Every display of every object staged it; the commit follows. */
+    Staged,
+};
+
+/**
+ * Test-only probe of the set completion barrier on the game thread. At
+ * `Published` a false return reports that object's subject as not holding the
+ * group yet, which delays one object under natural ticking; at `Staged`
+ * (ObjectId empty) the probe may break a display before the commit, and its
+ * return value is ignored. Production builds never see this; automation must
+ * always clear it.
+ */
+MTOULIVELINK_API void MtoUSetLinkageApplyProbe(
+    TFunction<bool(EMtoULinkageApplyStage Stage, const FString& ObjectId, const FString& Generation)> Probe);
 #endif
 
 /**
@@ -173,6 +193,9 @@ struct FMtoUSessionObject
     FString ObjectId;
     FLiveLinkSubjectKey SubjectKey;
     TWeakObjectPtr<AMtoULiveLinkActor> Actor;
+    // The object was negotiated through an explicit pairing, not as the one
+    // placed actor of the single-character workflow.
+    bool bPairedAtNegotiation = false;
     int32 ExpectedBoneCount = 0;
     int32 ExpectedCurveCount = 0;
     int32 NegotiatedRevision = 0;
@@ -251,6 +274,17 @@ public:
     /** The one linkage boundary this source owns; Game Thread only. */
     FMtoULinkageSession& GetLinkageSession() { return LinkageSession; }
     const FMtoULinkageSession& GetLinkageSession() const { return LinkageSession; }
+    /**
+     * The actor the connected session streams one object into, or null when
+     * the session did not negotiate that object. Takeover and publishing use
+     * this one identity.
+     */
+    AMtoULiveLinkActor* FindNegotiatedActorOnGameThread(const FString& ObjectId) const;
+    /**
+     * A pairing changed: when it replaced or dropped a target of the connected
+     * set, the connection ends, as any other change of the set does.
+     */
+    void NotePairingChangedOnGameThread();
 
 #if WITH_DEV_AUTOMATION_TESTS
     // Automation gauges for the linkage state: undelivered control messages

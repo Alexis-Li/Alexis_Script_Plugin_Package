@@ -555,37 +555,49 @@ void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Compo
     Component.SetUpdateAnimationInEditor(true);
     Component.SetAnimationMode(EAnimationMode::AnimationBlueprint);
     Component.SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
-    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component.GetAnimInstance()))
+    ApplyLiveLinkSubject(&Component);
+}
+
+void AMtoULiveLinkActor::ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const
+{
+    if (!Component)
+    {
+        return;
+    }
+    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance()))
     {
         // Every part evaluates this actor's one object subject, so the whole
         // composed character poses from the same session and the second object
-        // of a set never reads the primary's values.
+        // of a set never reads the primary's values. An actor outside the
+        // negotiated set evaluates nothing, so it never shows another
+        // actor's object.
         Instance->SetSubject(FLiveLinkSubjectName(LiveLinkSubjectName));
-        Instance->EnableLiveLinkEvaluation(true);
+        Instance->EnableLiveLinkEvaluation(bInLiveLinkSet);
     }
 }
 
 void AMtoULiveLinkActor::SetLiveLinkSubject(FName Subject)
 {
-    if (Subject.IsNone() || Subject == LiveLinkSubjectName)
+    if (Subject.IsNone())
     {
         return;
     }
     LiveLinkSubjectName = Subject;
-    const auto Retarget = [Subject](USkeletalMeshComponent* Component)
-    {
-        if (Component)
-        {
-            if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance()))
-            {
-                Instance->SetSubject(FLiveLinkSubjectName(Subject));
-            }
-        }
-    };
-    Retarget(SkeletalMeshComponent);
+    bInLiveLinkSet = true;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
     for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
     {
-        Retarget(Part.Get());
+        ApplyLiveLinkSubject(Part.Get());
+    }
+}
+
+void AMtoULiveLinkActor::ReleaseLiveLinkSubject()
+{
+    bInLiveLinkSet = false;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        ApplyLiveLinkSubject(Part.Get());
     }
 }
 

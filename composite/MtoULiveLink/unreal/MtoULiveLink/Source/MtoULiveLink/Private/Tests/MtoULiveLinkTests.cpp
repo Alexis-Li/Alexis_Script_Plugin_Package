@@ -8673,12 +8673,15 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == Primary
         && PartComponents[0]->GetSkeletalMeshAsset() == Head);
-    TestTrue(TEXT("the part evaluates the one character subject"),
+    // The part is a Live Link display of the actor's one subject; it evaluates
+    // only once a session negotiated the actor.
+    TestTrue(TEXT("the part is a Live Link display of the character"),
         Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance()) != nullptr
-        && Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())
-            ->GetEnableLiveLinkEvaluation()
         && PartComponents[0]->GetUpdateAnimationInEditor()
         && PartComponents[0]->GetDisablePostProcessBlueprint());
+    TestFalse(TEXT("an unconnected part evaluates no subject"),
+        Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())
+        && Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())->GetEnableLiveLinkEvaluation());
 
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
@@ -8709,6 +8712,14 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         && Reply.Contains(TEXT("\"accepted_morph_count\":2")));
     TestTrue(TEXT("a Head-only Morph is not reported as missing in Unreal"),
         Reply.Contains(TEXT("\"missing_in_unreal\":[\"Missing\"]")));
+    TestTrue(TEXT("the part evaluates the one character subject"), PollUntil([&]()
+    {
+        Source->Update();
+        const TArray<TObjectPtr<UMtoUCharacterPartComponent>>& Parts = Actor->GetCharacterPartComponents();
+        ULiveLinkInstance* Instance = Parts.Num() == 1 && Parts[0]
+            ? Cast<ULiveLinkInstance>(Parts[0]->GetAnimInstance()) : nullptr;
+        return Instance && Instance->GetEnableLiveLinkEvaluation();
+    }, 5.0));
 
     // A frame carries one value per manifest name, in manifest order; only the
     // accepted names are published to the subject.
@@ -14198,7 +14209,9 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
     };
     AMtoULiveLinkActor* Hero = HeroMesh ? MakeActor(HeroMesh) : nullptr;
     AMtoULiveLinkActor* Prop = PropMesh ? MakeActor(PropMesh) : nullptr;
-    if (!Hero || !Prop)
+    // A third compatible actor at the same anchor that no object is paired with.
+    AMtoULiveLinkActor* Idle = HeroMesh ? MakeActor(HeroMesh) : nullptr;
+    if (!Hero || !Prop || !Idle)
     {
         AddError(TEXT("The two Binding actors cannot be created."));
         World->DestroyWorld(false);
@@ -14321,6 +14334,16 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
         Prop->GetLiveLinkSubject(), FName(TEXT("MtoU_Secondary")));
     TestEqual(TEXT("the primary actor keeps the character subject"),
         Hero->GetLiveLinkSubject(), FName(TEXT("MtoU_Character")));
+    const auto Evaluates = [](const AMtoULiveLinkActor* Actor)
+    {
+        ULiveLinkInstance* Instance = Actor
+            ? Cast<ULiveLinkInstance>(Actor->GetSkeletalMeshComponent()->GetAnimInstance()) : nullptr;
+        return Instance && Instance->GetEnableLiveLinkEvaluation();
+    };
+    TestTrue(TEXT("both objects of the set evaluate their subjects"),
+        Hero->IsInLiveLinkSet() && Prop->IsInLiveLinkSet() && Evaluates(Hero) && Evaluates(Prop));
+    TestFalse(TEXT("an unpaired actor outside the set evaluates no subject"),
+        Idle->IsInLiveLinkSet() || Evaluates(Idle));
 
     const TArray<uint8> Frame = Packet(FString::Printf(
         TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[0.250],\"objects\":[%s]}"),
@@ -14424,6 +14447,9 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the second subject left the stream"), SubjectCurve(TEXT("MtoU_Secondary")) < 0.0f);
     TestEqual(TEXT("the second actor reports its removal"),
         Prop->GetConnectionStatus(), FString(TEXT("Removed from the set")));
+    TestFalse(TEXT("the removed actor stops evaluating any subject"),
+        Prop->IsInLiveLinkSet() || Evaluates(Prop));
+    TestTrue(TEXT("the primary keeps evaluating its subject"), Evaluates(Hero));
 
     // A target issued for the old set before the removal may still be on the
     // wire; the next one names the new set.
@@ -14460,11 +14486,52 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
         MtoURequestLinkageLeave(TEXT("end"), MtoUGetLinkageView().Identity.ModeRevision + 1, EndError));
     TestEqual(TEXT("ending the preview restores the remaining writers"), Hooks.RestoreCalls, 1);
 
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("every actor of the ended session stops evaluating"), PollUntil([&]()
+    {
+        Pump();
+        return !Hero->IsInLiveLinkSet() && !Evaluates(Hero);
+    }, 5.0));
+
+    // ---- a changed pairing ends the connected set -------------------------
+    // Takeover and stream must name one target: replacing the second object's
+    // actor (B unpaired, C paired) ends the connection and hands the takeover
+    // back instead of muting C while B keeps receiving the stream.
+    TestTrue(TEXT("the listener is ready for another set"),
+        PollUntil([&]() { Source->Update(); return Source->GetSourceStatus().ToString().StartsWith(TEXT("Listening on")); }, 5.0));
+    FMtoULinkageReplyReader SecondReader;
+    FSocket* Second = Connect(SecondReader, Pump);
+    TestNotNull(TEXT("the set connects again"), Second);
+    if (Second)
+    {
+        for (int32 Index = 0; Index < 2; ++Index)
+        {
+            TestTrue(TEXT("each object is ready again"), SecondReader.Next(*Second, TEXT("ready"), Payload, Pump));
+        }
+        TestTrue(TEXT("while connected, the takeover target is the negotiated actor"),
+            MtoUFindLinkagePairedActor(TEXT("secondary")) == Prop);
+        Hooks.PlannedTargets = Hooks.SentTargets;
+        const int32 RestoresBefore = Hooks.RestoreCalls;
+        TestTrue(TEXT("linkage entry takes the set over again"),
+            MtoURequestLinkageEnter(MtoUGetLinkageView().Identity.ModeRevision + 1, EnterError));
+        MtoUClearLinkageTarget(*Prop);
+        TestTrue(TEXT("the idle actor pairs as the second object"), PairLinkageTarget(Idle, TEXT("secondary")));
+        TestTrue(TEXT("the changed pairing ends the set"), SecondReader.Next(*Second, TEXT("error"), Payload, Pump));
+        TestTrue(TEXT("the refusal asks for a new connection"), FromUtf8(Payload).Contains(TEXT("PAIRING_REQUIRED")));
+        TestTrue(TEXT("the takeover is handed back"), PollUntil([&]()
+        {
+            Pump();
+            return Hooks.RestoreCalls > RestoresBefore && !MtoUGetLinkageView().bTakeoverHeld;
+        }, 5.0));
+        TestFalse(TEXT("the newly paired actor never joined the stream"), Idle->IsInLiveLinkSet() || Evaluates(Idle));
+        DestroySocket(*SocketSubsystem, Second);
+    }
+
     MtoUSetLinkageHooks(FMtoULinkageHooks());
     MtoUSetActiveSource(PreviousSource);
     MtoUClearLinkageTarget(*Hero);
     MtoUClearLinkageTarget(*Prop);
-    DestroySocket(*SocketSubsystem, Client);
+    MtoUClearLinkageTarget(*Idle);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     World->DestroyWorld(false);

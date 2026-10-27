@@ -265,8 +265,9 @@ object, every workflow stays as described above.
    keeps going without reconnecting.
 
 Setting a different second object, changing either object's skeleton, outfit,
-Binding or parts, or deleting a paired actor ends the connection; connect
-again. A second actor at another placement, or one moved during linkage, is
+Binding or parts, pairing or unpairing an actor of the connected set, or
+deleting a paired actor ends the connection; connect again. Other Binding
+Actors in the level do not follow Maya. A second actor at another placement, or one moved during linkage, is
 refused with 副对象与主角色在 UE 中的放置不一致. Cached Playback and the Model
 workflow support one character: remove the second object first. If removing
 the object cannot restore its tracks, the connection ends and both hosts name

@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MtoULinkage.h"
+#include "MtoULiveLinkSource.h"
 #include "MtoUGuiAcceptance.h"
 #include "MtoULinkageEditor.h"
 #include "MtoULiveLinkActor.h"
@@ -68,9 +69,11 @@
  * objects: takeover per target, the world/screen/rotation/Morph oracle of each,
  * playback of the whole set, and the exits. The set scenarios refuse a moved
  * second target, refuse Maya's main root as the second object, refuse a group
- * without the second object, survive one of the second object's displays
- * dropping out during commit, remove the second object from either host while
- * the main character keeps linkage, and destroy the second target.
+ * without the second object, hold the whole set while one object's subject is
+ * delayed, roll the whole set back when a second-object display fails after
+ * the group was staged (both through the runtime's automation apply probe),
+ * remove the second object from either host while the main character keeps
+ * linkage, and destroy the second target.
  */
 namespace
 {
@@ -1874,13 +1877,32 @@ private:
             RecordWriterPose(InjectSecondPose, true);
             return true;
         });
-        Add(TEXT("[inject] a second-object display drops out during commit"), 120.0, [this]()
+        Add(TEXT("[inject] one object's subject is delayed under natural ticking"), 120.0, [this]()
         {
-            USkeletalMeshComponent* Display = SecondaryActor->GetSkeletalMeshComponent();
+            const double Now = FPlatformTime::Seconds();
             const FMtoULinkageView View = MtoUGetLinkageView();
             if (RefusalPhase == 0)
             {
-                Display->UnregisterComponent();
+                InjectMorphs = DisplayedMorphs();
+                DelayUntil = 0.0;
+                MtoUSetLinkageApplyProbe([this](EMtoULinkageApplyStage Stage, const FString& ObjectId, const FString&)
+                {
+                    if (Stage != EMtoULinkageApplyStage::Published || ObjectId != SecondaryObjectId)
+                    {
+                        return true;
+                    }
+                    if (DelayUntil == 0.0)
+                    {
+                        // The first group after the time change: hold the second
+                        // object's subject for part of the convergence window.
+                        DelayUntil = FPlatformTime::Seconds() + 1.2;
+                    }
+                    ++HeldChecks;
+                    return FPlatformTime::Seconds() >= DelayUntil;
+                });
+                HeldChecks = 0;
+                MaxHeldPoseDelta = 0.0;
+                MaxHeldMorphDelta = 0.0;
                 bAppliedDuringDropout = false;
                 RefusalPhase = 1;
                 return false;
@@ -1890,26 +1912,94 @@ private:
                 if (SetTimeAndSettle(OracleFrames[0] + 45.0, 0.0))
                 {
                     RefusalPhase = 2;
-                    RefusalStarted = FPlatformTime::Seconds();
                 }
                 return false;
             }
-            // The new target is answered by Maya; the set cannot be shown
-            // while one display is gone, so nothing newer may be confirmed.
-            bAppliedDuringDropout |= View.AppliedEvalId != InjectApplied;
-            if (FPlatformTime::Seconds() - RefusalStarted < 4.0)
+            if (DelayUntil == 0.0 || Now < DelayUntil)
+            {
+                // While one object waits, no display of either object may show the new group.
+                bAppliedDuringDropout |= View.AppliedEvalId != InjectApplied;
+                MaxHeldPoseDelta = FMath::Max3(MaxHeldPoseDelta,
+                    PoseDelta(InjectMainPose, false), PoseDelta(InjectSecondPose, true));
+                MaxHeldMorphDelta = FMath::Max(MaxHeldMorphDelta, MorphDelta(InjectMorphs));
+                return false;
+            }
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 45.0, 0.01))
             {
                 return false;
             }
-            Test->TestFalse(TEXT("no group is confirmed while a second-object display is missing"),
-                bAppliedDuringDropout);
-            Log(FString::Printf(TEXT("[inject] display dropout: mode %s, target %.1f, applied %.1f converged %d, detail '%s', error %s '%s'"),
-                *View.Mode, View.TargetDisplayFrame, View.AppliedDisplayFrame, View.bConverged ? 1 : 0,
-                *View.Detail.Left(200), *View.ErrorCode, *View.Error.Left(160)));
-            Test->TestEqual(TEXT("nothing newer is applied while the display is gone"), View.AppliedEvalId, InjectApplied);
-            Test->TestTrue(TEXT("the main character keeps the last complete pose while the second display is gone"),
-                PoseDelta(InjectMainPose, false) < 0.05);
+            MtoUSetLinkageApplyProbe(nullptr);
+            Log(FString::Printf(TEXT("[inject] delayed second object: held %d subject checks over 1.2 s; during the hold the displays moved at most %.4f cm and %.5f Morph weight, applied changed %d; then the whole set converged at %.1f"),
+                HeldChecks, MaxHeldPoseDelta, MaxHeldMorphDelta, bAppliedDuringDropout ? 1 : 0, View.AppliedDisplayFrame));
+            Test->TestTrue(TEXT("the delayed object was really held"), HeldChecks > 1);
+            Test->TestFalse(TEXT("no group is confirmed while one object is delayed"), bAppliedDuringDropout);
+            Test->TestTrue(TEXT("both objects keep the last complete bones while one is delayed"), MaxHeldPoseDelta < 0.05);
+            Test->TestTrue(TEXT("both objects keep the last complete Morphs while one is delayed"), MaxHeldMorphDelta < 0.001);
+            Test->TestTrue(TEXT("both objects show the new group once the delay ends"),
+                PoseDelta(InjectMainPose, false) > 0.05 || PoseDelta(InjectSecondPose, true) > 0.05);
+            SettledFrame = -1.0;
+            InjectApplied = View.AppliedEvalId;
+            RecordWriterPose(InjectMainPose);
+            RecordWriterPose(InjectSecondPose, true);
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[inject] a second-object display fails after the group was staged"), 120.0, [this]()
+        {
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            USkeletalMeshComponent* Display = SecondaryActor->GetSkeletalMeshComponent();
+            if (RefusalPhase == 0)
+            {
+                InjectMorphs = DisplayedMorphs();
+                BrokenGeneration.Reset();
+                RefusalStarted = 0.0;
+                MtoUSetLinkageApplyProbe([this, Display](EMtoULinkageApplyStage Stage, const FString&, const FString& Generation)
+                {
+                    if (Stage == EMtoULinkageApplyStage::Staged && BrokenGeneration.IsEmpty())
+                    {
+                        // Every display staged the group; the second object's
+                        // display leaves the world before the commit.
+                        BrokenGeneration = Generation;
+                        Display->UnregisterComponent();
+                    }
+                    return true;
+                });
+                bAppliedDuringDropout = false;
+                RefusalPhase = 1;
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SetTimeAndSettle(OracleFrames[0] + 57.0, 0.0))
+                {
+                    RefusalPhase = 2;
+                }
+                return false;
+            }
+            if (BrokenGeneration.IsEmpty())
+            {
+                return false;
+            }
+            bAppliedDuringDropout |= View.AppliedEvalId != InjectApplied;
+            if (RefusalStarted == 0.0)
+            {
+                RefusalStarted = FPlatformTime::Seconds();
+            }
+            if (FPlatformTime::Seconds() - RefusalStarted < 1.0)
+            {
+                return false;
+            }
+            // The rollback put every display back on the last complete group.
+            const double MainDelta = PoseDelta(InjectMainPose, false);
+            const double MorphChange = MorphDelta(InjectMorphs, false);
+            Log(FString::Printf(TEXT("[inject] display failed after staging group %s: applied changed %d, main display %.4f cm and %.5f Morph weight from the last complete group, mode %s, detail '%s'"),
+                *BrokenGeneration.Left(40), bAppliedDuringDropout ? 1 : 0, MainDelta, MorphChange, *View.Mode, *View.Detail.Left(200)));
+            Test->TestFalse(TEXT("the group whose display failed after staging is never confirmed"), bAppliedDuringDropout);
+            Test->TestTrue(TEXT("the main character is rolled back to the last complete bones"), MainDelta < 0.05);
+            Test->TestTrue(TEXT("the main character is rolled back to the last complete Morphs"), MorphChange < 0.001);
+            MtoUSetLinkageApplyProbe(nullptr);
             Display->RegisterComponent();
+            RefusalStarted = 0.0;
             RefusalPhase = 0;
             return true;
         });
@@ -1918,14 +2008,14 @@ private:
             const FMtoULinkageView View = MtoUGetLinkageView();
             if (View.Mode != TEXT("linkage"))
             {
-                Test->AddError(TEXT("linkage ended after the display dropout: ") + View.ErrorCode + TEXT(" ") + View.Error);
+                Test->AddError(TEXT("linkage ended after the display failure: ") + View.ErrorCode + TEXT(" ") + View.Error);
                 return true;
             }
-            if (!SetTimeAndSettleOnce(OracleFrames[0] + 57.0))
+            if (!SetTimeAndSettleOnce(OracleFrames[0] + 69.0))
             {
                 return false;
             }
-            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 57.0, 0.01))
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 69.0, 0.01))
             {
                 return false;
             }
@@ -1935,6 +2025,55 @@ private:
             Log(FString::Printf(TEXT("[inject] the whole set converged again at %.1f"), View.AppliedDisplayFrame));
             return true;
         });
+    }
+
+    /** Every Morph weight the latest Maya snapshot names, as each object's displays show it. */
+    TMap<FString, double> DisplayedMorphs() const
+    {
+        TMap<FString, double> Out;
+        if (!MayaResult.IsValid() || !MayaResult->HasTypedField<EJson::Object>(TEXT("snapshot")))
+        {
+            return Out;
+        }
+        const TSharedPtr<FJsonObject> Snapshot = MayaResult->GetObjectField(TEXT("snapshot"));
+        for (const bool bSecondary : {false, true})
+        {
+            const AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+            const TSharedPtr<FJsonObject> Row = SnapshotRow(Snapshot, bSecondary);
+            const TSharedPtr<FJsonObject>* Morphs = nullptr;
+            if (!Owner || !Row.IsValid() || !Row->TryGetObjectField(TEXT("morphs"), Morphs))
+            {
+                continue;
+            }
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
+            {
+                const TArray<double> Weights = MtoUGuiAcceptance::DisplayedMorphWeights(*Owner, FName(*Morph.Key));
+                if (!Weights.IsEmpty())
+                {
+                    Out.Add((bSecondary ? TEXT("secondary/") : TEXT("character/")) + Morph.Key, Weights[0]);
+                }
+            }
+        }
+        return Out;
+    }
+
+    /** The largest change of the recorded Morph weights; the main character's only when asked. */
+    double MorphDelta(const TMap<FString, double>& Before, bool bWithSecondary = true) const
+    {
+        double Delta = 0.0;
+        const TMap<FString, double> Now = DisplayedMorphs();
+        for (const TPair<FString, double>& Entry : Before)
+        {
+            if (!bWithSecondary && Entry.Key.StartsWith(TEXT("secondary/")))
+            {
+                continue;
+            }
+            if (const double* Current = Now.Find(Entry.Key))
+            {
+                Delta = FMath::Max(Delta, FMath::Abs(*Current - Entry.Value));
+            }
+        }
+        return Delta;
     }
 
     /**
@@ -2275,6 +2414,7 @@ private:
 
     void Finish()
     {
+        MtoUSetLinkageApplyProbe(nullptr);
         for (const FString& Package : ProtectedPackages)
         {
             const UPackage* Loaded = FindPackage(nullptr, *Package);
@@ -2358,6 +2498,11 @@ private:
     TMap<int32, TMap<FName, FOracleRotation>> SecondaryOracleRotations;
     bool bSecondaryAnchorPinned = false;
     bool bMayaStarted = false;
+    // The apply probe's injections inside linkage.
+    double DelayUntil = 0.0, MaxHeldPoseDelta = 0.0, MaxHeldMorphDelta = 0.0;
+    int32 HeldChecks = 0;
+    FString BrokenGeneration;
+    TMap<FString, double> InjectMorphs;
     bool bAbort = false;
     bool bDroppedShown = false, bDisconnectSent = false, bAppliedDuringDropout = false;
     FString LastSecondaryStatus, DroppedEvalId, InjectApplied, RefusalText;

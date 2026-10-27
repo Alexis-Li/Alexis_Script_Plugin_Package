@@ -1644,12 +1644,20 @@ TArray<UObject*> FMtoULinkageEditor::ResolveTargetComponents(const AActor* Actor
     return Components;
 }
 
-/** The paired anchor: the pairing the panel remembered, or the runtime's own path. */
+/**
+ * The paired anchor: the actor the session streams the primary into (the
+ * pairing while nothing is connected), else the pairing the panel remembered
+ * or the runtime's own path.
+ */
 AActor* ResolvePairedAnchor()
 {
     FMtoULinkageEditorState& State = GetState();
     if (const FMtoULinkageView View = MtoUGetLinkageView(); View.bPaired)
     {
+        if (AMtoULiveLinkActor* Primary = MtoUFindLinkagePairedActor(TEXT("character")))
+        {
+            return Primary;
+        }
         if (AActor* Observed = State.ObservedActor.Get())
         {
             return Observed;
