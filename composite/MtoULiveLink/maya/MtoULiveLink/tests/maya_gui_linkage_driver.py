@@ -18,7 +18,17 @@ directory), ``command``, ``result``, ``evidence``, ``oracle_joints`` (short
 names), ``keyed_joints`` (short names whose orient-constraint driver gets test
 keys), ``key_range`` ``[start, end]``, ``key_step``, ``key_degrees``,
 optional ``keyed_morphs`` (blendShape aliases keyed between the two weights of
-``morph_range``, default ``[0.15, 0.85]``) and ``allow_scene_load_warnings``.
+``morph_range``, default ``[0.15, 0.85]``), ``morph_namespace`` (report every
+weight of the blendShapes in that namespace whose value is at least 0.05, so a
+scene's own animation supplies the Morph oracle without test keys) and
+``allow_scene_load_warnings`` and ``start_frame`` (Maya's time before the
+first connect). Joint names match without namespaces.
+
+Optional ``secondary`` sets the second object before the first connect, from
+the same selection the 对象配对 window reads: ``root``, optional ``display``,
+``oracle_joints``, ``keyed_joints`` and ``morph_namespace`` with the meanings
+above. Snapshots then carry ``objects`` with ``character`` and ``secondary``
+rows of ``joints`` and ``morphs``.
 
 Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``disconnect``,
 ``leave`` (with ``target`` ``realtime``/``end``), ``workflow`` (``target``
@@ -26,10 +36,15 @@ Commands (``{"id": n, "action": ...}``): ``enter``, ``connect``, ``disconnect``,
 ``capture`` (``range`` ``[start, end]``), ``time`` (``frame``), ``snapshot``,
 ``panel_shot`` (with ``name``), ``stage`` (with ``name``: every dialog is
 recorded with the latest stage, so the test can tell which ones a scenario
-expects), ``sample_plugins`` (with ``name``), ``quit``. Each runs the handler
+expects), ``sample_plugins`` (with ``name``), ``set_secondary``,
+``remove_secondary`` (the 对象配对 window's **设为副对象** and **移除副对象**),
+``secondary_is_primary`` (**设为副对象** with the main character's root
+selected), ``objects_window`` (``target`` ``open``/``close``),
+``drop_secondary_once`` (the next linkage group leaves out the second object;
+this disposable process only), ``quit``. Each runs the handler
 of the panel control it names. The result file always carries the latest
-linkage status and the panel's workflow, mode, cache state and status line;
-``ack`` names the last finished command.
+linkage status, the object set and the panel's workflow, mode, cache state and
+status line; ``ack`` names the last finished command.
 
 ``prefs`` describes the preferences this Maya started with, read before Maya
 can save them again: the ``pluginPrefs.mel`` in this Maya's own preference
@@ -116,13 +131,24 @@ def open_scene():
         RESULT["scene_load_warning"] = str(exc)[:400]
 
 
-def joint_path(short):
-    joints = cmds.listRelatives(FIXTURE["root"], allDescendents=True, type="joint",
+def joint_path(short, root=None):
+    joints = cmds.listRelatives(root or FIXTURE["root"], allDescendents=True, type="joint",
                                 fullPath=True) or []
     for path in joints:
-        if path.split("|")[-1] == short:
+        if path.split("|")[-1].split(":")[-1] == short:
             return path
     return None
+
+
+def object_specs():
+    """``(object_id, root, oracle joints, morph namespace)`` of every fixture object."""
+    specs = [("character", FIXTURE["root"], FIXTURE.get("oracle_joints", []),
+              FIXTURE.get("morph_namespace"))]
+    secondary = FIXTURE.get("secondary")
+    if secondary:
+        specs.append(("secondary", secondary["root"], secondary.get("oracle_joints", []),
+                      secondary.get("morph_namespace")))
+    return specs
 
 
 def key_test_motion():
@@ -147,8 +173,11 @@ def key_test_motion():
     step = float(FIXTURE.get("key_step", 42))
     degrees = float(FIXTURE.get("key_degrees", 25))
     keyed = []
-    for index, short in enumerate(FIXTURE.get("keyed_joints", [])):
-        path = joint_path(short)
+    listed = [(FIXTURE["root"], short) for short in FIXTURE.get("keyed_joints", [])]
+    secondary = FIXTURE.get("secondary") or {}
+    listed += [(secondary["root"], short) for short in secondary.get("keyed_joints", [])]
+    for index, (root, short) in enumerate(listed):
+        path = joint_path(short, root)
         if not path:
             RESULT["errors"].append("no joint named " + short)
             continue
@@ -293,28 +322,46 @@ def snapshot():
     # oracle does not depend on whether Maya re-evaluated the scene after the
     # time change: xform and a plain getAttr return the last evaluated values.
     now = cmds.currentTime(query=True)
-    joints = {}
-    for short in FIXTURE.get("oracle_joints", []):
-        path = joint_path(short)
-        if not path:
-            continue
-        matrix = cmds.getAttr(path + ".worldMatrix[0]", time=now)
-        world = list(matrix[12:15])
-        joints[short] = {"world": world,
-                         "screen": screen_point(record, world) if record else None,
-                         "axes": world_axes(matrix)}
-    morphs = {}
-    for name in RESULT.get("keyed_morphs", []):
-        plugs = morph_plugs(name)
-        if plugs:
-            morphs[name] = cmds.getAttr(plugs[0], time=now)
+    objects = {}
+    for object_id, root, oracle_joints, namespace in object_specs():
+        joints = {}
+        for short in oracle_joints:
+            path = joint_path(short, root)
+            if not path:
+                continue
+            matrix = cmds.getAttr(path + ".worldMatrix[0]", time=now)
+            world = list(matrix[12:15])
+            joints[short] = {"world": world,
+                             "screen": screen_point(record, world) if record else None,
+                             "axes": world_axes(matrix)}
+        morphs = {}
+        if object_id == "character":
+            for name in RESULT.get("keyed_morphs", []):
+                plugs = morph_plugs(name)
+                if plugs:
+                    morphs[name] = cmds.getAttr(plugs[0], time=now)
+        if namespace:
+            morphs.update(animated_morphs(namespace, now))
+        objects[object_id] = {"joints": joints, "morphs": morphs}
     status = CONTROLLER.linkage_status()
-    return {"time": now, "camera": record, "joints": joints,
-            "morphs": morphs, "status": status}
+    return {"time": now, "camera": record, "joints": objects["character"]["joints"],
+            "morphs": objects["character"]["morphs"], "objects": objects, "status": status}
+
+
+def animated_morphs(namespace, now):
+    """Every weight of the namespace's blendShapes at ``now`` that is at least 0.05."""
+    weights = {}
+    for deformer in cmds.ls(namespace + ":*", type="blendShape") or []:
+        aliases = cmds.aliasAttr(deformer, query=True) or []
+        for alias in aliases[0::2]:
+            value = cmds.getAttr(deformer + "." + alias, time=now)
+            if abs(value) >= 0.05:
+                weights[alias] = value
+    return weights
 
 
 def grab_windows(name):
-    """Save the main panel and the 诊断详情 window as PNG images."""
+    """Save the main panel, the 诊断详情 and the open 对象配对 window as PNG images."""
     from maya import OpenMayaUI as omui
     try:
         from PySide2.QtWidgets import QWidget
@@ -323,7 +370,8 @@ def grab_windows(name):
         from PySide6.QtWidgets import QWidget
         from shiboken6 import wrapInstance
     saved = []
-    for window in ("MtoULiveLinkWindow", "MtoULiveLinkDiagnosticWindow"):
+    for window in ("MtoULiveLinkWindow", "MtoULiveLinkDiagnosticWindow",
+                   "MtoULiveLinkObjectsWindow"):
         pointer = omui.MQtUtil.findWindow(window)
         if not pointer:
             continue
@@ -387,6 +435,21 @@ def run_command(command):
         cmds.intField(CONTROLLER._range_start_field, edit=True, value=int(start))
         cmds.intField(CONTROLLER._range_end_field, edit=True, value=int(end))
         CONTROLLER._capture_cached_playback()
+    elif action == "set_secondary":
+        select_secondary()
+        CONTROLLER.set_secondary_object()
+    elif action == "secondary_is_primary":
+        cmds.select(FIXTURE["root"], replace=True)
+        CONTROLLER.set_secondary_object()
+    elif action == "remove_secondary":
+        CONTROLLER.remove_secondary_object()
+    elif action == "objects_window":
+        if command.get("target") == "close":
+            CONTROLLER.close_objects_window()
+        else:
+            CONTROLLER.open_objects_window()
+    elif action == "drop_secondary_once":
+        drop_secondary_once()
     elif action == "quit":
         quit_maya()
         return
@@ -394,10 +457,41 @@ def run_command(command):
         RESULT["errors"].append("unknown command " + str(action))
 
 
+def select_secondary():
+    secondary = FIXTURE["secondary"]
+    selection = [secondary["root"]]
+    if secondary.get("display"):
+        selection.append(secondary["display"])
+    cmds.select(selection, replace=True)
+
+
+def drop_secondary_once():
+    """The next linkage group leaves out the second object's row.
+
+    Patches the group builder the linkage session imported, in this disposable
+    process only, so Unreal receives one incomplete group through the real
+    connection; every later group is complete again.
+    """
+    from mtou_livelink import linkage
+    original = linkage.make_group_message
+
+    def incomplete(*args, **kwargs):
+        linkage.make_group_message = original
+        message = original(*args, **kwargs)
+        message["objects"] = [row for row in message["objects"]
+                              if row.get("object_id") != "secondary"]
+        RESULT["dropped_group"] = {"eval_id": message.get("eval_id"),
+                                   "objects": [row.get("object_id") for row in message["objects"]]}
+        return message
+
+    linkage.make_group_message = incomplete
+
+
 def tick():
     try:
         status = CONTROLLER.linkage_status()
         RESULT["status"] = status
+        RESULT["objects"] = CONTROLLER.objects_state()
         RESULT["connected"] = CONTROLLER._session is not None and CONTROLLER._session_ready()
         RESULT["maya_time"] = cmds.currentTime(query=True)
         RESULT["link_camera_exists"] = bool(cmds.objExists("MtoU_LinkCamera"))
@@ -450,8 +544,14 @@ def start():
         CONTROLLER = MtoULiveLink.run()
         RESULT["phase"] = "panel"
         write_result()
+        if "start_frame" in FIXTURE:
+            # Where the artist starts: linkage maps every target from here.
+            cmds.currentTime(float(FIXTURE["start_frame"]), update=True)
         cmds.select(FIXTURE["root"], replace=True)
         CONTROLLER.set_role()
+        if FIXTURE.get("secondary"):
+            select_secondary()
+            CONTROLLER.set_secondary_object()
         CONTROLLER.connect()
         RESULT["phase"] = "running"
         write_result()

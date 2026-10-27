@@ -260,9 +260,9 @@ object, every workflow stays as described above.
    camera linkage it shows a new pose only when every display of both objects
    holds it.
 4. To continue with the main character only, click **移除副对象** in the Maya
-   window or in the second actor's Details. Unreal hands the object's animation
-   back to the sequence and the main character keeps going without
-   reconnecting.
+   window or in the second actor's Details. Unreal gives the object's tracks
+   back to the sequence and its actor stops following Maya; the main character
+   keeps going without reconnecting.
 
 Setting a different second object, changing either object's skeleton, outfit,
 Binding or parts, or deleting a paired actor ends the connection; connect

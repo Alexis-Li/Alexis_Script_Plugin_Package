@@ -41,6 +41,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieSceneSpawnTrack.h"
 #include "Tracks/MovieSceneSubTrack.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
@@ -59,11 +60,25 @@
  * production hooks. Each scenario enters linkage, checks the muted writers,
  * and leaves through one exit: the two panel exits, closing the sequence,
  * switching it, destroying the target and closing the world.
+ *
+ * With a `secondary` block the fixture names a second binding of the same
+ * sequence (a possessable, or a spawnable the copy turns into one) and its
+ * Skeletal Mesh. A second Binding Actor stands at the same anchor, Maya sets
+ * its object through the pairing window's action, and every check covers both
+ * objects: takeover per target, the world/screen/rotation/Morph oracle of each,
+ * playback of the whole set, and the exits. The set scenarios refuse a moved
+ * second target, refuse Maya's main root as the second object, refuse a group
+ * without the second object, survive one of the second object's displays
+ * dropping out during commit, remove the second object from either host while
+ * the main character keeps linkage, and destroy the second target.
  */
 namespace
 {
 using MtoUGuiAcceptance::ReadJsonFile;
 using MtoUGuiAcceptance::WriteJsonFile;
+
+/** The second object's id in the v11 object set. */
+const TCHAR* const SecondaryObjectId = TEXT("secondary");
 
 TArray<TSharedPtr<FJsonValue>> NumberArray(std::initializer_list<double> Values)
 {
@@ -120,6 +135,104 @@ bool MayaWorldRotation(const TSharedPtr<FJsonObject>& Joint, const FQuat& Anchor
     return true;
 }
 
+/**
+ * The Binding a fixture object names: a transient copy of its `binding` asset,
+ * or a transient Binding of its `skeletal_mesh` and optional `parts`.
+ */
+UMtoULiveLinkBinding* MakeFixtureBinding(const TSharedPtr<FJsonObject>& Spec, FString& OutError)
+{
+    FString Path;
+    if (Spec->TryGetStringField(TEXT("binding"), Path))
+    {
+        UMtoULiveLinkBinding* Asset = LoadObject<UMtoULiveLinkBinding>(nullptr, *Path);
+        if (!Asset)
+        {
+            OutError = TEXT("Binding did not load: ") + Path;
+            return nullptr;
+        }
+        return DuplicateObject<UMtoULiveLinkBinding>(Asset, GetTransientPackage());
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Spec->GetStringField(TEXT("skeletal_mesh")));
+    if (!Binding->SkeletalMesh)
+    {
+        OutError = TEXT("Skeletal Mesh did not load: ") + Spec->GetStringField(TEXT("skeletal_mesh"));
+        return nullptr;
+    }
+    const TArray<TSharedPtr<FJsonValue>>* Parts = nullptr;
+    if (Spec->TryGetArrayField(TEXT("parts"), Parts))
+    {
+        for (const TSharedPtr<FJsonValue>& Part : *Parts)
+        {
+            FMtoUCharacterPart& Entry = Binding->AdditionalParts.AddDefaulted_GetRef();
+            Entry.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Part->AsString());
+            Entry.PartName = FPaths::GetBaseFilename(Part->AsString());
+            Entry.bEnabled = true;
+            if (!Entry.SkeletalMesh)
+            {
+                OutError = TEXT("Part did not load: ") + Part->AsString();
+                return nullptr;
+            }
+        }
+    }
+    Binding->EnsureCharacterPartIds();
+    return Binding;
+}
+
+/**
+ * The possessable of one named binding in a sequence copy. A spawnable of that
+ * name becomes a possessable with the same tracks; its spawn track goes, as
+ * the placed Binding Actor exists before the sequence plays.
+ */
+FGuid PossessableOfBinding(UMovieScene* MovieScene, const FString& Name, FString& OutLog)
+{
+    FGuid Guid;
+    for (int32 Index = 0; Index < MovieScene->GetPossessableCount(); ++Index)
+    {
+        if (MovieScene->GetPossessable(Index).GetName() == Name)
+        {
+            Guid = MovieScene->GetPossessable(Index).GetGuid();
+        }
+    }
+    if (!Guid.IsValid())
+    {
+        for (int32 Index = 0; Index < MovieScene->GetSpawnableCount(); ++Index)
+        {
+            const FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable(Index);
+            if (Spawnable.GetName() == Name)
+            {
+                const FGuid Old = Spawnable.GetGuid();
+                Guid = MovieScene->AddPossessable(Name, AMtoULiveLinkActor::StaticClass());
+                MovieScene->MoveBindingContents(Old, Guid);
+                MovieScene->RemoveSpawnable(Old);
+                OutLog += FString::Printf(TEXT("spawnable '%s' became a possessable; "), *Name);
+                break;
+            }
+        }
+    }
+    if (const FMovieSceneBinding* Binding = MovieScene->FindBinding(Guid))
+    {
+        TArray<UMovieSceneTrack*> SpawnTracks;
+        for (UMovieSceneTrack* Track : Binding->GetTracks())
+        {
+            if (Cast<UMovieSceneSpawnTrack>(Track))
+            {
+                SpawnTracks.Add(Track);
+            }
+        }
+        for (UMovieSceneTrack* Track : SpawnTracks)
+        {
+            MovieScene->RemoveTrack(*Track);
+            OutLog += TEXT("spawn track removed; ");
+        }
+    }
+    if (FMovieScenePossessable* Possessable = MovieScene->FindPossessable(Guid))
+    {
+        Possessable->SetPossessedObjectClass(AMtoULiveLinkActor::StaticClass());
+    }
+    return Guid;
+}
+
 /** A /Temp copy of a sequence asset; the original package is never touched. */
 ULevelSequence* TempCopy(ULevelSequence* Original, const FString& Name)
 {
@@ -166,7 +279,7 @@ public:
                 return true;
             }
         }
-        if (Step >= Steps.Num())
+        if (Step >= Steps.Num() || bAbort)
         {
             Finish();
             return true;
@@ -223,7 +336,25 @@ public:
                 *LastStatus, *Status, *Steps[Step].Name));
             LastStatus = Status;
         }
-        if (!MayaResult.IsValid() && Step >= 2)
+        if (HasSecondary())
+        {
+            const FString SecondaryStatus = SecondaryActor.IsValid()
+                ? SecondaryActor->GetConnectionStatus() : FString(TEXT("no actor"));
+            if (SecondaryStatus != LastSecondaryStatus)
+            {
+                Log(FString::Printf(TEXT("second actor status '%s' -> '%s' during step '%s'"),
+                    *LastSecondaryStatus, *SecondaryStatus, *Steps[Step].Name));
+                LastSecondaryStatus = SecondaryStatus;
+            }
+            // The group Maya sent without the second object must never be shown.
+            if (!DroppedEvalId.IsEmpty() && !bDroppedShown
+                && MtoUGetLinkageView().AppliedEvalId == DroppedEvalId)
+            {
+                bDroppedShown = true;
+                Test->AddError(TEXT("The group without the second object was reported applied: ") + DroppedEvalId);
+            }
+        }
+        if (!MayaResult.IsValid() && bMayaStarted)
         {
             return false;
         }
@@ -290,6 +421,74 @@ private:
         return Driver.Send(Action, Fields);
     }
 
+    bool HasSecondary() const
+    {
+        return Fixture.IsValid() && Fixture->HasTypedField<EJson::Object>(TEXT("secondary"));
+    }
+
+    TSharedPtr<FJsonObject> SecondarySpec() const
+    {
+        return Fixture->GetObjectField(TEXT("secondary"));
+    }
+
+    /** The oracle joints of one object, as the Maya fixture lists them. */
+    TArray<TSharedPtr<FJsonValue>> OracleJointsOf(bool bSecondary) const
+    {
+        const TSharedPtr<FJsonObject> Maya = Fixture->GetObjectField(TEXT("maya"));
+        return bSecondary ? Maya->GetObjectField(TEXT("secondary"))->GetArrayField(TEXT("oracle_joints"))
+                          : Maya->GetArrayField(TEXT("oracle_joints"));
+    }
+
+    /** Maya's object set says the second object is part of the connection. */
+    bool MayaSetHasSecondary() const
+    {
+        const TSharedPtr<FJsonObject>* Objects = nullptr;
+        FString Secondary;
+        return MayaResult.IsValid() && MayaResult->TryGetObjectField(TEXT("objects"), Objects)
+            && (*Objects)->TryGetStringField(TEXT("secondary"), Secondary) && !Secondary.IsEmpty();
+    }
+
+    int32 NegotiatedObjects() const
+    {
+        int32 Count = 0;
+        for (const FMtoULinkageObjectView& Object : MtoUGetLinkageView().Objects)
+        {
+            Count += Object.bNegotiated ? 1 : 0;
+        }
+        return Count;
+    }
+
+    /** Both actors are connected and both objects are negotiated. */
+    bool SetConnected() const
+    {
+        bool bConnected = false;
+        if (!MayaResult.IsValid() || !MayaResult->TryGetBoolField(TEXT("connected"), bConnected) || !bConnected
+            || !Actor.IsValid() || !Actor->GetConnectionStatus().StartsWith(TEXT("Connected")))
+        {
+            return false;
+        }
+        return !HasSecondary() || (SecondaryActor.IsValid()
+            && SecondaryActor->GetConnectionStatus().StartsWith(TEXT("Connected"))
+            && MayaSetHasSecondary());
+    }
+
+    /** Pairs every placed actor whose pairing a session change cleared. */
+    void PairAgain()
+    {
+        FString Error;
+        if (Actor.IsValid() && MtoUGetLinkagePairedObject(*Actor) != Fixture->GetStringField(TEXT("object_id")))
+        {
+            Test->TestTrue(TEXT("the main Binding Actor pairs again"),
+                MtoUPairLinkageTarget(*Actor, Fixture->GetStringField(TEXT("object_id")), Error));
+        }
+        if (HasSecondary() && SecondaryActor.IsValid()
+            && MtoUGetLinkagePairedObject(*SecondaryActor) != SecondaryObjectId)
+        {
+            Test->TestTrue(TEXT("the second Binding Actor pairs again"),
+                MtoUPairLinkageTarget(*SecondaryActor, SecondaryObjectId, Error));
+        }
+    }
+
     bool Prepare()
     {
         Fixture = ReadJsonFile(FixturePath);
@@ -310,26 +509,61 @@ private:
 
         // ---- level, sequence copies and the rebound target ----------------
         Add(TEXT("load level and build the sequence copies"), 300.0, [this]() { return BuildScene(); });
+        if (HasSecondary())
+        {
+            // A set connects only when every object has its target, so the
+            // artist pairs both actors before connecting from Maya.
+            Add(TEXT("pair both targets before Maya connects"), 30.0, [this]() { return PairTargets(); });
+        }
         Add(TEXT("start Maya through the public entry"), 30.0, [this]() { return StartMaya(); });
         Add(TEXT("Maya connects and the character negotiates"), 600.0, [this]()
         {
-            bool bConnected = false;
-            return MayaResult.IsValid() && MayaResult->TryGetBoolField(TEXT("connected"), bConnected)
-                && bConnected && Actor.IsValid()
-                && Actor->GetConnectionStatus().StartsWith(TEXT("Connected"));
+            // A refused connection shows Maya's dialog; nothing later can run.
+            const TArray<TSharedPtr<FJsonValue>>* Dialogs = nullptr;
+            if (MayaResult.IsValid() && MayaResult->TryGetArrayField(TEXT("dialogs"), Dialogs))
+            {
+                for (const TSharedPtr<FJsonValue>& Dialog : *Dialogs)
+                {
+                    const TSharedPtr<FJsonObject>* Diagnostic = nullptr;
+                    FString Code, Details;
+                    if (Dialog->AsObject()->TryGetObjectField(TEXT("diagnostic"), Diagnostic))
+                    {
+                        (*Diagnostic)->TryGetStringField(TEXT("code"), Code);
+                        (*Diagnostic)->TryGetStringField(TEXT("details"), Details);
+                    }
+                    if (!Code.IsEmpty() && Code != TEXT("BLENDSHAPE_MISMATCH"))
+                    {
+                        Test->AddError(FString::Printf(TEXT("Maya's connection was refused: %s %s"), *Code, *Details.Left(1500)));
+                        bAbort = true;
+                        return true;
+                    }
+                }
+            }
+            return SetConnected();
         });
         Add(TEXT("pair the target and open the sequence copy"), 60.0, [this]() { return PairAndOpen(); });
         Add(TEXT("Details renders while connected"), 60.0, [this]() { return RenderDetails(TEXT("connected")); });
         Add(TEXT("record the sequence-driven pose before any takeover"), 60.0, [this]()
         {
-            if (!SetTimeAndSettle(OracleFrames[0], 0.5) || !RecordWriterPose(BeforePose))
+            if (!SetTimeAndSettle(OracleFrames[0], 0.5) || !RecordWriterPose(BeforePose)
+                || (HasSecondary() && !RecordWriterPose(SecondaryBeforePose, true)))
             {
                 return false;
             }
             Log(TEXT("sequence-driven actor transform before takeover ")
                 + Actor->GetActorTransform().ToHumanReadableString());
+            if (HasSecondary())
+            {
+                Log(TEXT("sequence-driven second actor transform before takeover ")
+                    + SecondaryActor->GetActorTransform().ToHumanReadableString());
+                Test->TestEqual(TEXT("the connection negotiated both objects"), NegotiatedObjects(), 2);
+            }
             return true;
         });
+        if (HasSecondary())
+        {
+            AddSetRefusals();
+        }
 
         const TArray<TSharedPtr<FJsonValue>>& Scenarios = Fixture->GetArrayField(TEXT("scenarios"));
         for (int32 Index = 0; Index < Scenarios.Num(); ++Index)
@@ -362,14 +596,27 @@ private:
         MainOriginal = LoadObject<ULevelSequence>(nullptr, *Fixture->GetStringField(TEXT("main_sequence")));
         ShotOriginal = LoadObject<ULevelSequence>(nullptr, *Fixture->GetStringField(TEXT("shot_sequence")));
         SwitchSequence = LoadObject<ULevelSequence>(nullptr, *Fixture->GetStringField(TEXT("switch_sequence")));
-        UMtoULiveLinkBinding* BindingAsset = LoadObject<UMtoULiveLinkBinding>(nullptr, *Fixture->GetStringField(TEXT("binding")));
-        if (!MainOriginal || !ShotOriginal || !SwitchSequence || !BindingAsset)
+        FString BindingError;
+        Binding.Reset(MakeFixtureBinding(Fixture, BindingError));
+        if (HasSecondary() && Binding.IsValid())
         {
-            Test->AddError(TEXT("Fixture sequence or binding did not load"));
+            SecondaryBinding.Reset(MakeFixtureBinding(SecondarySpec(), BindingError));
+        }
+        if (!MainOriginal || !ShotOriginal || !SwitchSequence || !Binding.IsValid()
+            || (HasSecondary() && !SecondaryBinding.IsValid()))
+        {
+            Test->AddError(TEXT("Fixture sequence or binding did not load ") + BindingError);
             return false;
         }
-        Binding.Reset(DuplicateObject<UMtoULiveLinkBinding>(BindingAsset, GetTransientPackage()));
         MainCopy.Reset(TempCopy(MainOriginal, TEXT("Main")));
+        if (ShotOriginal == MainOriginal)
+        {
+            // One sequence binds the targets itself; it has no shot to repoint.
+            ShotCopy.Reset(MainCopy.Get());
+            ProtectedPackages.Add(MainOriginal->GetPackage()->GetName());
+            ProtectedPackages.Add(World->GetPackage()->GetName());
+            return SpawnTarget() && (!HasSecondary() || SpawnTarget(true));
+        }
         ShotCopy.Reset(TempCopy(ShotOriginal, TEXT("Shot")));
         int32 Repointed = 0;
         for (UMovieSceneTrack* Track : MainCopy->GetMovieScene()->GetTracks())
@@ -396,44 +643,79 @@ private:
             ProtectedPackages.Add(Package);
         }
         ProtectedPackages.Add(World->GetPackage()->GetName());
-        return SpawnTarget();
+        return SpawnTarget() && (!HasSecondary() || SpawnTarget(true));
     }
 
-    bool SpawnTarget()
+    bool SpawnTarget(bool bSecondary = false)
     {
         UWorld* World = WorldPtr.Get();
         const TSharedPtr<FJsonObject> Anchor = Fixture->GetObjectField(TEXT("anchor"));
         const FVector Location = ReadVector(Anchor, TEXT("location"));
         const FVector Euler = ReadVector(Anchor, TEXT("rotation"));
         AnchorTransform = FTransform(FRotator(Euler.Y, Euler.Z, Euler.X), Location);
-        // Placed like an artist's actor; the level is never saved.
+        // Placed like an artist's actor; the level is never saved. Both
+        // objects' actors stand at the same anchor; each object's own
+        // placement comes from its root in Maya.
         FActorSpawnParameters Params;
         AMtoULiveLinkActor* Spawned = World->SpawnActor<AMtoULiveLinkActor>(
             Location, AnchorTransform.Rotator(), Params);
-        Spawned->SetActorLabel(TEXT("MtoU Linkage Acceptance (unsaved)"));
-        Spawned->SetBinding(Binding.Get());
-        Actor = Spawned;
+        Spawned->SetActorLabel(bSecondary ? TEXT("MtoU Linkage Acceptance second object (unsaved)")
+                                          : TEXT("MtoU Linkage Acceptance (unsaved)"));
+        Spawned->SetBinding(bSecondary ? SecondaryBinding.Get() : Binding.Get());
+        (bSecondary ? SecondaryActor : Actor) = Spawned;
 
-        // The character's binding in the shot copy now possesses the Binding
+        // The object's binding in the shot copy now possesses the Binding
         // Actor: its existing animation and transform writers drive it.
-        const FString TargetName = Fixture->GetStringField(TEXT("target_binding"));
+        const FString TargetName = (bSecondary ? SecondarySpec() : Fixture)->GetStringField(TEXT("target_binding"));
         UMovieScene* MovieScene = ShotCopy->GetMovieScene();
-        FGuid Guid;
-        for (int32 Index = 0; Index < MovieScene->GetPossessableCount(); ++Index)
+        FString ConversionLog;
+        const FGuid Guid = PossessableOfBinding(MovieScene, TargetName, ConversionLog);
+        if (!ConversionLog.IsEmpty())
         {
-            FMovieScenePossessable& Possessable = MovieScene->GetPossessable(Index);
-            if (Possessable.GetName() == TargetName)
-            {
-                Guid = Possessable.GetGuid();
-                Possessable.SetPossessedObjectClass(AMtoULiveLinkActor::StaticClass());
-            }
+            Log(TEXT("binding '") + TargetName + TEXT("': ") + ConversionLog);
         }
-        if (!Test->TestTrue(TEXT("the shot copy has the character binding"), Guid.IsValid()))
+        if (!Test->TestTrue(*FString::Printf(TEXT("the shot copy has the binding '%s'"), *TargetName), Guid.IsValid()))
         {
             return false;
         }
-        TargetGuid = Guid;
-        if (!bAnchorKeyed)
+        (bSecondary ? SecondaryGuid : TargetGuid) = Guid;
+        if (bSecondary && !bSecondaryAnchorPinned)
+        {
+            // The second object's transform writer places it where the
+            // production scene stood it; in the copy it holds the shared
+            // anchor instead, so taking it over leaves both targets at one
+            // placement.
+            bSecondaryAnchorPinned = true;
+            const FVector AnchorEuler(AnchorTransform.Rotator().Roll, AnchorTransform.Rotator().Pitch,
+                AnchorTransform.Rotator().Yaw);
+            const double Values[6] = {Location.X, Location.Y, Location.Z,
+                AnchorEuler.X, AnchorEuler.Y, AnchorEuler.Z};
+            int32 Pinned = 0;
+            if (const FMovieSceneBinding* TargetBinding = MovieScene->FindBinding(Guid))
+            {
+                for (UMovieSceneTrack* Track : TargetBinding->GetTracks())
+                {
+                    for (UMovieSceneSection* Section : Track->GetAllSections())
+                    {
+                        UMovieScene3DTransformSection* Transform = Cast<UMovieScene3DTransformSection>(Section);
+                        if (!Transform)
+                        {
+                            continue;
+                        }
+                        TArrayView<FMovieSceneDoubleChannel*> Channels =
+                            Transform->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+                        for (int32 Index = 0; Index < 6 && Index < Channels.Num(); ++Index)
+                        {
+                            Channels[Index]->Reset();
+                            Channels[Index]->SetDefault(Values[Index]);
+                            ++Pinned;
+                        }
+                    }
+                }
+            }
+            Log(FString::Printf(TEXT("anchor pinned into the second object's transform writer: %d channels"), Pinned));
+        }
+        if (!bSecondary && !bAnchorKeyed)
         {
             // The shot's own transform writer places the character at the
             // fixture's anchor, in the copy only: once the takeover mutes that
@@ -485,16 +767,35 @@ private:
 
     bool StartMaya()
     {
-        return Driver.Start(*Test, Fixture->GetObjectField(TEXT("maya")), EvidenceDir);
+        bMayaStarted = Driver.Start(*Test, Fixture->GetObjectField(TEXT("maya")), EvidenceDir);
+        return bMayaStarted;
+    }
+
+    /** Pairs each actor that is not already paired with its object. */
+    bool PairTargets()
+    {
+        FString Error;
+        if (MtoUGetLinkagePairedObject(*Actor) != Fixture->GetStringField(TEXT("object_id"))
+            && !Test->TestTrue(TEXT("the Binding Actor pairs with the Maya object"),
+                MtoUPairLinkageTarget(*Actor, Fixture->GetStringField(TEXT("object_id")), Error)))
+        {
+            Test->AddError(Error);
+            return false;
+        }
+        if (HasSecondary() && MtoUGetLinkagePairedObject(*SecondaryActor) != SecondaryObjectId
+            && !Test->TestTrue(TEXT("the second Binding Actor pairs with the second Maya object"),
+                MtoUPairLinkageTarget(*SecondaryActor, SecondaryObjectId, Error)))
+        {
+            Test->AddError(Error);
+            return false;
+        }
+        return true;
     }
 
     bool PairAndOpen()
     {
-        FString Error;
-        if (!Test->TestTrue(TEXT("the Binding Actor pairs with the Maya object"),
-                MtoUPairLinkageTarget(*Actor, Fixture->GetStringField(TEXT("object_id")), Error)))
+        if (!PairTargets())
         {
-            Test->AddError(Error);
             return false;
         }
         FMtoULinkageEditor::SetObservedLinkageActor(Actor.Get());
@@ -596,6 +897,35 @@ private:
         }
         Inventory->SetArrayField(TEXT("writers"), Writers);
         Inventory->SetStringField(TEXT("writer_inventory_error"), Error);
+        if (HasSecondary() && SecondaryActor.IsValid())
+        {
+            // The second target's own writers, taken over and restored on their own.
+            TArray<TSharedPtr<FJsonValue>> SecondaryComponents;
+            SecondaryComponents.Add(MakeShared<FJsonValueString>(TEXT("primary ")
+                + SecondaryActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()->GetPathName()));
+            Inventory->SetArrayField(TEXT("secondary_components"), SecondaryComponents);
+            FString SecondaryError;
+            TArray<TSharedPtr<FJsonValue>> SecondaryWriters;
+            SecondaryWriterTracks.Reset();
+            for (const FMtoULinkageEditor::FWriterRecord& Record : FMtoULinkageEditor::CollectTargetWriters(
+                     Source, FMtoULinkageEditor::ResolveTargetComponents(SecondaryActor.Get()),
+                     SecondaryActor.Get(), SecondaryError))
+            {
+                SecondaryWriters.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%s %s rows=%d"),
+                    *Record.Kind, *Record.BindingName, Record.Rows.Num())));
+                SecondaryWriterTracks.Add(Record.Track);
+            }
+            Inventory->SetArrayField(TEXT("secondary_writers"), SecondaryWriters);
+            Inventory->SetStringField(TEXT("secondary_writer_inventory_error"), SecondaryError);
+            Test->TestTrue(TEXT("the second target has writers of its own to take over"),
+                !SecondaryWriters.IsEmpty() && SecondaryError.IsEmpty());
+            for (const TWeakObjectPtr<UMovieSceneTrack>& Track : SecondaryWriterTracks)
+            {
+                Test->TestFalse(TEXT("no writer belongs to both targets"), WriterTracks.Contains(Track));
+            }
+            Log(FString::Printf(TEXT("inventory: the second target has %d writers%s"),
+                SecondaryWriters.Num(), SecondaryError.IsEmpty() ? TEXT("") : *(TEXT(", error ") + SecondaryError)));
+        }
         Inventory->SetArrayField(TEXT("anchor_location"), NumberArray({
             AnchorTransform.GetLocation().X, AnchorTransform.GetLocation().Y, AnchorTransform.GetLocation().Z}));
         Inventory->SetArrayField(TEXT("anchor_rotation_rpy"), NumberArray({
@@ -632,12 +962,17 @@ private:
         return true;
     }
 
-    /** World positions of the oracle bones on the primary display. */
-    bool RecordWriterPose(TMap<FName, FVector>& Out)
+    /** World positions of the oracle bones on one object's primary display. */
+    bool RecordWriterPose(TMap<FName, FVector>& Out, bool bSecondary = false)
     {
         Out.Reset();
-        USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent();
-        for (const TSharedPtr<FJsonValue>& Name : Fixture->GetObjectField(TEXT("maya"))->GetArrayField(TEXT("oracle_joints")))
+        const TWeakObjectPtr<AMtoULiveLinkActor>& Owner = bSecondary ? SecondaryActor : Actor;
+        if (!Owner.IsValid())
+        {
+            return false;
+        }
+        USkeletalMeshComponent* Primary = Owner->GetSkeletalMeshComponent();
+        for (const TSharedPtr<FJsonValue>& Name : OracleJointsOf(bSecondary))
         {
             const FName Bone(*Name->AsString());
             if (Primary->GetBoneIndex(Bone) != INDEX_NONE)
@@ -645,14 +980,41 @@ private:
                 Out.Add(Bone, Primary->GetSocketLocation(Bone));
             }
         }
-        return Test->TestTrue(TEXT("the primary display owns the oracle bones"), Out.Num() >= 3);
+        return Test->TestTrue(bSecondary ? TEXT("the second object's display owns its oracle bones")
+                                         : TEXT("the primary display owns the oracle bones"), Out.Num() >= 3);
+    }
+
+    /** The largest move of any oracle bone from a recorded pose. */
+    double PoseDelta(const TMap<FName, FVector>& Before, bool bSecondary)
+    {
+        TMap<FName, FVector> Now;
+        RecordWriterPose(Now, bSecondary);
+        double MaxDelta = 0.0;
+        for (const TPair<FName, FVector>& Entry : Before)
+        {
+            if (const FVector* Current = Now.Find(Entry.Key))
+            {
+                MaxDelta = FMath::Max(MaxDelta, FVector::Distance(*Current, Entry.Value));
+            }
+        }
+        return MaxDelta;
     }
 
     bool WritersMuted(bool bExpected, const TCHAR* What)
     {
+        if (HasSecondary())
+        {
+            return WritersMutedIn(WriterTracks, bExpected, *(FString(What) + TEXT(" (main)")))
+                & WritersMutedIn(SecondaryWriterTracks, bExpected, *(FString(What) + TEXT(" (second)")));
+        }
+        return WritersMutedIn(WriterTracks, bExpected, What);
+    }
+
+    bool WritersMutedIn(const TArray<TWeakObjectPtr<UMovieSceneTrack>>& Tracks, bool bExpected, const TCHAR* What)
+    {
         int32 Live = 0;
         int32 Muted = 0;
-        for (const TWeakObjectPtr<UMovieSceneTrack>& Weak : WriterTracks)
+        for (const TWeakObjectPtr<UMovieSceneTrack>& Weak : Tracks)
         {
             if (UMovieSceneTrack* Track = Weak.Get())
             {
@@ -665,7 +1027,7 @@ private:
             }
         }
         Log(FString::Printf(TEXT("%s: %d writers muted, %d live"), What, Muted, Live));
-        return bExpected ? (Muted == WriterTracks.Num() && Muted > 0) : Muted == 0;
+        return bExpected ? (Muted == Tracks.Num() && Muted > 0) : Muted == 0;
     }
 
     // -------------------------------------------------------------- scenarios
@@ -728,10 +1090,29 @@ private:
                 LinkageAnchor.Equals(AnchorTransform, 0.01));
             Test->TestNotNull(*(Tag + TEXT("the primary display evaluates Live Link")),
                 Cast<ULiveLinkInstance>(Actor->GetSkeletalMeshComponent()->GetAnimInstance()));
+            if (HasSecondary())
+            {
+                Log(FString::Printf(TEXT("%ssecond target during linkage %s"), *Tag,
+                    *SecondaryActor->GetActorTransform().ToHumanReadableString()));
+                Test->TestTrue(*(Tag + TEXT("both targets share the anchor during linkage")),
+                    SecondaryActor->GetActorTransform().Equals(AnchorTransform, 0.01));
+                Test->TestNotNull(*(Tag + TEXT("the second object's display evaluates Live Link")),
+                    Cast<ULiveLinkInstance>(SecondaryActor->GetSkeletalMeshComponent()->GetAnimInstance()));
+                Test->TestEqual(*(Tag + TEXT("linkage holds both objects")), NegotiatedObjects(), 2);
+            }
             return true;
         });
+        if (Scenario == TEXT("remove_secondary") || Scenario == TEXT("ue_remove_secondary"))
+        {
+            AddRemoval(Scenario, Tag);
+            return;
+        }
         if (Index == 0)
         {
+            if (HasSecondary())
+            {
+                AddSetInjections();
+            }
             for (int32 Frame = 0; Frame < Fixture->GetArrayField(TEXT("oracle_frames")).Num(); ++Frame)
             {
                 AddOracle(Frame);
@@ -830,13 +1211,23 @@ private:
     double DisplayedMorphDelta() const
     {
         double Delta = 0.0;
-        const TSharedPtr<FJsonObject>* Morphs = nullptr;
-        if (MayaResult.IsValid() && Actor.IsValid() && MayaResult->HasTypedField<EJson::Object>(TEXT("snapshot"))
-            && MayaResult->GetObjectField(TEXT("snapshot"))->TryGetObjectField(TEXT("morphs"), Morphs))
+        if (!MayaResult.IsValid() || !MayaResult->HasTypedField<EJson::Object>(TEXT("snapshot")))
         {
+            return Delta;
+        }
+        const TSharedPtr<FJsonObject> Snapshot = MayaResult->GetObjectField(TEXT("snapshot"));
+        for (const bool bSecondary : {false, true})
+        {
+            const AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+            const TSharedPtr<FJsonObject> Row = (bSecondary && !HasSecondary()) ? nullptr : SnapshotRow(Snapshot, bSecondary);
+            const TSharedPtr<FJsonObject>* Morphs = nullptr;
+            if (!Owner || !Row.IsValid() || !Row->TryGetObjectField(TEXT("morphs"), Morphs))
+            {
+                continue;
+            }
             for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
             {
-                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Actor, FName(*Morph.Key)))
+                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Owner, FName(*Morph.Key)))
                 {
                     Delta = FMath::Max(Delta, FMath::Abs(Weight - Morph.Value->AsNumber()));
                 }
@@ -859,24 +1250,23 @@ private:
         return false;
     }
 
-    void CompareOracle(int32 FrameIndex)
+    /** One object's oracle against its Maya snapshot row; the counts come back for the assertions. */
+    struct FObjectOracle
     {
-        const TSharedPtr<FJsonObject> Snapshot = MayaResult->GetObjectField(TEXT("snapshot"));
-        const TSharedPtr<FJsonObject> Joints = Snapshot->GetObjectField(TEXT("joints"));
-        const TSharedPtr<ISequencer> Sequencer = SequencerWeak.Pin();
-        UCameraComponent* Camera = Sequencer.IsValid() ? Sequencer->GetLastEvaluatedCameraCut().Get() : nullptr;
-        FMinimalViewInfo View;
-        if (Camera)
-        {
-            Camera->GetCameraView(0.0f, View);
-        }
-        USkeletalMeshComponent* Primary = Actor->GetSkeletalMeshComponent();
-        double MaxWorld = 0.0;
-        double MaxScreen = 0.0;
-        int32 Compared = 0;
-        int32 MissingAxes = 0;
-        TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
-        TMap<FName, FOracleRotation>& Rotations = OracleRotations.FindOrAdd(FrameIndex);
+        double MaxWorld = 0.0, MaxScreen = 0.0, MaxMorph = 0.0, MaxExpectedMorph = 0.0;
+        double MaxRotation = 0.0, MinMayaChange = 0.0;
+        int32 Compared = 0, ComparedMorphs = 0, ComparedRotations = 0, MissingAxes = 0;
+    };
+
+    FObjectOracle CompareObjectOracle(int32 FrameIndex, bool bSecondary, const TSharedPtr<FJsonObject>& Row,
+        const FMinimalViewInfo& View, bool bCamera, const TSharedRef<FJsonObject>& Record)
+    {
+        FObjectOracle Out;
+        AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+        USkeletalMeshComponent* Primary = Owner->GetSkeletalMeshComponent();
+        const TSharedPtr<FJsonObject> Joints = Row->GetObjectField(TEXT("joints"));
+        TMap<FName, FOracleRotation>& Rotations =
+            (bSecondary ? SecondaryOracleRotations : OracleRotations).FindOrAdd(FrameIndex);
         for (const TPair<FString, TSharedPtr<FJsonValue>>& Joint : Joints->Values)
         {
             const FName Bone(*Joint.Key);
@@ -890,7 +1280,7 @@ private:
             const FVector Expected = LinkageAnchor.TransformPosition(
                 FVector(MayaWorld.X, MayaWorld.Z, MayaWorld.Y));
             const FVector Shown = Primary->GetSocketLocation(Bone);
-            MaxWorld = FMath::Max(MaxWorld, FVector::Distance(Expected, Shown));
+            Out.MaxWorld = FMath::Max(Out.MaxWorld, FVector::Distance(Expected, Shown));
             FQuat MayaRotation;
             if (MayaWorldRotation(Entry, LinkageAnchor.GetRotation(), MayaRotation))
             {
@@ -898,61 +1288,54 @@ private:
             }
             else
             {
-                ++MissingAxes;
+                ++Out.MissingAxes;
             }
             FVector2D UnrealScreen;
             const TArray<TSharedPtr<FJsonValue>>* MayaScreen = nullptr;
-            if (Camera && ProjectThroughCamera(View, Shown, UnrealScreen)
+            if (bCamera && ProjectThroughCamera(View, Shown, UnrealScreen)
                 && Entry->TryGetArrayField(TEXT("screen"), MayaScreen) && MayaScreen->Num() == 2)
             {
                 const FVector2D MayaPoint((*MayaScreen)[0]->AsNumber(), (*MayaScreen)[1]->AsNumber());
-                MaxScreen = FMath::Max(MaxScreen, FVector2D::Distance(UnrealScreen, MayaPoint));
+                Out.MaxScreen = FMath::Max(Out.MaxScreen, FVector2D::Distance(UnrealScreen, MayaPoint));
                 Record->SetArrayField(Joint.Key, NumberArray({Shown.X, Shown.Y, Shown.Z,
                     Expected.X, Expected.Y, Expected.Z, UnrealScreen.X, UnrealScreen.Y, MayaPoint.X, MayaPoint.Y}));
             }
-            ++Compared;
+            ++Out.Compared;
         }
-        // Morph weights: every keyed Maya weight against each display that owns
-        // the target, read where the displays' verification reads them.
-        double MaxMorph = 0.0;
-        double MaxExpectedMorph = 0.0;
-        int32 ComparedMorphs = 0;
+        // Morph weights: every reported Maya weight against each display of
+        // this object that owns the target, read where the displays'
+        // verification reads them.
         const TSharedPtr<FJsonObject>* Morphs = nullptr;
         TSharedRef<FJsonObject> MorphRecord = MakeShared<FJsonObject>();
-        if (Snapshot->TryGetObjectField(TEXT("morphs"), Morphs))
+        if (Row->TryGetObjectField(TEXT("morphs"), Morphs))
         {
             for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
             {
                 const double Expected = Morph.Value->AsNumber();
                 TArray<TSharedPtr<FJsonValue>> Shown;
-                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Actor, FName(*Morph.Key)))
+                for (const double Weight : MtoUGuiAcceptance::DisplayedMorphWeights(*Owner, FName(*Morph.Key)))
                 {
-                    MaxMorph = FMath::Max(MaxMorph, FMath::Abs(Weight - Expected));
+                    Out.MaxMorph = FMath::Max(Out.MaxMorph, FMath::Abs(Weight - Expected));
                     Shown.Add(MakeShared<FJsonValueNumber>(Weight));
                 }
                 if (Shown.Num() > 0)
                 {
-                    ++ComparedMorphs;
-                    MaxExpectedMorph = FMath::Max(MaxExpectedMorph, FMath::Abs(Expected));
+                    ++Out.ComparedMorphs;
+                    Out.MaxExpectedMorph = FMath::Max(Out.MaxExpectedMorph, FMath::Abs(Expected));
+                    TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+                    Entry->SetNumberField(TEXT("maya"), Expected);
+                    Entry->SetArrayField(TEXT("displays"), Shown);
+                    MorphRecord->SetObjectField(Morph.Key, Entry);
                 }
-                TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-                Entry->SetNumberField(TEXT("maya"), Expected);
-                Entry->SetArrayField(TEXT("displays"), Shown);
-                MorphRecord->SetObjectField(Morph.Key, Entry);
             }
         }
         Record->SetObjectField(TEXT("morphs"), MorphRecord);
-        Record->SetNumberField(TEXT("max_morph"), MaxMorph);
-        // Bone rotations: the C01 joints are point-constrained, so their
-        // positions are the same at every oracle frame; the keyed rotations are
-        // not. Each display's rotation change since the first oracle frame must
-        // be Maya's change, which a pose sampled at another frame would miss.
-        // That holds only if Maya's pose differs from every earlier oracle
-        // frame's, which the keyed motion's period can defeat.
-        double MaxRotation = 0.0;
-        double MinMayaChange = 0.0;
-        int32 ComparedRotations = 0;
-        const TMap<FName, FOracleRotation>* First = OracleRotations.Find(0);
+        Record->SetNumberField(TEXT("max_morph"), Out.MaxMorph);
+        // Bone rotations: each display's rotation change since the first
+        // oracle frame must be Maya's change, which a pose sampled at another
+        // frame would miss. That holds only if Maya's pose differs from every
+        // earlier oracle frame's.
+        const TMap<FName, FOracleRotation>* First = (bSecondary ? SecondaryOracleRotations : OracleRotations).Find(0);
         if (FrameIndex > 0 && First)
         {
             TSharedRef<FJsonObject> RotationRecord = MakeShared<FJsonObject>();
@@ -963,17 +1346,18 @@ private:
                     const FQuat MayaChange = Pair.Value.Maya * Base->Maya.Inverse();
                     const FQuat ShownChange = Pair.Value.Shown * Base->Shown.Inverse();
                     const double Error = FMath::RadiansToDegrees(MayaChange.AngularDistance(ShownChange));
-                    MaxRotation = FMath::Max(MaxRotation, Error);
-                    ++ComparedRotations;
+                    Out.MaxRotation = FMath::Max(Out.MaxRotation, Error);
+                    ++Out.ComparedRotations;
                     RotationRecord->SetNumberField(Pair.Key.ToString(), Error);
                 }
             }
             Record->SetObjectField(TEXT("rotation_error_deg"), RotationRecord);
-            MinMayaChange = TNumericLimits<double>::Max();
+            Out.MinMayaChange = TNumericLimits<double>::Max();
             for (int32 Earlier = 0; Earlier < FrameIndex; ++Earlier)
             {
                 double Change = 0.0;
-                if (const TMap<FName, FOracleRotation>* Before = OracleRotations.Find(Earlier))
+                if (const TMap<FName, FOracleRotation>* Before =
+                        (bSecondary ? SecondaryOracleRotations : OracleRotations).Find(Earlier))
                 {
                     for (const TPair<FName, FOracleRotation>& Pair : Rotations)
                     {
@@ -983,11 +1367,140 @@ private:
                         }
                     }
                 }
-                MinMayaChange = FMath::Min(MinMayaChange, Change);
+                Out.MinMayaChange = FMath::Min(Out.MinMayaChange, Change);
             }
         }
-        Record->SetNumberField(TEXT("max_rotation_error_deg"), MaxRotation);
-        Record->SetNumberField(TEXT("min_maya_rotation_change_deg"), MinMayaChange);
+        Record->SetNumberField(TEXT("max_rotation_error_deg"), Out.MaxRotation);
+        Record->SetNumberField(TEXT("min_maya_rotation_change_deg"), Out.MinMayaChange);
+        Record->SetNumberField(TEXT("max_world_cm"), Out.MaxWorld);
+        Record->SetNumberField(TEXT("max_screen_ndc"), Out.MaxScreen);
+        return Out;
+    }
+
+    /** The assertions of one object's oracle. */
+    void CheckObjectOracle(int32 FrameIndex, bool bSecondary, const FObjectOracle& Result, const FString& CameraName)
+    {
+        const FString Who = bSecondary ? TEXT("second object") : TEXT("character");
+        Log(FString::Printf(TEXT("oracle frame %.1f via %s, %s: %d bones, max world %.4f cm, max screen %.5f (NDC)"),
+            OracleFrames[FrameIndex], *CameraName, *Who, Result.Compared, Result.MaxWorld, Result.MaxScreen));
+        Test->TestTrue(*FString::Printf(TEXT("oracle compares the %s's bones"), *Who), Result.Compared >= 3);
+        if (Result.MissingAxes > 0)
+        {
+            Test->AddError(FString::Printf(TEXT("oracle frame %.1f: the Maya driver's snapshot has no world axes for %d bones of the %s; the fixture's maya.driver predates the bone-rotation oracle, so bone rotations are not compared"),
+                OracleFrames[FrameIndex], Result.MissingAxes, *Who));
+        }
+        else if (FrameIndex > 0)
+        {
+            const double Tolerance = Fixture->HasField(TEXT("rotation_tolerance_deg"))
+                ? Fixture->GetNumberField(TEXT("rotation_tolerance_deg")) : 0.5;
+            Log(FString::Printf(TEXT("oracle frame %.1f, %s: %d bone rotations since frame %.1f, max error %.4f deg; Maya's pose differs from every earlier oracle frame's by at least %.2f deg"),
+                OracleFrames[FrameIndex], *Who, Result.ComparedRotations, OracleFrames[0], Result.MaxRotation,
+                Result.MinMayaChange));
+            Test->TestTrue(*FString::Printf(TEXT("oracle compares the %s's bone rotations"), *Who),
+                Result.ComparedRotations >= 3);
+            if (!Test->TestTrue(*FString::Printf(TEXT("the %s's oracle bone rotations differ from every earlier oracle frame's"), *Who),
+                Result.MinMayaChange > 10.0 * Tolerance))
+            {
+                Log(FString::Printf(TEXT("oracle frame %.1f cannot be told from an earlier oracle frame for the %s: their Maya times lie a whole number of key periods (2 * maya.key_step) apart or symmetrically about a key, or the scene's own animation holds still there. Change maya.key_step or oracle_frames in the fixture."),
+                    OracleFrames[FrameIndex], *Who));
+            }
+            Test->TestTrue(*FString::Printf(TEXT("the %s's displays show Maya's bone rotations of the oracle frame"), *Who),
+                Result.MaxRotation < Tolerance);
+        }
+        const TSharedPtr<FJsonObject> Maya = Fixture->GetObjectField(TEXT("maya"));
+        const TSharedPtr<FJsonObject> MayaObject = bSecondary ? Maya->GetObjectField(TEXT("secondary")) : Maya;
+        const TArray<TSharedPtr<FJsonValue>>* KeyedMorphs = nullptr;
+        const bool bKeyed = !bSecondary && MayaObject->TryGetArrayField(TEXT("keyed_morphs"), KeyedMorphs)
+            && KeyedMorphs->Num() > 0;
+        if (bKeyed || MayaObject->HasField(TEXT("morph_namespace")))
+        {
+            Log(FString::Printf(TEXT("oracle frame %.1f, %s: %d morphs, max Maya weight %.3f, max delta %.5f"),
+                OracleFrames[FrameIndex], *Who, Result.ComparedMorphs, Result.MaxExpectedMorph, Result.MaxMorph));
+            if (bKeyed)
+            {
+                Test->TestTrue(TEXT("every keyed Morph is shown by a display"), Result.ComparedMorphs >= KeyedMorphs->Num());
+            }
+            else
+            {
+                Test->TestTrue(*FString::Printf(TEXT("the %s's displays show some of Maya's animated Morphs"), *Who),
+                    Result.ComparedMorphs >= 1);
+            }
+            Test->TestTrue(*FString::Printf(TEXT("the %s's oracle Morph weights are non-zero"), *Who),
+                Result.MaxExpectedMorph > 0.05);
+            Test->TestTrue(*FString::Printf(TEXT("the %s's displays show Maya's Morph weights"), *Who),
+                Result.MaxMorph < Fixture->GetNumberField(TEXT("morph_tolerance")));
+        }
+        Test->TestTrue(*FString::Printf(TEXT("the displayed %s matches Maya's world pose through the anchor"), *Who),
+            Result.MaxWorld < Fixture->GetNumberField(TEXT("world_tolerance_cm")));
+        Test->TestTrue(*FString::Printf(TEXT("Unreal's rendered camera shows the %s where Maya's linked camera does"), *Who),
+            Result.MaxScreen < Fixture->GetNumberField(TEXT("screen_tolerance_ndc")));
+    }
+
+    /** The snapshot row of one object; a driver without object rows reports the character only. */
+    TSharedPtr<FJsonObject> SnapshotRow(const TSharedPtr<FJsonObject>& Snapshot, bool bSecondary) const
+    {
+        const TSharedPtr<FJsonObject>* Objects = nullptr;
+        if (Snapshot->TryGetObjectField(TEXT("objects"), Objects))
+        {
+            const TSharedPtr<FJsonObject>* Row = nullptr;
+            if ((*Objects)->TryGetObjectField(bSecondary ? SecondaryObjectId : TEXT("character"), Row))
+            {
+                return *Row;
+            }
+        }
+        return bSecondary ? nullptr : Snapshot;
+    }
+
+    void CompareOracle(int32 FrameIndex, bool bWithSecondary = true)
+    {
+        const TSharedPtr<FJsonObject> Snapshot = MayaResult->GetObjectField(TEXT("snapshot"));
+        const TSharedPtr<ISequencer> Sequencer = SequencerWeak.Pin();
+        UCameraComponent* Camera = Sequencer.IsValid() ? Sequencer->GetLastEvaluatedCameraCut().Get() : nullptr;
+        FMinimalViewInfo View;
+        if (Camera)
+        {
+            Camera->GetCameraView(0.0f, View);
+        }
+        const FString CameraName = Camera ? Camera->GetOwner()->GetActorNameOrLabel() : TEXT("no camera");
+        TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
+        const FObjectOracle Main = CompareObjectOracle(FrameIndex, false, SnapshotRow(Snapshot, false), View,
+            Camera != nullptr, Record);
+        CheckObjectOracle(FrameIndex, false, Main, CameraName);
+        if (HasSecondary() && bWithSecondary)
+        {
+            const TSharedPtr<FJsonObject> Row = SnapshotRow(Snapshot, true);
+            if (Test->TestTrue(TEXT("the Maya snapshot has the second object's row"), Row.IsValid()))
+            {
+                TSharedRef<FJsonObject> SecondaryRecord = MakeShared<FJsonObject>();
+                const FObjectOracle Second = CompareObjectOracle(FrameIndex, true, Row, View, Camera != nullptr,
+                    SecondaryRecord);
+                CheckObjectOracle(FrameIndex, true, Second, CameraName);
+                Record->SetObjectField(TEXT("secondary"), SecondaryRecord);
+                // Both characters have bones of the same names; each display
+                // must show its own object's pose, never the other's.
+                const TSharedPtr<FJsonObject> MainJoints = SnapshotRow(Snapshot, false)->GetObjectField(TEXT("joints"));
+                const TSharedPtr<FJsonObject> SecondJoints = Row->GetObjectField(TEXT("joints"));
+                int32 Shared = 0;
+                double MinApart = TNumericLimits<double>::Max();
+                for (const TPair<FString, TSharedPtr<FJsonValue>>& Joint : SecondJoints->Values)
+                {
+                    if (MainJoints->HasField(Joint.Key))
+                    {
+                        ++Shared;
+                        MinApart = FMath::Min(MinApart, FVector::Distance(
+                            ReadVector(Joint.Value->AsObject(), TEXT("world")),
+                            ReadVector(MainJoints->GetObjectField(Joint.Key), TEXT("world"))));
+                    }
+                }
+                Log(FString::Printf(TEXT("oracle frame %.1f: %d oracle bones share a name across the two objects; in Maya they stand at least %.2f cm apart"),
+                    OracleFrames[FrameIndex], Shared, Shared > 0 ? MinApart : 0.0));
+                if (Shared > 0)
+                {
+                    Test->TestTrue(TEXT("same-name bones of the two objects stand apart, so a crossed stream would fail the oracle"),
+                        MinApart > 10.0 * Fixture->GetNumberField(TEXT("world_tolerance_cm")));
+                }
+            }
+        }
         Record->SetNumberField(TEXT("frame"), OracleFrames[FrameIndex]);
         Record->SetArrayField(TEXT("ue_view_location"), NumberArray({View.Location.X, View.Location.Y, View.Location.Z}));
         Record->SetArrayField(TEXT("ue_view_rotation_rpy"), NumberArray({View.Rotation.Roll, View.Rotation.Pitch, View.Rotation.Yaw}));
@@ -998,50 +1511,10 @@ private:
             LinkageAnchor.GetLocation().Y, LinkageAnchor.GetLocation().Z}));
         Record->SetArrayField(TEXT("anchor_rotation_rpy"), NumberArray({LinkageAnchor.Rotator().Roll,
             LinkageAnchor.Rotator().Pitch, LinkageAnchor.Rotator().Yaw}));
-        Record->SetStringField(TEXT("camera"), Camera ? Camera->GetOwner()->GetActorNameOrLabel() : TEXT("none"));
-        Record->SetNumberField(TEXT("max_world_cm"), MaxWorld);
-        Record->SetNumberField(TEXT("max_screen_ndc"), MaxScreen);
+        Record->SetStringField(TEXT("camera"), CameraName);
         Record->SetObjectField(TEXT("maya_snapshot"), Snapshot);
-        WriteJsonFile(FPaths::Combine(EvidenceDir, FString::Printf(TEXT("oracle-%d.json"), FrameIndex)), Record);
-        Log(FString::Printf(TEXT("oracle frame %.1f via %s: %d bones, max world %.4f cm, max screen %.5f (NDC)"),
-            OracleFrames[FrameIndex], Camera ? *Camera->GetOwner()->GetActorNameOrLabel() : TEXT("no camera"),
-            Compared, MaxWorld, MaxScreen));
-        Test->TestTrue(TEXT("oracle compares the character's bones"), Compared >= 3);
-        if (MissingAxes > 0)
-        {
-            Test->AddError(FString::Printf(TEXT("oracle frame %.1f: the Maya driver's snapshot has no world axes for %d bones; the fixture's maya.driver predates the bone-rotation oracle, so bone rotations are not compared"),
-                OracleFrames[FrameIndex], MissingAxes));
-        }
-        else if (FrameIndex > 0)
-        {
-            const double Tolerance = Fixture->HasField(TEXT("rotation_tolerance_deg"))
-                ? Fixture->GetNumberField(TEXT("rotation_tolerance_deg")) : 0.5;
-            Log(FString::Printf(TEXT("oracle frame %.1f: %d bone rotations since frame %.1f, max error %.4f deg; Maya's pose differs from every earlier oracle frame's by at least %.2f deg"),
-                OracleFrames[FrameIndex], ComparedRotations, OracleFrames[0], MaxRotation, MinMayaChange));
-            Test->TestTrue(TEXT("oracle compares the character's bone rotations"), ComparedRotations >= 3);
-            if (!Test->TestTrue(TEXT("the oracle bone rotations differ from every earlier oracle frame's"),
-                MinMayaChange > 10.0 * Tolerance))
-            {
-                Log(FString::Printf(TEXT("oracle frame %.1f cannot be told from an earlier oracle frame: their Maya times lie a whole number of key periods (2 * maya.key_step) apart or symmetrically about a key. Change maya.key_step or oracle_frames in the fixture."),
-                    OracleFrames[FrameIndex]));
-            }
-            Test->TestTrue(TEXT("the displays show Maya's bone rotations of the oracle frame"), MaxRotation < Tolerance);
-        }
-        const TArray<TSharedPtr<FJsonValue>>* KeyedMorphs = nullptr;
-        if (Fixture->GetObjectField(TEXT("maya"))->TryGetArrayField(TEXT("keyed_morphs"), KeyedMorphs)
-            && KeyedMorphs->Num() > 0)
-        {
-            Log(FString::Printf(TEXT("oracle frame %.1f: %d morphs, max Maya weight %.3f, max delta %.5f"),
-                OracleFrames[FrameIndex], ComparedMorphs, MaxExpectedMorph, MaxMorph));
-            Test->TestEqual(TEXT("every keyed Morph is shown by a display"), ComparedMorphs, KeyedMorphs->Num());
-            Test->TestTrue(TEXT("the oracle Morph weights are non-zero"), MaxExpectedMorph > 0.05);
-            Test->TestTrue(TEXT("the displays show Maya's Morph weights"),
-                MaxMorph < Fixture->GetNumberField(TEXT("morph_tolerance")));
-        }
-        Test->TestTrue(TEXT("the displayed character matches Maya's world pose through the anchor"),
-            MaxWorld < Fixture->GetNumberField(TEXT("world_tolerance_cm")));
-        Test->TestTrue(TEXT("Unreal's rendered camera shows the character where Maya's linked camera does"),
-            MaxScreen < Fixture->GetNumberField(TEXT("screen_tolerance_ndc")));
+        WriteJsonFile(FPaths::Combine(EvidenceDir, FString::Printf(TEXT("oracle-%s%d.json"),
+            bWithSecondary ? TEXT("") : TEXT("after-removal-"), FrameIndex)), Record);
     }
 
     void AddPlayback()
@@ -1064,6 +1537,7 @@ private:
             }
             ++PlayTicks;
             bAnchorMoved |= !Actor->GetActorTransform().Equals(LinkageAnchor, 0.01);
+            bAnchorMoved |= HasSecondary() && !SecondaryActor->GetActorTransform().Equals(LinkageAnchor, 0.01);
             const double PlaySeconds = Fixture->GetNumberField(TEXT("play_seconds"));
             if (PluginSampleId < 0 && Now - PlayStarted >= 0.25 * PlaySeconds)
             {
@@ -1102,6 +1576,524 @@ private:
             }
             const FMtoULinkageView View = MtoUGetLinkageView();
             return View.bConverged && !View.AppliedEvalId.IsEmpty();
+        });
+    }
+
+    // ------------------------------------------------------------ object set
+
+    int32 MayaDialogCount() const
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Dialogs = nullptr;
+        return MayaResult.IsValid() && MayaResult->TryGetArrayField(TEXT("dialogs"), Dialogs) ? Dialogs->Num() : 0;
+    }
+
+    /** Sends one Maya command once and finishes when Maya acknowledged it. */
+    bool SendOnce(const FString& Action, const FString& Target = FString(), const FString& Name = FString())
+    {
+        if (OnceId < 0)
+        {
+            OnceId = SendMaya(Action, Target, Name);
+            return false;
+        }
+        if (!MayaAcked(OnceId))
+        {
+            return false;
+        }
+        OnceId = -1;
+        return true;
+    }
+
+    bool MayaConnected() const
+    {
+        bool bConnected = false;
+        return MayaResult.IsValid() && MayaResult->TryGetBoolField(TEXT("connected"), bConnected) && bConnected;
+    }
+
+    /** Refusals of an invalid set, each leaving the connected set as it was. */
+    void AddSetRefusals()
+    {
+        Add(TEXT("[set] dialog stage"), 30.0, [this]() { return SendOnce(TEXT("stage"), FString(), TEXT("set_refusals")); });
+        Add(TEXT("[set] one target cannot serve both objects"), 30.0, [this]()
+        {
+            FString Error;
+            const bool bPaired = MtoUPairLinkageTarget(*Actor, SecondaryObjectId, Error);
+            Log(TEXT("[set] pairing the main actor as the second object: ") + (bPaired ? FString(TEXT("accepted")) : Error));
+            Test->TestFalse(TEXT("the main target cannot also be paired as the second object"), bPaired);
+            Test->TestEqual(TEXT("the main target keeps its pairing"), MtoUGetLinkagePairedObject(*Actor),
+                Fixture->GetStringField(TEXT("object_id")));
+            Test->TestEqual(TEXT("the second target keeps its pairing"), MtoUGetLinkagePairedObject(*SecondaryActor),
+                FString(SecondaryObjectId));
+            return true;
+        });
+        Add(TEXT("[set] Maya refuses its main root as the second object"), 60.0, [this]()
+        {
+            if (RefusalPhase == 0)
+            {
+                DialogsBefore = MayaDialogCount();
+                RefusalPhase = 1;
+            }
+            if (!SendOnce(TEXT("secondary_is_primary")))
+            {
+                return false;
+            }
+            RefusalPhase = 0;
+            Test->TestTrue(TEXT("Maya explains why its main root cannot be the second object"),
+                MayaDialogCount() > DialogsBefore);
+            Test->TestTrue(TEXT("Maya keeps the second object it had"), MayaSetHasSecondary());
+            Test->TestTrue(TEXT("the connection keeps both objects"), SetConnected() && NegotiatedObjects() == 2);
+            return true;
+        });
+        Add(TEXT("[set] a second target at another placement is refused"), 60.0, [this]()
+        {
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (RefusalPhase == 0)
+            {
+                RefusalPhase = 1;
+                SecondaryActor->SetActorLocation(AnchorTransform.GetLocation() + FVector(15.0, 0.0, 0.0));
+                FString Error;
+                const bool bAccepted = MtoURequestLinkageEnter(View.Identity.ModeRevision + 1, Error);
+                Log(TEXT("[set] entering with a moved second target: ")
+                    + (bAccepted ? FString(TEXT("request sent")) : TEXT("refused at once: ") + Error));
+                if (!bAccepted)
+                {
+                    RefusalText = Error;
+                    RefusalPhase = 2;
+                }
+                RefusalStarted = FPlatformTime::Seconds();
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (View.ErrorCode == TEXT("ANCHOR_MISMATCH") && View.Mode == TEXT("realtime") && !View.bTransitioning)
+                {
+                    RefusalText = View.ErrorCode + TEXT(" ") + View.Error + TEXT(" ") + View.Detail;
+                    RefusalPhase = 2;
+                }
+                else if (View.Mode == TEXT("linkage") && !View.bTransitioning)
+                {
+                    Test->AddError(TEXT("linkage was entered with the second target at another placement"));
+                    RefusalText = TEXT("entered");
+                    RefusalPhase = 2;
+                }
+                return false;
+            }
+            SecondaryActor->SetActorTransform(AnchorTransform);
+            if (View.Mode != TEXT("realtime") || View.bTransitioning || View.bTakeoverHeld)
+            {
+                if (View.Mode == TEXT("linkage") && !View.bTransitioning && LeaveAfterRefusal < 0)
+                {
+                    FString Error;
+                    LeaveAfterRefusal = MtoURequestLinkageLeave(TEXT("end"), View.Identity.ModeRevision + 1, Error) ? 1 : 0;
+                }
+                return false;
+            }
+            Log(TEXT("[set] refusal: ") + RefusalText);
+            Test->TestTrue(TEXT("the moved second target is refused for its placement"),
+                RefusalText.Contains(TEXT("ANCHOR_MISMATCH")) || RefusalText.Contains(TEXT("placement")));
+            Test->TestTrue(TEXT("the refused entry leaves every writer live"), WritersMuted(false, TEXT("[set] after the anchor refusal")));
+            RefusalPhase = 0;
+            LeaveAfterRefusal = -1;
+            return true;
+        });
+        Add(TEXT("[set] wrong skeleton: dialog stage"), 30.0, [this]() { return SendOnce(TEXT("stage"), FString(), TEXT("wrong_skeleton")); });
+        Add(TEXT("[set] wrong skeleton: disconnect"), 120.0, [this]()
+        {
+            if (RefusalPhase == 0)
+            {
+                if (SendOnce(TEXT("disconnect")))
+                {
+                    RefusalPhase = 1;
+                }
+                return false;
+            }
+            if (MayaConnected())
+            {
+                return false;
+            }
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[set] a second target of another skeleton is refused"), 600.0, [this]()
+        {
+            if (RefusalPhase == 0)
+            {
+                // The second actor now shows the main character's mesh, whose
+                // skeleton the second Maya object does not have.
+                WrongBinding.Reset(DuplicateObject<UMtoULiveLinkBinding>(Binding.Get(), GetTransientPackage()));
+                SecondaryActor->SetBinding(WrongBinding.Get());
+                DialogsBefore = MayaDialogCount();
+                RefusalPhase = 1;
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SendOnce(TEXT("connect")))
+                {
+                    RefusalPhase = 2;
+                    RefusalStarted = FPlatformTime::Seconds();
+                }
+                return false;
+            }
+            // Maya answers the refused object with a dialog; Unreal never
+            // reports the second target connected.
+            if (MayaDialogCount() <= DialogsBefore)
+            {
+                return false;
+            }
+            const TArray<TSharedPtr<FJsonValue>>& Dialogs = MayaResult->GetArrayField(TEXT("dialogs"));
+            FString Text;
+            FJsonSerializer::Serialize(Dialogs.Last()->AsObject().ToSharedRef(), TJsonWriterFactory<>::Create(&Text));
+            Log(TEXT("[set] wrong skeleton refusal dialog: ") + Text.Left(600));
+            Test->TestTrue(TEXT("the wrong skeleton is refused by name"), Text.Contains(TEXT("SKELETON_MISMATCH")));
+            Test->TestFalse(TEXT("the second target of the wrong skeleton never connects"),
+                SecondaryActor->GetConnectionStatus().StartsWith(TEXT("Connected")) && NegotiatedObjects() == 2);
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[set] the right skeleton connects again"), 600.0, [this]()
+        {
+            if (RefusalPhase == 0)
+            {
+                // A refused object may leave Maya connected with the main
+                // character only; the right Binding needs a new connection.
+                if (MayaConnected() || OnceId >= 0)
+                {
+                    if (OnceId >= 0 || !bDisconnectSent)
+                    {
+                        bDisconnectSent |= SendOnce(TEXT("disconnect"));
+                    }
+                    return false;
+                }
+                bDisconnectSent = false;
+                SecondaryActor->SetBinding(SecondaryBinding.Get());
+                RefusalPhase = 1;
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SendOnce(TEXT("connect")))
+                {
+                    RefusalPhase = 2;
+                }
+                return false;
+            }
+            if (!SetConnected())
+            {
+                return false;
+            }
+            PairAgain();
+            RefusalPhase = 0;
+            Test->TestEqual(TEXT("the reconnected set has both objects"), NegotiatedObjects(), 2);
+            return true;
+        });
+    }
+
+    /**
+     * Inside linkage: a group without the second object and a second-object
+     * display that drops out during commit are never shown as a half set.
+     */
+    void AddSetInjections()
+    {
+        Add(TEXT("[inject] dialog stage"), 30.0, [this]() { return SendOnce(TEXT("stage"), FString(), TEXT("set_injections")); });
+        Add(TEXT("[inject] converge before the injections"), 120.0, [this]()
+        {
+            if (!SetTimeAndSettleOnce(OracleFrames[0] + 9.0))
+            {
+                return false;
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 9.0, 0.01))
+            {
+                return false;
+            }
+            SettledFrame = -1.0;
+            InjectApplied = View.AppliedEvalId;
+            RecordWriterPose(InjectMainPose);
+            RecordWriterPose(InjectSecondPose, true);
+            return true;
+        });
+        Add(TEXT("[inject] Maya sends one group without the second object"), 120.0, [this]()
+        {
+            if (RefusalPhase == 0)
+            {
+                if (SendOnce(TEXT("drop_secondary_once")))
+                {
+                    RefusalPhase = 1;
+                }
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SetTimeAndSettle(OracleFrames[0] + 21.0, 0.0))
+                {
+                    RefusalPhase = 2;
+                    RefusalStarted = FPlatformTime::Seconds();
+                }
+                return false;
+            }
+            const TSharedPtr<FJsonObject>* Dropped = nullptr;
+            if (!MayaResult->TryGetObjectField(TEXT("dropped_group"), Dropped))
+            {
+                return false;
+            }
+            DroppedEvalId = (*Dropped)->GetStringField(TEXT("eval_id"));
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (View.ErrorCode != TEXT("INVALID_MESSAGE") && FPlatformTime::Seconds() - RefusalStarted < 15.0)
+            {
+                return false;
+            }
+            Log(FString::Printf(TEXT("[inject] incomplete group %s: UE error %s '%s', applied %s @ %.1f, mode %s"),
+                *DroppedEvalId.Right(12), *View.ErrorCode, *View.Error.Left(160), *View.AppliedEvalId.Right(12),
+                View.AppliedDisplayFrame, *View.Mode));
+            Test->TestEqual(TEXT("the incomplete group is refused as an invalid message"), View.ErrorCode, FString(TEXT("INVALID_MESSAGE")));
+            Test->TestNotEqual(TEXT("the incomplete group is never applied"), View.AppliedEvalId, DroppedEvalId);
+            if (View.AppliedEvalId == InjectApplied)
+            {
+                // Nothing newer was applied, so both objects still show the last complete group.
+                Test->TestTrue(TEXT("the main character keeps the last complete pose"), PoseDelta(InjectMainPose, false) < 0.05);
+                Test->TestTrue(TEXT("the second object keeps the last complete pose"), PoseDelta(InjectSecondPose, true) < 0.05);
+            }
+            Test->TestEqual(TEXT("linkage continues after the refused group"), View.Mode, FString(TEXT("linkage")));
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[inject] converge again after the incomplete group"), 120.0, [this]()
+        {
+            if (!SetTimeAndSettleOnce(OracleFrames[0] + 33.0))
+            {
+                return false;
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 33.0, 0.01))
+            {
+                return false;
+            }
+            SettledFrame = -1.0;
+            InjectApplied = View.AppliedEvalId;
+            RecordWriterPose(InjectMainPose);
+            RecordWriterPose(InjectSecondPose, true);
+            return true;
+        });
+        Add(TEXT("[inject] a second-object display drops out during commit"), 120.0, [this]()
+        {
+            USkeletalMeshComponent* Display = SecondaryActor->GetSkeletalMeshComponent();
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (RefusalPhase == 0)
+            {
+                Display->UnregisterComponent();
+                bAppliedDuringDropout = false;
+                RefusalPhase = 1;
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SetTimeAndSettle(OracleFrames[0] + 45.0, 0.0))
+                {
+                    RefusalPhase = 2;
+                    RefusalStarted = FPlatformTime::Seconds();
+                }
+                return false;
+            }
+            // The new target is answered by Maya; the set cannot be shown
+            // while one display is gone, so nothing newer may be confirmed.
+            bAppliedDuringDropout |= View.AppliedEvalId != InjectApplied;
+            if (FPlatformTime::Seconds() - RefusalStarted < 4.0)
+            {
+                return false;
+            }
+            Test->TestFalse(TEXT("no group is confirmed while a second-object display is missing"),
+                bAppliedDuringDropout);
+            Log(FString::Printf(TEXT("[inject] display dropout: mode %s, target %.1f, applied %.1f converged %d, detail '%s', error %s '%s'"),
+                *View.Mode, View.TargetDisplayFrame, View.AppliedDisplayFrame, View.bConverged ? 1 : 0,
+                *View.Detail.Left(200), *View.ErrorCode, *View.Error.Left(160)));
+            Test->TestEqual(TEXT("nothing newer is applied while the display is gone"), View.AppliedEvalId, InjectApplied);
+            Test->TestTrue(TEXT("the main character keeps the last complete pose while the second display is gone"),
+                PoseDelta(InjectMainPose, false) < 0.05);
+            Display->RegisterComponent();
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[inject] the restored display shows the whole set again"), 120.0, [this]()
+        {
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (View.Mode != TEXT("linkage"))
+            {
+                Test->AddError(TEXT("linkage ended after the display dropout: ") + View.ErrorCode + TEXT(" ") + View.Error);
+                return true;
+            }
+            if (!SetTimeAndSettleOnce(OracleFrames[0] + 57.0))
+            {
+                return false;
+            }
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0] + 57.0, 0.01))
+            {
+                return false;
+            }
+            SettledFrame = -1.0;
+            Test->TestNotNull(TEXT("the restored display evaluates Live Link again"),
+                Cast<ULiveLinkInstance>(SecondaryActor->GetSkeletalMeshComponent()->GetAnimInstance()));
+            Log(FString::Printf(TEXT("[inject] the whole set converged again at %.1f"), View.AppliedDisplayFrame));
+            return true;
+        });
+    }
+
+    /**
+     * Removes the second object inside linkage from Maya or from Unreal; the
+     * main character keeps linkage, then the object joins again by reconnecting.
+     */
+    void AddRemoval(const FString& Scenario, const FString& Tag)
+    {
+        const bool bFromUnreal = Scenario == TEXT("ue_remove_secondary");
+        Add(Tag + TEXT("converge before the removal"), 120.0, [this]()
+        {
+            if (!SetTimeAndSettleOnce(OracleFrames[1]))
+            {
+                return false;
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            return View.bConverged && FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[1], 0.01);
+        });
+        Add(Tag + TEXT("remove the second object"), 120.0, [this, bFromUnreal, Tag]()
+        {
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (RefusalPhase == 0)
+            {
+                SettledFrame = -1.0;
+                RemovalStarted = FPlatformTime::Seconds();
+                if (bFromUnreal)
+                {
+                    FString Error;
+                    Test->TestTrue(*(Tag + TEXT("Unreal's 移除副对象 is accepted")), MtoURequestRemoveSecondaryObject(Error));
+                    RefusalPhase = 2;
+                }
+                else
+                {
+                    RefusalPhase = 1;
+                }
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (SendOnce(TEXT("remove_secondary")))
+                {
+                    RefusalPhase = 2;
+                }
+                return false;
+            }
+            const TSharedPtr<FJsonObject> Status = MayaStatus();
+            bool bMayaActive = false;
+            if (NegotiatedObjects() != 1 || View.bRemovingObject || MayaSetHasSecondary()
+                || !Status.IsValid() || !Status->TryGetBoolField(TEXT("active"), bMayaActive) || !bMayaActive)
+            {
+                return false;
+            }
+            Log(FString::Printf(TEXT("%sremoval confirmed in %.2f s: UE mode %s, set revision %d, detail '%s'"),
+                *Tag, FPlatformTime::Seconds() - RemovalStarted, *View.Mode, View.Identity.SetRevision, *View.Detail));
+            Test->TestEqual(*(Tag + TEXT("linkage continues after the removal")), View.Mode, FString(TEXT("linkage")));
+            Test->TestTrue(*(Tag + TEXT("the main target stays taken over")),
+                WritersMutedIn(WriterTracks, true, *(Tag + TEXT("main after the removal"))));
+            Test->TestTrue(*(Tag + TEXT("only the second target's writers are handed back")),
+                WritersMutedIn(SecondaryWriterTracks, false, *(Tag + TEXT("second after the removal"))));
+            // The Binding Actor's display only ever shows Live Link; out of the
+            // set it shows its Binding without a stream, like a disconnected actor.
+            Test->TestEqual(*(Tag + TEXT("the second actor says it left the set")),
+                SecondaryActor->GetConnectionStatus(), FString(TEXT("Removed from the set")));
+            Test->TestTrue(*(Tag + TEXT("the restore left nothing behind")), View.RecoveryResidual.IsEmpty());
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(Tag + TEXT("the main character keeps following alone"), 120.0, [this, Tag]()
+        {
+            if (!SetTimeAndSettleOnce(OracleFrames[0]))
+            {
+                return false;
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0], 0.01))
+            {
+                return false;
+            }
+            if (SnapshotId < 0)
+            {
+                SnapshotId = SendMaya(TEXT("snapshot"));
+                return false;
+            }
+            if (!MayaAcked(SnapshotId))
+            {
+                return false;
+            }
+            SnapshotId = -1;
+            SettledFrame = -1.0;
+            CompareOracle(0, false);
+            return true;
+        });
+        Add(Tag + TEXT("end linkage with the main character only"), 120.0, [this, Tag]()
+        {
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            if (LeaveIssued != Tag)
+            {
+                LeaveIssued = Tag;
+                FString Error;
+                Test->TestTrue(*(Tag + TEXT("结束预览 is accepted")),
+                    MtoURequestLinkageLeave(TEXT("end"), View.Identity.ModeRevision + 1, Error));
+                return false;
+            }
+            if (View.Mode != TEXT("realtime") || View.bTransitioning || View.bTakeoverHeld)
+            {
+                return false;
+            }
+            LeaveIssued.Reset();
+            return WritersMuted(false, *(Tag + TEXT("after 结束预览")));
+        });
+        Add(Tag + TEXT("the second object joins again"), 600.0, [this, Tag]()
+        {
+            if (RefusalPhase == 0)
+            {
+                // 设为副对象 changes the set, which ends the connection.
+                if (SendOnce(TEXT("set_secondary")))
+                {
+                    RefusalPhase = 1;
+                }
+                return false;
+            }
+            if (RefusalPhase == 1)
+            {
+                if (MayaConnected() && !MayaSetHasSecondary())
+                {
+                    return false;
+                }
+                if (MayaConnected() && NegotiatedObjects() == 2)
+                {
+                    RefusalPhase = 3;
+                    return false;
+                }
+                if (!MayaConnected())
+                {
+                    RefusalPhase = 2;
+                }
+                return false;
+            }
+            if (RefusalPhase == 2)
+            {
+                if (SendOnce(TEXT("connect")))
+                {
+                    RefusalPhase = 3;
+                }
+                return false;
+            }
+            if (!SetConnected())
+            {
+                return false;
+            }
+            PairAgain();
+            RefusalPhase = 0;
+            Log(Tag + TEXT("the second object joined again after reconnecting"));
+            Test->TestEqual(*(Tag + TEXT("the set has both objects again")), NegotiatedObjects(), 2);
+            return true;
+        });
+        Add(Tag + TEXT("the original writers drive both targets again"), 120.0, [this, Scenario, Tag]()
+        {
+            return RecoverAfter(Scenario, Tag);
         });
     }
 
@@ -1193,6 +2185,10 @@ private:
         {
             WorldPtr->DestroyActor(Actor.Get());
         }
+        else if (Scenario == TEXT("destroy_secondary"))
+        {
+            WorldPtr->DestroyActor(SecondaryActor.Get());
+        }
         else if (Scenario == TEXT("close_world"))
         {
             GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(MainCopy.Get());
@@ -1213,22 +2209,28 @@ private:
         {
             return true;
         }
-        if (Scenario == TEXT("destroy_target"))
+        if (Scenario == TEXT("destroy_target") || Scenario == TEXT("destroy_secondary"))
         {
             // The deleted target ended the streaming session too; the artist
             // places the actor again and reconnects from Maya.
-            if (!Actor.IsValid())
+            const bool bSecondary = Scenario == TEXT("destroy_secondary");
+            if (!(bSecondary ? SecondaryActor : Actor).IsValid())
             {
-                if (!SpawnTarget())
+                if (!SpawnTarget(bSecondary))
                 {
                     return true;
+                }
+                if (HasSecondary())
+                {
+                    // A set reconnects only once every object has its target again.
+                    PairTargets();
                 }
                 Reconnected = false;
                 return false;
             }
             bool bConnected = false;
             MayaResult->TryGetBoolField(TEXT("connected"), bConnected);
-            if (!Actor->GetConnectionStatus().StartsWith(TEXT("Connected")) || !bConnected)
+            if (!SetConnected())
             {
                 if (!bConnected && ReconnectId < 0)
                 {
@@ -1240,9 +2242,7 @@ private:
             {
                 Reconnected = true;
                 ReconnectId = -1;
-                FString Error;
-                Test->TestTrue(TEXT("the new Binding Actor pairs again"),
-                    MtoUPairLinkageTarget(*Actor, Fixture->GetStringField(TEXT("object_id")), Error));
+                PairAgain();
                 FMtoULinkageEditor::SetObservedLinkageActor(Actor.Get());
                 WriterTracks.Reset();
                 WriteInventory();
@@ -1258,19 +2258,17 @@ private:
         {
             return false;
         }
-        TMap<FName, FVector> After;
-        RecordWriterPose(After);
-        double MaxDelta = 0.0;
-        for (const TPair<FName, FVector>& Entry : BeforePose)
-        {
-            if (const FVector* Now = After.Find(Entry.Key))
-            {
-                MaxDelta = FMath::Max(MaxDelta, FVector::Distance(*Now, Entry.Value));
-            }
-        }
+        const double MaxDelta = PoseDelta(BeforePose, false);
         Log(FString::Printf(TEXT("%s: the sequence animation drives the target again, max delta %.4f cm from before the takeover"),
             *Scenario, MaxDelta));
         Test->TestTrue(*(Tag + TEXT("the original animation writer shows its own pose again")), MaxDelta < 0.05);
+        if (HasSecondary())
+        {
+            const double SecondDelta = PoseDelta(SecondaryBeforePose, true);
+            Log(FString::Printf(TEXT("%s: the sequence animation drives the second target again, max delta %.4f cm from before the takeover"),
+                *Scenario, SecondDelta));
+            Test->TestTrue(*(Tag + TEXT("the second target's own writers show their pose again")), SecondDelta < 0.05);
+        }
         LeaveIssued.Reset();
         return true;
     }
@@ -1290,16 +2288,33 @@ private:
                 Test->TestFalse(TEXT("no writer stays muted"), Track->IsLocalEvalDisabled());
             }
         }
+        for (const TWeakObjectPtr<UMovieSceneTrack>& Weak : SecondaryWriterTracks)
+        {
+            if (const UMovieSceneTrack* Track = Weak.Get())
+            {
+                Test->TestFalse(TEXT("no writer of the second target stays muted"), Track->IsLocalEvalDisabled());
+            }
+        }
         if (MayaResult.IsValid())
         {
             MayaResult = Driver.Poll();
-            // Only the connect-time Morph mismatch of the fixture and the
-            // exits that end the streaming session may show a dialog.
+            // Only the connect-time Morph mismatch of the fixture, the exits
+            // that end the streaming session and the set refusals the test
+            // provokes may show a dialog.
             MtoUGuiAcceptance::CheckMayaDialogs(*Test, MayaResult,
                 {{TEXT("startup"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("destroy_target"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("destroy_target"), TEXT("STREAM_INTERRUPTED")},
-                 {TEXT("close_world"), TEXT("STREAM_INTERRUPTED")}},
+                 {TEXT("close_world"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("set_refusals"), TEXT("ROLE_SETUP_FAILED")},
+                 {TEXT("set_refusals"), TEXT("ANCHOR_MISMATCH")},
+                 {TEXT("wrong_skeleton"), TEXT("SKELETON_MISMATCH")},
+                 {TEXT("wrong_skeleton"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("set_injections"), TEXT("INVALID_MESSAGE")},
+                 {TEXT("remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("ue_remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("destroy_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("destroy_secondary"), TEXT("STREAM_INTERRUPTED")}},
                 [this](const FString& Line) { Log(Line); });
             Evidence->SetObjectField(TEXT("maya_final"), MayaResult);
         }
@@ -1334,6 +2349,20 @@ private:
     TArray<TWeakObjectPtr<UMovieSceneTrack>> WriterTracks;
     TArray<FString> ProtectedPackages;
     TMap<FName, FVector> BeforePose;
+    // The second object of the set, when the fixture names one.
+    TStrongObjectPtr<UMtoULiveLinkBinding> SecondaryBinding, WrongBinding;
+    TWeakObjectPtr<AMtoULiveLinkActor> SecondaryActor;
+    FGuid SecondaryGuid;
+    TArray<TWeakObjectPtr<UMovieSceneTrack>> SecondaryWriterTracks;
+    TMap<FName, FVector> SecondaryBeforePose, InjectMainPose, InjectSecondPose;
+    TMap<int32, TMap<FName, FOracleRotation>> SecondaryOracleRotations;
+    bool bSecondaryAnchorPinned = false;
+    bool bMayaStarted = false;
+    bool bAbort = false;
+    bool bDroppedShown = false, bDisconnectSent = false, bAppliedDuringDropout = false;
+    FString LastSecondaryStatus, DroppedEvalId, InjectApplied, RefusalText;
+    int32 OnceId = -1, RefusalPhase = 0, DialogsBefore = 0, LeaveAfterRefusal = -1;
+    double RefusalStarted = 0.0, RemovalStarted = 0.0;
     double SettleUntil = 0.0, SettledFrame = -1.0, MorphWaitStarted = 0.0;
     int32 EnterRequested = -1, StageId = -1, SnapshotId = -1, ShotId = -1, QuitId = -1, EndAfterRealtime = -1;
     double MayaTimeBefore = 0.0;
