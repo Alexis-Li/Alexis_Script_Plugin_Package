@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MtoULinkage.h"
 #include "MtoULiveLinkSource.h"
+#include "MtoUSceneRefExport.h"
 #include "MtoUGuiAcceptance.h"
 #include "MtoULinkageEditor.h"
 #include "MtoULiveLinkActor.h"
@@ -15,6 +16,8 @@
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -566,12 +569,17 @@ private:
         if (HasSecondary())
         {
             AddSetRefusals();
+            AddCompositionSwaps();
         }
 
         const TArray<TSharedPtr<FJsonValue>>& Scenarios = Fixture->GetArrayField(TEXT("scenarios"));
         for (int32 Index = 0; Index < Scenarios.Num(); ++Index)
         {
             AddScenario(Scenarios[Index]->AsString(), Index);
+        }
+        if (HasSecondary() && Fixture->HasTypedField<EJson::Object>(TEXT("reference_probe")))
+        {
+            AddReferenceAlignment();
         }
         Add(TEXT("quit Maya"), 120.0, [this]()
         {
@@ -662,8 +670,7 @@ private:
         FActorSpawnParameters Params;
         AMtoULiveLinkActor* Spawned = World->SpawnActor<AMtoULiveLinkActor>(
             Location, AnchorTransform.Rotator(), Params);
-        Spawned->SetActorLabel(bSecondary ? TEXT("MtoU Linkage Acceptance second object (unsaved)")
-                                          : TEXT("MtoU Linkage Acceptance (unsaved)"));
+        Spawned->SetActorLabel(bSecondary ? TEXT("MtoU Second (unsaved)") : TEXT("MtoU Linkage Acceptance (unsaved)"));
         Spawned->SetBinding(bSecondary ? SecondaryBinding.Get() : Binding.Get());
         (bSecondary ? SecondaryActor : Actor) = Spawned;
 
@@ -1121,6 +1128,13 @@ private:
                 AddOracle(Frame);
             }
             AddPlayback();
+            if (HasSecondary())
+            {
+                Add(TEXT("the pairing window opens during linkage"), 30.0, [this]()
+                {
+                    return SendOnce(TEXT("objects_window"), TEXT("open"));
+                });
+            }
             Add(TEXT("panel screenshots during linkage"), 60.0, [this]()
             {
                 if (ShotId < 0)
@@ -1135,6 +1149,32 @@ private:
                 return true;
             });
             Add(TEXT("Details renders during linkage"), 60.0, [this]() { return RenderDetails(TEXT("linkage")); });
+            if (HasSecondary())
+            {
+                // Closing and reopening the pairing window changes nothing of the set.
+                Add(TEXT("the pairing window closes during linkage"), 30.0, [this]()
+                {
+                    return SendOnce(TEXT("objects_window"), TEXT("close"));
+                });
+                Add(TEXT("the pairing window reopens with the same set"), 30.0, [this]()
+                {
+                    if (!SendOnce(TEXT("objects_window"), TEXT("open")))
+                    {
+                        return false;
+                    }
+                    const TSharedPtr<FJsonObject> Status = MayaStatus();
+                    bool bActive = false;
+                    Test->TestTrue(TEXT("linkage continues while the pairing window closes and reopens"),
+                        Status.IsValid() && Status->TryGetBoolField(TEXT("active"), bActive) && bActive
+                        && MtoUGetLinkageView().Mode == TEXT("linkage"));
+                    Test->TestTrue(TEXT("the reopened pairing window shows the same second object"), MayaSetHasSecondary());
+                    return true;
+                });
+                Add(TEXT("panel screenshots after reopening"), 60.0, [this]()
+                {
+                    return SendOnce(TEXT("panel_shot"), FString(), TEXT("linkage-reopened"));
+                });
+            }
         }
         AddExit(Scenario, Tag);
     }
@@ -1150,9 +1190,16 @@ private:
         const TArray<TSharedPtr<FJsonValue>>* Widths = nullptr;
         if (Fixture->TryGetArrayField(TEXT("details_widths"), Widths) && Widths->Num() > 0)
         {
-            MtoUGuiAcceptance::RenderDetails(*Test, *Actor, *Widths,
-                Fixture->HasField(TEXT("details_height")) ? Fixture->GetNumberField(TEXT("details_height")) : 1600.0,
+            const double Height = Fixture->HasField(TEXT("details_height"))
+                ? Fixture->GetNumberField(TEXT("details_height")) : 1600.0;
+            MtoUGuiAcceptance::RenderDetails(*Test, *Actor, *Widths, Height,
                 EvidenceDir, State, [this](const FString& Line) { Log(Line); });
+            if (HasSecondary() && SecondaryActor.IsValid())
+            {
+                // The second actor's own rows: pairing, set state and 移除副对象.
+                MtoUGuiAcceptance::RenderDetails(*Test, *SecondaryActor, *Widths, Height,
+                    EvidenceDir, State + TEXT("-secondary"), [this](const FString& Line) { Log(Line); });
+            }
         }
         return true;
     }
@@ -1612,6 +1659,13 @@ private:
         return MayaResult.IsValid() && MayaResult->TryGetBoolField(TEXT("connected"), bConnected) && bConnected;
     }
 
+    /** Maya still holds a session object, connected or still being torn down. */
+    bool MayaSessionOpen() const
+    {
+        bool bOpen = false;
+        return MayaResult.IsValid() && MayaResult->TryGetBoolField(TEXT("session_open"), bOpen) && bOpen;
+    }
+
     /** Refusals of an invalid set, each leaving the connected set as it was. */
     void AddSetRefusals()
     {
@@ -1789,6 +1843,254 @@ private:
             Test->TestEqual(TEXT("the reconnected set has both objects"), NegotiatedObjects(), 2);
             return true;
         });
+    }
+
+    /**
+     * Scene reference in the common space of a two-object set. In the new map
+     * the last exit left behind, both Binding Actors stand at the anchor next
+     * to one probe cube; the reference is exported through the product path and
+     * imported by Maya's own action, and the cube's world centre in Maya must be
+     * the inverse anchor of its Unreal world position, the same space both
+     * objects' poses arrive in. The fixture's `reference_probe` gives the cube's
+     * `offset` and `rotation` relative to the anchor.
+     */
+    void AddReferenceAlignment()
+    {
+        Add(TEXT("[reference] dialog stage"), 30.0, [this]() { return SendOnce(TEXT("stage"), FString(), TEXT("reference")); });
+        Add(TEXT("[reference] place the set and a probe in a new map"), 60.0, [this]()
+        {
+            UWorld* World = GEditor->GetEditorWorldContext().World();
+            if (!World)
+            {
+                return false;
+            }
+            const TSharedPtr<FJsonObject> Probe = Fixture->GetObjectField(TEXT("reference_probe"));
+            const FVector Euler = ReadVector(Probe, TEXT("rotation"));
+            const FTransform Local(FRotator(Euler.Y, Euler.Z, Euler.X), ReadVector(Probe, TEXT("offset")));
+            ProbeTransform = Local * AnchorTransform;
+            FActorSpawnParameters Params;
+            Params.ObjectFlags |= RF_Transient;
+            for (const bool bSecondary : {false, true})
+            {
+                AMtoULiveLinkActor* Spawned = World->SpawnActor<AMtoULiveLinkActor>(
+                    AnchorTransform.GetLocation(), AnchorTransform.Rotator(), Params);
+                Spawned->SetBinding(bSecondary ? SecondaryBinding.Get() : Binding.Get());
+                (bSecondary ? SecondaryActor : Actor) = Spawned;
+            }
+            AStaticMeshActor* Cube = World->SpawnActor<AStaticMeshActor>(
+                ProbeTransform.GetLocation(), ProbeTransform.Rotator(), Params);
+            Cube->GetStaticMeshComponent()->SetStaticMesh(
+                LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+            Cube->SetActorLabel(TEXT("MtoURefProbe"));
+            WorldPtr = World;
+            Log(TEXT("[reference] probe at ") + ProbeTransform.ToHumanReadableString());
+            return PairTargets();
+        });
+        Add(TEXT("[reference] the set connects in the new map"), 600.0, [this]() { return ReconnectSet(TEXT("[reference]")); });
+        Add(TEXT("[reference] export through the product path"), 300.0, [this]()
+        {
+            FMtoUSceneRefExportResult Result;
+            const bool bExported = FMtoUSceneRefExport::Run(*WorldPtr, TArray<FString>(), Result);
+            Log(FString::Printf(TEXT("[reference] export %s: %s"), bExported ? TEXT("offered") : TEXT("refused"),
+                *Result.Error));
+            Test->TestTrue(TEXT("the scene reference is exported and offered"), bExported);
+            return true;
+        });
+        Add(TEXT("[reference] Maya imports the offered reference"), 300.0, [this]()
+        {
+            const TSharedPtr<FJsonObject>* Reference = nullptr;
+            bool bOffered = false;
+            if (!MayaResult->TryGetObjectField(TEXT("reference"), Reference)
+                || !(*Reference)->TryGetBoolField(TEXT("offered"), bOffered) || !bOffered)
+            {
+                return false;
+            }
+            if (RefusalPhase == 0)
+            {
+                // One click of 导入/更新参考.
+                if (SendOnce(TEXT("import_reference")))
+                {
+                    RefusalPhase = 1;
+                }
+                return false;
+            }
+            const TSharedPtr<FJsonObject> Report = (*Reference)->GetObjectField(TEXT("report"));
+            FString Action;
+            Report->TryGetStringField(TEXT("action"), Action);
+            if (Action != TEXT("import"))
+            {
+                return false;
+            }
+            bool bAccepted = false;
+            Report->GetObjectField(TEXT("report"))->TryGetBoolField(TEXT("accepted"), bAccepted);
+            FString Text;
+            FJsonSerializer::Serialize(Report.ToSharedRef(), TJsonWriterFactory<>::Create(&Text));
+            Log(TEXT("[reference] import report: ") + Text.Left(600));
+            Test->TestTrue(TEXT("Maya accepts and imports the reference"), bAccepted);
+            RefusalPhase = 0;
+            return true;
+        });
+        Add(TEXT("[reference] the probe lines up through the inverse anchor"), 60.0, [this]()
+        {
+            if (!SendOnce(TEXT("reference_snapshot"), FString(), TEXT("MtoURefProbe")))
+            {
+                return false;
+            }
+            const TSharedPtr<FJsonObject>* Nodes = nullptr;
+            if (!MayaResult->TryGetObjectField(TEXT("reference_nodes"), Nodes) || (*Nodes)->Values.IsEmpty())
+            {
+                Test->AddError(TEXT("Maya's reference container has no probe node"));
+                return true;
+            }
+            // Maya (x, y, z) is Unreal (x, z, y); the container stands at the inverse anchor.
+            const FVector Local = AnchorTransform.InverseTransformPosition(ProbeTransform.GetLocation());
+            const FVector Expected(Local.X, Local.Z, Local.Y);
+            double MaxDelta = 0.0;
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Node : (*Nodes)->Values)
+            {
+                const TArray<TSharedPtr<FJsonValue>>& C = Node.Value->AsArray();
+                const FVector Shown(C[0]->AsNumber(), C[1]->AsNumber(), C[2]->AsNumber());
+                MaxDelta = FMath::Max(MaxDelta, FVector::Distance(Shown, Expected));
+                Log(FString::Printf(TEXT("[reference] %s: Maya centre %s, expected %s (%.4f cm)"), *Node.Key,
+                    *Shown.ToString(), *Expected.ToString(), FVector::Distance(Shown, Expected)));
+            }
+            Test->TestTrue(TEXT("the reference probe stands where the set's common space puts it"),
+                MaxDelta < Fixture->GetNumberField(TEXT("world_tolerance_cm")));
+            return true;
+        });
+    }
+
+    /**
+     * Synthetic composition changes of a connected set: each replaces one
+     * object's full body or parts, which must end the whole set; Maya then
+     * connects again with the changed object, and the original composition
+     * is restored and connected the same way. The fixture names the swaps in
+     * `composition_swaps`: `{name, object: "character"|"secondary",
+     * skeletal_mesh?, parts?}`.
+     */
+    void AddCompositionSwaps()
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Swaps = nullptr;
+        if (!Fixture->TryGetArrayField(TEXT("composition_swaps"), Swaps) || Swaps->IsEmpty())
+        {
+            return;
+        }
+        Add(TEXT("[swap] dialog stage"), 30.0, [this]() { return SendOnce(TEXT("stage"), FString(), TEXT("composition_swaps")); });
+        for (const TSharedPtr<FJsonValue>& Value : *Swaps)
+        {
+            const TSharedPtr<FJsonObject> Swap = Value->AsObject();
+            const FString Name = Swap->GetStringField(TEXT("name"));
+            const bool bSecondary = Swap->GetStringField(TEXT("object")) == SecondaryObjectId;
+            Add(FString::Printf(TEXT("[swap] %s ends the set"), *Name), 120.0, [this, Swap, Name, bSecondary]()
+            {
+                return ChangeComposition(Swap, bSecondary, Name, true);
+            });
+            Add(FString::Printf(TEXT("[swap] %s connects again"), *Name), 600.0, [this, Name]()
+            {
+                return ReconnectSet(TEXT("[swap] ") + Name + TEXT(" changed"));
+            });
+            Add(FString::Printf(TEXT("[swap] %s restored ends the set"), *Name), 120.0, [this, Swap, Name, bSecondary]()
+            {
+                return ChangeComposition(Swap, bSecondary, Name, false);
+            });
+            Add(FString::Printf(TEXT("[swap] %s restored connects again"), *Name), 600.0, [this, Name]()
+            {
+                return ReconnectSet(TEXT("[swap] ") + Name + TEXT(" restored"));
+            });
+        }
+    }
+
+    /** Applies one swap (or puts the original back) and waits for the set to end. */
+    bool ChangeComposition(const TSharedPtr<FJsonObject>& Swap, bool bSecondary, const FString& Name, bool bApply)
+    {
+        AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+        UMtoULiveLinkBinding* Target = bSecondary ? SecondaryBinding.Get() : Binding.Get();
+        if (RefusalPhase == 0)
+        {
+            if (bApply)
+            {
+                SavedMesh = Target->SkeletalMesh;
+                SavedParts = Target->AdditionalParts;
+            }
+            FString Path;
+            const TArray<TSharedPtr<FJsonValue>>* Parts = nullptr;
+            if (Swap->TryGetStringField(TEXT("skeletal_mesh"), Path))
+            {
+                Target->SkeletalMesh = bApply ? LoadObject<USkeletalMesh>(nullptr, *Path) : SavedMesh.Get();
+                Owner->NotifyBindingInputsChanged();
+            }
+            if (Swap->TryGetArrayField(TEXT("parts"), Parts))
+            {
+                if (bApply)
+                {
+                    Target->AdditionalParts.Reset();
+                    for (const TSharedPtr<FJsonValue>& Part : *Parts)
+                    {
+                        FMtoUCharacterPart& Entry = Target->AdditionalParts.AddDefaulted_GetRef();
+                        Entry.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Part->AsString());
+                        Entry.PartName = FPaths::GetBaseFilename(Part->AsString());
+                        Entry.bEnabled = true;
+                    }
+                    Target->EnsureCharacterPartIds();
+                }
+                else
+                {
+                    Target->AdditionalParts = SavedParts;
+                }
+                Owner->NotifyCharacterPartsChanged();
+            }
+            RefusalPhase = 1;
+            return false;
+        }
+        // The changed object ends the whole set: neither actor stays connected,
+        // and Maya finished tearing its session down.
+        if (MayaConnected() || MayaSessionOpen() || Actor->GetConnectionStatus().StartsWith(TEXT("Connected"))
+            || SecondaryActor->GetConnectionStatus().StartsWith(TEXT("Connected")))
+        {
+            return false;
+        }
+        Log(FString::Printf(TEXT("[swap] %s %s: the set ended (UE '%s' / '%s')"), *Name,
+            bApply ? TEXT("applied") : TEXT("restored"), *Actor->GetConnectionStatus(),
+            *SecondaryActor->GetConnectionStatus()));
+        Test->TestFalse(*FString::Printf(TEXT("[swap] %s leaves no object streaming"), *Name),
+            Actor->IsInLiveLinkSet() || SecondaryActor->IsInLiveLinkSet());
+        RefusalPhase = 0;
+        return true;
+    }
+
+    /** Maya connects the set again; both objects negotiate. */
+    bool ReconnectSet(const FString& What)
+    {
+        if (RefusalPhase == 0)
+        {
+            if (MayaSessionOpen())
+            {
+                return false;
+            }
+            if (SendOnce(TEXT("connect")))
+            {
+                RefusalPhase = 1;
+                RefusalStarted = FPlatformTime::Seconds();
+            }
+            return false;
+        }
+        if (!SetConnected())
+        {
+            // An idle Maya after the 连接 click: the click landed while an
+            // ending session was still torn down, so it is clicked again.
+            if (!MayaSessionOpen() && FPlatformTime::Seconds() - RefusalStarted > 10.0)
+            {
+                Log(What + TEXT(": Maya stayed idle after 连接; connecting again"));
+                RefusalPhase = 0;
+            }
+            return false;
+        }
+        PairAgain();
+        Log(FString::Printf(TEXT("%s: the set connected again with %d objects (UE '%s' / '%s')"), *What,
+            NegotiatedObjects(), *Actor->GetConnectionStatus(), *SecondaryActor->GetConnectionStatus()));
+        Test->TestEqual(*(What + TEXT(": both objects negotiate")), NegotiatedObjects(), 2);
+        RefusalPhase = 0;
+        return true;
     }
 
     /**
@@ -2141,6 +2443,10 @@ private:
             RefusalPhase = 0;
             return true;
         });
+        Add(Tag + TEXT("Details renders after the removal"), 60.0, [this, Scenario]()
+        {
+            return RenderDetails(Scenario + TEXT("-removed"));
+        });
         Add(Tag + TEXT("the main character keeps following alone"), 120.0, [this, Tag]()
         {
             if (!SetTimeAndSettleOnce(OracleFrames[0]))
@@ -2450,6 +2756,9 @@ private:
                  {TEXT("set_refusals"), TEXT("ANCHOR_MISMATCH")},
                  {TEXT("wrong_skeleton"), TEXT("SKELETON_MISMATCH")},
                  {TEXT("wrong_skeleton"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("composition_swaps"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("composition_swaps"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("reference"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("set_injections"), TEXT("INVALID_MESSAGE")},
                  {TEXT("remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("ue_remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
@@ -2498,6 +2807,10 @@ private:
     TMap<int32, TMap<FName, FOracleRotation>> SecondaryOracleRotations;
     bool bSecondaryAnchorPinned = false;
     bool bMayaStarted = false;
+    FTransform ProbeTransform;
+    // The composition a swap replaced, put back afterwards.
+    TObjectPtr<USkeletalMesh> SavedMesh;
+    TArray<FMtoUCharacterPart> SavedParts;
     // The apply probe's injections inside linkage.
     double DelayUntil = 0.0, MaxHeldPoseDelta = 0.0, MaxHeldMorphDelta = 0.0;
     int32 HeldChecks = 0;

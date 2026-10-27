@@ -41,7 +41,10 @@ expects), ``sample_plugins`` (with ``name``), ``set_secondary``,
 ``secondary_is_primary`` (**设为副对象** with the main character's root
 selected), ``objects_window`` (``target`` ``open``/``close``),
 ``drop_secondary_once`` (the next linkage group leaves out the second object;
-this disposable process only), ``quit``. Each runs the handler
+this disposable process only), ``import_reference`` (the 场景参考 window's
+**导入/更新参考**), ``reference_snapshot`` (the world bounding-box centre of
+every transform under the reference container whose name holds ``name``),
+``quit``. Each runs the handler
 of the panel control it names. The result file always carries the latest
 linkage status, the object set and the panel's workflow, mode, cache state and
 status line; ``ack`` names the last finished command.
@@ -450,6 +453,10 @@ def run_command(command):
             CONTROLLER.open_objects_window()
     elif action == "drop_secondary_once":
         drop_secondary_once()
+    elif action == "import_reference":
+        CONTROLLER.import_reference()
+    elif action == "reference_snapshot":
+        RESULT["reference_nodes"] = reference_nodes(command.get("name") or "")
     elif action == "quit":
         quit_maya()
         return
@@ -487,12 +494,34 @@ def drop_secondary_once():
     linkage.make_group_message = incomplete
 
 
+def reference_nodes(fragment):
+    """World bounding-box centres (cm) of the reference container's matching transforms."""
+    nodes = {}
+    # The importer reports the group it placed, inside its own namespace.
+    report = CONTROLLER.reference_report().get("report") or {}
+    group = (report.get("container") or {}).get("group_path")
+    if not group or not cmds.objExists(group):
+        return nodes
+    for path in cmds.listRelatives(group, allDescendents=True, type="transform",
+                                   fullPath=True) or []:
+        name = path.split("|")[-1]
+        if fragment in name and cmds.listRelatives(path, shapes=True, type="mesh"):
+            box = cmds.exactWorldBoundingBox(path)
+            nodes[name] = [(box[0] + box[3]) / 2.0, (box[1] + box[4]) / 2.0,
+                           (box[2] + box[5]) / 2.0]
+    return nodes
+
+
 def tick():
     try:
         status = CONTROLLER.linkage_status()
         RESULT["status"] = status
         RESULT["objects"] = CONTROLLER.objects_state()
+        RESULT["reference"] = {"offered": bool(CONTROLLER.reference_offer()),
+                               "report": CONTROLLER.reference_report()}
         RESULT["connected"] = CONTROLLER._session is not None and CONTROLLER._session_ready()
+        # 连接 does nothing while an ending session is still being torn down.
+        RESULT["session_open"] = CONTROLLER._session is not None
         RESULT["maya_time"] = cmds.currentTime(query=True)
         RESULT["link_camera_exists"] = bool(cmds.objExists("MtoU_LinkCamera"))
         RESULT["panel_camera"] = (camera_record() or {}).get("camera")

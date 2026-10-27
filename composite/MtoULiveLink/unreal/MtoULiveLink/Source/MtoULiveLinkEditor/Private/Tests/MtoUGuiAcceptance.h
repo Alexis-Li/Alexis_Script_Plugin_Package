@@ -55,7 +55,16 @@ inline void WriteJsonFile(const FString& Path, const TSharedRef<FJsonObject>& Va
 {
     FString Text;
     FJsonSerializer::Serialize(Value, TJsonWriterFactory<>::Create(&Text));
-    FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+    // Maya's driver reads the command file continuously; a write that meets
+    // that read fails on Windows, and a lost command would stall the test.
+    for (int32 Attempt = 0; Attempt < 50; ++Attempt)
+    {
+        if (FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+        {
+            return;
+        }
+        FPlatformProcess::Sleep(0.02f);
+    }
 }
 
 /**
