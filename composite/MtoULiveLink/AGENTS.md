@@ -91,7 +91,8 @@ such a template, report it as a missing prerequisite instead of starting Maya
 with an empty preference directory.
 
 Before 2026-10-19 these tests used the `MtoULiveLink.` prefix with the same
-remaining path; acceptance records use the old names.
+remaining path, and the `MtoUOptIn.Actor.*` tests kept that prefix until
+2026-10-28; acceptance records use the old names.
 
 `prototypes/` is frozen verification scaffolding. Its Unreal plugins are
 disabled in `unreal/ToolsLab.uproject`, and product work does not run its tests.
