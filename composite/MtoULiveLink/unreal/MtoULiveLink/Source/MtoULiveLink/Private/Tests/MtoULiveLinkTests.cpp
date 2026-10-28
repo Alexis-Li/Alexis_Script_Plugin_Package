@@ -1370,12 +1370,14 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             }
             else if (Operation == TEXT("mode_state"))
             {
+                const TSharedPtr<FJsonObject>* Anchor = nullptr;
                 PacketBytes = FMtoUProtocol::EncodeModeState(
                     static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("mode_revision"))),
                     Source->GetStringField(TEXT("mode")),
                     Source->GetStringField(TEXT("control")),
-                    Source->GetStringField(TEXT("detail")));
+                    Source->GetStringField(TEXT("detail")),
+                    Source->TryGetObjectField(TEXT("anchor"), Anchor) ? *Anchor : nullptr);
             }
             else if (Operation == TEXT("camera_time"))
             {
@@ -1729,6 +1731,29 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                             Encoded->GetObjectField(TEXT("space"))->GetNumberField(TEXT("space_revision"))),
                         static_cast<int32>(
                             Source->GetObjectField(TEXT("space"))->GetNumberField(TEXT("space_revision"))));
+                }
+                if (Operation == TEXT("mode_state") && Source->HasField(TEXT("anchor")))
+                {
+                    const TArray<TSharedPtr<FJsonValue>>& Location =
+                        Encoded->GetObjectField(TEXT("anchor"))->GetArrayField(TEXT("location_cm"));
+                    const TArray<TSharedPtr<FJsonValue>>& SourceLocation =
+                        Source->GetObjectField(TEXT("anchor"))->GetArrayField(TEXT("location_cm"));
+                    TestEqual(*FString::Printf(TEXT("%s names the anchor location"), *Id),
+                        Location.Num(), SourceLocation.Num());
+                    for (int32 Index = 0; Index < FMath::Min(Location.Num(), SourceLocation.Num()); ++Index)
+                    {
+                        TestEqual(*FString::Printf(TEXT("%s anchor location %d"), *Id, Index),
+                            Location[Index]->AsNumber(), SourceLocation[Index]->AsNumber());
+                    }
+                    const TSharedPtr<FJsonObject> Rotation =
+                        Encoded->GetObjectField(TEXT("anchor"))->GetObjectField(TEXT("rotation_deg"));
+                    const TSharedPtr<FJsonObject> SourceRotation =
+                        Source->GetObjectField(TEXT("anchor"))->GetObjectField(TEXT("rotation_deg"));
+                    for (const TCHAR* Field : {TEXT("roll"), TEXT("pitch"), TEXT("yaw")})
+                    {
+                        TestEqual(*FString::Printf(TEXT("%s anchor %s"), *Id, Field),
+                            Rotation->GetNumberField(Field), SourceRotation->GetNumberField(Field));
+                    }
                 }
                 if (Operation == TEXT("camera_time"))
                 {
@@ -11933,6 +11958,8 @@ struct FMtoULinkageTestHooks
     // False once the takeover's sequence, world or target went away.
     bool bTakeoverValid = true;
     int32 ValidateCalls = 0;
+    // The takeover's common anchor every linkage mode_state names.
+    FTransform Anchor = FTransform::Identity;
 
     void Install()
     {
@@ -12021,6 +12048,11 @@ struct FMtoULinkageTestHooks
         {
             ++ViewChanges;
             LastView = View;
+        };
+        Hooks.GetAnchor = [this](FTransform& OutAnchor) -> bool
+        {
+            OutAnchor = Anchor;
+            return true;
         };
     }
 };
@@ -12623,6 +12655,7 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     FMtoULinkageTestHooks Hooks;
     Hooks.PlannedTargets = 2;
+    Hooks.Anchor = FTransform(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
     Hooks.Install();
     MtoUSetLinkageHooks(Hooks.Hooks);
 
@@ -12659,6 +12692,24 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
             ModeState->GetStringField(TEXT("control")), FString(TEXT("unreal")));
         TestEqual(TEXT("the mode statement revision"),
             static_cast<int32>(ModeState->GetNumberField(TEXT("mode_revision"))), 1);
+        // Maya checks its scene reference against the takeover's anchor.
+        const TSharedPtr<FJsonObject>* Anchor = nullptr;
+        TestTrue(TEXT("the linkage statement names the anchor"),
+            ModeState->TryGetObjectField(TEXT("anchor"), Anchor));
+        if (Anchor)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Location =
+                (*Anchor)->GetArrayField(TEXT("location_cm"));
+            TestEqual(TEXT("the anchor location has three values"), Location.Num(), 3);
+            TestNearlyEqual(TEXT("the anchor location x"),
+                Location.Num() == 3 ? Location[0]->AsNumber() : 0.0, 60.0, 1.0e-6);
+            TestNearlyEqual(TEXT("the anchor location y"),
+                Location.Num() == 3 ? Location[1]->AsNumber() : 0.0, 40.0, 1.0e-6);
+            const TSharedPtr<FJsonObject> Degrees = (*Anchor)->GetObjectField(TEXT("rotation_deg"));
+            TestNearlyEqual(TEXT("the anchor yaw"), Degrees->GetNumberField(TEXT("yaw")), 37.0, 1.0e-4);
+            TestNearlyEqual(TEXT("the anchor pitch"), Degrees->GetNumberField(TEXT("pitch")), -4.0, 1.0e-4);
+            TestNearlyEqual(TEXT("the anchor roll"), Degrees->GetNumberField(TEXT("roll")), 3.0, 1.0e-4);
+        }
     }
     TestFalse(TEXT("the pose gate opens once Maya confirmed"),
         MtoUGetLinkageView().bTransitioning);
@@ -13121,6 +13172,40 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         PrimaryDisplay->IsComponentTickEnabled());
     TestFalse(TEXT("linkage holds the part's own tick"),
         HatDisplay && HatDisplay->IsComponentTickEnabled());
+
+    // ---- the scheduling measurement --------------------------------------
+    {
+        const FMtoULinkageScheduleStats Stats = MtoUGetLinkageScheduleStats();
+        AddInfo(FString::Printf(TEXT("Schedule: issued %d, applied %d, cancelled %d, failed %d, coalesced %d"),
+            Stats.Issued, Stats.Applied, Stats.Cancelled, Stats.Failed, Stats.Coalesced));
+        TestTrue(TEXT("every issued target is recorded"),
+            Stats.Records.Num() == Stats.Issued && Stats.DroppedRecords == 0);
+        TestTrue(TEXT("the confirmed groups are counted as applied"), Stats.Applied >= 3);
+        TestTrue(TEXT("the target a pause dropped is counted as cancelled"), Stats.Cancelled >= 1);
+        int32 Open = 0;
+        bool bAppliedAfterIssue = true;
+        for (const FMtoULinkageIssueRecord& Record : Stats.Records)
+        {
+            Open += Record.Outcome == TEXT("open") ? 1 : 0;
+            if (Record.Outcome == TEXT("applied"))
+            {
+                bAppliedAfterIssue &= Record.AppliedSeconds >= Record.IssuedSeconds;
+            }
+        }
+        TestEqual(TEXT("every issue ends once"),
+            Stats.Applied + Stats.Cancelled + Open, Stats.Issued);
+        TestTrue(TEXT("the half group the barrier refused is counted"), Stats.Failed >= 1);
+        TestTrue(TEXT("a group is applied after its target was issued"), bAppliedAfterIssue);
+        TestEqual(TEXT("at most one target is in flight"), Stats.InFlightPeak, 1);
+        TestTrue(TEXT("at most one target waits"), Stats.PendingPeak <= 1);
+        TestTrue(TEXT("the staged groups stay within the frozen budget"),
+            Stats.StagedPeak <= FMtoUProtocol::MaxPendingCameraTargets);
+        TestTrue(TEXT("the outgoing control queue stays within the frozen budget"),
+            Stats.OutgoingControlPeak >= 1 && Stats.OutgoingControlPeak <= FMtoUProtocol::MaxControlQueue);
+        MtoUResetLinkageScheduleStats();
+        TestEqual(TEXT("a reset starts a new measurement window"),
+            MtoUGetLinkageScheduleStats().Issued, 0);
+    }
 
     // ---- leaving for realtime and ending the preview ---------------------
     FString LeaveError;

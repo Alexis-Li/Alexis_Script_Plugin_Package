@@ -59,14 +59,22 @@ def applied_message(eval_id="seq@10+0/cam#c1", sample_serial=1, applied=True,
     }
 
 
-def mode_state(mode_revision, mode=mtou_config.LINKAGE_MODE, session_id=5, detail=""):
-    return {
+IDENTITY_ANCHOR = {"location_cm": [0.0, 0.0, 0.0],
+                   "rotation_deg": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}}
+
+
+def mode_state(mode_revision, mode=mtou_config.LINKAGE_MODE, session_id=5, detail="",
+               anchor=IDENTITY_ANCHOR):
+    message = {
         "type": "mode_state", "session_id": session_id,
         "mode_revision": mode_revision, "mode": mode,
         "control": (mtou_config.CONTROL_UNREAL if mode == mtou_config.LINKAGE_MODE
                     else mtou_config.CONTROL_MAYA),
         "detail": detail,
     }
+    if mode == mtou_config.LINKAGE_MODE:
+        message["anchor"] = anchor
+    return message
 
 
 class FakeHost(object):
@@ -77,6 +85,12 @@ class FakeHost(object):
         self.sampled = 0
         self.restore_residual = ()
         self.apply_error = None
+        self.stale = None
+        self.anchors = []
+
+    def stale_reference(self, anchor):
+        self.anchors.append(anchor)
+        return self.stale
 
     def capture_state(self):
         self.captured += 1
@@ -414,6 +428,54 @@ class RemoteTransitionTests(unittest.TestCase):
         self.assertFalse(instance.is_active)
         self.assertEqual(1, len(host.restored))
         self.assertFalse(instance.takeover_held())
+
+    def test_a_stale_reference_refuses_unreals_transition_before_maya_changes(self):
+        instance, host, session, events = build()
+        host.stale = "the reference was placed for another anchor"
+        moved = {"location_cm": [60.0, 40.0, 0.0],
+                 "rotation_deg": {"roll": 3.0, "pitch": -4.0, "yaw": 37.0}}
+        self.assertEqual("enter", instance.note_mode_state(mode_state(1, anchor=moved)))
+        with self.assertRaises(mtou_linkage.LinkageError) as raised:
+            instance.enter(1, remote=True, anchor=moved)
+        self.assertEqual("REFERENCE_STALE", raised.exception.code)
+        self.assertEqual([moved], host.anchors)
+        self.assertEqual(0, host.captured)
+        self.assertFalse(instance.is_active)
+        # Unreal hears the failed transition and hands its writers back.
+        self.assertEqual(
+            [("mode", "realtime", 1, "failed")],
+            [(m["type"], m["mode"], m["mode_revision"], m["transition"])
+             for m in session.messages])
+        self.assertEqual("REFERENCE_STALE", events[-1].diagnostic["code"])
+
+    def test_a_stale_reference_fails_the_linkage_maya_started_at_confirmation(self):
+        instance, host, session, events = build()
+        instance.enter(2)
+        host.stale = "the reference was placed for another anchor"
+        self.assertEqual("refused", instance.note_mode_state(mode_state(2)))
+        self.assertFalse(instance.is_active)
+        self.assertEqual(1, len(host.restored))
+        self.assertFalse(instance.takeover_held())
+        self.assertEqual(
+            [("mode", "linkage", "ready"), ("mode", "realtime", "failed")],
+            [(m["type"], m["mode"], m["transition"]) for m in session.messages])
+        self.assertEqual("REFERENCE_STALE", events[-1].diagnostic["code"])
+
+    def test_a_current_reference_lets_the_confirmation_through(self):
+        instance, host, session, events = build()
+        instance.enter(2)
+        self.assertEqual("confirmed", instance.note_mode_state(mode_state(2)))
+        self.assertEqual([IDENTITY_ANCHOR], host.anchors)
+        self.assertTrue(instance.is_active)
+
+    def test_an_echo_after_the_confirmation_checks_nothing_again(self):
+        instance, host, session, events = build()
+        instance.enter(2)
+        instance.note_mode_state(mode_state(2))
+        host.stale = "moved after the confirmation"
+        self.assertEqual("noted", instance.note_mode_state(mode_state(1)))
+        self.assertTrue(instance.is_active)
+        self.assertEqual(1, len(host.anchors))
 
     def test_a_stale_realtime_statement_keeps_the_confirmed_linkage(self):
         instance, host, session, events = build()

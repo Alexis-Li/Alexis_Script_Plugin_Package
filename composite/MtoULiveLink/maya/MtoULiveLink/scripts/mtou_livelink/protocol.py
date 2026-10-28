@@ -8,6 +8,7 @@ from .config import (
     CHARACTER_OBJECT_ID,
     CONTROL_MAYA,
     CONTROL_UNREAL,
+    LINKAGE_MODE,
     MAX_CACHE_FRAME_COUNT,
     MAX_CACHE_PAYLOAD_BYTES,
     MAX_MESSAGE_BYTES,
@@ -418,6 +419,25 @@ def finite_float(value):
     return number if math.isfinite(number) else None
 
 
+def validate_anchor(anchor):
+    """A linkage ``mode_state`` names the target's placement.
+
+    The shape is the handoff manifest's ``world.anchor``: ``location_cm[3]``
+    and ``rotation_deg{roll, pitch, yaw}``, all finite.
+    """
+    if not isinstance(anchor, dict):
+        raise ValueError("a linkage mode_state must name its anchor")
+    location = anchor.get("location_cm")
+    rotation = anchor.get("rotation_deg")
+    if not isinstance(location, list) or len(location) != 3             or any(finite_float(value) is None for value in location):
+        raise ValueError("anchor field 'location_cm' must be three finite numbers")
+    if not isinstance(rotation, dict) or any(
+            finite_float(rotation.get(name)) is None
+            for name in ("roll", "pitch", "yaw")):
+        raise ValueError(
+            "anchor field 'rotation_deg' must name finite roll, pitch and yaw")
+
+
 # List fields whose entries are objects rather than names.
 STRING_LIST_EXCEPTIONS = ("components", "targets")
 
@@ -597,6 +617,8 @@ def validate_reply(reply):
             "protocol reply field 'mode' must be one of {0}".format(", ".join(MODES)))
     if reply_type in ("mode_state",) and reply["control"] not in (CONTROL_MAYA, CONTROL_UNREAL):
         raise ValueError("protocol reply field 'control' must be 'maya' or 'unreal'")
+    if reply_type == "mode_state" and reply["mode"] == LINKAGE_MODE:
+        validate_anchor(reply.get("anchor"))
     if reply_type == "applied" and not reply["applied"]:
         if not reply["reason"]:
             raise ValueError(

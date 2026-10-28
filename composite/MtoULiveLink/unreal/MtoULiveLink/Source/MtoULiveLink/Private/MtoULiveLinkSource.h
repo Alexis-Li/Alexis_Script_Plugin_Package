@@ -273,6 +273,17 @@ public:
 
     /** The one linkage boundary this source owns; Game Thread only. */
     FMtoULinkageSession& GetLinkageSession() { return LinkageSession; }
+    /** Peak undelivered linkage control messages in each direction. */
+    void GetControlQueuePeaks(int32& OutOutgoing, int32& OutIncoming) const
+    {
+        OutOutgoing = OutgoingControlPeak.Load();
+        OutIncoming = IncomingControlPeak.Load();
+    }
+    void ResetControlQueuePeaks()
+    {
+        OutgoingControlPeak.Store(QueuedOutgoingControls.Load());
+        IncomingControlPeak.Store(QueuedLinkageControls.Load());
+    }
     const FMtoULinkageSession& GetLinkageSession() const { return LinkageSession; }
     /**
      * The actor the connected session streams one object into, or null when
@@ -446,6 +457,9 @@ private:
     // Undelivered control messages in the reply direction, decremented by the
     // worker as each packet reaches the socket.
     TAtomic<int32> QueuedOutgoingControls{0};
+    // Peaks of both control queues for the scheduling measurement.
+    TAtomic<int32> OutgoingControlPeak{0};
+    TAtomic<int32> IncomingControlPeak{0};
     // Game-thread mirror of the linkage mode the worker reads to refuse work
     // that contradicts the current time authority.
     TAtomic<bool> bWorkerLinkageActive{false};

@@ -115,6 +115,15 @@ REFERENCE_MARK_ATTRIBUTE = "mtouSceneRefContainer"
 
 REFERENCE_MARK_VALUE = "mtou-scene-ref-container/1"
 
+# The anchor the container was placed for, so a reference exported before the
+# target moved cannot enter linkage as if it were current.
+REFERENCE_ANCHOR_ATTRIBUTE = "mtouSceneRefAnchor"
+
+# A reference matches the linkage anchor within the common-anchor tolerances.
+REFERENCE_ANCHOR_TOLERANCE_CM = 0.01
+
+REFERENCE_ANCHOR_TOLERANCE_DEG = 0.01
+
 REFERENCE_GRAY_SHADER = "MtoU_UE_SceneRef_Gray"
 
 # Tool-owned temporary camera that follows the Unreal evaluated camera.

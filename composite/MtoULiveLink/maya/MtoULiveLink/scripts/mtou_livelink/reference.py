@@ -113,6 +113,9 @@ from .config import (
     MAX_REFERENCE_BYTES,
     MAX_REFERENCE_OBJECTS,
     MAX_REFERENCE_TRIANGLES,
+    REFERENCE_ANCHOR_ATTRIBUTE,
+    REFERENCE_ANCHOR_TOLERANCE_CM,
+    REFERENCE_ANCHOR_TOLERANCE_DEG,
     REFERENCE_CONTAINER,
     REFERENCE_GRAY_SHADER,
     REFERENCE_MARK_ATTRIBUTE,
@@ -1118,6 +1121,43 @@ def parse_anchor(value):
             (sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp),
             (-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp))
     return {"location_cm": location, "axes": axes}, None
+
+
+#: The anchor of a manifest without ``world.anchor``: the Maya origin frame.
+IDENTITY_ANCHOR = {"location_cm": [0.0, 0.0, 0.0],
+                   "rotation_deg": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}}
+
+
+def anchor_difference(recorded, current,
+                      tolerance_cm=REFERENCE_ANCHOR_TOLERANCE_CM,
+                      tolerance_deg=REFERENCE_ANCHOR_TOLERANCE_DEG):
+    """Why a reference placed for ``recorded`` does not fit ``current``, or None.
+
+    Both are ``world.anchor`` shaped values. The positions must agree within
+    ``tolerance_cm`` and every unit axis within ``tolerance_deg``, the same
+    tolerances that bind the targets of one set to one placement.
+    """
+    placed, problem = parse_anchor(recorded)
+    if problem or placed is None:
+        return "the reference records no usable anchor ({0})".format(
+            problem or "none")
+    wanted, problem = parse_anchor(current)
+    if problem or wanted is None:
+        return "the linkage names no usable anchor ({0})".format(problem or "none")
+    distance = math.sqrt(sum(
+        (placed["location_cm"][index] - wanted["location_cm"][index]) ** 2
+        for index in range(3)))
+    angle = max(
+        math.degrees(math.acos(max(-1.0, min(1.0, sum(
+            left[index] * right[index] for index in range(3))))))
+        for left, right in zip(placed["axes"], wanted["axes"]))
+    if distance <= tolerance_cm and angle <= tolerance_deg:
+        return None
+    return ("the reference was placed for the anchor at ({0}) and the linkage "
+            "target now stands at ({1}): {2:.3f} cm and {3:.3f} deg apart").format(
+                ", ".join("{0:g}".format(value) for value in placed["location_cm"]),
+                ", ".join("{0:g}".format(value) for value in wanted["location_cm"]),
+                distance, angle)
 
 
 def anchor_container_matrix(anchor):
@@ -2387,6 +2427,7 @@ class ReferenceImporter(object):
         self.previous_state = None
         self.frame_factor_reported = False
         self.anchor = None
+        self.anchor_record = None
         self.report = {
             "schema": REPORT_SCHEMA,
             "phase": "start",
@@ -2516,6 +2557,11 @@ class ReferenceImporter(object):
         if problem:
             raise _Refusal(CATEGORY_ANCHOR_INVALID, problem)
         self.anchor = anchor
+        self.anchor_record = (
+            {"location_cm": list(anchor["location_cm"]),
+             "rotation_deg": {name: float(world["anchor"]["rotation_deg"][name])
+                              for name in ("roll", "pitch", "yaw")}}
+            if anchor else IDENTITY_ANCHOR)
         self.report["anchor"] = {
             "applied": False,
             "source": "manifest" if anchor else "absent",
@@ -2528,11 +2574,23 @@ class ReferenceImporter(object):
                 "target; export again in Unreal and re-import")
 
     def _place_anchor(self):
-        """Move the verified staged container into the anchor frame."""
-        if self.anchor is None:
-            return
+        """Move the verified staged container into the anchor frame.
+
+        The container also records the anchor it was placed for (identity when
+        the manifest names none), so linkage can tell a reference exported
+        before the target moved from a current one.
+        """
         try:
             group = self._container_group(self.active_namespace)
+            if not cmds.attributeQuery(
+                    REFERENCE_ANCHOR_ATTRIBUTE, node=group, exists=True):
+                cmds.addAttr(group, longName=REFERENCE_ANCHOR_ATTRIBUTE,
+                             dataType="string")
+            cmds.setAttr(group + "." + REFERENCE_ANCHOR_ATTRIBUTE,
+                         json.dumps(self.anchor_record, sort_keys=True),
+                         type="string")
+            if self.anchor is None:
+                return
             cmds.xform(group, matrix=anchor_container_matrix(self.anchor))
         except _Refusal:
             raise
@@ -3701,6 +3759,7 @@ def _namespace_ownership(name, accepted_marks):
             continue
         else:
             state["foreign"].append(path)
+    state["foreign"].extend(_foreign_descendants(_namespace_top_nodes(name), name))
     state["ours_only"] = bool(state["marked"]) and not state["foreign"]
     return state
 
@@ -3721,6 +3780,13 @@ def _remove_owned_nodes(namespace, accepted_marks):
         if token not in marks:
             if not _node_type_in(path, TOLERATED_CONTAINER_TOP_TYPES):
                 left.append(path)
+            continue
+        foreign = _foreign_descendants([path], namespace)
+        if foreign:
+            # Deleting the group would delete the scene's nodes under it.
+            errors.append("the marked node {0} holds nodes this tool did not "
+                          "create: {1}".format(path, _node_summary(foreign)))
+            left.append(path)
             continue
         try:
             cmds.delete(path)
@@ -3810,6 +3876,7 @@ def _container_state(name):
             state["incomplete"].append(path)
         else:
             state["foreign_nodes"].append(path)
+    state["foreign_nodes"].extend(_foreign_descendants(_namespace_top_nodes(name), name))
     if state["foreign_nodes"]:
         state["conflict"] = (
             "the name {0!r} is used by nodes this tool does not own and never "
@@ -3847,6 +3914,30 @@ def _namespace_top_nodes(namespace):
     """
     nodes = cmds.ls(namespace + ":*", long=True, type="transform") or []
     return [path for path in nodes if str(path).count("|") == 1]
+
+
+def _foreign_descendants(paths, namespace):
+    """DAG nodes under ``paths`` that the import into ``namespace`` did not create.
+
+    Everything an import creates lives in its namespace, so a node of another
+    namespace hanging anywhere below the container -- a scene object a person
+    parented under a reference mesh, for example -- belongs to the scene.
+    Deleting the namespace would delete it with its parent, so its presence
+    makes the container not entirely this tool's.
+    """
+    found = []
+    for path in paths:
+        try:
+            below = cmds.listRelatives(path, allDescendents=True, fullPath=True) or []
+        except Exception:  # noqa: BLE001 - an unreadable tree is not provably ours
+            found.append(path)
+            continue
+        for node in below:
+            leaf = str(node).rsplit("|", 1)[-1]
+            node_namespace = leaf.rsplit(":", 1)[0] if ":" in leaf else ""
+            if node_namespace != namespace                     and not node_namespace.startswith(namespace + ":"):
+                found.append(str(node))
+    return found
 
 
 def _root_nodes(name):
@@ -4367,6 +4458,32 @@ def _file_node_image_exists(node):
         return os.path.exists(image)
     except (OSError, ValueError):
         return False
+
+
+def stale_reference(anchor, container=REFERENCE_CONTAINER):
+    """Why the scene reference cannot enter linkage at ``anchor``, or None.
+
+    ``anchor`` is the linkage target's current placement (``world.anchor``
+    shaped). No tool-owned container means there is nothing to check. A
+    container whose recorded anchor differs, or that records none (imported
+    by an earlier version), was placed for another frame: it is kept, but it
+    is not the current reference.
+    """
+    require_maya()
+    state = _container_state(container)
+    group = state["group"] or state["root_group"]
+    if not group:
+        return None
+    try:
+        if not cmds.attributeQuery(
+                REFERENCE_ANCHOR_ATTRIBUTE, node=group, exists=True):
+            return ("the reference {0!r} records no anchor; it was imported by "
+                    "an earlier version".format(container))
+        recorded = json.loads(cmds.getAttr(group + "." + REFERENCE_ANCHOR_ATTRIBUTE))
+    except Exception as error:  # noqa: BLE001 - an unreadable record is stale
+        return "the reference {0!r} anchor cannot be read: {1}".format(
+            container, error)
+    return anchor_difference(recorded, anchor)
 
 
 class ReferenceContainer(object):
