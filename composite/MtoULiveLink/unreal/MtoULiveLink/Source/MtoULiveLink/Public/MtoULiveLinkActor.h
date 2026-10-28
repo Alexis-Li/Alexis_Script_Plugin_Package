@@ -296,6 +296,13 @@ private:
     void SetLiveLinkSubject(FName Subject);
     /** The actor left the set: its displays stop evaluating any subject. */
     void ReleaseLiveLinkSubject();
+    /**
+     * While the actor is in the set, every display evaluates its subject
+     * again if something replaced its anim instance or stopped its Live Link
+     * evaluation (a Sequencer restoring the state a muted track saved before
+     * the takeover does both). Returns the displays it reconfigured.
+     */
+    int32 RestoreLiveLinkEvaluation();
     void ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const;
     void InheritPrimaryDisplaySettings(USkeletalMeshComponent& Component);
     void HandleCharacterPartMeshChanged();

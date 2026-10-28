@@ -173,6 +173,12 @@ public:
         WriteJsonFile(DriverFixture, MayaFixture.ToSharedRef());
         FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LINKAGE_DRIVER_FIXTURE"), *DriverFixture);
         FPlatformMisc::SetEnvironmentVar(TEXT("MAYA_APP_DIR"), *AppDir);
+        // A listener moved off the default port is where this Maya connects.
+        FString Port;
+        if (FParse::Value(FCommandLine::Get(), TEXT("MtoULiveLinkPort="), Port))
+        {
+            FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LIVELINK_PORT"), *Port);
+        }
         const FString Args = FString::Printf(
             TEXT("-log \"%s\" -command \"python(\\\"import runpy; runpy.run_path(r'%s')\\\")\""),
             *FPaths::Combine(EvidenceDir, TEXT("maya.log")), *MayaFixture->GetStringField(TEXT("driver")));

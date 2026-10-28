@@ -1995,7 +1995,10 @@ private:
         const FMtoULinkageView View = MtoUGetLinkageView();
         if (SustainedPhase == 0)
         {
-            if (!SetTimeAndSettle(OracleFrames[0], 0.5) || !View.bConverged)
+            const TSharedPtr<FJsonObject> Sustained = Fixture->GetObjectField(TEXT("sustained"));
+            const double StartFrame = Sustained->HasField(TEXT("start_frame"))
+                ? Sustained->GetNumberField(TEXT("start_frame")) : OracleFrames[0];
+            if (!SetTimeAndSettle(StartFrame, 0.5) || !View.bConverged)
             {
                 return false;
             }
@@ -2031,6 +2034,10 @@ private:
             SustainedPhase = 1;
             return false;
         }
+        if (SustainedPhase >= 1)
+        {
+            NoteSustainedFailure(View);
+        }
         if (SustainedPhase == 1)
         {
             SampleMemory();
@@ -2051,7 +2058,12 @@ private:
         {
             if (!View.bConverged)
             {
-                return Now - SustainedPausedAt > 30.0 ? FinishSustained(DelayMs, Seconds, View) : false;
+                if (Now - SustainedPausedAt <= 30.0)
+                {
+                    return false;
+                }
+                SustainedPlayRecords = MtoUGetLinkageScheduleStats();
+                return FinishSustained(DelayMs, Seconds, View);
             }
             SustainedPauseConvergence = Now - SustainedPausedAt;
             SustainedPlayRecords = MtoUGetLinkageScheduleStats();
@@ -2071,6 +2083,45 @@ private:
         }
         SustainedJumpConvergence = Now - SustainedJumpedAt;
         return FinishSustained(DelayMs, Seconds, View);
+    }
+
+    /** Every refused application during the tier, with the first one's time and reason. */
+    void NoteSustainedFailure(const FMtoULinkageView& View)
+    {
+        if (View.Error.IsEmpty() || View.Error == SustainedLastError)
+        {
+            return;
+        }
+        SustainedLastError = View.Error;
+        ++SustainedFailures;
+        if (SustainedFailures <= 5)
+        {
+            Log(FString::Printf(TEXT("[sustained] refusal %d at %.2f s: %s"), SustainedFailures,
+                FPlatformTime::Seconds() - SustainedStart, *View.Error.Right(600)));
+            // Which writer the display follows when the barrier refuses it.
+            for (const bool bSecondary : {false, true})
+            {
+                const AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+                const USkeletalMeshComponent* Display = Owner ? Owner->GetSkeletalMeshComponent() : nullptr;
+                if (!Display)
+                {
+                    continue;
+                }
+                const UAnimInstance* Instance = Display->GetAnimInstance();
+                Log(FString::Printf(TEXT("[sustained]   %s display: predicted LOD %d, forced LOD %d, recently rendered %d, pause anims %d, enable animation %d, update anim in editor %d"),
+                    bSecondary ? TEXT("second") : TEXT("main"), Display->GetPredictedLODLevel(),
+                    Display->GetForcedLOD(), Display->WasRecentlyRendered() ? 1 : 0,
+                    Display->bPauseAnims ? 1 : 0, Display->bEnableAnimation ? 1 : 0,
+                    Display->GetUpdateAnimationInEditor() ? 1 : 0));
+                Log(FString::Printf(TEXT("[sustained]   %s display: anim instance %s, mode %d, mesh %s, tick %d, post-process off %d"),
+                    bSecondary ? TEXT("second") : TEXT("main"),
+                    Instance ? *Instance->GetClass()->GetName() : TEXT("none"),
+                    static_cast<int32>(Display->GetAnimationMode()),
+                    Display->GetSkeletalMeshAsset() ? *Display->GetSkeletalMeshAsset()->GetName() : TEXT("none"),
+                    Display->IsComponentTickEnabled() ? 1 : 0, Display->GetDisablePostProcessBlueprint() ? 1 : 0));
+            }
+            WritersMuted(true, TEXT("[sustained] at the refusal"));
+        }
     }
 
     static double Percentile(TArray<double> Values, double Fraction)
@@ -2155,6 +2206,7 @@ private:
             Stats.IncomingControlPeak, Mib(SustainedUeStart), Mib(SustainedUePeak), Mib(SustainedMayaStart),
             Mib(SustainedMayaPeak), Stats.DroppedRecords));
 
+        Log(FString::Printf(TEXT("%sdistinct refusals %d"), *Tag, SustainedFailures));
         const TSharedRef<FJsonObject> Tier = MakeShared<FJsonObject>();
         Tier->SetNumberField(TEXT("delay_ms"), DelayMs);
         Tier->SetStringField(TEXT("injection"), DelayMs > 0.0
@@ -2189,6 +2241,7 @@ private:
         Tier->SetNumberField(TEXT("unreal_memory_peak_mib"), Mib(SustainedUePeak));
         Tier->SetNumberField(TEXT("maya_memory_start_mib"), Mib(SustainedMayaStart));
         Tier->SetNumberField(TEXT("maya_memory_peak_mib"), Mib(SustainedMayaPeak));
+        Tier->SetNumberField(TEXT("distinct_refusals"), SustainedFailures);
         TArray<TSharedPtr<FJsonValue>> Rows;
         for (const FMtoULinkageIssueRecord& Record : Stats.Records)
         {
@@ -2227,6 +2280,8 @@ private:
             && Stats.IncomingControlPeak <= FMtoUProtocol::MaxControlQueue);
         SustainedPhase = 0;
         SustainedPauseConvergence = SustainedJumpConvergence = 0.0;
+        SustainedFailures = 0;
+        SustainedLastError.Reset();
         return true;
     }
 
@@ -3954,6 +4009,8 @@ private:
     double SustainedPauseConvergence = 0.0, SustainedJumpConvergence = 0.0;
     uint64 SustainedUePeak = 0, SustainedMayaPeak = 0, SustainedUeStart = 0, SustainedMayaStart = 0;
     TMap<FString, double> HeldSince;
+    int32 SustainedFailures = 0;
+    FString SustainedLastError;
     FMtoULinkageScheduleStats SustainedPlayRecords;
     TArray<TSharedPtr<FJsonValue>> SustainedTiers;
     ESequencerLoopMode LoopModeBefore = ESequencerLoopMode::SLM_NoLoop;

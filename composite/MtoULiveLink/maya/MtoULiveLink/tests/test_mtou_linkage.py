@@ -364,6 +364,35 @@ class LinkageEvidenceTests(unittest.TestCase):
         self.assertEqual(0, status.applied_count)
         self.assertIn("writer busy", status.detail)
 
+    def test_a_refused_sample_is_sampled_again(self):
+        # Unreal keeps the target issued after a refusal; without a new sample
+        # the display would never converge until the next pause or jump.
+        self.instance.offer_target(camera_time())
+        self.assertEqual(1, self.instance.pump())
+        self.instance.note_applied(applied_message(applied=False, reason="display busy"))
+        self.assertEqual(1, self.instance.pump())
+        self.assertEqual(2, self.host.sampled)
+        self.assertEqual(2, self.session.messages[-1]["sample_serial"])
+        self.instance.note_applied(applied_message(sample_serial=2))
+        self.assertTrue(self.instance.status().converged)
+
+    def test_a_newer_waiting_target_goes_before_the_refused_one(self):
+        self.instance.offer_target(camera_time())
+        self.instance.pump()
+        self.instance.offer_target(camera_time(eval_id="seq@11+0/cam#c1", eval_serial=2,
+                                               display_frame=11.0))
+        self.instance.note_applied(applied_message(applied=False, reason="display busy"))
+        self.instance.pump()
+        self.assertEqual("seq@11+0/cam#c1", self.session.messages[-1]["eval_id"])
+        self.assertEqual(0, self.instance.pump())
+
+    def test_a_refusal_of_an_older_sample_samples_nothing(self):
+        self.instance.offer_target(camera_time())
+        self.instance.pump()
+        self.instance.note_applied(applied_message(sample_serial=7, applied=False,
+                                                   reason="old"))
+        self.assertEqual(0, self.instance.pump())
+
     def test_applied_evidence_must_match_the_session_identity(self):
         message = applied_message(session_id=9)
         with self.assertRaises(mtou_linkage.LinkageError) as caught:

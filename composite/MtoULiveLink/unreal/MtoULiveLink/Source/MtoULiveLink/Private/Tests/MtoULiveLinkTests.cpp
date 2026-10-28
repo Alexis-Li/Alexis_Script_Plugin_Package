@@ -13173,6 +13173,28 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("linkage holds the part's own tick"),
         HatDisplay && HatDisplay->IsComponentTickEnabled());
 
+    // ---- a display whose Live Link evaluation was stopped from outside ----
+    // A Sequencer restoring what a muted track saved before the takeover puts
+    // an anim instance back with its evaluation stopped; the set's display
+    // must evaluate its subject again instead of freezing on an old frame.
+    if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(PrimaryDisplay->GetAnimInstance()))
+    {
+        Stopped->EnableLiveLinkEvaluation(false);
+        Source->Update();
+        TestTrue(TEXT("the display of the set evaluates its subject again"),
+            Stopped->GetEnableLiveLinkEvaluation());
+    }
+    if (HatDisplay)
+    {
+        if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(HatDisplay->GetAnimInstance()))
+        {
+            Stopped->EnableLiveLinkEvaluation(false);
+            Source->Update();
+            TestTrue(TEXT("the part of the set evaluates its subject again"),
+                Stopped->GetEnableLiveLinkEvaluation());
+        }
+    }
+
     // ---- the scheduling measurement --------------------------------------
     {
         const FMtoULinkageScheduleStats Stats = MtoUGetLinkageScheduleStats();

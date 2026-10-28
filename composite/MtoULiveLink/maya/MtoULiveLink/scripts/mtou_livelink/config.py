@@ -1,5 +1,6 @@
 """Constants shared by the Maya adapter: versions, wire limits and cache contracts."""
 
+import os
 
 __version__ = "0.10.0"
 
@@ -18,7 +19,16 @@ MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 HOST = "127.0.0.1"
 
-PORT = 54321
+def _port(value, default=54321):
+    """The Unreal listener's port; MTOU_LIVELINK_PORT moves it off the default."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+PORT = _port(os.environ.get("MTOU_LIVELINK_PORT"))
 
 SUBJECT_NAME = "MtoU_Character"
 

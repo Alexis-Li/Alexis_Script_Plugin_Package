@@ -540,14 +540,22 @@ class LinkageSession(object):
                     "INVALID_MESSAGE", "applied requires an integer sample_serial")
             self._applied = dict(message)
             self._applied_at = self._clock()
+            answers_issued = (self._issued is not None
+                              and self._issued.eval_id == message.get("eval_id")
+                              and sample_serial == self._issued_sample_serial)
             if message.get("applied"):
                 self._applied_count += 1
                 # The issued work is finished once Unreal confirms the actual
                 # components of that sample; a newer waiting target stays.
-                if self._issued is not None \
-                        and self._issued.eval_id == message.get("eval_id") \
-                        and sample_serial == self._issued_sample_serial:
+                if answers_issued:
                     self._issued = None
+            elif answers_issued:
+                # Unreal refused this sample and keeps its target issued, and
+                # nothing else would answer it: the target is sampled again
+                # unless a newer one already waits.
+                if self._pending is None:
+                    self._pending = self._issued
+                self._issued = None
             self._detail = (
                 "已应用 {0}".format(message.get("eval_id"))
                 if message.get("applied")

@@ -543,6 +543,22 @@ void FMtoULiveLinkSource::Update()
     }
     HandleCacheCommandsOnGameThread();
 
+    // A display of the set evaluates only its subject: a Sequencer restoring
+    // what a muted track saved before the takeover (an earlier anim instance
+    // with its evaluation stopped) would otherwise freeze it on an old frame.
+    for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
+    {
+        if (AMtoULiveLinkActor* Participant = Actor.Get())
+        {
+            if (const int32 Restored = Participant->RestoreLiveLinkEvaluation())
+            {
+                UE_LOG(LogMtoULiveLinkSource, Log,
+                    TEXT("%s: %d display(s) evaluate the Live Link subject again."),
+                    *Participant->GetName(), Restored);
+            }
+        }
+    }
+
     // Linkage intake and pump: the control messages and the staged pose groups
     // follow the greeting, and the camera/time pump asks the editor for the
     // current target on its bounded cadence.
@@ -2802,9 +2818,12 @@ bool FMtoULiveLinkSource::MatchDisplayPose(
         if (!Local[MeshIndex].Equals(
                 Pending.ExpectedTransforms[TargetIndex], MtoUAppliedTransformTolerance))
         {
+            const FTransform& Expected = Pending.ExpectedTransforms[TargetIndex];
             OutMismatch = FString::Printf(
-                TEXT("display '%s' shows another pose at bone '%s'"),
-                *Display.GetName(), *Object.TargetBoneNames[TargetIndex].ToString());
+                TEXT("object '%s' display '%s' shows another pose at bone '%s' "
+                     "(shown %s, expected %s)"),
+                *Object.ObjectId, *Display.GetName(), *Object.TargetBoneNames[TargetIndex].ToString(),
+                *Local[MeshIndex].ToString(), *Expected.ToString());
             return false;
         }
         ++InOutComponent.BoneCount;
