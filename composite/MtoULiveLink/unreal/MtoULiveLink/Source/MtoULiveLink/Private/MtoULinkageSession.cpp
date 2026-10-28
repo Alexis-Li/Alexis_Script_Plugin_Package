@@ -1525,6 +1525,7 @@ void FMtoULinkageSession::EndIssueRecord(const TCHAR* Outcome, double NowSeconds
         FMtoULinkageIssueRecord& Record = Stats.Records[IssuedRecord];
         Record.Outcome = Ended;
         Record.AppliedSeconds = Ended == TEXT("applied") ? NowSeconds : 0.0;
+        Record.EndedSeconds = NowSeconds;
     }
     IssuedRecord = INDEX_NONE;
 }

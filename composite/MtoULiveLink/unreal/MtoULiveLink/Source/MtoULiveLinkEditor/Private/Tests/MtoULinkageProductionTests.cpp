@@ -26,6 +26,7 @@
 #include "HAL/PlatformProcess.h"
 #include "ILevelSequenceEditorToolkit.h"
 #include "ISequencer.h"
+#include "SequencerSettings.h"
 #include "LevelSequence.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
 #include "LiveLinkInstance.h"
@@ -585,6 +586,44 @@ private:
         {
             AddReferenceAlignment();
         }
+        if (Fixture->HasTypedField<EJson::Object>(TEXT("lifecycle")))
+        {
+            Add(TEXT("[lifecycle] after the last exit Maya holds what a disconnected panel holds"), 120.0, [this]()
+            {
+                // Close the session the last scenario left open, then count.
+                if (LifecyclePhase == 0)
+                {
+                    if (!MayaSessionOpen())
+                    {
+                        LifecyclePhase = 1;
+                    }
+                    else if (LifecycleId < 0)
+                    {
+                        LifecycleId = SendMaya(TEXT("disconnect"));
+                    }
+                    else if (MayaAcked(LifecycleId))
+                    {
+                        LifecycleId = -1;
+                    }
+                    return false;
+                }
+                if (LifecycleId < 0)
+                {
+                    LifecycleId = SendMaya(TEXT("resources"));
+                    return false;
+                }
+                if (!MayaAcked(LifecycleId))
+                {
+                    return false;
+                }
+                LifecycleId = -1;
+                LifecyclePhase = 0;
+                LifecycleLastCensus = MayaResult->GetObjectField(TEXT("resources"));
+                CompareCensus(TEXT("after the last exit"), LifecycleDisconnected);
+                Evidence->SetArrayField(TEXT("lifecycle"), LifecycleSamples);
+                return true;
+            });
+        }
         Add(TEXT("quit Maya"), 120.0, [this]()
         {
             if (QuitId < 0)
@@ -1084,6 +1123,20 @@ private:
             StageId = -1;
             return true;
         });
+        if (Scenario == TEXT("lifecycle"))
+        {
+            AddLifecycle();
+            return;
+        }
+        if (Scenario == TEXT("lifecycle_check"))
+        {
+            // After the Unreal exits before it: one more round, the same census.
+            Add(TEXT("[lifecycle] after the Unreal exits"), 300.0, [this]()
+            {
+                return LifecycleCycle(TEXT("cycle")) && CompareCensus(TEXT("after the Unreal exits"));
+            });
+            return;
+        }
         if (Scenario == TEXT("arms"))
         {
             AddArmsReplacement(true);
@@ -1165,6 +1218,10 @@ private:
                 AddOracle(Frame);
             }
             AddPlayback();
+            if (Fixture->HasTypedField<EJson::Object>(TEXT("sustained")))
+            {
+                AddSustained();
+            }
             if (HasSecondary())
             {
                 Add(TEXT("the pairing window opens during linkage"), 30.0, [this]()
@@ -1665,6 +1722,512 @@ private:
             const FMtoULinkageView View = MtoUGetLinkageView();
             return View.bConverged && !View.AppliedEvalId.IsEmpty();
         });
+    }
+
+    // ------------------------------------------------------------ lifecycle
+
+    /**
+     * INT-09 in the interactive Maya: after one warm-up cycle the census of
+     * what the tool holds (live OpenMaya callbacks counted at registration,
+     * scriptJobs, Python threads, open sockets, MtoU nodes and windows) is the
+     * baseline; `lifecycle.cycles` rounds of connect, linkage and 结束预览,
+     * closing and reopening the panel, replacing the scene and a restore that
+     * cannot delete the tool's camera must each return to it.
+     */
+    void AddLifecycle()
+    {
+        Add(TEXT("[lifecycle] warm-up cycle and baseline census"), 300.0, [this]()
+        {
+            if (!LifecycleCycle(TEXT("cycle")))
+            {
+                return false;
+            }
+            LifecycleBaseline = LifecycleLastCensus;
+            Log(TEXT("[lifecycle] baseline ") + DescribeCensus(LifecycleBaseline));
+            return true;
+        });
+        const int32 Cycles = static_cast<int32>(
+            Fixture->GetObjectField(TEXT("lifecycle"))->GetNumberField(TEXT("cycles")));
+        for (int32 Index = 1; Index <= Cycles; ++Index)
+        {
+            Add(FString::Printf(TEXT("[lifecycle] cycle %d"), Index), 300.0, [this, Index]()
+            {
+                return LifecycleCycle(TEXT("cycle")) && CompareCensus(FString::Printf(TEXT("cycle %d"), Index));
+            });
+        }
+        for (int32 Index = 1; Index <= 3; ++Index)
+        {
+            Add(FString::Printf(TEXT("[lifecycle] panel closed and reopened %d"), Index), 300.0, [this, Index]()
+            {
+                return LifecycleCycle(TEXT("panel")) && CompareCensus(FString::Printf(TEXT("panel %d"), Index));
+            });
+        }
+        for (int32 Index = 1; Index <= 2; ++Index)
+        {
+            Add(FString::Printf(TEXT("[lifecycle] scene replaced and reopened %d"), Index), 600.0, [this, Index]()
+            {
+                return LifecycleCycle(TEXT("scene")) && CompareCensus(FString::Printf(TEXT("scene %d"), Index));
+            });
+        }
+        Add(TEXT("[lifecycle] a restore that cannot delete the tool camera reports it"), 300.0, [this]()
+        {
+            return LifecycleCycle(TEXT("recovery")) && CompareCensus(TEXT("after the reported residual was removed"));
+        });
+    }
+
+    /** Sends one Maya command and waits for its acknowledgement and a condition. */
+    bool LifecycleSend(const FString& Action, const FString& Target, TFunctionRef<bool()> Ready)
+    {
+        if (LifecycleId < 0)
+        {
+            LifecycleId = SendMaya(Action, Target);
+            return false;
+        }
+        if (!MayaAcked(LifecycleId) || !Ready())
+        {
+            return false;
+        }
+        LifecycleId = -1;
+        ++LifecyclePhase;
+        return false;
+    }
+
+    bool MayaLinkageActive() const
+    {
+        const TSharedPtr<FJsonObject> Status = MayaStatus();
+        bool bActive = false;
+        return Status.IsValid() && Status->TryGetBoolField(TEXT("active"), bActive) && bActive;
+    }
+
+    bool LinkageEntered()
+    {
+        const FMtoULinkageView View = MtoUGetLinkageView();
+        return View.Mode == TEXT("linkage") && !View.bTransitioning && View.bTakeoverHeld && MayaLinkageActive();
+    }
+
+    bool LinkageEnded()
+    {
+        const FMtoULinkageView View = MtoUGetLinkageView();
+        return View.Mode == TEXT("realtime") && !View.bTransitioning && !View.bTakeoverHeld && !MayaLinkageActive();
+    }
+
+    /**
+     * One lifecycle round, as a phase machine; true once its census arrived.
+     * `cycle`: 镜头联动, 结束预览, 断开, 连接. `panel`: the same linkage, then the
+     * panel closes (the session ends) and `run()` opens it again and connects.
+     * `scene`: a new scene replaces the open one, then the fixture scene is
+     * opened again and connected. `recovery`: the tool's camera is locked
+     * before 结束预览, its residual must be reported, then the person unlocks
+     * and deletes it and reconnects.
+     */
+    bool LifecycleCycle(const FString& Kind)
+    {
+        const bool bWithLinkage = Kind != TEXT("scene");
+        switch (LifecyclePhase)
+        {
+        case 0:
+            if (!bWithLinkage)
+            {
+                ++LifecyclePhase;
+                return false;
+            }
+            return LifecycleSend(TEXT("enter"), FString(), [this]() { return LinkageEntered(); });
+        case 1:
+            if (Kind == TEXT("recovery"))
+            {
+                return LifecycleSend(TEXT("lock_link_camera"), FString(), []() { return true; });
+            }
+            ++LifecyclePhase;
+            return false;
+        case 2:
+            if (!bWithLinkage)
+            {
+                ++LifecyclePhase;
+                return false;
+            }
+            return LifecycleSend(TEXT("leave"), TEXT("end"), [this]() { return LinkageEnded(); });
+        case 3:
+        {
+            if (Kind == TEXT("recovery"))
+            {
+                const TSharedPtr<FJsonObject> Status = MayaStatus();
+                const TArray<TSharedPtr<FJsonValue>>* Records = nullptr;
+                FString Residual;
+                if (Status.IsValid() && Status->TryGetArrayField(TEXT("recovery_records"), Records))
+                {
+                    for (const TSharedPtr<FJsonValue>& Record : *Records)
+                    {
+                        Residual += Record->AsString() + TEXT("; ");
+                    }
+                }
+                Log(TEXT("[lifecycle] restore residual: ") + Residual);
+                Test->TestTrue(TEXT("[lifecycle] the camera the restore could not delete is reported by name"),
+                    Residual.Contains(TEXT("MtoU_LinkCamera")));
+                Test->TestTrue(TEXT("[lifecycle] Unreal still handed every writer back"),
+                    WritersMuted(false, TEXT("[lifecycle] after the failed restore")));
+            }
+            const FString Action = Kind == TEXT("panel") ? TEXT("close_panel")
+                : Kind == TEXT("scene") ? TEXT("new_scene") : TEXT("disconnect");
+            return LifecycleSend(Action, FString(), [this]() { return !MayaSessionOpen(); });
+        }
+        case 4:
+            if (Kind == TEXT("recovery"))
+            {
+                return LifecycleSend(TEXT("lock_link_camera"), TEXT("unlock"), []() { return true; });
+            }
+            if (Kind == TEXT("cycle"))
+            {
+                // The disconnected census: what the last exit of a run returns to.
+                return LifecycleSend(TEXT("resources"), FString(), [this]()
+                {
+                    LifecycleDisconnected = MayaResult->GetObjectField(TEXT("resources"));
+                    return true;
+                });
+            }
+            ++LifecyclePhase;
+            return false;
+        case 5:
+        {
+            const FString Action = Kind == TEXT("panel") ? TEXT("open_panel")
+                : Kind == TEXT("scene") ? TEXT("reopen_scene") : TEXT("connect");
+            return LifecycleSend(Action, FString(), [this]() { return MayaConnected(); });
+        }
+        case 6:
+            return LifecycleSend(TEXT("resources"), FString(), [this]()
+            {
+                LifecycleLastCensus = MayaResult->GetObjectField(TEXT("resources"));
+                return true;
+            });
+        default:
+            LifecyclePhase = 0;
+            LifecycleSamples.Add(MakeShared<FJsonValueObject>(LifecycleLastCensus.ToSharedRef()));
+            return true;
+        }
+    }
+
+    static FString DescribeCensus(const TSharedPtr<FJsonObject>& Census)
+    {
+        FString Text;
+        FJsonSerializer::Serialize(Census.ToSharedRef(), TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text));
+        return Text;
+    }
+
+    /** The census must equal the baseline in every resource it counts. */
+    bool CompareCensus(const FString& What, const TSharedPtr<FJsonObject>& Expected = nullptr)
+    {
+        const TSharedPtr<FJsonObject> Baseline = Expected.IsValid() ? Expected : LifecycleBaseline;
+        const TSharedPtr<FJsonObject> Census = LifecycleLastCensus;
+        const FString Tag = TEXT("[lifecycle] ") + What + TEXT(": ");
+        for (const TCHAR* Field : {TEXT("callbacks"), TEXT("script_jobs"), TEXT("sockets")})
+        {
+            Test->TestEqual(*(Tag + Field + TEXT(" return to the baseline")),
+                static_cast<int32>(Census->GetNumberField(Field)), static_cast<int32>(Baseline->GetNumberField(Field)));
+        }
+        for (const TCHAR* Field : {TEXT("threads"), TEXT("nodes"), TEXT("windows")})
+        {
+            FString Now, Before;
+            for (const TSharedPtr<FJsonValue>& Value : Census->GetArrayField(Field))
+            {
+                Now += Value->AsString() + TEXT(",");
+            }
+            for (const TSharedPtr<FJsonValue>& Value : Baseline->GetArrayField(Field))
+            {
+                Before += Value->AsString() + TEXT(",");
+            }
+            Test->TestEqual(*(Tag + Field + TEXT(" return to the baseline")), Now, Before);
+        }
+        Log(Tag + DescribeCensus(Census));
+        return true;
+    }
+
+    // ---------------------------------------------------- sustained playback
+
+    /**
+     * The frozen INT-10 measurement: for every delay tier the looping sequence
+     * plays for `sustained.seconds` while each published group is held at the
+     * set completion barrier for the tier's delay (0 measures the natural
+     * delay), then a pause and a jump must each converge within the budget.
+     * Every issued target's outcome comes from the runtime's own scheduling
+     * record, on the game thread's monotonic clock.
+     */
+    void AddSustained()
+    {
+        const TSharedPtr<FJsonObject> Sustained = Fixture->GetObjectField(TEXT("sustained"));
+        for (const TSharedPtr<FJsonValue>& Delay : Sustained->GetArrayField(TEXT("delays_ms")))
+        {
+            const double DelayMs = Delay->AsNumber();
+            const double Seconds = Sustained->GetNumberField(TEXT("seconds"));
+            Add(FString::Printf(TEXT("[sustained %.0f ms] continuous playback, pause and jump converge"), DelayMs),
+                Seconds + 180.0, [this, DelayMs, Seconds]() { return SustainedStep(DelayMs, Seconds); });
+        }
+        Add(TEXT("[sustained] the loop mode is put back"), 10.0, [this]()
+        {
+            RestoreLoopMode();
+            return true;
+        });
+    }
+
+    void RestoreLoopMode()
+    {
+        const TSharedPtr<ISequencer> Sequencer = SequencerWeak.Pin();
+        if (bLoopModeChanged && Sequencer.IsValid())
+        {
+            Sequencer->GetSequencerSettings()->SetLoopMode(LoopModeBefore);
+        }
+        bLoopModeChanged = false;
+    }
+
+    void SampleMemory()
+    {
+        SustainedUePeak = FMath::Max<uint64>(SustainedUePeak, FPlatformMemory::GetStats().UsedPhysical);
+        SustainedMayaPeak = FMath::Max<uint64>(SustainedMayaPeak, Driver.MemoryBytes());
+    }
+
+    bool SustainedStep(double DelayMs, double Seconds)
+    {
+        const double Now = FPlatformTime::Seconds();
+        const TSharedPtr<ISequencer> Sequencer = SequencerWeak.Pin();
+        if (!Sequencer.IsValid())
+        {
+            Test->AddError(TEXT("[sustained] the sequence copy is no longer open"));
+            return true;
+        }
+        const FMtoULinkageView View = MtoUGetLinkageView();
+        if (SustainedPhase == 0)
+        {
+            if (!SetTimeAndSettle(OracleFrames[0], 0.5) || !View.bConverged)
+            {
+                return false;
+            }
+            if (!bLoopModeChanged)
+            {
+                LoopModeBefore = Sequencer->GetSequencerSettings()->GetLoopMode();
+                Sequencer->GetSequencerSettings()->SetLoopMode(ESequencerLoopMode::SLM_Loop);
+                bLoopModeChanged = true;
+            }
+            HeldSince.Reset();
+            if (DelayMs > 0.0)
+            {
+                // Injection point: Unreal's set completion barrier. Every
+                // published group is held for the tier's delay after the
+                // barrier first sees it, under natural ticking.
+                MtoUSetLinkageApplyProbe([this, DelayMs](EMtoULinkageApplyStage Stage, const FString&, const FString& Generation)
+                {
+                    if (Stage != EMtoULinkageApplyStage::Published)
+                    {
+                        return true;
+                    }
+                    const double Seen = HeldSince.FindOrAdd(Generation, FPlatformTime::Seconds());
+                    return FPlatformTime::Seconds() - Seen >= DelayMs / 1000.0;
+                });
+            }
+            MtoUResetLinkageScheduleStats();
+            SustainedUePeak = SustainedMayaPeak = 0;
+            SampleMemory();
+            SustainedUeStart = SustainedUePeak;
+            SustainedMayaStart = SustainedMayaPeak;
+            SustainedStart = Now;
+            Sequencer->OnPlay(false);
+            SustainedPhase = 1;
+            return false;
+        }
+        if (SustainedPhase == 1)
+        {
+            SampleMemory();
+            if (HeldSince.Num() > 4096)
+            {
+                HeldSince.Reset();
+            }
+            if (Now - SustainedStart < Seconds)
+            {
+                return false;
+            }
+            Sequencer->Pause();
+            SustainedPausedAt = Now;
+            SustainedPhase = 2;
+            return false;
+        }
+        if (SustainedPhase == 2)
+        {
+            if (!View.bConverged)
+            {
+                return Now - SustainedPausedAt > 30.0 ? FinishSustained(DelayMs, Seconds, View) : false;
+            }
+            SustainedPauseConvergence = Now - SustainedPausedAt;
+            SustainedPlayRecords = MtoUGetLinkageScheduleStats();
+            // A jump while paused: a discontinuity that must converge too.
+            SustainedJumpFrame = FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0], 0.5)
+                ? OracleFrames[0] + 37.0 : OracleFrames[0];
+            const FFrameTime Tick = FFrameRate::TransformTime(FFrameTime::FromDecimal(SustainedJumpFrame),
+                Sequencer->GetRootDisplayRate(), Sequencer->GetRootTickResolution());
+            Sequencer->SetGlobalTime(Tick);
+            SustainedJumpedAt = Now;
+            SustainedPhase = 3;
+            return false;
+        }
+        if (!View.bConverged || !FMath::IsNearlyEqual(View.AppliedDisplayFrame, SustainedJumpFrame, 0.01))
+        {
+            return Now - SustainedJumpedAt > 30.0 ? FinishSustained(DelayMs, Seconds, View) : false;
+        }
+        SustainedJumpConvergence = Now - SustainedJumpedAt;
+        return FinishSustained(DelayMs, Seconds, View);
+    }
+
+    static double Percentile(TArray<double> Values, double Fraction)
+    {
+        if (Values.IsEmpty())
+        {
+            return 0.0;
+        }
+        Values.Sort();
+        const int32 Rank = FMath::Clamp(FMath::CeilToInt(Fraction * Values.Num()) - 1, 0, Values.Num() - 1);
+        return Values[Rank];
+    }
+
+    bool FinishSustained(double DelayMs, double Seconds, const FMtoULinkageView& View)
+    {
+        MtoUSetLinkageApplyProbe(nullptr);
+        const FString Tag = FString::Printf(TEXT("[sustained %.0f ms] "), DelayMs);
+        const FMtoULinkageScheduleStats& Stats = SustainedPlayRecords;
+        TArray<double> Latencies;
+        TArray<double> AppliedAt;
+        TArray<double> CancelledAt;
+        int32 Open = 0, FailedTargets = 0;
+        for (const FMtoULinkageIssueRecord& Record : Stats.Records)
+        {
+            if (Record.Outcome == TEXT("applied"))
+            {
+                Latencies.Add(Record.AppliedSeconds - Record.IssuedSeconds);
+                AppliedAt.Add(Record.AppliedSeconds);
+            }
+            else if (Record.Outcome == TEXT("cancelled"))
+            {
+                CancelledAt.Add(Record.EndedSeconds);
+            }
+            else
+            {
+                ++Open;
+            }
+            FailedTargets += Record.FailedApplications > 0 ? 1 : 0;
+        }
+        AppliedAt.Sort();
+        // A gap without a complete application counts against the budget
+        // unless a cut, loop wrap or other cancellation happened inside it.
+        double MaxGap = 0.0, MaxUnexcusedGap = 0.0;
+        int32 ExcusedGaps = 0;
+        double Previous = SustainedStart;
+        for (int32 Index = 0; Index <= AppliedAt.Num(); ++Index)
+        {
+            const double Next = Index < AppliedAt.Num() ? AppliedAt[Index] : SustainedPausedAt;
+            const double Gap = Next - Previous;
+            bool bExcused = false;
+            for (const double Cancelled : CancelledAt)
+            {
+                bExcused |= Cancelled > Previous && Cancelled <= Next;
+            }
+            MaxGap = FMath::Max(MaxGap, Gap);
+            if (bExcused)
+            {
+                ExcusedGaps += Gap > 2.0 ? 1 : 0;
+            }
+            else
+            {
+                MaxUnexcusedGap = FMath::Max(MaxUnexcusedGap, Gap);
+            }
+            Previous = Next;
+        }
+        const double Played = SustainedPausedAt - SustainedStart;
+        const double P50 = Percentile(Latencies, 0.50), P95 = Percentile(Latencies, 0.95),
+            P99 = Percentile(Latencies, 0.99);
+        const double MaxLatency = Latencies.IsEmpty() ? 0.0 : FMath::Max(Latencies);
+        const double ApplyRate = Stats.Issued > 0 ? double(Stats.Applied) / double(Stats.Issued) : 0.0;
+        const auto Mib = [](uint64 Bytes) { return double(Bytes) / (1024.0 * 1024.0); };
+        Log(FString::Printf(TEXT("%splayed %.1f s: issued %d, applied %d (%.1f/s, rate %.3f), cancelled %d, open %d, "
+                "overdue %d, coalesced %d, failed applications %d on %d targets; issued->applied p50 %.3f s, "
+                "p95 %.3f s, p99 %.3f s, max %.3f s; longest gap %.3f s, longest gap without a cancellation "
+                "%.3f s (%d longer gaps held a cut, wrap or cancellation); pause converged in %.3f s, jump in %.3f s; "
+                "peaks in flight %d, waiting %d, staged %d, control out %d in %d; memory Unreal %.0f -> %.0f MiB, "
+                "Maya %.0f -> %.0f MiB; dropped records %d"),
+            *Tag, Played, Stats.Issued, Stats.Applied, Played > 0.0 ? Stats.Applied / Played : 0.0, ApplyRate,
+            Stats.Cancelled, Open, Stats.Overdue, Stats.Coalesced, Stats.Failed, FailedTargets, P50, P95, P99,
+            MaxLatency, MaxGap, MaxUnexcusedGap, ExcusedGaps, SustainedPauseConvergence, SustainedJumpConvergence,
+            Stats.InFlightPeak, Stats.PendingPeak, Stats.StagedPeak, Stats.OutgoingControlPeak,
+            Stats.IncomingControlPeak, Mib(SustainedUeStart), Mib(SustainedUePeak), Mib(SustainedMayaStart),
+            Mib(SustainedMayaPeak), Stats.DroppedRecords));
+
+        const TSharedRef<FJsonObject> Tier = MakeShared<FJsonObject>();
+        Tier->SetNumberField(TEXT("delay_ms"), DelayMs);
+        Tier->SetStringField(TEXT("injection"), DelayMs > 0.0
+            ? TEXT("each published group held at the Unreal set completion barrier for delay_ms")
+            : TEXT("none (natural delay)"));
+        Tier->SetNumberField(TEXT("frozen_seconds"), Seconds);
+        Tier->SetNumberField(TEXT("played_seconds"), Played);
+        Tier->SetNumberField(TEXT("issued"), Stats.Issued);
+        Tier->SetNumberField(TEXT("applied"), Stats.Applied);
+        Tier->SetNumberField(TEXT("applied_per_second"), Played > 0.0 ? Stats.Applied / Played : 0.0);
+        Tier->SetNumberField(TEXT("apply_rate"), ApplyRate);
+        Tier->SetNumberField(TEXT("cancelled"), Stats.Cancelled);
+        Tier->SetNumberField(TEXT("open"), Open);
+        Tier->SetNumberField(TEXT("overdue"), Stats.Overdue);
+        Tier->SetNumberField(TEXT("coalesced"), Stats.Coalesced);
+        Tier->SetNumberField(TEXT("failed_applications"), Stats.Failed);
+        Tier->SetNumberField(TEXT("latency_p50_s"), P50);
+        Tier->SetNumberField(TEXT("latency_p95_s"), P95);
+        Tier->SetNumberField(TEXT("latency_p99_s"), P99);
+        Tier->SetNumberField(TEXT("latency_max_s"), MaxLatency);
+        Tier->SetNumberField(TEXT("max_gap_s"), MaxGap);
+        Tier->SetNumberField(TEXT("max_gap_without_cancellation_s"), MaxUnexcusedGap);
+        Tier->SetNumberField(TEXT("long_gaps_with_cancellation"), ExcusedGaps);
+        Tier->SetNumberField(TEXT("pause_convergence_s"), SustainedPauseConvergence);
+        Tier->SetNumberField(TEXT("jump_convergence_s"), SustainedJumpConvergence);
+        Tier->SetNumberField(TEXT("in_flight_peak"), Stats.InFlightPeak);
+        Tier->SetNumberField(TEXT("waiting_peak"), Stats.PendingPeak);
+        Tier->SetNumberField(TEXT("staged_peak"), Stats.StagedPeak);
+        Tier->SetNumberField(TEXT("control_out_peak"), Stats.OutgoingControlPeak);
+        Tier->SetNumberField(TEXT("control_in_peak"), Stats.IncomingControlPeak);
+        Tier->SetNumberField(TEXT("unreal_memory_start_mib"), Mib(SustainedUeStart));
+        Tier->SetNumberField(TEXT("unreal_memory_peak_mib"), Mib(SustainedUePeak));
+        Tier->SetNumberField(TEXT("maya_memory_start_mib"), Mib(SustainedMayaStart));
+        Tier->SetNumberField(TEXT("maya_memory_peak_mib"), Mib(SustainedMayaPeak));
+        TArray<TSharedPtr<FJsonValue>> Rows;
+        for (const FMtoULinkageIssueRecord& Record : Stats.Records)
+        {
+            const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+            Row->SetNumberField(TEXT("serial"), Record.IssueSerial);
+            Row->SetNumberField(TEXT("frame"), Record.DisplayFrame);
+            Row->SetNumberField(TEXT("issued_s"), Record.IssuedSeconds - SustainedStart);
+            Row->SetNumberField(TEXT("ended_s"), Record.EndedSeconds > 0.0 ? Record.EndedSeconds - SustainedStart : -1.0);
+            Row->SetStringField(TEXT("outcome"), Record.Outcome);
+            Row->SetBoolField(TEXT("overdue"), Record.bOverdue);
+            Row->SetNumberField(TEXT("failed_applications"), Record.FailedApplications);
+            Rows.Add(MakeShared<FJsonValueObject>(Row));
+        }
+        Tier->SetArrayField(TEXT("records"), Rows);
+        WriteJsonFile(FPaths::Combine(EvidenceDir, FString::Printf(TEXT("sustained-%.0fms.json"), DelayMs)), Tier);
+        SustainedTiers.Add(MakeShared<FJsonValueObject>(Tier));
+        Evidence->SetArrayField(TEXT("sustained"), SustainedTiers);
+
+        // The budgets frozen before the run (issue #59, design-01).
+        Test->TestTrue(*(Tag + TEXT("the whole run fits the issue records")), Stats.DroppedRecords == 0);
+        Test->TestTrue(*(Tag + TEXT("the sequence played for the frozen duration")), Played >= Seconds);
+        Test->TestTrue(*(Tag + TEXT("complete groups were applied while playing")), Stats.Applied > 0);
+        Test->TestTrue(*(Tag + TEXT("no continuous stretch goes longer than 2 s without a complete application")),
+            MaxUnexcusedGap <= FMtoUProtocol::LinkageConvergenceSeconds);
+        Test->TestTrue(*(Tag + TEXT("the pause converges within 2 s")),
+            View.bConverged && SustainedPauseConvergence > 0.0
+            && SustainedPauseConvergence <= FMtoUProtocol::LinkageConvergenceSeconds);
+        Test->TestTrue(*(Tag + TEXT("the jump converges within 2 s")),
+            SustainedJumpConvergence > 0.0 && SustainedJumpConvergence <= FMtoUProtocol::LinkageConvergenceSeconds);
+        Test->TestTrue(*(Tag + TEXT("at most one target is in flight")), Stats.InFlightPeak <= 1);
+        Test->TestTrue(*(Tag + TEXT("at most one target waits")), Stats.PendingPeak <= 1);
+        Test->TestTrue(*(Tag + TEXT("staged groups stay within the frozen budget")),
+            Stats.StagedPeak <= FMtoUProtocol::MaxPendingCameraTargets);
+        Test->TestTrue(*(Tag + TEXT("both control queues stay within the frozen budget")),
+            Stats.OutgoingControlPeak <= FMtoUProtocol::MaxControlQueue
+            && Stats.IncomingControlPeak <= FMtoUProtocol::MaxControlQueue);
+        SustainedPhase = 0;
+        SustainedPauseConvergence = SustainedJumpConvergence = 0.0;
+        return true;
     }
 
     // ------------------------------------------------------------ object set
@@ -3251,6 +3814,7 @@ private:
     {
         StopFrameWatch();
         MtoUSetLinkageApplyProbe(nullptr);
+        RestoreLoopMode();
         for (const FString& Package : ProtectedPackages)
         {
             const UPackage* Loaded = FindPackage(nullptr, *Package);
@@ -3295,7 +3859,11 @@ private:
                  {TEXT("remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("ue_remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("destroy_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
-                 {TEXT("destroy_secondary"), TEXT("STREAM_INTERRUPTED")}},
+                 {TEXT("destroy_secondary"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("lifecycle"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("lifecycle"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("lifecycle"), TEXT("RECOVERY_REFUSED")},
+                 {TEXT("lifecycle_check"), TEXT("BLENDSHAPE_MISMATCH")}},
                 [this](const FString& Line) { Log(Line); });
             Evidence->SetObjectField(TEXT("maya_final"), MayaResult);
         }
@@ -3376,6 +3944,20 @@ private:
     int32 PluginSampleId = -1;
     TArray<double> AppliedFrames;
     bool bStopped = false;
+    // Lifecycle census (INT-09).
+    int32 LifecyclePhase = 0, LifecycleId = -1;
+    TSharedPtr<FJsonObject> LifecycleBaseline, LifecycleLastCensus, LifecycleDisconnected;
+    TArray<TSharedPtr<FJsonValue>> LifecycleSamples;
+    // Sustained playback (INT-10).
+    int32 SustainedPhase = 0;
+    double SustainedStart = 0.0, SustainedPausedAt = 0.0, SustainedJumpedAt = 0.0, SustainedJumpFrame = 0.0;
+    double SustainedPauseConvergence = 0.0, SustainedJumpConvergence = 0.0;
+    uint64 SustainedUePeak = 0, SustainedMayaPeak = 0, SustainedUeStart = 0, SustainedMayaStart = 0;
+    TMap<FString, double> HeldSince;
+    FMtoULinkageScheduleStats SustainedPlayRecords;
+    TArray<TSharedPtr<FJsonValue>> SustainedTiers;
+    ESequencerLoopMode LoopModeBefore = ESequencerLoopMode::SLM_NoLoop;
+    bool bLoopModeChanged = false;
     bool Reconnected = true;
     FTransform LinkageAnchor;
     bool bAnchorKeyed = false;

@@ -141,6 +141,8 @@ struct MTOULIVELINK_API FMtoULinkageIssueRecord
     double IssuedSeconds = 0.0;
     /** When its whole group was read back complete; 0 unless `Outcome` is `applied`. */
     double AppliedSeconds = 0.0;
+    /** When it was applied or cancelled; 0 while open. */
+    double EndedSeconds = 0.0;
     /** `open`, `applied` or `cancelled` (a pause, cut, jump or exit). */
     FString Outcome = TEXT("open");
     /** Answers to this target the barrier refused; a later one may still apply. */
