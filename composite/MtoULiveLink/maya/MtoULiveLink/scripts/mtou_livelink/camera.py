@@ -1098,6 +1098,14 @@ def _closed(actual, wanted, tolerance=1e-6):
     return abs(float(actual) - float(wanted)) <= abs(tolerance)
 
 
+def _holds(plug, value):
+    """True when ``plug`` already holds the captured ``value``."""
+    try:
+        return _closed(cmds.getAttr(plug), value)
+    except (RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _resolution_value(plug):
     if plug.endswith("width") or plug.endswith("height"):
         return int(round(float(cmds.getAttr(plug))))
@@ -1482,6 +1490,10 @@ class LinkCamera(object):
 
         for plug, value in sorted((state or {}).get("resolution", {}).items()):
             try:
+                if _holds(plug, value):
+                    # Never written, or already back: a locked plug that holds
+                    # its captured value is restored, not a residual.
+                    continue
                 require_writable(plug)
                 cmds.setAttr(plug, value)
             except (RuntimeError, ValueError, CameraSyncRefused) as error:
@@ -1564,12 +1576,20 @@ class LinkCamera(object):
             return []
         residual = []
         try:
-            for attribute in TRANSFORM_WRITE_ATTRIBUTES:
-                require_writable(transform + "." + attribute)
+            # Only what differs from the capture is written back, so a camera
+            # a refused target never touched restores without touching a
+            # locked attribute of its own.
+            matrix = list(borrowed["world_matrix"])
+            current = cmds.xform(transform, query=True, worldSpace=True, matrix=True)
+            if not all(_closed(left, right) for left, right in zip(current, matrix)):
+                for attribute in TRANSFORM_WRITE_ATTRIBUTES:
+                    require_writable(transform + "." + attribute)
             for attribute, value in sorted(borrowed.get("attributes", {}).items()):
-                cmds.setAttr("{0}.{1}".format(shape, attribute), value)
-            cmds.xform(transform, worldSpace=True,
-                       matrix=list(borrowed["world_matrix"]))
+                plug = "{0}.{1}".format(shape, attribute)
+                if not _holds(plug, value):
+                    cmds.setAttr(plug, value)
+            if not all(_closed(left, right) for left, right in zip(current, matrix)):
+                cmds.xform(transform, worldSpace=True, matrix=matrix)
         except (RuntimeError, ValueError, CameraSyncRefused) as error:
             residual.append("camera {0}: {1}".format(shape, error))
         return residual

@@ -1815,8 +1815,13 @@ class _FakeCommands(object):
         scene = self.scene
         scene.scene_at_import.append(scene.snapshots())
         namespace = flags.get("ns")
-        created = [scene.add_node(namespace, name).full_name
-                   for name in scene.imported_nodes]
+        created = []
+        for name in scene.imported_nodes:
+            node = scene.add_node(namespace, name)
+            created.append(node.full_name)
+            # fbxmaya creates every mesh as a transform with its shape below.
+            created.append(scene.add_node(
+                namespace, name + "Shape", "mesh", parent=node).full_name)
         scene.imports.append({"namespaces": set(scene.namespaces),
                               "nodes": len(scene.nodes)})
         if scene.fail_step == "import":
@@ -2091,7 +2096,8 @@ class StagedImportTest(unittest.TestCase):
         self.assertEqual(["SM_Wall"], [node.short for node in group.children])
         self.assertNotIn(container + reference.RETIRING_SUFFIX, scene.namespaces)
         self.assertNotIn(container + reference.STAGING_SUFFIX, scene.namespaces)
-        self.assertEqual(2, len(scene.namespace_members(container)))
+        # The group, the imported transform and its mesh shape.
+        self.assertEqual(3, len(scene.namespace_members(container)))
 
     def test_the_staging_namespace_is_the_one_the_report_names(self):
         scene = FakeReferenceScene()
@@ -2345,6 +2351,19 @@ class SwapRollbackTest(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(str(self.directory), ignore_errors=True)
+
+    def test_an_import_without_geometry_keeps_the_previous_reference(self):
+        # fbxmaya reads an unreadable file as an empty scene.
+        scene = FakeReferenceScene()
+        _group, old = owned_scene(scene, node_name="SM_Old")
+        scene.imported_nodes = []
+        report = import_fixture(scene, HandoffFixture(self.directory / "handoff"))
+        self.assertFalse(report["accepted"])
+        self.assertTrue(any("FBX_IMPORT_EMPTY" in entry for entry in report["problems"]),
+                        report["problems"])
+        self.assertIs(old, scene.find(old.long_name))
+        self.assertNotIn(reference.REFERENCE_CONTAINER + reference.STAGING_SUFFIX,
+                         scene.namespaces)
 
     def test_a_failed_read_back_rolls_the_swap_back(self):
         fixture = HandoffFixture(self.directory / "handoff")

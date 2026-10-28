@@ -1943,6 +1943,7 @@ CATEGORY_FBX_UNREADABLE = "FBX_UNREADABLE"
 CATEGORY_FBX_NOT_FBX = "FBX_NOT_FBX"
 CATEGORY_FBX_PLUGIN = "FBX_PLUGIN_UNAVAILABLE"
 CATEGORY_IMPORT_FAILED = "FBX_IMPORT_FAILED"
+CATEGORY_IMPORT_EMPTY = "FBX_IMPORT_EMPTY"
 CATEGORY_GRAY_MATERIAL = "GRAY_MATERIAL_CONFLICT"
 CATEGORY_SWAP_FAILED = "STAGED_SWAP_FAILED"
 CATEGORY_ANCHOR_INVALID = "ANCHOR_INVALID"
@@ -2811,6 +2812,15 @@ class ReferenceImporter(object):
             "root_nodes_parented": roots,
         }
         self.report["counts"]["container_nodes"] = len(_namespace_members(staging))
+        declared = _count(self.handoff.get("counts", {}).get("objects")
+                          if isinstance(self.handoff.get("counts"), dict) else None)
+        if declared and not (cmds.ls(staging + ":*", type="mesh") or []):
+            # The FBX plugin reads an unreadable file as an empty scene; an
+            # empty staging namespace must never replace the previous reference.
+            raise _Refusal(
+                CATEGORY_IMPORT_EMPTY,
+                "the FBX {0} produced no geometry although the handoff declares {1} "
+                "object(s); the previous reference is kept".format(self.fbx, declared))
         group_uuid = cmds.ls(group, uuid=True) or []
         self.report["container"].update({
             "staging_group_path": group,
