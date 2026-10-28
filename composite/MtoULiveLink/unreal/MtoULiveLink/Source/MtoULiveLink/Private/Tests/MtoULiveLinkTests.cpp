@@ -5930,8 +5930,8 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
     FString Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
     {
-        AddInfo(TEXT("Host check not requested; supply MtoUMayapy, MtoUMayaPeer and MtoUEvidence."));
-        return true;
+        AddError(TEXT("Host check requires -MtoUMayapy=, -MtoUMayaPeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
@@ -6114,8 +6114,8 @@ bool FMtoUMayaInteractivePlaybackTest::RunTest(const FString& Parameters)
     FString Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
     {
-        AddInfo(TEXT("Host check not requested; supply MtoUMayapy, MtoUMayaPeer and MtoUEvidence."));
-        return true;
+        AddError(TEXT("Host check requires -MtoUMayapy=, -MtoUMayaPeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
@@ -10756,7 +10756,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsAssetTest,
-    "MtoULiveLink.Actor.CharacterPartsAsset",
+    "MtoUOptIn.Actor.CharacterPartsAsset",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
@@ -10764,8 +10764,8 @@ bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
     FString BindingPath;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
     {
-        AddInfo(TEXT("External split-character acceptance requires -MtoUCharacterPartsBinding=<asset path>."));
-        return true;
+        AddError(TEXT("Split-character acceptance requires -MtoUCharacterPartsBinding=<asset path>."));
+        return false;
     }
     UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
     if (!TestNotNull(TEXT("production Binding loads"), Binding)) { return false; }
@@ -10815,7 +10815,7 @@ bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartTransactionsTest,
-    "MtoULiveLink.Actor.LoadedCharacterPartTransactions",
+    "MtoUOptIn.Actor.LoadedCharacterPartTransactions",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters)
@@ -10825,9 +10825,9 @@ bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
     {
-        AddInfo(TEXT("Load a saved split-character map and supply -MtoULoadedCharacterMap=<package> "));
-        AddInfo(TEXT("and -MtoUCharacterPartsBinding=<asset path> to check its transactions."));
-        return true;
+        AddError(TEXT("Load a saved split-character map and supply -MtoULoadedCharacterMap=<package> "
+            "and -MtoUCharacterPartsBinding=<asset path>."));
+        return false;
     }
     UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
     if (!TestNotNull(TEXT("production Binding loads"), Binding))
@@ -10907,7 +10907,7 @@ bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartsTest,
-    "MtoULiveLink.Actor.LoadedCharacterParts",
+    "MtoUOptIn.Actor.LoadedCharacterParts",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
@@ -10915,8 +10915,8 @@ bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
     FString MapPath;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath))
     {
-        AddInfo(TEXT("Load a saved character map and supply -MtoULoadedCharacterMap=<package path>."));
-        return true;
+        AddError(TEXT("Load a saved character map and supply -MtoULoadedCharacterMap=<package path>."));
+        return false;
     }
     int32 ActorsChecked = 0;
     for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
@@ -11001,10 +11001,10 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     FString Fixture, Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsFixture="), Fixture))
     {
-        AddInfo(TEXT("Cross-host character-parts acceptance not requested; supply"));
-        AddInfo(TEXT("-MtoUCharacterPartsFixture=<json> with binding/scene/root/poses,"));
-        AddInfo(TEXT("-MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=."));
-        return true;
+        AddError(TEXT("Cross-host character-parts acceptance requires "
+            "-MtoUCharacterPartsFixture=<json> with binding/scene/root/poses, "
+            "-MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPeer="), Peer)
@@ -13734,10 +13734,10 @@ bool FMtoUMayaLinkageHostTest::RunTest(const FString& Parameters)
     FString Fixture, Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULinkageFixture="), Fixture))
     {
-        AddInfo(TEXT("Cross-host linkage acceptance not requested; supply"));
-        AddInfo(TEXT("-MtoULinkageFixture=<json> with port/targets/timeout_seconds/fps,"));
-        AddInfo(TEXT("-MtoUMayapy=, -MtoUMayaLinkagePeer= and -MtoUEvidence=."));
-        return true;
+        AddError(TEXT("Cross-host linkage acceptance requires "
+            "-MtoULinkageFixture=<json> with port/targets/timeout_seconds/fps, "
+            "-MtoUMayapy=, -MtoUMayaLinkagePeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaLinkagePeer="), Peer)

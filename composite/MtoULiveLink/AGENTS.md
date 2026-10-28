@@ -22,13 +22,13 @@ confined to this product does not.
 ## Opt-in tests
 
 `MtoUOptIn.*` tests are excluded from the default run because they need a real
-Maya process, a production fixture, or a long measurement. Run only those the
-task affects, with the arguments each test names in its log message. Without
-those arguments a host test passes with only an info message; that pass is not
-evidence.
+Maya process, a production fixture, saved production assets, or a long
+measurement. Run only those the task affects. A test started without its
+required arguments fails and its error names them.
 
 | Test | Use |
 | --- | --- |
+| `MtoUOptIn.Actor.CharacterPartsAsset`, `.LoadedCharacterParts`, `.LoadedCharacterPartTransactions` | Split-character composition of a production Binding, and part transactions in a saved, loaded map |
 | `MtoUOptIn.Source.MayaCacheReconnect`, `.MayaInteractivePlayback`, `.MayaCharacterPartsHost`, `.MayaLinkageHost` | Cross-host acceptance of cache, playback, character parts, and linkage |
 | `MtoUOptIn.Editor.Preview.MayaRefreshPeer`, `.CharacterAcceptance` | Real Maya Preview refresh and complete-character acceptance |
 | `MtoUOptIn.Editor.Linkage.ProductionSequence` | Linkage in a production Level Sequence copy through a real Maya GUI (`maya_gui_linkage_driver.py`): writer takeover, anchor world/screen, bone-rotation and Morph oracle, playback under lag and every exit. The oracle frames must show different keyed poses: their Maya times must not lie a whole number of `2 * maya.key_step` apart (the driver default `key_step` 42 suits oracle frames 300/900/1500) |
