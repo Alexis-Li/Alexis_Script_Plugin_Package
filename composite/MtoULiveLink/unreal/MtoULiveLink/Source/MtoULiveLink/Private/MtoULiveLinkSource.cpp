@@ -2468,6 +2468,49 @@ float DisplayedMorphWeight(const USkeletalMeshComponent& Display, const UMorphTa
     }
     return 0.0f;
 }
+
+#if WITH_EDITOR
+// What one display shows before a commit: its pose buffers and Morph weights.
+struct FMtoUShownDisplay
+{
+    TWeakObjectPtr<USkeletalMeshComponent> Display;
+    TArray<FTransform> ComponentSpace;
+    TArray<FTransform> BoneSpace;
+    FMorphTargetWeightMap ActiveMorphTargets;
+    TArray<float> MorphTargetWeights;
+};
+
+FMtoUShownDisplay RecordShownDisplay(USkeletalMeshComponent& Display)
+{
+    FMtoUShownDisplay Shown;
+    Shown.Display = &Display;
+    Shown.ComponentSpace = Display.GetComponentSpaceTransforms();
+    Shown.BoneSpace = Display.GetBoneSpaceTransforms();
+    Shown.ActiveMorphTargets = Display.ActiveMorphTargets;
+    Shown.MorphTargetWeights = Display.MorphTargetWeights;
+    return Shown;
+}
+
+// Puts a surviving display back on what it showed, in the calling game-thread
+// step, so the frame renders it instead of the commit that failed.
+void RestoreShownDisplay(const FMtoUShownDisplay& Shown)
+{
+    USkeletalMeshComponent* Display = Shown.Display.Get();
+    if (!Display || !Display->IsRegistered() || Shown.ComponentSpace.IsEmpty()
+        || Display->GetEditableComponentSpaceTransforms().Num() != Shown.ComponentSpace.Num()
+        || Display->GetBoneSpaceTransforms().Num() != Shown.BoneSpace.Num())
+    {
+        return;
+    }
+    Display->GetEditableComponentSpaceTransforms() = Shown.ComponentSpace;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    Display->BoneSpaceTransforms = Shown.BoneSpace;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+    Display->ActiveMorphTargets = Shown.ActiveMorphTargets;
+    Display->MorphTargetWeights = Shown.MorphTargetWeights;
+    Display->ApplyEditedComponentSpaceTransforms();
+}
+#endif
 }
 
 FString FMtoULiveLinkSource::SubjectGenerationOnGameThread(int32 ObjectIndex) const
@@ -2573,6 +2616,16 @@ bool FMtoULiveLinkSource::ResolvePendingApplicationOnGameThread(
 
     // 4. One commit for the whole set in this game-thread step, before the
     //    frame renders, together with the Model follower's Morph overrides.
+    //    What every display showed is kept, so a commit that fails never
+    //    reaches a rendered frame.
+#if WITH_EDITOR
+    TArray<FMtoUShownDisplay> Shown;
+    Shown.Reserve(Displays.Num());
+    for (const FMtoULinkageDisplay& Entry : Displays)
+    {
+        Shown.Add(RecordShownDisplay(*Entry.Display));
+    }
+#endif
     for (const FMtoULinkageDisplay& Entry : Displays)
     {
         Entry.Display->TickAnimation(0.0f, false);
@@ -2588,8 +2641,25 @@ bool FMtoULiveLinkSource::ResolvePendingApplicationOnGameThread(
     }
     if (!VerifyDisplaysOnGameThread(Pending, Displays, OutComponents, Mismatch))
     {
-        // The commit disagrees with the verified evaluation; the caller
-        // restores the last complete group on every display.
+        // The commit disagrees with the verified evaluation or a display left
+        // the world: every surviving display shows again what it showed, and
+        // the Model follower the last complete Morphs, before this frame
+        // renders. The caller's rollback then gives the subjects the last
+        // complete frame, and the held displays follow only once they hold it.
+#if WITH_EDITOR
+        for (const FMtoUShownDisplay& Entry : Shown)
+        {
+            RestoreShownDisplay(Entry);
+        }
+#endif
+        for (const FMtoUSessionObject& Object : SessionObjects)
+        {
+            AMtoULiveLinkActor* Actor = Object.Actor.Get();
+            if (Actor && !Object.LastCompleteCurves.IsEmpty())
+            {
+                Actor->ApplyModelMorphCurves(Object.AcceptedCurveNames, Object.LastCompleteCurves);
+            }
+        }
         OutReason = FString::Printf(
             TEXT("Group %s was not displayed completely: %s"), *Pending.Generation, *Mismatch);
         return true;

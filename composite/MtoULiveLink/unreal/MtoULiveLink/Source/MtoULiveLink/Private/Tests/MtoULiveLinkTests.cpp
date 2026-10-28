@@ -12100,6 +12100,9 @@ struct FMtoULinkageReplyReader
 {
     FMtoUFrameDecoder Decoder;
     TArray<FString> OtherTypes;
+    // The payloads of OtherTypes, so a step can still find a reply that
+    // arrived while it waited for another one.
+    TArray<TArray<uint8>> OtherPayloads;
     // A read can carry several replies (the runtime answers a group with the
     // application evidence and, in the same update, the next camera/time
     // target). Messages that are not the one being awaited are queued by type
@@ -12138,6 +12141,7 @@ struct FMtoULinkageReplyReader
                     return true;
                 }
                 OtherTypes.Add(Type);
+                OtherPayloads.Add(Payload);
                 Pending.FindOrAdd(Type).Add(MoveTemp(Payload));
             }
             return false;
@@ -14422,6 +14426,93 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
         FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Character")), 0.1f, 1.0e-3f)
         && FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Secondary")), 0.9f, 1.0e-3f));
 
+    // ---- a display failing after staging never shows a half set -----------
+    // The second object's display leaves the world once every display staged
+    // the group of the next target. After every game-thread step, which is
+    // when a frame renders, the first object must still show the last complete
+    // group; that target stays issued, so the next whole group answers it.
+    {
+        USkeletalMeshComponent* HeroDisplay = Hero->GetSkeletalMeshComponent();
+        USkeletalMeshComponent* PropDisplay = Prop->GetSkeletalMeshComponent();
+        const UMorphTarget* HeroSmile = HeroMesh->FindMorphTarget(TEXT("Smile"));
+        const auto HeroSmileShown = [&]() -> float
+        {
+            const int32* Index = HeroSmile ? HeroDisplay->ActiveMorphTargets.Find(HeroSmile) : nullptr;
+            return Index && HeroDisplay->MorphTargetWeights.IsValidIndex(*Index)
+                ? HeroDisplay->MorphTargetWeights[*Index] : 0.0f;
+        };
+        const float SmileBefore = HeroSmileShown();
+        TestTrue(TEXT("the first object shows the complete group's Morph"),
+            FMath::IsNearlyEqual(SmileBefore, 0.1f, 1.0e-3f));
+        const TArray<FTransform> PoseBefore = HeroDisplay->GetComponentSpaceTransforms();
+        bool bBroken = false;
+        MtoUSetLinkageApplyProbe([&](EMtoULinkageApplyStage Stage, const FString&, const FString&)
+        {
+            if (Stage == EMtoULinkageApplyStage::Staged && !bBroken)
+            {
+                bBroken = true;
+                PropDisplay->UnregisterComponent();
+            }
+            return true;
+        });
+        int32 Steps = 0;
+        float MaxSmileChange = 0.0f;
+        double MaxPoseChange = 0.0;
+        const auto WatchedPump = [&]()
+        {
+            Pump();
+            ++Steps;
+            MaxSmileChange = FMath::Max(MaxSmileChange, FMath::Abs(HeroSmileShown() - SmileBefore));
+            const TArray<FTransform>& PoseNow = HeroDisplay->GetComponentSpaceTransforms();
+            for (int32 Bone = 0; Bone < FMath::Min(PoseNow.Num(), PoseBefore.Num()); ++Bone)
+            {
+                MaxPoseChange = FMath::Max(MaxPoseChange,
+                    FVector::Distance(PoseNow[Bone].GetLocation(), PoseBefore[Bone].GetLocation()));
+            }
+        };
+        // The synthetic editor offers one more target.
+        Hooks.PlannedTargets = Hooks.SentTargets + 1;
+        TestTrue(TEXT("the next target is issued"), Reader.Next(*Client, TEXT("camera_time"), Payload, Pump, 5.0));
+        if (JsonObjectFromBytes(Payload, Target))
+        {
+            EvalId = Target->GetStringField(TEXT("eval_id"));
+        }
+        const TArray<uint8> Failing = Packet(ObjectSetGroupJson(SessionId, EvalId, 3, 1,
+            {ObjectRowJson(TEXT("character"), Pose, 0.6), ObjectRowJson(TEXT("secondary"), Pose, 0.4)}));
+        SendBytes(*Client, Failing.GetData(), Failing.Num());
+        TestTrue(TEXT("the group whose display failed is answered"),
+            Reader.Next(*Client, TEXT("applied"), Payload, WatchedPump, 5.0));
+        TSharedPtr<FJsonObject> Failed;
+        if (JsonObjectFromBytes(Payload, Failed))
+        {
+            TestFalse(TEXT("the group whose display failed after staging is not confirmed"),
+                Failed->GetBoolField(TEXT("applied")));
+        }
+        for (int32 Extra = 0; Extra < 5; ++Extra)
+        {
+            WatchedPump();
+        }
+        MtoUSetLinkageApplyProbe(nullptr);
+        AddInfo(FString::Printf(TEXT("Display failure after staging: %d game-thread steps watched, first object changed at most %.6f Morph weight and %.6f cm"),
+            Steps, MaxSmileChange, MaxPoseChange));
+        TestTrue(TEXT("the display failed after the group was staged"), bBroken);
+        TestTrue(TEXT("the first object keeps the last complete Morph at every step"), MaxSmileChange < 1.0e-3f);
+        TestTrue(TEXT("the first object keeps the last complete pose at every step"), MaxPoseChange < 1.0e-3);
+
+        PropDisplay->RegisterComponent();
+        const TArray<uint8> Again = Packet(ObjectSetGroupJson(SessionId, EvalId, 4, 1,
+            {ObjectRowJson(TEXT("character"), Pose, 0.15), ObjectRowJson(TEXT("secondary"), Pose, 0.85)}));
+        SendBytes(*Client, Again.GetData(), Again.Num());
+        TestTrue(TEXT("the next whole group is answered"), Reader.Next(*Client, TEXT("applied"), Payload, Pump, 5.0));
+        TSharedPtr<FJsonObject> Recovered;
+        if (JsonObjectFromBytes(Payload, Recovered))
+        {
+            TestTrue(TEXT("the restored display shows the next whole group"), Recovered->GetBoolField(TEXT("applied")));
+        }
+        TestTrue(TEXT("the first object shows the next whole group"),
+            FMath::IsNearlyEqual(HeroSmileShown(), 0.15f, 1.0e-3f));
+    }
+
     // ---- removing the second object inside the connection -----------------
     // The synthetic editor offers exactly one more target: the one the new
     // set must answer.
@@ -14429,6 +14520,7 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
     const TArray<uint8> Remove = Packet(FString::Printf(
         TEXT("{\"type\":\"remove_object\",\"session_id\":%d,\"object_id\":\"secondary\","
              "\"set_revision\":2,\"detail\":\"pairing window\"}"), SessionId));
+    const int32 SkippedBeforeRemoval = Reader.OtherPayloads.Num();
     SendBytes(*Client, Remove.GetData(), Remove.Num());
     TestTrue(TEXT("the removal is confirmed"), Reader.Next(*Client, TEXT("object_removed"), Payload, Pump));
     TSharedPtr<FJsonObject> Removed;
@@ -14454,6 +14546,17 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
     // A target issued for the old set before the removal may still be on the
     // wire; the next one names the new set.
     int32 NewSetTargets = 0;
+    // The new set's target may arrive before the removal's confirmation.
+    for (int32 Skipped = SkippedBeforeRemoval; Skipped < Reader.OtherPayloads.Num() && NewSetTargets == 0; ++Skipped)
+    {
+        if (JsonObjectFromBytes(Reader.OtherPayloads[Skipped], Target)
+            && Target->GetStringField(TEXT("type")) == TEXT("camera_time")
+            && static_cast<int32>(Target->GetNumberField(TEXT("set_revision"))) == 2)
+        {
+            ++NewSetTargets;
+            EvalId = Target->GetStringField(TEXT("eval_id"));
+        }
+    }
     for (int32 Attempt = 0; Attempt < 3 && NewSetTargets == 0; ++Attempt)
     {
         if (Reader.Next(*Client, TEXT("camera_time"), Payload, Pump, 5.0)
@@ -14465,13 +14568,13 @@ bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
         }
     }
     TestEqual(TEXT("the current target is issued again for the new set"), NewSetTargets, 1);
-    const TArray<uint8> Stale = Packet(ObjectSetGroupJson(SessionId, EvalId, 3, 1,
+    const TArray<uint8> Stale = Packet(ObjectSetGroupJson(SessionId, EvalId, 5, 1,
         {ObjectRowJson(TEXT("character"), Pose, 0.2), ObjectRowJson(TEXT("secondary"), Pose, 0.8)}));
     SendBytes(*Client, Stale.GetData(), Stale.Num());
     TestTrue(TEXT("a group of the closed set is refused"), Reader.Next(*Client, TEXT("error"), Payload, Pump));
     TestTrue(TEXT("the refusal names the stale set"),
         FromUtf8(Payload).Contains(TEXT("SET_REVISION_STALE")));
-    const TArray<uint8> Primary = Packet(ObjectSetGroupJson(SessionId, EvalId, 4, 2,
+    const TArray<uint8> Primary = Packet(ObjectSetGroupJson(SessionId, EvalId, 6, 2,
         {ObjectRowJson(TEXT("character"), Pose, 0.3)}));
     SendBytes(*Client, Primary.GetData(), Primary.Num());
     TestTrue(TEXT("the primary continues alone"), Reader.Next(*Client, TEXT("applied"), Payload, Pump, 5.0));
