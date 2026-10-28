@@ -2865,8 +2865,8 @@ bool FMtoULinkageProductionSequenceTest::RunTest(const FString& Parameters)
     FString Fixture;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULinkageProductionFixture="), Fixture))
     {
-        AddInfo(TEXT("Production linkage not requested; pass -MtoULinkageProductionFixture=<fixture.json>."));
-        return true;
+        AddError(TEXT("Production linkage requires -MtoULinkageProductionFixture=<fixture.json>."));
+        return false;
     }
     FAutomationTestFramework::Get().EnqueueLatentCommand(
         MakeShared<FProductionLinkageCommand>(this, Fixture));

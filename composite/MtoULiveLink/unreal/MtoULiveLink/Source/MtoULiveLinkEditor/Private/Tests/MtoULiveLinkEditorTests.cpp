@@ -4482,8 +4482,8 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
     FString Mayapy;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
     {
-        AddInfo(TEXT("Real Maya peer not requested; supply MtoUMayapy, MtoURefreshPeer and MtoUEvidence."));
-        return true;
+        AddError(TEXT("Real Maya peer check requires -MtoUMayapy=, -MtoURefreshPeer= and -MtoUEvidence=."));
+        return false;
     }
     FString Peer;
     FString Evidence;
