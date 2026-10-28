@@ -1,8 +1,9 @@
 # Development Conventions
 
-This is the human-facing change workflow. Normative boundaries and platform
-requirements live in the repository and nearest platform `AGENTS.md`; use the
-[repository map](workspace-spec.md) to find them.
+This is the shared change workflow for people and agents; the root `AGENTS.md`
+links its design, fix and verification rules. Repository boundaries and
+platform requirements live in the repository and nearest platform `AGENTS.md`;
+use the [repository map](workspace-spec.md) to find them.
 
 ## Change workflow
 
@@ -101,7 +102,8 @@ target host.
 | Delivery, code review and routine checks | PR or issue comments |
 | User installation and usage | Project `README.md` and `README_CN.md` |
 | Released and unreleased behavior changes | Owning `CHANGELOG.md` |
-| Normative development constraints | Applicable `AGENTS.md` |
+| Shared design, fix and verification-scope rules | This document |
+| Repository, host and project constraints | Applicable `AGENTS.md` |
 | Selected completed decisions and essential host evidence | Existing topic in `docs/project-history/<project>/` |
 | Active domain vocabulary and decisions | Context and ADR locations described in `docs/agents/domain.md` |
 
