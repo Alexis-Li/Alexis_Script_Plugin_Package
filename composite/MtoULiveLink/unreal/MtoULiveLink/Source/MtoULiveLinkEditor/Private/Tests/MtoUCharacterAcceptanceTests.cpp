@@ -545,7 +545,7 @@ bool FMtoUCharacterAcceptanceTest::RunTest(const FString& Parameters)
 {
     FString Fixture, Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterFixture="), Fixture))
-    { AddInfo(TEXT("Character acceptance not requested; provide fixture, mayapy, peer and evidence paths.")); return true; }
+    { AddError(TEXT("Character acceptance requires -MtoUCharacterFixture=, -MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=.")); return false; }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPeer="), Peer)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence))

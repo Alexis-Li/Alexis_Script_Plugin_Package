@@ -595,8 +595,8 @@ bool FMtoUGuiWorkflowTest::RunTest(const FString& Parameters)
     FString Fixture;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUGuiWorkflowFixture="), Fixture))
     {
-        AddInfo(TEXT("GUI workflow regression not requested; run on /Engine/Maps/Entry with -MtoUGuiWorkflowFixture=<fixture.json>."));
-        return true;
+        AddError(TEXT("GUI workflow regression requires /Engine/Maps/Entry and -MtoUGuiWorkflowFixture=<fixture.json>."));
+        return false;
     }
     FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FGuiWorkflowCommand>(this, Fixture));
     return true;

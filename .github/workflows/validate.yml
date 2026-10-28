@@ -20,3 +20,9 @@ jobs:
           python-version: "3.13"
       - run: python tools/validate_repository.py
       - run: python -m unittest discover -s tests -v
+      - name: Project system-Python tests
+        if: matrix.submodules == 'false'
+        run: |
+          python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p "test_*.py"
+          python -m unittest discover -s maya/tools/FlattenMeshToUV/tests
+          python -m unittest discover -s maya/tools/NitroPoly/tests
