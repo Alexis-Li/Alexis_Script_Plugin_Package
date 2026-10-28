@@ -517,6 +517,9 @@ def tick():
         status = CONTROLLER.linkage_status()
         RESULT["status"] = status
         RESULT["objects"] = CONTROLLER.objects_state()
+        # Unreal's last applied evidence, one component row per object.
+        applied = getattr(CONTROLLER._linkage, "_applied", None)
+        RESULT["applied"] = dict(applied) if applied else None
         RESULT["reference"] = {"offered": bool(CONTROLLER.reference_offer()),
                                "report": CONTROLLER.reference_report()}
         RESULT["connected"] = CONTROLLER._session is not None and CONTROLLER._session_ready()

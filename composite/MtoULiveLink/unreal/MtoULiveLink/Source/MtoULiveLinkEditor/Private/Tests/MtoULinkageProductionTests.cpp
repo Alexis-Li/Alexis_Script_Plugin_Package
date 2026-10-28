@@ -6,6 +6,8 @@
 #include "MtoULinkageEditor.h"
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUCharacterComposition.h"
+#include "MtoULiveLinkEditorTestFixtures.h"
 
 #include "Camera/CameraComponent.h"
 #include "Camera/CameraTypes.h"
@@ -13,6 +15,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "DynamicMesh/DynamicBoneAttribute.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "Engine/SkeletalMesh.h"
@@ -28,6 +31,7 @@
 #include "LiveLinkInstance.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -972,6 +976,27 @@ private:
         return true;
     }
 
+    /**
+     * The bones one object's target requires, as negotiation resolves them;
+     * a bone of the display's skeleton outside them is never streamed.
+     */
+    const TSet<FName>& RequiredOf(bool bSecondary)
+    {
+        const UMtoULiveLinkBinding* Target = bSecondary ? SecondaryBinding.Get() : Binding.Get();
+        FString Key = Target && Target->SkeletalMesh ? Target->SkeletalMesh->GetPathName() : FString();
+        for (const FMtoUCharacterPart& Part : Target ? Target->AdditionalParts : TArray<FMtoUCharacterPart>())
+        {
+            Key += TEXT("|") + (Part.bEnabled && Part.SkeletalMesh ? Part.SkeletalMesh->GetPathName() : FString());
+        }
+        FRequiredBones& Cache = RequiredCache[bSecondary ? 1 : 0];
+        if (Cache.Key != Key)
+        {
+            Cache.Key = Key;
+            Cache.Bones = TSet<FName>(RequiredBones(Target));
+        }
+        return Cache.Bones;
+    }
+
     /** World positions of the oracle bones on one object's primary display. */
     bool RecordWriterPose(TMap<FName, FVector>& Out, bool bSecondary = false)
     {
@@ -982,10 +1007,11 @@ private:
             return false;
         }
         USkeletalMeshComponent* Primary = Owner->GetSkeletalMeshComponent();
+        const TSet<FName>& Required = RequiredOf(bSecondary);
         for (const TSharedPtr<FJsonValue>& Name : OracleJointsOf(bSecondary))
         {
             const FName Bone(*Name->AsString());
-            if (Primary->GetBoneIndex(Bone) != INDEX_NONE)
+            if (Primary->GetBoneIndex(Bone) != INDEX_NONE && Required.Contains(Bone))
             {
                 Out.Add(Bone, Primary->GetSocketLocation(Bone));
             }
@@ -1058,6 +1084,10 @@ private:
             StageId = -1;
             return true;
         });
+        if (Scenario == TEXT("arms"))
+        {
+            AddArmsReplacement(true);
+        }
         Add(Tag + TEXT("enter linkage"), 120.0, [this, Index]()
         {
             const FMtoULinkageView View = MtoUGetLinkageView();
@@ -1115,6 +1145,13 @@ private:
         if (Scenario == TEXT("remove_secondary") || Scenario == TEXT("ue_remove_secondary"))
         {
             AddRemoval(Scenario, Tag);
+            return;
+        }
+        if (Scenario == TEXT("arms"))
+        {
+            AddArmsOracle();
+            AddExit(Scenario, Tag);
+            AddArmsReplacement(false);
             return;
         }
         if (Index == 0)
@@ -1317,10 +1354,11 @@ private:
         const TSharedPtr<FJsonObject> Joints = Row->GetObjectField(TEXT("joints"));
         TMap<FName, FOracleRotation>& Rotations =
             (bSecondary ? SecondaryOracleRotations : OracleRotations).FindOrAdd(FrameIndex);
+        const TSet<FName>& Required = RequiredOf(bSecondary);
         for (const TPair<FString, TSharedPtr<FJsonValue>>& Joint : Joints->Values)
         {
             const FName Bone(*Joint.Key);
-            if (Primary->GetBoneIndex(Bone) == INDEX_NONE)
+            if (Primary->GetBoneIndex(Bone) == INDEX_NONE || !Required.Contains(Bone))
             {
                 continue;
             }
@@ -2042,20 +2080,305 @@ private:
             RefusalPhase = 1;
             return false;
         }
-        // The changed object ends the whole set: neither actor stays connected,
-        // and Maya finished tearing its session down.
+        return SetEnded(FString::Printf(TEXT("[swap] %s %s"), *Name, bApply ? TEXT("applied") : TEXT("restored")));
+    }
+
+    /** The changed object ends the whole set: neither actor stays connected, and Maya finished tearing its session down. */
+    bool SetEnded(const FString& What)
+    {
         if (MayaConnected() || MayaSessionOpen() || Actor->GetConnectionStatus().StartsWith(TEXT("Connected"))
             || SecondaryActor->GetConnectionStatus().StartsWith(TEXT("Connected")))
         {
             return false;
         }
-        Log(FString::Printf(TEXT("[swap] %s %s: the set ended (UE '%s' / '%s')"), *Name,
-            bApply ? TEXT("applied") : TEXT("restored"), *Actor->GetConnectionStatus(),
+        Log(FString::Printf(TEXT("%s: the set ended (UE '%s' / '%s')"), *What, *Actor->GetConnectionStatus(),
             *SecondaryActor->GetConnectionStatus()));
-        Test->TestFalse(*FString::Printf(TEXT("[swap] %s leaves no object streaming"), *Name),
+        Test->TestFalse(*(What + TEXT(" leaves no object streaming")),
             Actor->IsInLiveLinkSet() || SecondaryActor->IsInLiveLinkSet());
         RefusalPhase = 0;
         return true;
+    }
+
+    /**
+     * Synthetic full-body/arms replacement of the second object. The arms
+     * target is cut from the object's own full body: the triangles only the
+     * fixture's `arms.chains` skin, on the same skeleton, with one Morph Target
+     * for each Maya Morph of that object at the first oracle frame. Replacing
+     * the full body with it (bArms) or putting the full body back ends the
+     * whole set; Maya connects again and the set negotiates the new target's
+     * required bones.
+     */
+    void AddArmsReplacement(bool bArms)
+    {
+        const FString What = bArms ? TEXT("[arms] full body replaced by arms") : TEXT("[arms] arms replaced by the full body");
+        if (bArms)
+        {
+            Add(TEXT("[arms] build the synthetic arms target"), 300.0, [this]() { return BuildArmsTarget(); });
+        }
+        Add(What + TEXT(" ends the set"), 120.0, [this, bArms, What]()
+        {
+            if (RefusalPhase == 0)
+            {
+                if (!ArmsMesh.IsValid())
+                {
+                    Test->AddError(TEXT("[arms] no arms target was built"));
+                    bAbort = true;
+                    return true;
+                }
+                SecondaryBinding->SkeletalMesh = bArms ? ArmsMesh.Get() : FullBodyMesh.Get();
+                SecondaryActor->NotifyBindingInputsChanged();
+                RefusalPhase = 1;
+                return false;
+            }
+            return SetEnded(What);
+        });
+        Add(What + TEXT(": connects again"), 600.0, [this, What]() { return ReconnectSet(What); });
+        Add(What + TEXT(": required bones"), 30.0, [this, bArms, What]()
+        {
+            const TArray<FName> Required = RequiredBones(SecondaryBinding.Get());
+            Log(FString::Printf(TEXT("%s: the second object now requires %d bones (full body %d, arms %d)"),
+                *What, Required.Num(), FullRequired.Num(), ArmsRequired.Num()));
+            Test->TestTrue(*(What + TEXT(": the set negotiates the new target's required bones")),
+                Required == (bArms ? ArmsRequired : FullRequired));
+            return true;
+        });
+    }
+
+    static TArray<FName> RequiredBones(const UMtoULiveLinkBinding* Target)
+    {
+        const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Target);
+        TArray<FName> Out;
+        if (Composition.IsUsable())
+        {
+            for (int32 Index = 0; Index < Composition.RequiredSkeleton.GetNum(); ++Index)
+            {
+                Out.Add(Composition.RequiredSkeleton.GetBoneName(Index));
+            }
+        }
+        return Out;
+    }
+
+    bool BuildArmsTarget()
+    {
+        const TSharedPtr<FJsonObject> Arms = Fixture->GetObjectField(TEXT("arms"));
+        USkeletalMesh* Body = SecondaryBinding->SkeletalMesh;
+        FullBodyMesh.Reset(Body);
+        TSet<FName> Chains;
+        for (const TSharedPtr<FJsonValue>& Chain : Arms->GetArrayField(TEXT("chains")))
+        {
+            Chains.Add(FName(*Chain->AsString()));
+        }
+        // The Morphs Maya animates on this object at the first oracle frame.
+        TArray<FName> MorphNames;
+        if (const TSharedPtr<FJsonObject> Record = ReadJsonFile(FPaths::Combine(EvidenceDir, TEXT("oracle-0.json"))))
+        {
+            const TSharedPtr<FJsonObject> Row = SnapshotRow(Record->GetObjectField(TEXT("maya_snapshot")), true);
+            const TSharedPtr<FJsonObject>* Morphs = nullptr;
+            if (Row.IsValid() && Row->TryGetObjectField(TEXT("morphs"), Morphs))
+            {
+                for (const TPair<FString, TSharedPtr<FJsonValue>>& Morph : (*Morphs)->Values)
+                {
+                    MorphNames.Add(FName(*Morph.Key));
+                }
+            }
+        }
+        if (!Test->TestTrue(TEXT("[arms] the first oracle frame names the second object's Maya Morphs"), MorphNames.Num() > 0))
+        {
+            bAbort = true;
+            return true;
+        }
+
+        // Keep the triangles every corner of which only the arm chains skin.
+        const FReferenceSkeleton& Skeleton = Body->GetRefSkeleton();
+        TSet<FName> ArmBones;
+        for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+        {
+            for (int32 Bone = Index; Bone != INDEX_NONE; Bone = Skeleton.GetParentIndex(Bone))
+            {
+                if (Chains.Contains(Skeleton.GetBoneName(Bone)))
+                {
+                    ArmBones.Add(Skeleton.GetBoneName(Index));
+                    break;
+                }
+            }
+        }
+        UDynamicMesh* Source = NewObject<UDynamicMesh>(GetTransientPackage());
+        FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
+        ReadOptions.bApplyBuildSettings = false;
+        ReadOptions.bRequestTangents = true;
+        FGeometryScriptMeshReadLOD ReadLOD;
+        ReadLOD.LODType = EGeometryScriptLODType::SourceModel;
+        EGeometryScriptOutcomePins Outcome = EGeometryScriptOutcomePins::Failure;
+        UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromSkeletalMesh(Body, Source, ReadOptions, ReadLOD, Outcome);
+        if (!Test->TestTrue(TEXT("[arms] the full body's geometry is read"), Outcome == EGeometryScriptOutcomePins::Success))
+        {
+            bAbort = true;
+            return true;
+        }
+        UE::Geometry::FDynamicMesh3 Mesh(Source->GetMeshRef());
+        const UE::Geometry::FDynamicMeshVertexSkinWeightsAttribute* Weights = Mesh.HasAttributes()
+            ? Mesh.Attributes()->GetSkinWeightsAttribute(FSkeletalMeshAttributes::DefaultSkinWeightProfileName) : nullptr;
+        const UE::Geometry::FDynamicMeshBoneNameAttribute* Names = Mesh.HasAttributes() ? Mesh.Attributes()->GetBoneNames() : nullptr;
+        if (!Test->TestTrue(TEXT("[arms] the full body's skin weights are read"), Weights && Names))
+        {
+            bAbort = true;
+            return true;
+        }
+        TArray<int32> Others;
+        for (const int32 Triangle : Mesh.TriangleIndicesItr())
+        {
+            const UE::Geometry::FIndex3i Corners = Mesh.GetTriangle(Triangle);
+            bool bArms = true;
+            for (int32 Corner = 0; Corner < 3 && bArms; ++Corner)
+            {
+                UE::AnimationCore::FBoneWeights Value;
+                Weights->GetValue(Corners[Corner], Value);
+                for (int32 Influence = 0; Influence < Value.Num() && bArms; ++Influence)
+                {
+                    bArms = ArmBones.Contains(Names->GetValue(Value[Influence].GetBoneIndex()));
+                }
+            }
+            if (!bArms)
+            {
+                Others.Add(Triangle);
+            }
+        }
+        const int32 BodyTriangles = Mesh.TriangleCount();
+        for (const int32 Triangle : Others)
+        {
+            Mesh.RemoveTriangle(Triangle, true, false);
+        }
+        Mesh.CompactInPlace();
+        if (Mesh.Attributes()->HasMaterialID())
+        {
+            for (const int32 Triangle : Mesh.TriangleIndicesItr())
+            {
+                Mesh.Attributes()->GetMaterialID()->SetValue(Triangle, 0);
+            }
+        }
+        if (!Test->TestTrue(TEXT("[arms] the arm chains alone skin part of the full body"), Mesh.TriangleCount() > 0))
+        {
+            bAbort = true;
+            return true;
+        }
+        // A /Temp package: the writer refuses the engine's transient package. Nothing saves it.
+        UPackage* ArmsPackage = CreatePackage(TEXT("/Temp/MtoULinkageArmsTarget"));
+        ArmsMesh.Reset(MtoUEditorTest::WriteTransientDriver(*ArmsPackage, *Body, Mesh, {FName(TEXT("Arms"))}));
+        if (!Test->TestNotNull(TEXT("[arms] the arms target is written"), ArmsMesh.Get()))
+        {
+            bAbort = true;
+            return true;
+        }
+        UE::Geometry::FAxisAlignedBox3d Bounds = Mesh.GetBounds();
+        Bounds.Expand(1.0);
+        for (const FName Name : MorphNames)
+        {
+            Test->TestTrue(*FString::Printf(TEXT("[arms] Morph Target '%s' is added"), *Name.ToString()),
+                MtoUEditorTest::AddBoxMorph(*ArmsMesh, Name, Bounds, FVector3f(0.0f, 0.0f, 0.5f)));
+        }
+
+        // The required bones negotiation resolves for each target.
+        FullRequired = RequiredBones(SecondaryBinding.Get());
+        UMtoULiveLinkBinding* ArmsBinding = DuplicateObject<UMtoULiveLinkBinding>(SecondaryBinding.Get(), GetTransientPackage());
+        ArmsBinding->SkeletalMesh = ArmsMesh.Get();
+        ArmsRequired = RequiredBones(ArmsBinding);
+        TSet<FString> Unstreamed;
+        for (const TSharedPtr<FJsonValue>& Bone : Arms->GetArrayField(TEXT("unstreamed")))
+        {
+            Unstreamed.Add(Bone->AsString());
+        }
+        int32 Foreign = 0, Missing = 0, Kept = 0;
+        for (const FName Bone : ArmsRequired)
+        {
+            Foreign += FullRequired.Contains(Bone) ? 0 : 1;
+            Kept += Unstreamed.Contains(Bone.ToString()) ? 1 : 0;
+        }
+        for (const FName Chain : Chains)
+        {
+            Missing += ArmsRequired.Contains(Chain) ? 0 : 1;
+        }
+        Log(FString::Printf(TEXT("[arms] arms target: %d of %d triangles, %d Morph Targets (%s); required bones: arms %d, full body %d"),
+            Mesh.TriangleCount(), BodyTriangles, MorphNames.Num(),
+            *FString::JoinBy(MorphNames, TEXT(", "), [](FName Name) { return Name.ToString(); }),
+            ArmsRequired.Num(), FullRequired.Num()));
+        Log(TEXT("[arms] arms required bones: ") + FString::JoinBy(ArmsRequired, TEXT(" "), [](FName Name) { return Name.ToString(); }));
+        Test->TestTrue(TEXT("[arms] the arms target requires fewer bones than the full body"),
+            ArmsRequired.Num() > 0 && ArmsRequired.Num() < FullRequired.Num());
+        Test->TestEqual(TEXT("[arms] every arms bone is a full-body bone"), Foreign, 0);
+        Test->TestEqual(TEXT("[arms] the arms target requires its arm chains"), Missing, 0);
+        Test->TestEqual(TEXT("[arms] the arms target requires none of the fixture's unstreamed bones"), Kept, 0);
+        return true;
+    }
+
+    /** In linkage, the arms display shows Maya's arm bones and Morphs at the first oracle frame. */
+    void AddArmsOracle()
+    {
+        Add(TEXT("[arms] converge on the first oracle frame"), 120.0, [this]()
+        {
+            if (!SetTimeAndSettleOnce(OracleFrames[0]))
+            {
+                return false;
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            return View.bConverged && !View.AppliedEvalId.IsEmpty()
+                && FMath::IsNearlyEqual(View.AppliedDisplayFrame, OracleFrames[0], 0.01);
+        });
+        Add(TEXT("[arms] the arms display shows Maya's arms"), 60.0, [this]()
+        {
+            if (!SendOnce(TEXT("snapshot")))
+            {
+                return false;
+            }
+            const double Now = FPlatformTime::Seconds();
+            if (DisplayedMorphDelta() >= Fixture->GetNumberField(TEXT("morph_tolerance")))
+            {
+                if (MorphWaitStarted == 0.0)
+                {
+                    MorphWaitStarted = Now;
+                }
+                if (Now - MorphWaitStarted < 5.0)
+                {
+                    return false;
+                }
+            }
+            MorphWaitStarted = 0.0;
+            SettledFrame = -1.0;
+            const TSharedPtr<FJsonObject> Snapshot = MayaResult->GetObjectField(TEXT("snapshot"));
+            FMinimalViewInfo View;
+            TSharedRef<FJsonObject> Record = MakeShared<FJsonObject>();
+            TSharedRef<FJsonObject> ArmsRecord = MakeShared<FJsonObject>();
+            const FObjectOracle Main = CompareObjectOracle(0, false, SnapshotRow(Snapshot, false), View, false, Record);
+            CheckObjectOracle(0, false, Main, TEXT("no camera"));
+            const FObjectOracle ArmsOracle = CompareObjectOracle(0, true, SnapshotRow(Snapshot, true), View, false, ArmsRecord);
+            CheckObjectOracle(0, true, ArmsOracle, TEXT("no camera"));
+            Record->SetObjectField(TEXT("secondary"), ArmsRecord);
+            Record->SetObjectField(TEXT("maya_snapshot"), Snapshot);
+            // Unreal's applied evidence for the arms object, as Maya received it.
+            int32 ArmsBones = -1, ArmsMorphs = -1;
+            const TSharedPtr<FJsonObject>* Applied = nullptr;
+            if (MayaResult->TryGetObjectField(TEXT("applied"), Applied))
+            {
+                Record->SetObjectField(TEXT("applied"), *Applied);
+                const TArray<TSharedPtr<FJsonValue>>* Components = nullptr;
+                if ((*Applied)->TryGetArrayField(TEXT("components"), Components))
+                {
+                    for (const TSharedPtr<FJsonValue>& Component : *Components)
+                    {
+                        if (Component->AsObject()->GetStringField(TEXT("object_id")) == SecondaryObjectId)
+                        {
+                            ArmsBones = Component->AsObject()->GetIntegerField(TEXT("bones"));
+                            ArmsMorphs = Component->AsObject()->GetIntegerField(TEXT("morphs"));
+                        }
+                    }
+                }
+            }
+            WriteJsonFile(FPaths::Combine(EvidenceDir, TEXT("oracle-arms.json")), Record);
+            Log(FString::Printf(TEXT("[arms] Unreal applied the arms object with %d bones and %d Morphs (required %d bones)"),
+                ArmsBones, ArmsMorphs, ArmsRequired.Num()));
+            Test->TestEqual(TEXT("[arms] the arms display holds exactly the arms' required bones"), ArmsBones, ArmsRequired.Num());
+            Test->TestTrue(TEXT("[arms] the arms display holds Maya's Morphs"), ArmsMorphs >= 1);
+            return true;
+        });
     }
 
     /** Maya connects the set again; both objects negotiate. */
@@ -2186,6 +2509,7 @@ private:
             if (RefusalPhase == 0)
             {
                 InjectMorphs = DisplayedMorphs();
+                StartFrameWatch(TEXT("delayed second object"));
                 DelayUntil = 0.0;
                 MtoUSetLinkageApplyProbe([this](EMtoULinkageApplyStage Stage, const FString& ObjectId, const FString&)
                 {
@@ -2231,6 +2555,7 @@ private:
                 return false;
             }
             MtoUSetLinkageApplyProbe(nullptr);
+            CheckFrameWatch();
             Log(FString::Printf(TEXT("[inject] delayed second object: held %d subject checks over 1.2 s; during the hold the displays moved at most %.4f cm and %.5f Morph weight, applied changed %d; then the whole set converged at %.1f"),
                 HeldChecks, MaxHeldPoseDelta, MaxHeldMorphDelta, bAppliedDuringDropout ? 1 : 0, View.AppliedDisplayFrame));
             Test->TestTrue(TEXT("the delayed object was really held"), HeldChecks > 1);
@@ -2253,6 +2578,7 @@ private:
             if (RefusalPhase == 0)
             {
                 InjectMorphs = DisplayedMorphs();
+                StartFrameWatch(TEXT("display failed after staging"));
                 BrokenGeneration.Reset();
                 RefusalStarted = 0.0;
                 MtoUSetLinkageApplyProbe([this, Display](EMtoULinkageApplyStage Stage, const FString&, const FString& Generation)
@@ -2262,6 +2588,7 @@ private:
                         // Every display staged the group; the second object's
                         // display leaves the world before the commit.
                         BrokenGeneration = Generation;
+                        WatchBreakFrame = WatchedFrames.Num();
                         Display->UnregisterComponent();
                     }
                     return true;
@@ -2325,8 +2652,208 @@ private:
             Test->TestNotNull(TEXT("the restored display evaluates Live Link again"),
                 Cast<ULiveLinkInstance>(SecondaryActor->GetSkeletalMeshComponent()->GetAnimInstance()));
             Log(FString::Printf(TEXT("[inject] the whole set converged again at %.1f"), View.AppliedDisplayFrame));
+            CheckFrameWatch();
             return true;
         });
+    }
+
+    struct FWatchedDisplay
+    {
+        TWeakObjectPtr<USkeletalMeshComponent> Display;
+        FString Label;
+        TArray<int32> Bones;
+    };
+    struct FWatchedState
+    {
+        bool bRegistered = false;
+        TArray<FVector> Bones;
+        TMap<FName, float> Morphs;
+    };
+
+    /**
+     * Watches every display of both objects (primary displays and parts) at
+     * every frame end, which is when a frame renders, from an injection until
+     * the set has converged on the next group. Each frame must show, on all
+     * registered displays together, either the last complete group the watch
+     * started on or the group the set converged on at its end: never a mix,
+     * and the new group only once Unreal confirmed it.
+     */
+    void StartFrameWatch(const FString& Name)
+    {
+        StopFrameWatch();
+        FrameWatchName = Name;
+        WatchedDisplays.Reset();
+        WatchedFrames.Reset();
+        WatchedApplied.Reset();
+        WatchBreakFrame = INDEX_NONE;
+        for (const bool bSecondary : {false, true})
+        {
+            AMtoULiveLinkActor* Owner = bSecondary ? SecondaryActor.Get() : Actor.Get();
+            if (!Owner)
+            {
+                continue;
+            }
+            TArray<USkeletalMeshComponent*> Displays;
+            Displays.Add(Owner->GetSkeletalMeshComponent());
+            for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Owner->GetCharacterPartComponents())
+            {
+                Displays.Add(Part.Get());
+            }
+            for (USkeletalMeshComponent* Display : Displays)
+            {
+                if (!Display || !Display->GetSkeletalMeshAsset())
+                {
+                    continue;
+                }
+                FWatchedDisplay& Entry = WatchedDisplays.AddDefaulted_GetRef();
+                Entry.Display = Display;
+                Entry.Label = FString::Printf(TEXT("%s/%s"), bSecondary ? TEXT("secondary") : TEXT("character"),
+                    *Display->GetSkeletalMeshAsset()->GetName());
+                // Up to 64 bones spread over the skeleton, plus every oracle bone.
+                const int32 Count = Display->GetSkeletalMeshAsset()->GetRefSkeleton().GetNum();
+                const int32 Stride = FMath::Max(1, Count / 64);
+                for (int32 Bone = 0; Bone < Count; Bone += Stride)
+                {
+                    Entry.Bones.AddUnique(Bone);
+                }
+                for (const TSharedPtr<FJsonValue>& Joint : OracleJointsOf(bSecondary))
+                {
+                    const int32 Bone = Display->GetBoneIndex(FName(*Joint->AsString()));
+                    if (Bone != INDEX_NONE)
+                    {
+                        Entry.Bones.AddUnique(Bone);
+                    }
+                }
+            }
+        }
+        FrameWatch = FCoreDelegates::OnEndFrame.AddLambda([this]()
+        {
+            TArray<FWatchedState>& Frame = WatchedFrames.AddDefaulted_GetRef();
+            for (const FWatchedDisplay& Entry : WatchedDisplays)
+            {
+                FWatchedState& State = Frame.AddDefaulted_GetRef();
+                USkeletalMeshComponent* Display = Entry.Display.Get();
+                State.bRegistered = Display && Display->IsRegistered();
+                if (!State.bRegistered)
+                {
+                    continue;
+                }
+                const TArray<FTransform>& Space = Display->GetComponentSpaceTransforms();
+                for (const int32 Bone : Entry.Bones)
+                {
+                    State.Bones.Add(Space.IsValidIndex(Bone) ? Space[Bone].GetLocation() : FVector::ZeroVector);
+                }
+                for (const TPair<const UMorphTarget*, int32>& Active : Display->ActiveMorphTargets)
+                {
+                    if (Active.Key && Display->MorphTargetWeights.IsValidIndex(Active.Value))
+                    {
+                        State.Morphs.Add(Active.Key->GetFName(), Display->MorphTargetWeights[Active.Value]);
+                    }
+                }
+            }
+            const FMtoULinkageView View = MtoUGetLinkageView();
+            WatchedApplied.Add(FString::Printf(TEXT("%s#%d"), *View.AppliedEvalId, View.AppliedSampleSerial));
+        });
+    }
+
+    void StopFrameWatch()
+    {
+        if (FrameWatch.IsValid())
+        {
+            FCoreDelegates::OnEndFrame.Remove(FrameWatch);
+            FrameWatch.Reset();
+        }
+    }
+
+    /** The largest bone (cm) and Morph difference of one display between two frames. */
+    static void WatchedDifference(const FWatchedState& A, const FWatchedState& B, double& OutBones, double& OutMorphs)
+    {
+        OutBones = 0.0;
+        OutMorphs = 0.0;
+        for (int32 Index = 0; Index < FMath::Min(A.Bones.Num(), B.Bones.Num()); ++Index)
+        {
+            OutBones = FMath::Max(OutBones, FVector::Distance(A.Bones[Index], B.Bones[Index]));
+        }
+        for (const TPair<FName, float>& Morph : A.Morphs)
+        {
+            OutMorphs = FMath::Max(OutMorphs, double(FMath::Abs(Morph.Value - B.Morphs.FindRef(Morph.Key))));
+        }
+        for (const TPair<FName, float>& Morph : B.Morphs)
+        {
+            OutMorphs = FMath::Max(OutMorphs, double(FMath::Abs(Morph.Value - A.Morphs.FindRef(Morph.Key))));
+        }
+    }
+
+    /**
+     * Checks that every watched frame shows, on all registered displays, exactly
+     * the group Unreal last confirmed: the one the watch started on until a new
+     * group is confirmed, then that group. A group's own reference is its last
+     * watched frame, when the set had settled on it.
+     */
+    void CheckFrameWatch()
+    {
+        StopFrameWatch();
+        const FString Tag = TEXT("[frames] ") + FrameWatchName;
+        if (!Test->TestTrue(*(Tag + TEXT(": frames were watched")), WatchedFrames.Num() > 2))
+        {
+            return;
+        }
+        TMap<FString, int32> Reference;
+        for (int32 FrameIndex = 0; FrameIndex < WatchedFrames.Num(); ++FrameIndex)
+        {
+            Reference.Add(WatchedApplied[FrameIndex], FrameIndex);
+        }
+        constexpr double BoneTolerance = 0.05;
+        constexpr double MorphTolerance = 0.001;
+        int32 Off = 0, Unregistered = 0, StartFrames = 0;
+        double PeakStartBones = 0.0, PeakStartMorphs = 0.0, PeakBones = 0.0, PeakMorphs = 0.0;
+        TArray<double> ObjectPeak = {0.0, 0.0};
+        TArray<FString> Groups;
+        for (int32 FrameIndex = 0; FrameIndex < WatchedFrames.Num(); ++FrameIndex)
+        {
+            const FString& Applied = WatchedApplied[FrameIndex];
+            Groups.AddUnique(Applied);
+            const TArray<FWatchedState>& Frame = WatchedFrames[FrameIndex];
+            const TArray<FWatchedState>& Shown = WatchedFrames[Reference[Applied]];
+            const bool bStartGroup = Applied == WatchedApplied[0];
+            StartFrames += bStartGroup ? 1 : 0;
+            FString FirstOff;
+            for (int32 Display = 0; Display < Frame.Num(); ++Display)
+            {
+                if (!Frame[Display].bRegistered || !Shown[Display].bRegistered)
+                {
+                    Unregistered += Frame[Display].bRegistered ? 0 : 1;
+                    continue;
+                }
+                double Bones = 0.0, Morphs = 0.0;
+                WatchedDifference(Frame[Display], Shown[Display], Bones, Morphs);
+                PeakBones = FMath::Max(PeakBones, Bones);
+                PeakMorphs = FMath::Max(PeakMorphs, Morphs);
+                if (bStartGroup)
+                {
+                    PeakStartBones = FMath::Max(PeakStartBones, Bones);
+                    PeakStartMorphs = FMath::Max(PeakStartMorphs, Morphs);
+                    const int32 Object = WatchedDisplays[Display].Label.StartsWith(TEXT("secondary")) ? 1 : 0;
+                    ObjectPeak[Object] = FMath::Max(ObjectPeak[Object], Bones);
+                }
+                if ((Bones >= BoneTolerance || Morphs >= MorphTolerance) && FirstOff.IsEmpty())
+                {
+                    FirstOff = FString::Printf(TEXT("%s is %.4f cm / %.5f Morph from its confirmed group"),
+                        *WatchedDisplays[Display].Label, Bones, Morphs);
+                }
+            }
+            if (!FirstOff.IsEmpty() && ++Off <= 5)
+            {
+                Log(FString::Printf(TEXT("%s: frame %d%s, confirmed %s: %s"), *Tag, FrameIndex,
+                    FrameIndex == WatchBreakFrame ? TEXT(" (display failed)") : TEXT(""),
+                    *Applied.Left(60), *FirstOff));
+            }
+        }
+        Log(FString::Printf(TEXT("%s: %d frame ends over %d displays, %d confirmed groups (display failed at frame %d, %d unregistered display samples); %d frames before the next confirmed group stayed within %.4f cm (character %.4f, second object %.4f) and %.5f Morph of the start; every frame within %.4f cm and %.5f Morph of its confirmed group; %d frames off"),
+            *Tag, WatchedFrames.Num(), WatchedDisplays.Num(), Groups.Num(), WatchBreakFrame, Unregistered, StartFrames,
+            PeakStartBones, ObjectPeak[0], ObjectPeak[1], PeakStartMorphs, PeakBones, PeakMorphs, Off));
+        Test->TestTrue(*(Tag + TEXT(": a new group is confirmed while watched")), Groups.Num() > 1 && StartFrames > 1);
+        Test->TestEqual(*(Tag + TEXT(": every frame shows exactly the last confirmed group on every display")), Off, 0);
     }
 
     /** Every Morph weight the latest Maya snapshot names, as each object's displays show it. */
@@ -2608,10 +3135,12 @@ private:
         LeaveIssued = Scenario;
         const FMtoULinkageView View = MtoUGetLinkageView();
         FString Error;
-        if (Scenario == TEXT("realtime") || Scenario == TEXT("end"))
+        if (Scenario == TEXT("realtime") || Scenario == TEXT("end") || Scenario == TEXT("arms"))
         {
+            // The arms scenario ends its preview the way 结束预览 does.
             Test->TestTrue(TEXT("the panel exit is accepted"),
-                MtoURequestLinkageLeave(Scenario, View.Identity.ModeRevision + 1, Error));
+                MtoURequestLinkageLeave(Scenario == TEXT("arms") ? TEXT("end") : *Scenario,
+                    View.Identity.ModeRevision + 1, Error));
         }
         else if (Scenario == TEXT("maya_end"))
         {
@@ -2720,6 +3249,7 @@ private:
 
     void Finish()
     {
+        StopFrameWatch();
         MtoUSetLinkageApplyProbe(nullptr);
         for (const FString& Package : ProtectedPackages)
         {
@@ -2758,6 +3288,8 @@ private:
                  {TEXT("wrong_skeleton"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("composition_swaps"), TEXT("STREAM_INTERRUPTED")},
                  {TEXT("composition_swaps"), TEXT("BLENDSHAPE_MISMATCH")},
+                 {TEXT("arms"), TEXT("STREAM_INTERRUPTED")},
+                 {TEXT("arms"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("reference"), TEXT("BLENDSHAPE_MISMATCH")},
                  {TEXT("set_injections"), TEXT("INVALID_MESSAGE")},
                  {TEXT("remove_secondary"), TEXT("BLENDSHAPE_MISMATCH")},
@@ -2810,12 +3342,26 @@ private:
     FTransform ProbeTransform;
     // The composition a swap replaced, put back afterwards.
     TObjectPtr<USkeletalMesh> SavedMesh;
+    TStrongObjectPtr<USkeletalMesh> ArmsMesh, FullBodyMesh;
+    TArray<FName> ArmsRequired, FullRequired;
+    struct FRequiredBones
+    {
+        FString Key;
+        TSet<FName> Bones;
+    };
+    FRequiredBones RequiredCache[2];
     TArray<FMtoUCharacterPart> SavedParts;
     // The apply probe's injections inside linkage.
     double DelayUntil = 0.0, MaxHeldPoseDelta = 0.0, MaxHeldMorphDelta = 0.0;
     int32 HeldChecks = 0;
     FString BrokenGeneration;
     TMap<FString, double> InjectMorphs;
+    FString FrameWatchName;
+    FDelegateHandle FrameWatch;
+    TArray<FWatchedDisplay> WatchedDisplays;
+    TArray<TArray<FWatchedState>> WatchedFrames;
+    TArray<FString> WatchedApplied;
+    int32 WatchBreakFrame = INDEX_NONE;
     bool bAbort = false;
     bool bDroppedShown = false, bDisconnectSent = false, bAppliedDuringDropout = false;
     FString LastSecondaryStatus, DroppedEvalId, InjectApplied, RefusalText;
