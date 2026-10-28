@@ -37,6 +37,48 @@ Host-dependent checks (Maya, Unreal, Substance 3D Painter, ...) remain
 project-specific and run in the supported host runtime. Scope generic linters and test discovery to the owning
 project; sibling projects are not part of its acceptance result.
 
+## Design before implementation
+
+| Change | State before implementing | Record and decision |
+| --- | --- | --- |
+| Local fix or small feature; interfaces and state ownership unchanged | Real call chain, change location, directly affected behavior and how it will be verified | A short note in the task; no separate document |
+| Cross-module feature, or a change to a public interface or to state/resource ownership | Reused capabilities, module responsibilities, data/state flow, failure recovery, compatibility and behavior that must be preserved | The existing issue or design record; one review of the key design before implementing |
+| The approach depends on an unproven host capability | The open question that decides the approach | Settle it with a minimal prototype or experiment before building further |
+
+Make ordinary implementation choices without asking. Changing agreed product
+semantics or an important trade-off is the user's decision. Cite an existing
+design when it suffices; write an ADR only for a new long-lived decision. Once
+responsibilities, contracts and acceptance are clear and no open question
+affects the approach, start implementing.
+
+## Review findings and fixes
+
+- Confirm a finding through the code path, a contract or a reproduction before
+  changing the implementation.
+- Before editing, check the actual callers and the owner of the affected state
+  or resource, and fix the root cause there. Recheck the original problem and
+  the existing behavior the fix touches; reuse evidence that remains valid.
+- Do not make a new failure pass by swallowing errors, deleting assertions,
+  loosening thresholds or rewriting acceptance. Correcting a wrong check needs
+  independent evidence. A fix that changes an interface or state ownership goes
+  back to the design step.
+- When the same kind of problem keeps returning in a third review round, stop
+  stacking patches: diagnose the root cause, narrow the change or redesign it.
+  Confirmed blockers stay blocking.
+- Style preferences and improvements unrelated to the change do not drive
+  rework; record them as follow-up candidates.
+
+## Verification scope
+
+- At the start, state briefly what behavior must be shown and the smallest
+  check that shows it. Keep the project's required checks; add more only for
+  uncovered acceptance, an actual failure or evidenced regression risk.
+- Do not add tests or defensive branches (retries, compatibility layers,
+  settings, fallbacks) for cases with no real trigger. Keep targeted checks for
+  reachable paths that could delete assets or damage a project.
+- Stop when the required checks pass, acceptance is covered and no blocker
+  remains. After a fix, rerun only what it affects.
+
 ## Repository tools
 
 For an independent project submodule, run Git, gh and project commands inside

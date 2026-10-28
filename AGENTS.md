@@ -145,6 +145,8 @@ exceptions, contracts, and useful commands.
 
 ## Validation
 
+- Before implementing, and when acting on review findings, follow the design,
+  fix and verification-scope rules in `docs/development-conventions.md`.
 - Start with the owning project's relevant checks and scope generic linters to
   its files. Test changed composite components independently; include cross-host
   acceptance when shared behavior or contracts are affected.
