@@ -1736,6 +1736,12 @@ private:
      */
     void AddLifecycle()
     {
+        // Closing the panel or replacing the scene closes 对象配对 with it, and
+        // reopening the panel does not reopen it: the baseline has the panel only.
+        Add(TEXT("[lifecycle] the pairing window closes before the baseline"), 30.0, [this]()
+        {
+            return SendOnce(TEXT("objects_window"), TEXT("close"));
+        });
         Add(TEXT("[lifecycle] warm-up cycle and baseline census"), 300.0, [this]()
         {
             if (!LifecycleCycle(TEXT("cycle")))
@@ -1848,7 +1854,7 @@ private:
             return LifecycleSend(TEXT("leave"), TEXT("end"), [this]() { return LinkageEnded(); });
         case 3:
         {
-            if (Kind == TEXT("recovery"))
+            if (Kind == TEXT("recovery") && LifecycleId < 0)
             {
                 const TSharedPtr<FJsonObject> Status = MayaStatus();
                 const TArray<TSharedPtr<FJsonValue>>* Records = nullptr;

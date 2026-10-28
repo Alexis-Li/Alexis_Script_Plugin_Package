@@ -494,6 +494,9 @@ def open_panel():
 def reopen_scene():
     """Open the fixture scene again, as an artist does, and connect."""
     open_scene()
+    # The panel's SceneOpened scriptJob runs on the idle queue; Maya runs it
+    # before a person can click 设置角色, so the driver does too.
+    cmds.flushIdleQueue()
     if "start_frame" in FIXTURE:
         cmds.currentTime(float(FIXTURE["start_frame"]), update=True)
     connect_role()
@@ -661,8 +664,10 @@ def tick():
         RESULT["panel"] = {
             "workflow": CONTROLLER._workflow, "mode": CONTROLLER._mode,
             "cached_state": getattr(view, "state", None) if view else None,
+            # The panel's controls are gone while it is closed (close_panel).
             "status": cmds.text(CONTROLLER._status_text, query=True, label=True)
-            if CONTROLLER._status_text else None}
+            if CONTROLLER._status_text and cmds.text(CONTROLLER._status_text, exists=True)
+            else None}
         try:
             command = json.loads(Path(FIXTURE["command"]).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
