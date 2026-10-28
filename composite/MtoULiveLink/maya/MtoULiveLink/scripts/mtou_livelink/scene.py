@@ -645,13 +645,20 @@ class CharacterScene(object):
         self._cleanup_error = None
 
     @classmethod
-    def capture(cls, root, display=None, display_attribute=None, on_event=None):
+    def capture(cls, root, display=None, display_attribute=None, on_event=None,
+                display_optional=False):
+        """Capture one object scene.
+
+        ``display_optional`` is for the independent object beside the primary
+        character: a skeletal prop has no Display controller, so a root
+        without one captures without an outfit instead of being refused.
+        """
         require_maya()
         scene = None
         try:
             root = cls._resolve_root(root)
             display, display_attribute = cls._resolve_display(
-                root, display, display_attribute)
+                root, display, display_attribute, display_optional)
             scene = cls(root, display, display_attribute, on_event)
             scene._commit_capture(revision=1)
             scene._register_callbacks()
@@ -675,9 +682,11 @@ class CharacterScene(object):
         return matches[0]
 
     @staticmethod
-    def _resolve_display(root, display, display_attribute):
+    def _resolve_display(root, display, display_attribute, display_optional=False):
         if display is None:
             candidates = display_candidates(root)
+            if not candidates and display_optional:
+                return None, None
             if len(candidates) != 1:
                 raise CharacterSceneError(
                     "AMBIGUOUS_DISPLAY",
@@ -731,8 +740,9 @@ class CharacterScene(object):
     def _capture_values(self, revision):
         try:
             subject = capture_subject(self._root)
-            display = self._display_record()
-            outfit = current_enum_label(display)
+            outfit = ""
+            if self._display_path is not None:
+                outfit = current_enum_label(self._display_record())
         except BindPoseError as exc:
             raise self._wrap_error("BIND_POSE_INVALID", exc)
         except (RuntimeError, ValueError) as exc:
@@ -763,6 +773,8 @@ class CharacterScene(object):
             self._callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
                 self._subject["bones"][0]["dag_path"].node(),
                 self._on_root_destroyed))
+            if self._display_path is None:
+                return
             self._callback_ids.append(om.MNodeMessage.addNodeDestroyedCallback(
                 dag_path(self._display_path).node(), self._on_display_destroyed))
             self._callback_ids.append(om.MNodeMessage.addAttributeChangedCallback(

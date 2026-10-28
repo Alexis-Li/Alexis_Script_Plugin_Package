@@ -160,6 +160,19 @@ public:
      */
     void NoteSessionEnded();
 
+    /**
+     * The Live Link subject every display of this actor evaluates: the
+     * primary character's subject unless a session negotiated the actor as the
+     * second object of its set.
+     */
+    FName GetLiveLinkSubject() const { return LiveLinkSubjectName; }
+
+    /**
+     * The displays evaluate their subject only while a session negotiated this
+     * actor as one object of its set; any other placed actor shows no stream.
+     */
+    bool IsInLiveLinkSet() const { return bInLiveLinkSet; }
+
     /** Current negotiated session's transient cache; never serialized on the actor. */
     FMtoUCachePlaybackView GetCachePlaybackView() const;
     bool StartCachedPlayback();
@@ -279,6 +292,11 @@ private:
     void ReconcileCharacterPartComponents(const FMtoUCharacterComposition& Composition);
     void DestroyCharacterPartComponent(UMtoUCharacterPartComponent& Component);
     void ConfigureLiveLinkInstance(USkeletalMeshComponent& Component);
+    /** Point every display at one object's subject and evaluate it; the source negotiates it. */
+    void SetLiveLinkSubject(FName Subject);
+    /** The actor left the set: its displays stop evaluating any subject. */
+    void ReleaseLiveLinkSubject();
+    void ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const;
     void InheritPrimaryDisplaySettings(USkeletalMeshComponent& Component);
     void HandleCharacterPartMeshChanged();
 
@@ -351,6 +369,11 @@ private:
     };
 
     TArray<FMtoUObservedPartMesh> ObservedPartMeshes;
+
+    /** The subject the negotiated session publishes this actor's object as; never saved. */
+    FName LiveLinkSubjectName = FName(TEXT("MtoU_Character"));
+    /** A session negotiated this actor as an object of its set; never saved. */
+    bool bInLiveLinkSet = false;
 
     TWeakObjectPtr<USkeletalMesh> ObservedDriverMesh;
     TWeakObjectPtr<UStaticMesh> ObservedPreviewMesh;

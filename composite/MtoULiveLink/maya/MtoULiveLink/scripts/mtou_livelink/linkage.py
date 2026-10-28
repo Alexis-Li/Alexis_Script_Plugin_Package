@@ -1,14 +1,19 @@
-"""Single-object linkage: follow the Unreal camera and time, answer with complete pose groups.
+"""Linkage: follow the Unreal camera and time, answer with complete pose groups.
 
 The session owns the exclusive time-control state on the Maya side. It never
 touches Maya directly: the host adapter passed to it applies the time and
 camera, samples the objects and restores the captured state, so the state
 machine and its scheduling stay testable without a host.
 
-Scheduling follows the frozen v10 contract (protocol/v10.md): one target is
+Scheduling follows the frozen v11 contract (protocol/v11.md): one target is
 being applied and one newer target may wait; an advancing desired target never
 cancels the work in flight, because Unreal shows that complete result and marks
 it as lagging instead of losing the only sample that was going to arrive.
+
+A group answers one target for the whole object set: the primary character and
+the optional second object are sampled at the same Maya time, and while the
+second object is being removed no group is sent, so Unreal never receives a
+group of a set it is closing.
 """
 
 import re
@@ -184,7 +189,7 @@ class LinkageStatus(object):
                  "issued", "applied_eval_id", "applied_display_frame",
                  "applied_sample_serial", "applied_age", "lag_seconds",
                  "pending", "applied_count", "refused_count", "converged",
-                 "recovery", "detail")
+                 "recovery", "detail", "object_ids", "removing")
 
     def __init__(self, **values):
         for name in self.__slots__:
@@ -196,11 +201,16 @@ class LinkageSession(object):
 
     def __init__(self, host, session, on_event=None, object_id=CHARACTER_OBJECT_ID,
                  space_revision=1, set_revision=1, clock=time.monotonic,
-                 mode_revision=0):
+                 mode_revision=0, object_ids=None):
         self._host = host
         self._session = session
         self._on_event = on_event
         self._object_id = object_id
+        # Every object of the current set, primary first; a group carries all.
+        self._object_ids = tuple(object_ids or (object_id,))
+        # True while the second object is being removed: no group of the old
+        # set is sent, and the waiting target is answered by the new set.
+        self._removing = False
         self._space_revision = int(space_revision)
         self._set_revision = int(set_revision)
         self._clock = clock
@@ -254,6 +264,39 @@ class LinkageSession(object):
         with self._lock:
             return self._set_revision
 
+    def object_ids(self):
+        with self._lock:
+            return self._object_ids
+
+    def begin_set_removal(self):
+        """Close the old set: hold groups until Unreal confirms the new one."""
+        with self._lock:
+            self._removing = True
+            self._detail = "正在移除副对象，等待 Unreal 确认"
+
+    def adopt_set(self, set_revision, object_ids):
+        """Adopt the set Unreal confirmed; the answer in flight belongs to the old set.
+
+        Unreal cancels the old set's work and issues the current target again,
+        so the issued slot is released and the next target is answered by the
+        new set.
+        """
+        revision = exact_int(set_revision)
+        if revision is None or revision < 1:
+            raise LinkageError("INVALID_MESSAGE", "set revision must be a positive integer")
+        with self._lock:
+            if revision < self._set_revision:
+                return False
+            self._set_revision = revision
+            self._object_ids = tuple(object_ids)
+            self._removing = False
+            self._issued = None
+            self._detail = "对象集合已更新（{0} 个对象）".format(len(self._object_ids))
+        self._emit(LinkageEvent(
+            "set", mode=self.mode(), control=self._control,
+            mode_revision=self.mode_revision(), detail=self._detail))
+        return True
+
     def takeover_held(self):
         """True after 返回实时 while Unreal may still hold the original writers."""
         with self._lock:
@@ -295,6 +338,8 @@ class LinkageSession(object):
                 converged=self._converged_locked(),
                 recovery=tuple(self._recovery),
                 detail=self._detail,
+                object_ids=self._object_ids,
+                removing=self._removing,
             )
 
     def _converged_locked(self):
@@ -689,10 +734,13 @@ class LinkageSession(object):
                 stale=revision < self._mode_revision)
         set_revision = exact_int(message.get("set_revision"))
         if set_revision is not None and set_revision != self._set_revision:
+            # A target of the set a removal just closed is still on the wire
+            # when Maya adopts the new set; it is counted, not reported.
             raise LinkageError(
                 "SET_REVISION_STALE",
                 "message set revision {0} is not the current {1}".format(
-                    set_revision, self._set_revision))
+                    set_revision, self._set_revision),
+                stale=set_revision < self._set_revision)
         space_revision = exact_int(message.get("space_revision"))
         if space_revision is not None and space_revision != self._space_revision:
             raise LinkageError(
@@ -709,10 +757,12 @@ class LinkageSession(object):
         waiting: Unreal shows that complete result and marks it as lagging.
         """
         with self._lock:
-            if self._closed or self._mode != LINKAGE_MODE:
+            if self._closed or self._mode != LINKAGE_MODE or self._removing:
                 return 0
             target = self._pending
             self._pending = None
+            object_ids = list(self._object_ids)
+            set_revision = self._set_revision
         if target is None:
             return 0
         try:
@@ -727,15 +777,21 @@ class LinkageSession(object):
                 mode_revision=self._mode_revision, detail=str(exc),
                 diagnostic=self._diagnostic("LINKAGE_APPLY_FAILED", exc)))
             return 0
-        objects = self._host.sample_group([self._object_id])
+        objects = self._host.sample_group(object_ids)
         with self._lock:
+            if self._set_revision != set_revision or self._removing:
+                # The set changed while Maya sampled: the target is answered
+                # again by the current set instead of by the closed one.
+                if self._pending is None:
+                    self._pending = target
+                return 0
             self._sample_serial += 1
             sample_serial = self._sample_serial
             self._issued = target
             self._issued_sample_serial = sample_serial
             self._detail = "已采样 {0}".format(target.eval_id)
         message = make_group_message(
-            self._session_id, self._set_revision, self._mode_revision,
+            self._session_id, set_revision, self._mode_revision,
             self._space_revision, target.eval_id, target.transport_serial,
             sample_serial, objects, readback, applied_time)
         size = group_wire_size(message)

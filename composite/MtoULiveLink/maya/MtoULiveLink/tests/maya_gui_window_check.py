@@ -28,6 +28,13 @@ through Qt, so Maya runs its own close and click handling.
    then closing the panel (which closes the reference window), switching
    workflow, a new scene and opening a scene, each with the reference window
    open; then Maya quits with both open.
+6. ``exit_objects_open``: the panel and the 对象配对 window are open when Maya
+   quits.
+7. ``objects_close_cycles``: the 对象配对 window is opened from the panel twice
+   (one window) and closed from its title bar 20 times.
+8. ``objects_owned_paths``: three rounds of the 对象配对 window's own close
+   button, closing the panel (which closes it), a new scene and opening a
+   scene with it open; then Maya quits with it open.
 
 Maya quits through ``cmds.quit`` or, with ``--quit title-bar``, by closing
 its main window as a person does. A scenario passes when every expectation
@@ -49,8 +56,10 @@ from pathlib import Path
 
 MAIN = "MtoULiveLinkWindow"
 REFERENCE = "MtoULiveLinkReferenceWindow"
+OBJECTS = "MtoULiveLinkObjectsWindow"
 STEPS = ("exit_both_open", "exit_after_reference_close", "exit_after_all_closed",
-         "close_cycles", "owned_paths")
+         "close_cycles", "owned_paths", "exit_objects_open", "objects_close_cycles",
+         "objects_owned_paths")
 CLOSE_CYCLES = 20
 OWNED_ROUNDS = 3
 WAIT_SECONDS = 15.0
@@ -157,6 +166,18 @@ def _in_maya():
         widget(getattr(panel.CONTROLLER, attribute), "findControl").click()
         yield wait("workflow switched", lambda: True)
 
+    def objects_windows():
+        return (cmds.lsUI(windows=True) or []).count(OBJECTS)
+
+    def open_objects():
+        stage("open objects window")
+        button = widget(panel.CONTROLLER._objects_window_button, "findControl")
+        button.click()
+        yield wait("objects window open", lambda: cmds.window(OBJECTS, exists=True))
+        button.click()  # a second click reuses the window
+        yield wait("objects reuse", lambda: True)
+        expect("one objects window", objects_windows() == 1, str(objects_windows()))
+
     def check_panel_usable(label):
         controller = panel.CONTROLLER
         expect(label + " panel open", cmds.window(MAIN, exists=True))
@@ -232,11 +253,61 @@ def _in_maya():
                    str(entry))
         yield from open_reference()
 
+    def exit_objects_open():
+        yield from open_panel()
+        yield from open_objects()
+
+    def objects_close_cycles():
+        yield from open_panel()
+        for cycle in range(CLOSE_CYCLES):
+            label = "objects cycle {0}".format(cycle + 1)
+            yield from open_objects()
+            yield from close_natively(OBJECTS)
+            check_panel_usable(label)
+            expect(label + " state", objects_windows() == 0
+                   and panel.CONTROLLER._objects_window is None
+                   and snapshot(label)["script_jobs"] == 3, str(objects_windows()))
+
+    def objects_owned_paths():
+        scene = evidence / (step + "-scene.ma")
+        cmds.file(rename=str(scene))
+        cmds.file(save=True, type="mayaAscii", force=True)
+        yield from open_panel()
+        for round_index in range(OWNED_ROUNDS):
+            label = "objects round {0}".format(round_index + 1)
+            yield from open_objects()
+            stage("objects close button")
+            widget(panel.CONTROLLER._objects_window._close_button, "findControl").click()
+            yield wait("objects window closed by its button",
+                       lambda: not cmds.window(OBJECTS, exists=True))
+            yield from open_objects()
+            yield from close_natively(MAIN)  # the panel closes its child window
+            expect(label + " panel close", objects_windows() == 0 and windows()[MAIN] == 0,
+                   str(objects_windows()))
+            yield from open_panel()
+            yield from open_objects()
+            stage("new scene")
+            cmds.file(new=True, force=True)
+            yield from until_idle("new scene")
+            expect(label + " new scene keeps one objects window", objects_windows() <= 1)
+            yield from open_objects()
+            stage("open scene")
+            cmds.file(str(scene), open=True, force=True)
+            yield from until_idle("open scene")
+            expect(label + " open scene keeps one objects window", objects_windows() <= 1)
+            entry = snapshot(label)
+            expect(label + " state", entry["windows"][MAIN] == 1 and entry["script_jobs"] == 3,
+                   str(entry))
+        yield from open_objects()
+
     # ------------------------------------------------------------- runner
     scenario = {"exit_both_open": exit_both_open,
                 "exit_after_reference_close": exit_after_reference_close,
                 "exit_after_all_closed": exit_after_all_closed,
-                "close_cycles": close_cycles, "owned_paths": owned_paths}[step]()
+                "close_cycles": close_cycles, "owned_paths": owned_paths,
+                "exit_objects_open": exit_objects_open,
+                "objects_close_cycles": objects_close_cycles,
+                "objects_owned_paths": objects_owned_paths}[step]()
 
     def quit_maya():
         snapshot("before quit")

@@ -78,16 +78,35 @@ struct MTOULIVELINK_API FMtoUAppliedEvidence
     int32 PartCount = 0;
 };
 
+/** One object of the set as the panel shows it. */
+struct MTOULIVELINK_API FMtoULinkageObjectView
+{
+    FString ObjectId;
+    /** The paired Binding actor's path; empty while the object is unpaired. */
+    FString TargetPath;
+    bool bPaired = false;
+    /** The current connection negotiated this object. */
+    bool bNegotiated = false;
+};
+
 /** What the panel shows; produced by the runtime, rendered by the editor. */
 struct MTOULIVELINK_API FMtoULinkageView
 {
     FString Mode = TEXT("realtime");
     FString Control = TEXT("maya");
     FMtoULinkageIdentity Identity;
+    /** The primary character is paired. */
     bool bPaired = false;
     FString PairedObjectId;
     FString TargetKind;
     FString TargetPath;
+    /**
+     * Every object the panel knows about, primary first: the negotiated set
+     * while connected, else the paired targets.
+     */
+    TArray<FMtoULinkageObjectView> Objects;
+    /** The second object is being removed from the set. */
+    bool bRemovingObject = false;
     FString TargetEvalId;
     double TargetDisplayFrame = 0.0;
     FString AppliedEvalId;
@@ -124,10 +143,18 @@ struct MTOULIVELINK_API FMtoULinkageHooks
 {
     /** Fill OutTarget from the open Level Sequence; false when nothing to send. */
     TFunction<bool(FMtoUCameraTimeTarget& OutTarget)> EvaluateCameraTime;
-    /** Mute the paired target's writers; false names the reason and its code. */
+    /**
+     * Mute the writers of every paired target of the set; false names the
+     * reason and its code, and nothing stays muted then.
+     */
     TFunction<bool(FString& OutError, FString& OutErrorCode)> TakeOverTarget;
     /** Restore every borrowed writer; false names what could not be restored. */
     TFunction<bool(FString& OutError, FString& OutErrorCode)> RestoreTarget;
+    /**
+     * Restore only the writers borrowed for one object of the set, for the
+     * removal of the second object; false names what could not be restored.
+     */
+    TFunction<bool(const FString& ObjectId, FString& OutError, FString& OutErrorCode)> RestoreObject;
     /**
      * While writers are borrowed: false, with the reason, once the takeover's
      * Level Sequence was closed or switched, its world was closed or the

@@ -625,15 +625,14 @@ bool FMtoUDetailsLinkageCompactTextTest::RunTest(const FString& Parameters)
     const FString Shown = FMtoULiveLinkActorDetails::CompactLinkageText(
         FText::FromString(TEXT("最新完整应用时间：") + EvalId + TEXT(" · 帧 1,740"))).ToString();
 
+    // Slate wraps only at spaces, so every run between spaces must fit; a
+    // '/' inside an object path is no break opportunity.
     TArray<FString> Runs;
     Shown.ParseIntoArray(Runs, TEXT(" "));
-    for (const FString& Line : Runs)
+    for (const FString& Run : Runs)
     {
-        TArray<FString> Segments;
-        Line.ParseIntoArray(Segments, TEXT("/"));
-        for (const FString& Segment : Segments)
         {
-            TestTrue(*FString::Printf(TEXT("run '%s' fits one line"), *Segment.Left(60)), Segment.Len() <= 52);
+            TestTrue(*FString::Printf(TEXT("run '%s' fits one line"), *Run.Left(60)), Run.Len() <= 52);
         }
     }
     TestTrue(TEXT("the sequence time stays readable"), Shown.StartsWith(TEXT("最新完整应用时间：Main@1392000+000//Game/")));
@@ -3986,7 +3985,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -4145,7 +4144,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -5119,7 +5118,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -6003,7 +6002,7 @@ bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
                 *ComparisonTransformJson(State->Skeleton->GetRefBonePose()[Index]));
         }
         const FString Init = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":10,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
+            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
             *BonesJson, ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
             ComparisonPartOnlyMorph);
         const TArray<uint8> InitBytes = ComparisonPacket(Init);

@@ -1,5 +1,6 @@
 """Real-time streaming session, sender worker and negotiation events."""
 
+import contextlib
 import errno
 import json
 import queue
@@ -9,7 +10,13 @@ import threading
 import time
 
 from . import config, mayaapi
-from .config import CHARACTER_OBJECT_ID, DEFAULT_PLAYBACK_CAP, WORKFLOW_ANIMATION, WORKFLOWS
+from .config import (
+    CHARACTER_OBJECT_ID,
+    DEFAULT_PLAYBACK_CAP,
+    SECONDARY_OBJECT_ID,
+    WORKFLOW_ANIMATION,
+    WORKFLOWS,
+)
 from .diagnostics import (
     DIAGNOSTICS,
     blendshape_warning_from_reply,
@@ -23,6 +30,7 @@ from .protocol import (
     make_frame_message,
     make_hello_message,
     make_init_message,
+    make_remove_object_message,
     recv_message,
     validate_reply,
 )
@@ -55,21 +63,45 @@ CONTROL_REPLY_TYPES = (
     "reference_removed",
     "camera_time",
     "applied",
+    "object_removed",
 )
+
+# A second object's negotiation differences are listed with this prefix, so
+# the warning dialog tells them apart from the primary character's.
+SECONDARY_WARNING_PREFIX = "副对象 · "
+
+
+def merge_object_warnings(warnings):
+    """One warning for the whole set; the second object's entries are prefixed."""
+    merged = {"missing_in_unreal": [], "missing_in_maya": [],
+              "bone_name_remaps": [], "has_warning": False}
+    for index, warning in enumerate(warnings):
+        prefix = "" if index == 0 else SECONDARY_WARNING_PREFIX
+        for key in ("missing_in_unreal", "missing_in_maya", "bone_name_remaps"):
+            merged[key].extend(prefix + str(value) for value in warning.get(key) or ())
+        merged["has_warning"] = merged["has_warning"] or bool(warning.get("has_warning"))
+    return merged
 
 
 class SenderWorker(threading.Thread):
     def __init__(self, init_message, hello_message=None):
         threading.Thread.__init__(self, name="MtoULiveLinkSender")
         self.daemon = True
-        self._init_message = init_message
+        # One init per object of the set, primary first; a single dict is the
+        # one-character set.
+        if isinstance(init_message, (list, tuple)):
+            self._init_messages = [dict(message) for message in init_message]
+        else:
+            self._init_messages = [init_message]
+        self._init_message = self._init_messages[0]
         self._hello_message = hello_message
-        # The connection greeting precedes the object description so a peer
+        # The connection greeting precedes the object descriptions so a peer
         # with a different protocol version refuses before it reads an object.
         initial = b""
         if hello_message is not None:
             initial += encode_message(hello_message)
-        initial += encode_message(init_message)
+        for message in self._init_messages:
+            initial += encode_message(message)
         self._initial_packet = initial
         self._hello_reply = None
         self._last_control_reply = None
@@ -274,13 +306,17 @@ class SenderWorker(threading.Thread):
             return reply
         return None
 
-    def _identity_mismatch(self, reply):
+    def _identity_mismatch(self, reply, init_message=None):
         """Describe the first identity field the ready reply fails to echo."""
+        init_message = init_message or self._init_message
+        expected_object = init_message.get("object_id")
+        if expected_object is not None and reply.get("object_id") != expected_object:
+            return "object_id: expected {0!r}, ready reported {1!r}".format(
+                expected_object, reply.get("object_id"))
         checks = (
             ("session_id", self._hello_reply or {}),
-            ("object_id", self._init_message),
-            ("set_revision", self._init_message),
-            ("space_revision", self._init_message),
+            ("set_revision", init_message),
+            ("space_revision", init_message),
         )
         for field, source in checks:
             expected = exact_int(source.get(field))
@@ -291,6 +327,53 @@ class SenderWorker(threading.Thread):
                 return "{0}: expected {1!r}, ready reported {2!r}".format(
                     field, expected, reply.get(field))
         return None
+
+    def _negotiate_set(self, sock):
+        """Read one ready per object of the set; returns the merged warning.
+
+        Any object Unreal refuses ends the whole set: the error reply becomes
+        the session's terminal status and nothing streams.
+        """
+        warnings = []
+        for init_message in self._init_messages:
+            reply = self._read_handshake_reply(sock)
+            if reply is None:
+                return None
+            if reply.get("type") == "error":
+                diagnostic = make_diagnostic(
+                    reply.get("code") or "INTERNAL_ERROR",
+                    reply.get("message") or "Unreal rejected the connection",
+                    details=reply.get("details") or reply.get("message") or "")
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return None
+            if reply.get("type") != "ready":
+                diagnostic = make_diagnostic(
+                    "INVALID_MESSAGE",
+                    "expected ready, received {0}".format(reply.get("type")))
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return None
+            identity_error = self._identity_mismatch(reply, init_message)
+            if identity_error is not None:
+                diagnostic = make_diagnostic(
+                    "INVALID_MESSAGE",
+                    "The ready reply does not echo the negotiated identity.",
+                    details=identity_error)
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return None
+            expected_revision = exact_int(init_message.get("revision"))
+            if (expected_revision is None
+                    or exact_int(reply.get("revision")) != expected_revision):
+                diagnostic = make_diagnostic(
+                    "INVALID_MESSAGE",
+                    "The ready reply does not echo the negotiated revision.",
+                    details="init revision {0!r}, ready revision {1!r}".format(
+                        init_message.get("revision"),
+                        reply.get("revision")))
+                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+                return None
+            warnings.append(blendshape_warning_from_reply(
+                filter_bone_driven_differences(init_message, reply)))
+        return merge_object_warnings(warnings)
 
     def hello_reply(self):
         with self._lock:
@@ -310,44 +393,10 @@ class SenderWorker(threading.Thread):
             if not self._send_initial(sock):
                 return
             sock.settimeout(5.0)
-            reply = self._read_handshake_reply(sock)
-            if reply is None:
-                return
-            if reply.get("type") == "error":
-                diagnostic = make_diagnostic(
-                    reply.get("code") or "INTERNAL_ERROR",
-                    reply.get("message") or "Unreal rejected the connection",
-                    details=reply.get("details") or reply.get("message") or "")
-                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
-                return
-            if reply.get("type") != "ready":
-                diagnostic = make_diagnostic(
-                    "INVALID_MESSAGE",
-                    "expected ready, received {0}".format(reply.get("type")))
-                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
-                return
-            identity_error = self._identity_mismatch(reply)
-            if identity_error is not None:
-                diagnostic = make_diagnostic(
-                    "INVALID_MESSAGE",
-                    "The ready reply does not echo the negotiated identity.",
-                    details=identity_error)
-                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
-                return
-            expected_revision = exact_int(self._init_message.get("revision"))
-            if (expected_revision is None
-                    or exact_int(reply.get("revision")) != expected_revision):
-                diagnostic = make_diagnostic(
-                    "INVALID_MESSAGE",
-                    "The ready reply does not echo the negotiated revision.",
-                    details="init revision {0!r}, ready revision {1!r}".format(
-                        self._init_message.get("revision"),
-                        reply.get("revision")))
-                self._set_status("error", diagnostic["summary"], diagnostic=diagnostic)
+            warning = self._negotiate_set(sock)
+            if warning is None:
                 return
             connected = True
-            warning = blendshape_warning_from_reply(
-                filter_bone_driven_differences(self._init_message, reply))
             self._set_status("ready", "Connected", warning=warning)
             sock.settimeout(0.25)
             while not self._stop_event.is_set():
@@ -508,13 +557,25 @@ class StreamingSession(object):
                  playback_state=None, workflow=WORKFLOW_ANIMATION,
                  blendshapes_enabled=True, object_id=CHARACTER_OBJECT_ID,
                  set_revision=1, space_revision=1, scene_units=None,
-                 maya_version=None):
+                 maya_version=None, secondary_scene=None):
         if workflow not in WORKFLOWS:
             raise StreamingSessionError(
                 "INVALID_MESSAGE",
                 "workflow must be 'animation' or 'model'.",
                 "requested workflow: {0}".format(workflow))
+        if secondary_scene is not None and workflow != WORKFLOW_ANIMATION:
+            raise StreamingSessionError(
+                "OBJECT_SET_UNSUPPORTED",
+                "模型工作流只支持单个角色。",
+                "a second object streams only in the Animation workflow")
         self._scene = scene
+        # The independent object beside the primary character; None for the
+        # one-character set. Removal inside the connection clears it.
+        self._secondary_scene = secondary_scene
+        self._secondary_revision = None
+        # The new set revision a requested removal waits for; frames pause
+        # until Unreal confirms it.
+        self._removal_pending = None
         self._scene_fps = fps
         self._playback_cap = normalize_playback_cap(playback_cap)
         self._playback_state = playback_state or maya_is_playing
@@ -541,10 +602,46 @@ class StreamingSession(object):
         self._cleaned = False
         self._cleanup_error = None
         self._sampling_paused = False
+        self._samples_held = 0
 
     @property
     def object_id(self):
         return self._object_id
+
+    @property
+    def set_objects(self):
+        """The ordered object ids of the current set, primary first."""
+        if self._secondary_scene is not None:
+            return (self._object_id, SECONDARY_OBJECT_ID)
+        return (self._object_id,)
+
+    @property
+    def secondary_scene(self):
+        return self._secondary_scene
+
+    @contextlib.contextmanager
+    def holding_samples(self):
+        """Skip live samples for the duration; the connection is still watched.
+
+        A scene-reference import runs long Maya commands that can let this
+        session's timer fire while the scene is only half built.
+        """
+        self._samples_held += 1
+        try:
+            yield
+        finally:
+            self._samples_held -= 1
+
+    @property
+    def removal_pending(self):
+        return self._removal_pending is not None
+
+    def object_scenes(self):
+        """Map of object id to its scene for the current set."""
+        scenes = {self._object_id: self._scene}
+        if self._secondary_scene is not None:
+            scenes[SECONDARY_OBJECT_ID] = self._secondary_scene
+        return scenes
 
     @property
     def set_revision(self):
@@ -586,7 +683,7 @@ class StreamingSession(object):
               playback_state=None, workflow=WORKFLOW_ANIMATION,
               blendshapes_enabled=True, object_id=CHARACTER_OBJECT_ID,
               set_revision=1, space_revision=1, scene_units=None,
-              maya_version=None):
+              maya_version=None, secondary_scene=None):
         try:
             fps = validate_frame_rate(fps)
             snapshot = scene.snapshot()
@@ -596,11 +693,18 @@ class StreamingSession(object):
         except (RuntimeError, ValueError) as exc:
             raise StreamingSessionError(
                 "INVALID_FRAME_RATE", str(exc), details=str(exc))
+        secondary_snapshot = None
+        if secondary_scene is not None:
+            try:
+                secondary_snapshot = secondary_scene.snapshot()
+            except CharacterSceneError as error:
+                raise StreamingSessionError(
+                    error.code, "副对象：" + error.message, error.details)
         session = cls(scene, fps, on_event, playback_cap, playback_state,
                       workflow, blendshapes_enabled, object_id, set_revision,
-                      space_revision, scene_units, maya_version)
+                      space_revision, scene_units, maya_version, secondary_scene)
         try:
-            session._start(snapshot)
+            session._start(snapshot, secondary_snapshot)
         except Exception as exc:
             session._cleanup()
             if isinstance(exc, StreamingSessionError):
@@ -609,7 +713,7 @@ class StreamingSession(object):
                 "INTERNAL_ERROR", str(exc), details=str(exc))
         return session
 
-    def _start(self, snapshot):
+    def _object_init(self, snapshot, object_id):
         if len(snapshot.bind_local_transforms) != len(snapshot.bones):
             raise StreamingSessionError(
                 "BIND_POSE_INVALID",
@@ -618,17 +722,25 @@ class StreamingSession(object):
             [name, parent, list(snapshot.bind_local_transforms[index])]
             for index, (name, parent) in enumerate(snapshot.bones)
         ]
-        init_message = make_init_message(
+        return make_init_message(
             bones, list(snapshot.curve_names), snapshot.revision,
             workflow=self._workflow,
             blendshapes_enabled=self._blendshapes_enabled,
-            object_id=self._object_id,
+            object_id=object_id,
             set_revision=self._set_revision,
-            space_revision=self._space_revision)
+            space_revision=self._space_revision,
+            set_objects=list(self.set_objects))
+
+    def _start(self, snapshot, secondary_snapshot=None):
+        init_messages = [self._object_init(snapshot, self._object_id)]
+        if secondary_snapshot is not None:
+            init_messages.append(
+                self._object_init(secondary_snapshot, SECONDARY_OBJECT_ID))
+            self._secondary_revision = secondary_snapshot.revision
         hello_message = make_hello_message(
             self._maya_version or "unknown",
             self._scene_units[0], self._scene_units[1], self._scene_fps)
-        self._worker = SenderWorker(init_message, hello_message)
+        self._worker = SenderWorker(init_messages, hello_message)
         self._revision = snapshot.revision
         self._worker.start()
         self._worker_started = True
@@ -752,6 +864,49 @@ class StreamingSession(object):
         if self._worker is None:
             return 0
         return self._worker.ordered_pending()
+
+    def request_secondary_removal(self, session_id, detail=""):
+        """Ask Unreal to remove the second object; returns the new set revision.
+
+        Frames of the old set stop here: realtime sampling pauses until Unreal
+        confirms the new set with ``object_removed``.
+        """
+        if not self.is_ready or self._worker is None:
+            raise StreamingSessionError(
+                "STREAM_INTERRUPTED", "移除副对象需要已连接的 Unreal 会话。")
+        if self._secondary_scene is None:
+            raise StreamingSessionError(
+                "INVALID_MESSAGE", "当前对象集合中没有副对象。")
+        if self._removal_pending is not None:
+            return self._removal_pending
+        revision = self._set_revision + 1
+        self._worker.submit_control(make_remove_object_message(
+            session_id, SECONDARY_OBJECT_ID, revision, detail))
+        self._removal_pending = revision
+        return revision
+
+    def adopt_removal(self, message):
+        """Adopt Unreal's ``object_removed``: the set holds the primary only.
+
+        Accepts Maya's own removal and one the Unreal user started. Returns the
+        removed scene, which the caller owns, or None for a confirmation of a
+        set this session already has.
+        """
+        revision = exact_int(message.get("set_revision"))
+        if message.get("object_id") != SECONDARY_OBJECT_ID or revision is None:
+            raise StreamingSessionError(
+                "INVALID_MESSAGE", "object_removed names no removable object.",
+                "object_removed {0!r} at set revision {1!r}".format(
+                    message.get("object_id"), message.get("set_revision")))
+        if revision <= self._set_revision:
+            return None
+        removed, self._secondary_scene = self._secondary_scene, None
+        self._secondary_revision = None
+        self._set_revision = revision
+        self._removal_pending = None
+        if not self._sampling_paused:
+            self._sample_and_submit(force=True)
+        return removed
 
     def end_cached_replay(self, discard_pending=False):
         if self._worker is None:
@@ -902,6 +1057,11 @@ class StreamingSession(object):
         if self._phase == "connecting":
             self._phase = "ready"
             self._emit(StreamingSessionEvent("ready", warning=warning))
+        if self._removal_pending is not None:
+            # The old set is closed; the new one starts with Unreal's answer.
+            return
+        if self._samples_held:
+            return
         now = time.time()
         sample_interval = 1.0 / self._effective_rate()
         if (not force and self._last_sample_time is not None
@@ -927,8 +1087,33 @@ class StreamingSession(object):
                         self._revision, frame.revision)),
                 recapture_scene=True)
             return
+        rows = None
+        if self._secondary_scene is not None:
+            # Both objects come from the same evaluation: the set is one
+            # message, so Unreal never shows them at two Maya times.
+            try:
+                secondary = self._secondary_scene.sample()
+            except CharacterSceneError as error:
+                self._request_failure(
+                    make_diagnostic(
+                        error.code if error.code in DIAGNOSTICS else "SAMPLING_FAILED",
+                        "副对象：" + error.message, details=error.details),
+                    recapture_scene=False)
+                return
+            if secondary.revision != self._secondary_revision:
+                self._request_failure(
+                    make_diagnostic(
+                        "SAMPLING_FAILED",
+                        "副对象的描述在本次连接中发生了变化。",
+                        details="secondary scene revision changed from {0} to {1}".format(
+                            self._secondary_revision, secondary.revision)),
+                    recapture_scene=False)
+                return
+            rows = [{"object_id": SECONDARY_OBJECT_ID,
+                     "transforms": list(secondary.transforms),
+                     "curves": list(secondary.curves)}]
         self._worker.submit(make_frame_message(
-            list(frame.transforms), list(frame.curves)))
+            list(frame.transforms), list(frame.curves), rows))
 
     def _request_failure(self, diagnostic, recapture_scene):
         if self._outcome is not None:

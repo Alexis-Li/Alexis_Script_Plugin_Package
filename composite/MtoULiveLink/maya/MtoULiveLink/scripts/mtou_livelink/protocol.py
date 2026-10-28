@@ -11,8 +11,10 @@ from .config import (
     MAX_CACHE_FRAME_COUNT,
     MAX_CACHE_PAYLOAD_BYTES,
     MAX_MESSAGE_BYTES,
+    MAX_SET_OBJECTS,
     MODES,
     PROTOCOL_VERSION,
+    SECONDARY_OBJECT_ID,
     WORKFLOW_ANIMATION,
     WORKFLOWS,
 )
@@ -22,13 +24,35 @@ def finite(values):
     return all(math.isfinite(float(value)) for value in values)
 
 
+def validate_set_objects(set_objects):
+    """The ordered object ids of one set: the primary first, no repeats."""
+    objects = [str(value) for value in (set_objects or ())]
+    if not objects or objects[0] != CHARACTER_OBJECT_ID:
+        raise ValueError("an object set starts with the '{0}' object".format(
+            CHARACTER_OBJECT_ID))
+    if len(set(objects)) != len(objects):
+        raise ValueError("an object set must not repeat a duplicate object id")
+    if len(objects) > MAX_SET_OBJECTS:
+        raise ValueError(
+            "an object set holds at most {0} objects (max_set_objects)".format(
+                MAX_SET_OBJECTS))
+    if any(value not in (CHARACTER_OBJECT_ID, SECONDARY_OBJECT_ID) for value in objects):
+        raise ValueError("unknown object id in the object set")
+    return objects
+
+
 def make_init_message(bones, curves, revision, workflow=WORKFLOW_ANIMATION,
                       blendshapes_enabled=True, object_id=CHARACTER_OBJECT_ID,
-                      set_revision=1, space_revision=1):
+                      set_revision=1, space_revision=1, set_objects=None):
     if workflow not in WORKFLOWS:
         raise ValueError("workflow must be 'animation' or 'model'")
     if not object_id:
         raise ValueError("object id must not be empty")
+    objects = validate_set_objects(set_objects or [CHARACTER_OBJECT_ID])
+    if str(object_id) not in objects:
+        raise ValueError("object id {0!r} is not part of set_objects".format(object_id))
+    if workflow != WORKFLOW_ANIMATION and len(objects) > 1:
+        raise ValueError("the Model workflow keeps the single-character object set")
     return {
         "type": "init",
         "version": PROTOCOL_VERSION,
@@ -40,14 +64,53 @@ def make_init_message(bones, curves, revision, workflow=WORKFLOW_ANIMATION,
         "blendshapes_enabled": bool(blendshapes_enabled),
         "bones": bones,
         "curves": curves,
+        "set_objects": objects,
     }
 
 
-def make_frame_message(transforms, curves):
+def make_frame_message(transforms, curves, objects=None):
+    """One realtime sample of the whole set at one Maya time.
+
+    The primary keeps the v9 top-level fields; ``objects`` carries every other
+    object of a two-object set, so both reach Unreal in one message.
+    """
     flat = [value for transform in transforms for value in transform] + list(curves)
     if not finite(flat):
         raise ValueError("frame values must be finite")
-    return {"type": "frame", "transforms": transforms, "curves": curves}
+    message = {"type": "frame", "transforms": transforms, "curves": curves}
+    if objects:
+        message["objects"] = _object_rows(objects, "frame", primary_allowed=False)
+    return message
+
+
+def _object_rows(objects, label, primary_allowed=True):
+    rows = []
+    seen = set()
+    for entry in objects:
+        if not isinstance(entry, dict):
+            raise ValueError("{0} object must be an object".format(label))
+        for field in ("object_id", "transforms", "curves"):
+            if field not in entry:
+                raise ValueError(
+                    "{0} object requires field '{1}'".format(label, field))
+        object_id = str(entry["object_id"])
+        if object_id in seen:
+            raise ValueError(
+                "{0} names a duplicate object id {1!r}".format(label, object_id))
+        if not primary_allowed and object_id == CHARACTER_OBJECT_ID:
+            raise ValueError(
+                "{0} object rows carry only the objects beside the primary".format(label))
+        seen.add(object_id)
+        flat = [value for transform in entry["transforms"] for value in transform]
+        flat.extend(entry["curves"])
+        if not finite(flat):
+            raise ValueError("{0} values must be finite".format(label))
+        rows.append({
+            "object_id": object_id,
+            "transforms": entry["transforms"],
+            "curves": entry["curves"],
+        })
+    return rows
 
 
 def make_cache_enter_message():
@@ -159,23 +222,7 @@ def make_group_message(session_id, set_revision, mode_revision, space_revision,
     """One complete pose sample answering one linkage target."""
     if not isinstance(objects, list) or not objects:
         raise ValueError("linkage group must carry at least one object")
-    rows = []
-    for entry in objects:
-        if not isinstance(entry, dict):
-            raise ValueError("linkage group object must be an object")
-        for field in ("object_id", "transforms", "curves"):
-            if field not in entry:
-                raise ValueError(
-                    "linkage group object requires field '{0}'".format(field))
-        flat = [value for transform in entry["transforms"] for value in transform]
-        flat.extend(entry["curves"])
-        if not finite(flat):
-            raise ValueError("linkage group values must be finite")
-        rows.append({
-            "object_id": str(entry["object_id"]),
-            "transforms": entry["transforms"],
-            "curves": entry["curves"],
-        })
+    rows = _object_rows(objects, "linkage group")
     return {
         "type": "group",
         "session_id": _positive_int(session_id, "session id"),
@@ -200,6 +247,21 @@ def group_wire_size(message):
     payload = json.dumps(message, ensure_ascii=False, allow_nan=False,
                          separators=(",", ":")).encode("utf-8")
     return len(payload)
+
+
+def make_remove_object_message(session_id, object_id, set_revision, detail=""):
+    """Maya removes the second object; the revision names the new set."""
+    if str(object_id) != SECONDARY_OBJECT_ID:
+        raise ValueError(
+            "only the '{0}' object can be removed inside a connection; removing "
+            "the 'character' object ends the connection".format(SECONDARY_OBJECT_ID))
+    return {
+        "type": "remove_object",
+        "session_id": _positive_int(session_id, "session id"),
+        "object_id": str(object_id),
+        "set_revision": _positive_int(set_revision, "set revision"),
+        "detail": str(detail),
+    }
 
 
 def make_reference_result_message(session_id, transfer_id, accepted, detail,
@@ -357,7 +419,7 @@ def finite_float(value):
 
 
 # List fields whose entries are objects rather than names.
-STRING_LIST_EXCEPTIONS = ("components",)
+STRING_LIST_EXCEPTIONS = ("components", "targets")
 
 
 def validate_reply(reply):
@@ -411,8 +473,15 @@ def validate_reply(reply):
             "version": (int, float),
             "session_id": (int, float),
             "capabilities": dict,
-            "target": dict,
+            "targets": list,
             "space": dict,
+        },
+        "object_removed": {
+            "session_id": (int, float),
+            "object_id": str,
+            "set_revision": (int, float),
+            "restored": bool,
+            "detail": str,
         },
         "mode_state": {
             "session_id": (int, float),
@@ -471,6 +540,11 @@ def validate_reply(reply):
         "hello_ack": {"detail": str},
     }
     fields = required.get(reply_type)
+    if reply_type == "hello_ack" and exact_int(reply.get("version")) != PROTOCOL_VERSION:
+        # A peer of another version answers with another shape; the version is
+        # the reason, whatever else differs.
+        raise ValueError(
+            "protocol reply field 'version' must equal the current protocol version")
     if fields is None:
         raise ValueError(
             "protocol reply type must be 'ready', 'error', a cache outcome"
@@ -508,14 +582,13 @@ def validate_reply(reply):
         raise ValueError(
             "protocol reply field 'scope' must be 'cache' or 'segment'")
     if reply_type == "hello_ack":
-        if int(reply["version"]) != PROTOCOL_VERSION:
-            raise ValueError(
-                "protocol reply field 'version' must equal the current protocol version")
-        target = reply["target"]
-        for name in ("object_id", "kind", "binding_path", "generation"):
-            if not isinstance(target.get(name), str):
-                raise ValueError(
-                    "hello_ack target field '{0}' must be a string".format(name))
+        for target in reply["targets"]:
+            if not isinstance(target, dict):
+                raise ValueError("hello_ack targets must be objects")
+            for name in ("object_id", "kind", "binding_path", "generation"):
+                if not isinstance(target.get(name), str):
+                    raise ValueError(
+                        "hello_ack target field '{0}' must be a string".format(name))
         space = reply["space"]
         if not isinstance(space.get("anchor"), dict):
             raise ValueError("hello_ack space field 'anchor' must be an object")

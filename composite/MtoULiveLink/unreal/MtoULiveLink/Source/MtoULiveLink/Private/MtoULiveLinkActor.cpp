@@ -555,13 +555,49 @@ void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Compo
     Component.SetUpdateAnimationInEditor(true);
     Component.SetAnimationMode(EAnimationMode::AnimationBlueprint);
     Component.SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
-    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component.GetAnimInstance()))
+    ApplyLiveLinkSubject(&Component);
+}
+
+void AMtoULiveLinkActor::ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const
+{
+    if (!Component)
     {
-        // Every part evaluates the one character subject, so the whole composed
-        // character poses from the single streaming session.
-        Instance->SetSubject(
-            FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
-        Instance->EnableLiveLinkEvaluation(true);
+        return;
+    }
+    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance()))
+    {
+        // Every part evaluates this actor's one object subject, so the whole
+        // composed character poses from the same session and the second object
+        // of a set never reads the primary's values. An actor outside the
+        // negotiated set evaluates nothing, so it never shows another
+        // actor's object.
+        Instance->SetSubject(FLiveLinkSubjectName(LiveLinkSubjectName));
+        Instance->EnableLiveLinkEvaluation(bInLiveLinkSet);
+    }
+}
+
+void AMtoULiveLinkActor::SetLiveLinkSubject(FName Subject)
+{
+    if (Subject.IsNone())
+    {
+        return;
+    }
+    LiveLinkSubjectName = Subject;
+    bInLiveLinkSet = true;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        ApplyLiveLinkSubject(Part.Get());
+    }
+}
+
+void AMtoULiveLinkActor::ReleaseLiveLinkSubject()
+{
+    bInLiveLinkSet = false;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        ApplyLiveLinkSubject(Part.Get());
     }
 }
 

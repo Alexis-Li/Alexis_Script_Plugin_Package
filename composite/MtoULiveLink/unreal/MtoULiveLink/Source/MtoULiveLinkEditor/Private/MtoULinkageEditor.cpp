@@ -829,6 +829,9 @@ struct FMtoUMutedWriter
     bool bWholeTrackMuted = false;
     TArray<TPair<int32, bool>> Rows;
     FString Name;
+    // The object of the set whose target this writer drives, so removing the
+    // second object hands back exactly its writers.
+    FString ObjectId;
     bool bRestored = false;
 };
 
@@ -871,6 +874,9 @@ struct FMtoULinkageEditorState
     TWeakPtr<ISequencer> TakeoverSequencer;
     TWeakObjectPtr<ULevelSequencePlayer> TakeoverPlayer;
     TWeakObjectPtr<const AActor> TakeoverAnchor;
+    // Every taken-over target of the set by object id; the primary's is also
+    // the TakeoverAnchor.
+    TMap<FString, TWeakObjectPtr<const AActor>> TakeoverTargets;
     bool bTakeoverUsedSequencer = false;
 
     TWeakObjectPtr<AActor> ObservedActor;
@@ -1235,7 +1241,8 @@ bool FMtoULinkageEditor::TakeOverTarget(
     const TArray<UObject*>& TargetObjects,
     const AActor* TargetAnchor,
     FString& OutError,
-    FString& OutErrorCode)
+    FString& OutErrorCode,
+    const FString& ObjectId)
 {
     OutError.Reset();
     OutErrorCode.Reset();
@@ -1305,6 +1312,7 @@ bool FMtoULinkageEditor::TakeOverTarget(
         FMtoUMutedWriter Muted;
         Muted.Track = Track;
         Muted.Name = Writer.Kind + TEXT(":") + Writer.BindingName;
+        Muted.ObjectId = ObjectId;
         Muted.bWholeTrackMuted = !Track->IsEvalDisabled(/*bInCheckLocal=*/true);
         for (const int32 Row : Writer.Rows)
         {
@@ -1327,7 +1335,11 @@ bool FMtoULinkageEditor::TakeOverTarget(
     State.TakeoverWorld = Source.World;
     State.TakeoverSequencer = Source.Sequencer;
     State.TakeoverPlayer = Source.Player;
-    State.TakeoverAnchor = TargetAnchor;
+    if (ObjectId == TEXT("character") || !State.TakeoverAnchor.IsValid())
+    {
+        State.TakeoverAnchor = TargetAnchor;
+    }
+    State.TakeoverTargets.Add(ObjectId, TargetAnchor);
     State.bTakeoverUsedSequencer = Source.Sequencer.IsValid();
 
     // Everything the writers owned is released: one evaluation re-establishes
@@ -1396,7 +1408,74 @@ bool FMtoULinkageEditor::RestoreTarget(FString& OutError, FString& OutErrorCode)
     State.TakeoverSequencer.Reset();
     State.TakeoverPlayer.Reset();
     State.TakeoverAnchor.Reset();
+    State.TakeoverTargets.Reset();
     State.bTakeoverUsedSequencer = false;
+    if (!Residuals.IsEmpty())
+    {
+        OutError = FString::Join(Residuals, TEXT("; "));
+        OutErrorCode = TEXT("RECOVERY_REFUSED");
+        return false;
+    }
+    return true;
+}
+
+bool FMtoULinkageEditor::RestoreObject(
+    const FString& ObjectId, FString& OutError, FString& OutErrorCode)
+{
+    OutError.Reset();
+    OutErrorCode.Reset();
+    FMtoULinkageEditorState& State = GetState();
+    if (!State.bTakeoverActive)
+    {
+        return true;
+    }
+    bool bRestoredAny = false;
+    TArray<FString> Residuals;
+    for (int32 Index = State.Writers.Num() - 1; Index >= 0; --Index)
+    {
+        FMtoUMutedWriter& Muted = State.Writers[Index];
+        if (Muted.ObjectId != ObjectId)
+        {
+            continue;
+        }
+        if (!Muted.bRestored)
+        {
+            if (UMovieSceneTrack* Track = Muted.Track.Get())
+            {
+                if (Muted.bWholeTrackMuted)
+                {
+                    Track->SetLocalEvalDisabled(false);
+                }
+                for (const TPair<int32, bool>& Row : Muted.Rows)
+                {
+                    Track->SetLocalRowEvalDisabled(Row.Value, Row.Key);
+                }
+                bRestoredAny = true;
+            }
+            else
+            {
+                Residuals.Add(FString::Printf(
+                    TEXT("the muted writer '%s' no longer exists, so its saved state could not be returned"),
+                    *Muted.Name));
+            }
+        }
+        State.Writers.RemoveAt(Index);
+    }
+    State.TakeoverTargets.Remove(ObjectId);
+    if (bRestoredAny)
+    {
+        // The object's own writers drive it again; one evaluation returns
+        // their pose while the other object's writers stay muted.
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = State.TakeoverSequence.Get();
+        Source.World = State.TakeoverWorld.Get();
+        Source.Sequencer = State.TakeoverSequencer.Pin();
+        Source.Player = State.TakeoverPlayer.Get();
+        if (Source.Sequence && (Source.Sequencer.IsValid() || Source.Player))
+        {
+            ForceSequenceEvaluation(Source);
+        }
+    }
     if (!Residuals.IsEmpty())
     {
         OutError = FString::Join(Residuals, TEXT("; "));
@@ -1453,6 +1532,17 @@ bool FMtoULinkageEditor::ValidateTakeover(FString& OutReason)
     {
         OutReason = TEXT("the paired target was destroyed or left the takeover's world");
         return false;
+    }
+    for (const TPair<FString, TWeakObjectPtr<const AActor>>& Target : State.TakeoverTargets)
+    {
+        const AActor* Actor = Target.Value.Get();
+        if (!IsValid(Actor) || Actor->GetWorld() != World)
+        {
+            OutReason = FString::Printf(
+                TEXT("the paired target of object '%s' was destroyed or left the takeover's world"),
+                *Target.Key);
+            return false;
+        }
     }
     return true;
 }
@@ -1554,12 +1644,20 @@ TArray<UObject*> FMtoULinkageEditor::ResolveTargetComponents(const AActor* Actor
     return Components;
 }
 
-/** The paired anchor: the pairing the panel remembered, or the runtime's own path. */
+/**
+ * The paired anchor: the actor the session streams the primary into (the
+ * pairing while nothing is connected), else the pairing the panel remembered
+ * or the runtime's own path.
+ */
 AActor* ResolvePairedAnchor()
 {
     FMtoULinkageEditorState& State = GetState();
     if (const FMtoULinkageView View = MtoUGetLinkageView(); View.bPaired)
     {
+        if (AMtoULiveLinkActor* Primary = MtoUFindLinkagePairedActor(TEXT("character")))
+        {
+            return Primary;
+        }
         if (AActor* Observed = State.ObservedActor.Get())
         {
             return Observed;
@@ -1603,13 +1701,54 @@ bool TakeOverTargetHook(FString& OutError, FString& OutErrorCode)
         OutErrorCode = CodeWriterNotIsolatable;
         return false;
     }
-    return FMtoULinkageEditor::TakeOverTarget(
-        Source, FMtoULinkageEditor::ResolveTargetComponents(Anchor), Anchor, OutError, OutErrorCode);
+    if (!FMtoULinkageEditor::TakeOverTarget(
+            Source, FMtoULinkageEditor::ResolveTargetComponents(Anchor), Anchor,
+            OutError, OutErrorCode, TEXT("character")))
+    {
+        return false;
+    }
+    // Every other object of the negotiated set is taken over the same way. A
+    // writer reaching two objects is refused as shared, and a refusal hands
+    // back what was taken before it, so no object is left half-entered.
+    for (const FMtoULinkageObjectView& Object : MtoUGetLinkageView().Objects)
+    {
+        if (Object.ObjectId == TEXT("character") || !Object.bNegotiated)
+        {
+            continue;
+        }
+        const AMtoULiveLinkActor* Target = MtoUFindLinkagePairedActor(Object.ObjectId);
+        FString TakeError;
+        FString TakeCode;
+        if (!Target)
+        {
+            TakeError = FString::Printf(
+                TEXT("the paired target of object '%s' no longer resolves"), *Object.ObjectId);
+            TakeCode = CodeTargetUnknown;
+        }
+        else if (FMtoULinkageEditor::TakeOverTarget(
+                Source, FMtoULinkageEditor::ResolveTargetComponents(Target), Target,
+                TakeError, TakeCode, Object.ObjectId))
+        {
+            continue;
+        }
+        FString RestoreError;
+        FString RestoreCode;
+        FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+        OutError = FString::Printf(TEXT("object '%s': %s"), *Object.ObjectId, *TakeError);
+        OutErrorCode = TakeCode;
+        return false;
+    }
+    return true;
 }
 
 bool RestoreTargetHook(FString& OutError, FString& OutErrorCode)
 {
     return FMtoULinkageEditor::RestoreTarget(OutError, OutErrorCode);
+}
+
+bool RestoreObjectHook(const FString& ObjectId, FString& OutError, FString& OutErrorCode)
+{
+    return FMtoULinkageEditor::RestoreObject(ObjectId, OutError, OutErrorCode);
 }
 
 bool ValidateTakeoverHook(FString& OutReason)
@@ -1677,6 +1816,7 @@ void FMtoULinkageEditor::InstallHooks()
     Hooks.EvaluateCameraTime = &EvaluateCameraTimeHook;
     Hooks.TakeOverTarget = &TakeOverTargetHook;
     Hooks.RestoreTarget = &RestoreTargetHook;
+    Hooks.RestoreObject = &RestoreObjectHook;
     Hooks.ValidateTakeover = &ValidateTakeoverHook;
     Hooks.OnViewChanged = &OnViewChangedHook;
     MtoUSetLinkageHooks(Hooks);

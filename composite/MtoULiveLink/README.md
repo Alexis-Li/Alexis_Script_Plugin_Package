@@ -205,8 +205,9 @@ Use this workflow to check Maya animation under the Unreal sequence camera and
 its timeline. It is optional: realtime preview, Cached Playback and garment
 comparison work without it.
 
-1. In Unreal, select the Binding Actor, click **配对** under **镜头联动** (the row
-   then reads 已配对 Maya 角色), and open the Level Sequence you want to follow.
+1. In Unreal, select the Binding Actor, click **配对为主角色** under **镜头联动**
+   (the row then reads 已配对为主角色), and open the Level Sequence you want to
+   follow.
 2. In Maya, connect the character as usual and click **进入联动** on the main
    panel's **镜头联动** card (or click **进入联动** in the Unreal Details panel;
    Maya follows either one). Maya stops its own playback, follows the sequence
@@ -240,6 +241,37 @@ restored the scene it was started in.
 If the Maya camera linkage drives is deleted or its camera shape replaced while
 linkage runs, Maya refuses the next target and writes no other camera; end the
 preview and start linkage again to use the current camera.
+
+## Second object
+
+Preview one independent skeletal prop or a second character together with the
+main character, in realtime preview and in camera linkage. Without a second
+object, every workflow stays as described above.
+
+1. Place a second Binding Actor for the object at exactly the same location
+   and rotation as the main character's Binding Actor; the object's own
+   placement comes from its root in Maya. In its Details, click
+   **配对为副对象** under **镜头联动**. The main character's actor must be paired
+   with **配对为主角色**.
+2. In Maya, click **打开对象配对窗口** on the **镜头联动** card, select the
+   object's root joint (add its Display controller when it has several) and
+   click **设为副对象**. A prop without a Display controller works too.
+3. Connect as usual. Unreal shows both objects from the same Maya time; in
+   camera linkage it shows a new pose only when every display of both objects
+   holds it.
+4. To continue with the main character only, click **移除副对象** in the Maya
+   window or in the second actor's Details. Unreal gives the object's tracks
+   back to the sequence and its actor stops following Maya; the main character
+   keeps going without reconnecting.
+
+Setting a different second object, changing either object's skeleton, outfit,
+Binding or parts, pairing or unpairing an actor of the connected set, or
+deleting a paired actor ends the connection; connect again. Other Binding
+Actors in the level do not follow Maya. A second actor at another placement, or one moved during linkage, is
+refused with 副对象与主角色在 UE 中的放置不一致. Cached Playback and the Model
+workflow support one character: remove the second object first. If removing
+the object cannot restore its tracks, the connection ends and both hosts name
+what to restore by hand.
 
 ## Scene reference in Maya
 

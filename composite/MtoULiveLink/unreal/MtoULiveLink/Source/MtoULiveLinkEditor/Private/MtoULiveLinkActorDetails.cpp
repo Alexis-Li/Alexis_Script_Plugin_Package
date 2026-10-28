@@ -436,7 +436,8 @@ FText GarmentComparisonTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
         : LOCTEXT("ComparisonShowOriginal", "显示原始服装；保持当前会话、姿势和角色部件。");
 }
 
-// Longest run without a space or '/' one line shows. An eval_id carries the
+// Longest run without a space one line shows; the row wraps only at spaces,
+// so an object path's '/' is no break. An eval_id carries the
 // whole camera description and runs to kilobytes; the row keeps both ends of
 // each long run and its tooltip keeps the full text.
 constexpr int32 LinkageRunLimit = 52;
@@ -450,7 +451,7 @@ FText CompactLinkageRuns(const FText& Text)
     while (Start < Full.Len())
     {
         int32 End = Start;
-        while (End < Full.Len() && Full[End] != TEXT(' ') && Full[End] != TEXT('/') && Full[End] != TEXT('\n'))
+        while (End < Full.Len() && Full[End] != TEXT(' ') && Full[End] != TEXT('\n'))
         {
             ++End;
         }
@@ -586,6 +587,14 @@ FText LinkageDiagnosticsText(const FMtoULinkageView& View)
         View.Identity.ModeRevision));
     Lines.Add(FString::Printf(TEXT("配对：%s · %s %s"),
         View.bPaired ? *View.PairedObjectId : TEXT("未配对"), *View.TargetKind, *View.TargetPath));
+    for (const FMtoULinkageObjectView& Object : View.Objects)
+    {
+        Lines.Add(FString::Printf(TEXT("对象 %s：%s · %s%s"),
+            *Object.ObjectId,
+            Object.bPaired ? *Object.TargetPath : TEXT("未配对"),
+            Object.bNegotiated ? TEXT("已协商") : TEXT("未协商"),
+            Object.ObjectId == TEXT("secondary") && View.bRemovingObject ? TEXT(" · 移除中") : TEXT("")));
+    }
     Lines.Add(FString::Printf(TEXT("目标时间：%s · 帧 %s"),
         View.TargetEvalId.IsEmpty() ? TEXT("—") : *View.TargetEvalId,
         *FString::SanitizeFloat(View.TargetDisplayFrame)));
@@ -672,17 +681,67 @@ FText LinkageEndTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULin
     return LOCTEXT("LinkageEndReady", "结束预览：交还被接管的动画和轨道，恢复原来的播放；没能恢复的部分会在这里提示。");
 }
 
-FText LinkagePairTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FMtoULinkageView& View)
+FString PairedObjectOf(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    return Actor.IsValid() ? MtoUGetLinkagePairedObject(*Actor) : FString();
+}
+
+FText LinkagePairStateText(TWeakObjectPtr<AMtoULiveLinkActor> Actor)
+{
+    const FString Paired = PairedObjectOf(Actor);
+    if (Paired == TEXT("character"))
+    {
+        return LOCTEXT("LinkagePairedPrimary", "已配对为主角色");
+    }
+    if (Paired == TEXT("secondary"))
+    {
+        return LOCTEXT("LinkagePairedSecondary", "已配对为副对象");
+    }
+    return LOCTEXT("LinkageUnpairedState", "未配对 Maya 对象");
+}
+
+FText LinkagePairTooltip(TWeakObjectPtr<AMtoULiveLinkActor> Actor, const FString& ObjectId)
 {
     if (!Actor.IsValid())
     {
-        return LOCTEXT("LinkagePairNoActor", "选择绑定 Actor 后配对 Maya 角色。");
+        return LOCTEXT("LinkagePairNoActor", "选择绑定 Actor 后配对 Maya 对象。");
     }
-    if (View.bPaired)
+    if (!PairedObjectOf(Actor).IsEmpty())
     {
         return LOCTEXT("LinkagePairPaired", "解除配对后，需要重新配对才能进入镜头联动；进行中的连接不受影响。");
     }
-    return LOCTEXT("LinkagePairReady", "把这个角色与 Maya 中连接的角色配对，配对后才能进入镜头联动。");
+    return ObjectId == TEXT("secondary")
+        ? LOCTEXT("LinkagePairSecondaryReady",
+            "把这个 Actor 配对为 Maya 中的副对象（骨骼道具或第二个角色）。"
+            "副对象与主角色放在同一位置，重新连接后一起预览。")
+        : LOCTEXT("LinkagePairReady", "把这个角色与 Maya 中连接的角色配对，配对后才能进入镜头联动。");
+}
+
+/** The second object's row: what the running set does with it. */
+FText LinkageSecondaryText(const FMtoULinkageView& View)
+{
+    const FMtoULinkageObjectView* Secondary = View.Objects.FindByPredicate(
+        [](const FMtoULinkageObjectView& Object) { return Object.ObjectId == TEXT("secondary"); });
+    if (!Secondary)
+    {
+        return FText::GetEmpty();
+    }
+    if (View.bRemovingObject)
+    {
+        return LOCTEXT("LinkageSecondaryRemoving", "正在移除副对象，交还它原来的动画…");
+    }
+    if (Secondary->bNegotiated)
+    {
+        return LOCTEXT("LinkageSecondaryStreaming", "副对象已连接，随主角色一起预览");
+    }
+    return LOCTEXT("LinkageSecondaryPaired", "副对象已配对，Maya 重新连接后生效");
+}
+
+bool CanRemoveSecondary(const FMtoULinkageView& View)
+{
+    const FMtoULinkageObjectView* Secondary = View.Objects.FindByPredicate(
+        [](const FMtoULinkageObjectView& Object) { return Object.ObjectId == TEXT("secondary"); });
+    return Secondary && Secondary->bNegotiated && !View.bRemovingObject && !View.bTransitioning;
 }
 
 /** Formats the scene-reference handoff result into the panel's one report line. */
@@ -1378,35 +1437,69 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
         Row.WholeRowContent()[Widget];
         FMtoULinkageEditor::RegisterLinkagePanelWidget(Row.WholeRowWidget.Widget);
     };
-    // Protocol v10 pairs the one Maya character, whose object id is always
-    // "character"; the row names it instead of asking for the id.
-    AddLinkageRow(LOCTEXT("LinkagePairingFilter", "配对 Maya 角色"),
+    // Protocol v11 pairs the primary character ("character") and at most one
+    // second object ("secondary"); each actor of the set serves one of them,
+    // so the row names the role instead of asking for an id.
+    const auto PairAs = [Actor, LinkageMessage](const FString& ObjectId)
+    {
+        AMtoULiveLinkActor* Target = Actor.Get();
+        if (!Target)
+        {
+            return FReply::Handled();
+        }
+        *LinkageMessage = FText::GetEmpty();
+        if (ObjectId == TEXT("character"))
+        {
+            FMtoULinkageEditor::SetObservedLinkageActor(Target);
+        }
+        FString PairError;
+        if (!MtoUPairLinkageTarget(*Target, ObjectId, PairError))
+        {
+            *LinkageMessage = FText::Format(
+                LOCTEXT("LinkagePairRefused", "无法配对：{0}"),
+                FText::FromString(PairError));
+        }
+        return FReply::Handled();
+    };
+    const auto UnpairedVisibility = [Actor]()
+    {
+        return PairedObjectOf(Actor).IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed;
+    };
+    AddLinkageRow(LOCTEXT("LinkagePairingFilter", "配对 Maya 对象"),
         SNew(SHorizontalBox)
             + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
             [
                 SNew(STextBlock)
                 .AutoWrapText(true)
-                .Text_Lambda([]()
-                {
-                    return MtoUGetLinkageView().bPaired
-                        ? LOCTEXT("LinkagePairedState", "已配对 Maya 角色")
-                        : LOCTEXT("LinkageUnpairedState", "未配对 Maya 角色");
-                })
+                .Text_Lambda([Actor]() { return LinkagePairStateText(Actor); })
+            ]
+            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+            [
+                SNew(SButton)
+                .Text(LOCTEXT("LinkagePair", "配对为主角色"))
+                .ToolTipText_Lambda([Actor]() { return LinkagePairTooltip(Actor, TEXT("character")); })
+                .Visibility_Lambda(UnpairedVisibility)
+                .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
+                .OnClicked_Lambda([PairAs]() { return PairAs(TEXT("character")); })
             ]
             + SHorizontalBox::Slot().AutoWidth()
             [
                 SNew(SButton)
-                .Text_Lambda([]()
-                {
-                    return MtoUGetLinkageView().bPaired
-                        ? LOCTEXT("LinkageClearPair", "解除配对")
-                        : LOCTEXT("LinkagePair", "配对");
-                })
-                .ToolTipText_Lambda([Actor]()
-                {
-                    return LinkagePairTooltip(Actor, MtoUGetLinkageView());
-                })
+                .Text(LOCTEXT("LinkagePairSecondary", "配对为副对象"))
+                .ToolTipText_Lambda([Actor]() { return LinkagePairTooltip(Actor, TEXT("secondary")); })
+                .Visibility_Lambda(UnpairedVisibility)
                 .IsEnabled_Lambda([Actor]() { return Actor.IsValid(); })
+                .OnClicked_Lambda([PairAs]() { return PairAs(TEXT("secondary")); })
+            ]
+            + SHorizontalBox::Slot().AutoWidth()
+            [
+                SNew(SButton)
+                .Text(LOCTEXT("LinkageClearPair", "解除配对"))
+                .ToolTipText_Lambda([Actor]() { return LinkagePairTooltip(Actor, FString()); })
+                .Visibility_Lambda([Actor]()
+                {
+                    return PairedObjectOf(Actor).IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+                })
                 .OnClicked_Lambda([Actor, LinkageMessage]()
                 {
                     AMtoULiveLinkActor* Target = Actor.Get();
@@ -1415,20 +1508,44 @@ void FMtoULiveLinkActorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
                         return FReply::Handled();
                     }
                     *LinkageMessage = FText::GetEmpty();
-                    if (MtoUGetLinkageView().bPaired)
+                    if (PairedObjectOf(Actor) == TEXT("character"))
                     {
-                        MtoUClearLinkageTarget(*Target);
                         FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
-                        return FReply::Handled();
                     }
-                    FMtoULinkageEditor::SetObservedLinkageActor(Target);
-                    FString PairError;
-                    if (!MtoUPairLinkageTarget(*Target, TEXT("character"), PairError))
-                    {
-                        *LinkageMessage = FText::Format(
-                            LOCTEXT("LinkagePairRefused", "无法配对：{0}"),
-                            FText::FromString(PairError));
-                    }
+                    MtoUClearLinkageTarget(*Target);
+                    return FReply::Handled();
+                })
+            ]
+        );
+
+    AddLinkageRow(LOCTEXT("LinkageSecondaryFilter", "副对象"),
+        SNew(SHorizontalBox)
+            .Visibility_Lambda([]()
+            {
+                return LinkageSecondaryText(MtoUGetLinkageView()).IsEmpty()
+                    ? EVisibility::Collapsed : EVisibility::Visible;
+            })
+            + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .AutoWrapText(true)
+                .Text_Lambda([]() { return LinkageSecondaryText(MtoUGetLinkageView()); })
+            ]
+            + SHorizontalBox::Slot().AutoWidth()
+            [
+                SNew(SButton)
+                .Text(LOCTEXT("LinkageRemoveSecondary", "移除副对象"))
+                .ToolTipText(LOCTEXT("LinkageRemoveSecondaryTooltip",
+                    "在当前连接内移除副对象：交还它原来的动画和轨道，主角色继续预览，不需要重新连接。"))
+                .IsEnabled_Lambda([]() { return CanRemoveSecondary(MtoUGetLinkageView()); })
+                .OnClicked_Lambda([LinkageMessage]()
+                {
+                    FString RemoveError;
+                    *LinkageMessage = MtoURequestRemoveSecondaryObject(RemoveError)
+                        ? FText::GetEmpty()
+                        : FText::Format(
+                            LOCTEXT("LinkageRemoveSecondaryRefused", "无法移除副对象：{0}"),
+                            FText::FromString(RemoveError));
                     return FReply::Handled();
                 })
             ]

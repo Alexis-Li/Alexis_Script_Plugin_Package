@@ -31,13 +31,14 @@ required arguments fails and its error names them.
 | `MtoUOptIn.Actor.CharacterPartsAsset`, `.LoadedCharacterParts`, `.LoadedCharacterPartTransactions` | Split-character composition of a production Binding, and part transactions in a saved, loaded map |
 | `MtoUOptIn.Source.MayaCacheReconnect`, `.MayaInteractivePlayback`, `.MayaCharacterPartsHost`, `.MayaLinkageHost` | Cross-host acceptance of cache, playback, character parts, and linkage |
 | `MtoUOptIn.Editor.Preview.MayaRefreshPeer`, `.CharacterAcceptance` | Real Maya Preview refresh and complete-character acceptance |
-| `MtoUOptIn.Editor.Linkage.ProductionSequence` | Linkage in a production Level Sequence copy through a real Maya GUI (`maya_gui_linkage_driver.py`): writer takeover, anchor world/screen, bone-rotation and Morph oracle, playback under lag and every exit. The oracle frames must show different keyed poses: their Maya times must not lie a whole number of `2 * maya.key_step` apart (the driver default `key_step` 42 suits oracle frames 300/900/1500) |
+| `MtoUOptIn.Editor.Linkage.ProductionSequence` | Linkage in a production Level Sequence copy through a real Maya GUI (`maya_gui_linkage_driver.py`): writer takeover, anchor world/screen, bone-rotation and Morph oracle, playback under lag and every exit. The oracle frames must show different keyed poses: their Maya times must not lie a whole number of `2 * maya.key_step` apart (the driver default `key_step` 42 suits oracle frames 300/900/1500). With a `secondary` block it accepts a two-object set: both targets at one anchor, each object's oracle, the set refusals, the injections (an incomplete group, and through the automation apply probe a delayed object and a display failing after staging; every display of both objects is recorded at each frame end until the set converges again, and each frame must show exactly the last confirmed group), removal from either host (scenarios `remove_secondary`, `ue_remove_secondary`, `destroy_secondary`), `composition_swaps` (full-body or parts replacements that must end the set), the `arms` scenario (after `realtime`; the fixture's `arms.chains` cut a synthetic arms target from the second object's full body, which replaces it, renegotiates only the arms' required bones and must show Maya's arm bones and Morphs; `arms.unstreamed` names bones it must not require) and, with `reference_probe`, a scene reference exported and imported in the set's common space. A scene with its own animation can drop `keyed_joints` and use `maya.morph_namespace`; pick oracle frames inside that animation and oracle bones the target meshes skin, since unskinned bones are not streamed |
 | `MtoUOptIn.Editor.Workflow.GuiRegression` | Real-time, cached playback, Model/Refresh/garment comparison and Animation after Model through the same Maya GUI driver; start the editor on `/Engine/Maps/Entry` |
 | `MtoUOptIn.Editor.Preview.RefreshBenchmark` | Preview refresh performance changes; `-MtoUBenchmarkCase=<case>` measures one case in a fresh process |
 
 The two Maya GUI tests render the Binding Actor's Details at the fixture's
 `details_widths` only when the editor can render: use `-RenderOffscreen`
-instead of `-NullRHI`. Every MtoU group is expanded and the render grows until
+instead of `-NullRHI`, plus `-nocef` for a production level whose content
+starts the web browser (CEF asserts under the offscreen renderer). Every MtoU group is expanded and the render grows until
 all rows fit, so collapsed groups and rows below the fold are checked too.
 
 Both tests also fail on any Maya dialog the scenario did not expect. The driver
@@ -78,7 +79,7 @@ missing parts, rollback and a clean install. Pass
 `--old-entry` the 0.9.0 `MtoULiveLink.py` (`git show 799fb07^:composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`).
 
 `maya/MtoULiveLink/tests/maya_gui_window_check.py`, also run with a host
-Python, closes the panel and the scene-reference window from their title bars
+Python, closes the panel, the scene-reference and the 对象配对 windows from their title bars
 (`WM_CLOSE`), repeats close and reopen, switches workflow and scenes, and
 quits Maya in each state; a scenario passes only when Maya exits with code 0,
 in time, without a crash log and without a Python traceback in its Script

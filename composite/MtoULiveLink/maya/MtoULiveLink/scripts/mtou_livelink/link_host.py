@@ -35,14 +35,21 @@ def camera_module():
 class MayaLinkageHost(object):
     """Applies linkage targets in one Maya scene."""
 
-    def __init__(self, scene, object_ids, fps, camera=None, link_camera_name=None):
+    def __init__(self, scene, object_ids, fps, camera=None, link_camera_name=None,
+                 scenes=None):
         self._scene = scene
         self._object_ids = tuple(object_ids)
+        # Object id to its own scene; the primary character is the default.
+        # A removed object leaves the map when the set changes.
+        self._scenes = dict(scenes or {})
+        for object_id in self._object_ids:
+            self._scenes.setdefault(object_id, scene)
         self._fps = float(fps)
         self._camera = camera
         self._link_camera_name = link_camera_name
         self._scene_replaced = False
         self._scene_callbacks = []
+        self._origin = None
 
     # ------------------------------------------------------------- capture
     def capture_state(self):
@@ -55,6 +62,9 @@ class MayaLinkageHost(object):
             "camera": self._camera_adapter().capture_state(),
             "scene": self._scene_identity(),
         }
+        # Every target of this linkage maps from the frame it started on;
+        # each sample moves Maya's clock, so the current time would drift.
+        self._origin = state["time"]
         self._watch_scene_replacement()
         return state
 
@@ -66,6 +76,7 @@ class MayaLinkageHost(object):
         camera values would overwrite the new scene's own data.
         """
         self._release_scene_callbacks()
+        self._origin = None
         if self._scene_replaced or not self._same_scene(state):
             self._scene_replaced = True
             return ["scene: the scene was replaced before linkage restored it; "
@@ -109,10 +120,19 @@ class MayaLinkageHost(object):
         return self._time_report(maya_time, time_payload), camera.readback()
 
     def sample_group(self, object_ids):
-        """Sample the complete pose of every object of the current set."""
+        """Sample the complete pose of every object of the current set.
+
+        Every object is read after the one time change of ``apply_target``, so
+        the whole group comes from one Maya evaluation; an object of each id
+        is read from its own scene, so same-name bones never cross objects.
+        """
         rows = []
         for object_id in object_ids:
-            frame = self._scene.sample()
+            scene = self._scenes.get(object_id)
+            if scene is None:
+                raise ValueError(
+                    "linkage object {0!r} has no Maya scene".format(object_id))
+            frame = scene.sample()
             rows.append({
                 "object_id": object_id,
                 "transforms": [list(transform) for transform in frame.transforms],
@@ -174,7 +194,8 @@ class MayaLinkageHost(object):
 
     # ------------------------------------------------------------ internals
     def _origin_frame(self):
-        return getattr(self, "_origin", self._current_time())
+        origin = getattr(self, "_origin", None)
+        return self._current_time() if origin is None else origin
 
     def _scene_fps(self):
         return self._fps

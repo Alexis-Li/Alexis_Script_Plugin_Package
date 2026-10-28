@@ -65,17 +65,18 @@ class RepositoryToolTests(unittest.TestCase):
         }
         self.assertEqual(
             [
-                "protocol_version must equal 10",
+                "protocol_version must equal 11",
                 "limits.max_linkage_group_bytes must be a positive integer",
                 "limits.max_control_queue must be a positive integer",
                 "limits.max_reference_bytes must be a positive integer",
                 "limits.max_reference_objects must be a positive integer",
                 "limits.max_reference_triangles must be a positive integer",
+                "limits.max_set_objects must be a positive integer",
                 "case 1 id is duplicated: duplicate",
                 "case 1 operation is unsupported",
                 "case 1 applies_to must contain maya and/or unreal",
                 "case 1 must define exactly one input source",
-                "case 1 rejected case needs a stable v10 error_code",
+                "case 1 rejected case needs a stable v11 error_code",
             ],
             module.validate_corpus(invalid),
         )

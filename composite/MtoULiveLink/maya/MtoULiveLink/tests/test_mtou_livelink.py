@@ -126,7 +126,7 @@ def character_snapshot(revision, root, outfit, bones, curves,
 
 
 CORPUS = json.loads(
-    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v10.json")
+    (pathlib.Path(__file__).resolve().parents[3] / "protocol" / "conformance-v11.json")
     .read_text(encoding="utf-8")
 )
 
@@ -779,6 +779,89 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(["ready", "stopped"], [event.kind for event in events])
         self.assertEqual(2, scene.sample.call_count)
         self.assertEqual(2, len(FakeWorker.instance.submitted))
+
+    def test_held_sampling_skips_ticks_until_released(self):
+        # A scene-reference import holds live sampling: Maya may run the
+        # timer inside the import, while the scene is only half built.
+        events = []
+        timer_callbacks = []
+
+        class FakeWorker(object):
+            instance = None
+
+            def __init__(self, init_message, hello_message=None):
+                del init_message
+                self.hello_message = hello_message
+                self.submitted = []
+                self.__class__.instance = self
+
+            def start(self):
+                pass
+
+            def status(self):
+                return ("ready", "Connected", {
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "has_warning": False,
+                }, None)
+
+            def submit(self, frame):
+                self.submitted.append(frame)
+
+            def begin_ordered(self):
+                pass
+
+            def submit_ordered(self, frame):
+                self.submitted.append(frame)
+
+            def ordered_pending(self):
+                return 0
+
+            def end_ordered(self, discard_pending=True):
+                pass
+
+            def set_reply_listener(self, listener):
+                pass
+
+            def stop(self):
+                pass
+
+            def join(self, timeout):
+                del timeout
+
+        fake_om = type("FakeOpenMaya", (), {
+            "MSceneMessage": type("FakeSceneMessage", (), {
+                "kBeforeNew": 1, "kBeforeOpen": 2, "kMayaExiting": 3,
+                "addCallback": staticmethod(lambda message, callback: 10 + message),
+            }),
+            "MEventMessage": type("FakeEventMessage", (), {
+                "addEventCallback": staticmethod(lambda event, callback: 30),
+            }),
+            "MTimerMessage": type("FakeTimerMessage", (), {
+                "addTimerCallback": staticmethod(
+                    lambda interval, callback: timer_callbacks.append(callback) or 20),
+            }),
+            "MMessage": type("FakeMessage", (), {
+                "removeCallback": staticmethod(lambda callback_id: None),
+            }),
+        })
+        scene = mock.Mock()
+        scene.snapshot.return_value = character_snapshot(
+            7, "|root", "Clothes01", [("root", -1)], ["Smile"])
+        scene.sample.return_value = mtou_scene.CharacterFrame(7, [[1, 2, 3]], [0.25])
+
+        with patch_global("om", fake_om), \
+             patch_global("SenderWorker", FakeWorker), \
+             mock.patch.object(time, "time", side_effect=[100.0, 100.05]):
+            session = mtou_session.StreamingSession.start(scene, 24.0, events.append)
+            with session.holding_samples():
+                timer_callbacks[0](0.0, 0.0, None)
+                held_samples = scene.sample.call_count
+            timer_callbacks[0](0.0, 0.0, None)
+            session.stop()
+
+        self.assertEqual(0, held_samples)
+        self.assertEqual(1, scene.sample.call_count)
+        self.assertEqual(1, len(FakeWorker.instance.submitted))
 
     def test_time_changed_event_streams_without_idle_timer_and_caps_burst(self):
         time_callbacks = []
@@ -1529,8 +1612,8 @@ class SenderLifecycleTests(unittest.TestCase):
             "type": "hello_ack", "version": mtou_config.PROTOCOL_VERSION,
             "session_id": 4242,
             "capabilities": dict(mtou_protocol.DEFAULT_CAPABILITIES),
-            "target": {"object_id": "character", "kind": "skeletal_mesh",
-                       "binding_path": "/Game/Characters/Hero", "generation": "1"},
+            "targets": [{"object_id": "character", "kind": "skeletal_mesh",
+                         "binding_path": "/Game/Characters/Hero", "generation": "1"}],
             "space": {"space_revision": 1,
                       "anchor": {"translation": [0, 0, 0],
                                  "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]}},
@@ -4288,13 +4371,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(mtou_config.WORKFLOW_MODEL, started[1]["workflow"])
         self.assertTrue(started[1]["blendshapes_enabled"])
 
-    def test_streaming_session_init_carries_protocol_v10_workflow_fields(self):
+    def test_streaming_session_init_carries_protocol_v11_workflow_fields(self):
         captured = {}
         worker = mock.Mock()
         worker.status.return_value = ("connecting", "Connecting", None, None)
 
-        def worker_factory(init_message, hello_message=None):
-            captured["init"] = init_message
+        def worker_factory(init_messages, hello_message=None):
+            # One init per object of the set; a one-character set sends one.
+            self.assertEqual(1, len(init_messages))
+            captured["init"] = init_messages[0]
             captured["hello"] = hello_message
             return worker
 
@@ -4328,7 +4413,7 @@ class WorkflowTests(unittest.TestCase):
                                   side_effect=worker_factory):
             session = mtou_session.StreamingSession.start(
                 scene, 24.0, None, workflow=mtou_config.WORKFLOW_MODEL,
-                blendshapes_enabled=False, object_id="hero", set_revision=3,
+                blendshapes_enabled=False, object_id="character", set_revision=3,
                 space_revision=2, scene_units=("m", 100.0),
                 maya_version="2025")
             session.stop()
@@ -4339,13 +4424,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(init_message["blendshapes_enabled"])
         self.assertEqual(["Smile"], init_message["curves"])
         # The object identity travels with the negotiation so a reordered scene
-        # can never re-target the wrong object.
-        self.assertEqual("hero", init_message["object_id"])
+        # can never re-target the wrong object; the set lists every object.
+        self.assertEqual("character", init_message["object_id"])
         self.assertEqual(3, init_message["set_revision"])
         self.assertEqual(2, init_message["space_revision"])
+        self.assertEqual(["character"], init_message["set_objects"])
         self.assertEqual(mtou_config.WORKFLOW_MODEL, session.workflow)
         self.assertFalse(session.blendshapes_enabled)
-        self.assertEqual("hero", session.object_id)
+        self.assertEqual("character", session.object_id)
         self.assertEqual(3, session.set_revision)
         self.assertEqual(2, session.space_revision)
 
@@ -4533,14 +4619,15 @@ class ProtocolTests(unittest.TestCase):
                 payload["bones"], payload["curves"], payload["revision"],
                 payload["workflow"], payload["blendshapes_enabled"],
                 payload["object_id"], payload["set_revision"],
-                payload["space_revision"])
+                payload["space_revision"], payload["set_objects"])
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
             return
         if operation == "frame":
             payload = case["payload"]
-            actual = mtou_protocol.make_frame_message(payload["transforms"], payload["curves"])
+            actual = mtou_protocol.make_frame_message(
+                payload["transforms"], payload["curves"], payload.get("objects"))
             actual.update({key: value for key, value in payload.items() if key == "future"})
             self.assertEqual(payload, actual)
             self.assertTrue(mtou_protocol.encode_message(actual))
@@ -4641,7 +4728,36 @@ class ProtocolTests(unittest.TestCase):
         if operation == "resource_limit":
             self._assert_resource_limit_case(case)
             return
+        if operation == "remove_object":
+            self._assert_remove_object_case(case)
+            return
+        if operation == "object_removed":
+            payload = case["payload"]
+            if expected["accepted"]:
+                self.assertEqual(payload, mtou_protocol.validate_reply(payload))
+                return
+            with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+                mtou_protocol.validate_reply(payload)
+            return
         self.fail("Unsupported Maya conformance operation: " + operation)
+
+    def _assert_remove_object_case(self, case):
+        """Maya's removal request names the second object and the new set."""
+        payload = case["payload"]
+        expected = case["expected"]
+
+        def build():
+            return mtou_protocol.make_remove_object_message(
+                payload["session_id"], payload["object_id"],
+                payload["set_revision"], payload["detail"])
+
+        if expected["accepted"]:
+            self.assertEqual(payload, build())
+            self.assertEqual(case["linkage"]["set_revision"] + 1, payload["set_revision"])
+            self.assertTrue(mtou_protocol.encode_message(build()))
+            return
+        with self.assertRaisesRegex(ValueError, "|".join(expected["keywords"])):
+            build()
 
     # ------------------------------------------------------------- v10 linkage
     def _assert_hello_case(self, case):

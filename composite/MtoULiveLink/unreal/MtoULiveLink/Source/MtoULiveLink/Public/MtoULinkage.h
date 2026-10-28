@@ -28,6 +28,18 @@ MTOULIVELINK_API bool MtoUPairLinkageTarget(
 /** Drop the actor's pairing; a running session keeps its negotiated set. */
 MTOULIVELINK_API void MtoUClearLinkageTarget(const AMtoULiveLinkActor& Actor);
 
+/** The object id the actor is paired as (`character` or `secondary`), or empty. */
+MTOULIVELINK_API FString MtoUGetLinkagePairedObject(const AMtoULiveLinkActor& Actor);
+
+/** The placed actor paired with one object id, or nullptr. */
+MTOULIVELINK_API AMtoULiveLinkActor* MtoUFindLinkagePairedActor(const FString& ObjectId);
+
+/**
+ * Remove the second object from the running set: its writers and displays
+ * are restored and Maya continues with the primary character only.
+ */
+MTOULIVELINK_API bool MtoURequestRemoveSecondaryObject(FString& OutError);
+
 /** Current status snapshot for the panel and the editor pump. */
 MTOULIVELINK_API FMtoULinkageView MtoUGetLinkageView();
 

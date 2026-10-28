@@ -27,6 +27,16 @@ struct FMtoUInitMessage
     FString ObjectId;
     int32 SetRevision = 0;
     int32 SpaceRevision = 0;
+    // v11: the ordered object ids of the set this connection negotiates,
+    // primary first; every init of the set repeats the same list.
+    TArray<FString> SetObjects;
+};
+
+/** The stable object ids of a set: the primary character and the second object. */
+struct FMtoUObjectIds
+{
+    static constexpr TCHAR Character[] = TEXT("character");
+    static constexpr TCHAR Secondary[] = TEXT("secondary");
 };
 
 /** Connection greeting: version, scene units and declared capabilities. */
@@ -83,6 +93,24 @@ struct FMtoUPoseGroupMessage
     double MayaFrame = 0.0;
 };
 
+/** Maya removes the second object; SetRevision names the new set. */
+struct FMtoURemoveObjectMessage
+{
+    int32 SessionId = 0;
+    FString ObjectId;
+    int32 SetRevision = 0;
+    FString Detail;
+};
+
+/** One explicitly paired target the greeting names. */
+struct FMtoUHelloTarget
+{
+    FString ObjectId;
+    FString Kind;
+    FString BindingPath;
+    FString Generation;
+};
+
 /** Outcome of one local handoff import, swap or removal. */
 struct FMtoUReferenceResultMessage
 {
@@ -133,10 +161,21 @@ struct FMtoUWorkflows
     }
 };
 
+/** One object of a two-object realtime frame beside the primary. */
+struct FMtoUFrameObject
+{
+    FString ObjectId;
+    TArray<FMtoUTransform> Transforms;
+    TArray<double> Curves;
+};
+
 struct FMtoUFrameMessage
 {
     TArray<FMtoUTransform> Transforms;
     TArray<double> Curves;
+    // v11: every other object of the set at the same Maya time; empty for a
+    // one-object set and for cached frames.
+    TArray<FMtoUFrameObject> Objects;
 };
 
 struct FMtoUCacheBeginMessage
@@ -170,12 +209,14 @@ private:
 class FMtoUProtocol
 {
 public:
-    static constexpr int32 Version = 10;
+    static constexpr int32 Version = 11;
+    // A set holds the primary character and at most one independent object.
+    static constexpr int32 MaxSetObjects = 2;
     // Transient Unreal cache limits, recalibrated with the first real-project
     // capture (320 frames at 30 fps exceeded the original 64 MiB estimate) and
     // aligned with Maya's 1 GiB large-cache confirmation gate. These are the
     // frozen wire values; the single source of truth is the `limits` block of
-    // protocol/conformance-v9.json, and both host adapters assert their
+    // protocol/conformance-v11.json, and both host adapters assert their
     // constants against the corpus. Encoded bytes are metered from the framing
     // boundary; parsed transient memory is preflighted from the negotiated
     // transform and curve counts before any allocation.
@@ -244,6 +285,11 @@ public:
         FMtoUPoseGroupMessage& OutMessage,
         FString& OutError,
         FString* OutErrorCode = nullptr);
+    static bool ParseRemoveObject(
+        const TArray<uint8>& Payload,
+        FMtoURemoveObjectMessage& OutMessage,
+        FString& OutError,
+        FString* OutErrorCode = nullptr);
     static bool ParseReferenceResult(
         const TArray<uint8>& Payload,
         FMtoUReferenceResultMessage& OutMessage,
@@ -261,12 +307,17 @@ public:
         FString* OutErrorCode = nullptr);
     static bool ParseFrame(const TArray<uint8>& Payload, FMtoUFrameMessage& OutMessage, FString& OutError);
     static bool PeekType(const TArray<uint8>& Payload, FString& OutType, FString& OutError);
+    // ExpectedObjects maps every object of the current set beside the primary
+    // to its negotiated transform (X) and curve (Y) counts. A frame of another
+    // set (an object the set no longer holds, or one it lacks) is a droppable
+    // frame, not a structural error.
     static bool ValidateFrame(
         const FMtoUFrameMessage& Frame,
         int32 ExpectedTransformCount,
         int32 ExpectedCurveCount,
         FString& OutError,
-        bool& bOutStructuralError);
+        bool& bOutStructuralError,
+        const TMap<FString, FIntPoint>* ExpectedObjects = nullptr);
     static bool ParseCacheEnter(const TArray<uint8>& Payload, FString& OutError);
     static bool ParseCacheBegin(
         const TArray<uint8>& Payload,
@@ -309,12 +360,16 @@ public:
         bool bReference,
         bool bCache,
         bool bModel,
-        const FString& TargetObjectId,
-        const FString& TargetKind,
-        const FString& TargetBindingPath,
-        const FString& TargetGeneration,
+        const TArray<FMtoUHelloTarget>& Targets,
         int32 SpaceRevision,
         const TSharedPtr<FJsonObject>& Anchor);
+    /** Unreal removed the second object and confirms the new set revision. */
+    static TArray<uint8> EncodeObjectRemoved(
+        int32 SessionId,
+        const FString& ObjectId,
+        int32 SetRevision,
+        bool bRestored,
+        const FString& Detail);
     /** Unreal's authority statement for the current time-control state. */
     static TArray<uint8> EncodeModeState(
         int32 SessionId,

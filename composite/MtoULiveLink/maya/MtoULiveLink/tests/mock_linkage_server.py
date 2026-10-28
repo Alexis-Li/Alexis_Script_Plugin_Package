@@ -1,7 +1,7 @@
 # ruff: noqa: E402
 """Minimal Unreal-side peer for the linkage host checks.
 
-Implements the v10 linkage conversation from the Unreal side (protocol/v10.md)
+Implements the v11 linkage conversation from the Unreal side (protocol/v11.md)
 so the Maya adapter can be exercised without an editor: it greets the client,
 accepts one object, sends camera/time targets, applies the answered groups,
 reports the application evidence, and records latency and convergence.
@@ -105,16 +105,16 @@ class MockUnrealPeer(object):
         if hello.get("type") != "hello":
             self.errors.append("first message was {0!r}".format(hello.get("type")))
             return
-        if hello.get("version") != 10:
+        if hello.get("version") != 11:
             self.errors.append("hello version {0!r}".format(hello.get("version")))
             return
         self._send(sock, {
             "type": "hello_ack",
-            "version": 10,
+            "version": 11,
             "session_id": self.session_id,
             "capabilities": {"linkage": True, "reference": True},
-            "target": {"object_id": self.object_id, "kind": "binding_actor",
-                       "binding_path": "/Game/Test/BP_Target", "generation": "1"},
+            "targets": [{"object_id": self.object_id, "kind": "binding_actor",
+                         "binding_path": "/Game/Test/BP_Target", "generation": "1"}],
             "space": {"space_revision": self.space_revision,
                       "anchor": {"translation": [0.0, 0.0, 0.0],
                                  "rotation": [0.0, 0.0, 0.0, 1.0], "scale": 1.0}},

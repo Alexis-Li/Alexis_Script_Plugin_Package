@@ -488,6 +488,74 @@ bool FMtoUProtocol::ParseInit(
         return false;
     }
 
+    // v11 object set: the ordered ids the connection negotiates, primary
+    // first. Every init of the set names the same list and its own id in it.
+    const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+    if (!GetArrayField(Object, TEXT("set_objects"), SetValues, OutError) || SetValues->IsEmpty())
+    {
+        OutError = TEXT("Field 'set_objects' must be a non-empty array of object ids.");
+        return false;
+    }
+    for (int32 Index = 0; Index < SetValues->Num(); ++Index)
+    {
+        FString SetObject;
+        if (!(*SetValues)[Index].IsValid() || (*SetValues)[Index]->Type != EJson::String
+            || !(*SetValues)[Index]->TryGetString(SetObject) || SetObject.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' entry %d must be a non-empty string."), Index);
+            return false;
+        }
+        if (OutMessage.SetObjects.Contains(SetObject))
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' names the duplicate object id '%s'."), *SetObject);
+            return false;
+        }
+        OutMessage.SetObjects.Add(SetObject);
+    }
+    if (OutMessage.SetObjects.Num() > MaxSetObjects)
+    {
+        OutError = FString::Printf(
+            TEXT("The object set holds %d objects; max_set_objects is %d."),
+            OutMessage.SetObjects.Num(), MaxSetObjects);
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("OBJECT_SET_UNSUPPORTED");
+        }
+        return false;
+    }
+    if (OutMessage.SetObjects[0] != FMtoUObjectIds::Character)
+    {
+        OutError = FString::Printf(
+            TEXT("Field 'set_objects' must start with the '%s' object."), FMtoUObjectIds::Character);
+        return false;
+    }
+    for (const FString& SetObject : OutMessage.SetObjects)
+    {
+        if (SetObject != FMtoUObjectIds::Character && SetObject != FMtoUObjectIds::Secondary)
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' names the unknown object id '%s'."), *SetObject);
+            return false;
+        }
+    }
+    if (!OutMessage.SetObjects.Contains(OutMessage.ObjectId))
+    {
+        OutError = FString::Printf(
+            TEXT("Object '%s' is not part of 'set_objects'."), *OutMessage.ObjectId);
+        return false;
+    }
+    if (Workflow != FMtoUWorkflows::Animation && OutMessage.SetObjects.Num() > 1)
+    {
+        OutError = TEXT("The Model workflow keeps the single-character object set.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("OBJECT_SET_UNSUPPORTED");
+        }
+        return false;
+    }
+
     const TArray<TSharedPtr<FJsonValue>>* BoneValues = nullptr;
     const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
     if (!GetArrayField(Object, TEXT("bones"), BoneValues, OutError)
@@ -620,8 +688,68 @@ bool FMtoUProtocol::ParseFrame(
     {
         return false;
     }
-    return ParseFrameBody(
-        Object, TEXT("frame"), INDEX_NONE, INDEX_NONE, OutMessage, OutError);
+    if (!ParseFrameBody(
+            Object, TEXT("frame"), INDEX_NONE, INDEX_NONE, OutMessage, OutError))
+    {
+        return false;
+    }
+    if (!Object->HasField(TEXT("objects")))
+    {
+        return true;
+    }
+    // v11: the other objects of a two-object set, sampled at the same Maya
+    // time as the primary. A row names one object beside the primary, once.
+    const TArray<TSharedPtr<FJsonValue>>* RowValues = nullptr;
+    if (!GetArrayField(Object, TEXT("objects"), RowValues, OutError))
+    {
+        return false;
+    }
+    for (int32 Index = 0; Index < RowValues->Num(); ++Index)
+    {
+        const TSharedPtr<FJsonObject> Row = (*RowValues)[Index].IsValid()
+            ? (*RowValues)[Index]->AsObject()
+            : nullptr;
+        if (!Row.IsValid())
+        {
+            OutError = FString::Printf(TEXT("Frame object %d must be an object."), Index);
+            return false;
+        }
+        FMtoUFrameObject Parsed;
+        if (!GetStringField(Row, TEXT("object_id"), Parsed.ObjectId, OutError)
+            || Parsed.ObjectId.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("Frame object %d requires a non-empty 'object_id'."), Index);
+            return false;
+        }
+        if (Parsed.ObjectId == FMtoUObjectIds::Character)
+        {
+            OutError = TEXT("A frame object row carries only an object beside the primary.");
+            return false;
+        }
+        for (const FMtoUFrameObject& Existing : OutMessage.Objects)
+        {
+            if (Existing.ObjectId == Parsed.ObjectId)
+            {
+                OutError = FString::Printf(
+                    TEXT("A frame names the duplicate object '%s'."), *Parsed.ObjectId);
+                return false;
+            }
+        }
+        // The row shares the frame body's value rules; its own type field is
+        // the frame's, so the body parser sees one.
+        Row->SetStringField(TEXT("type"), TEXT("frame"));
+        FMtoUFrameMessage Values;
+        if (!ParseFrameBody(Row, TEXT("frame"), INDEX_NONE, INDEX_NONE, Values, OutError))
+        {
+            OutError = FString::Printf(TEXT("Frame object '%s': %s"), *Parsed.ObjectId, *OutError);
+            return false;
+        }
+        Parsed.Transforms = MoveTemp(Values.Transforms);
+        Parsed.Curves = MoveTemp(Values.Curves);
+        OutMessage.Objects.Add(MoveTemp(Parsed));
+    }
+    return true;
 }
 
 bool FMtoUProtocol::ParseHello(
@@ -1075,6 +1203,48 @@ bool FMtoUProtocol::ParseGroup(
     {
         Row.UeDisplayFrame = OutMessage.UeDisplayFrame;
         Row.MayaFrame = OutMessage.MayaFrame;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseRemoveObject(
+    const TArray<uint8>& Payload,
+    FMtoURemoveObjectMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoURemoveObjectMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("remove_object"))
+    {
+        OutError = TEXT("Message type must be 'remove_object'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetStringField(Object, TEXT("object_id"), OutMessage.ObjectId, OutError)
+        || !GetIdentityInt(Object, TEXT("set_revision"), OutMessage.SetRevision, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.SetRevision < 1 || OutMessage.ObjectId.IsEmpty())
+    {
+        OutError = TEXT("Fields 'session_id' and 'set_revision' must be positive and 'object_id' non-empty.");
+        return false;
+    }
+    if (Object->HasField(TEXT("detail"))
+        && !GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+    {
+        return false;
     }
     return true;
 }
@@ -1635,35 +1805,40 @@ bool FMtoUProtocol::ParseCacheClear(
     return true;
 }
 
-bool FMtoUProtocol::ValidateFrame(
-    const FMtoUFrameMessage& Frame,
+namespace
+{
+bool ValidateFrameValues(
+    const TArray<FMtoUTransform>& Transforms,
+    const TArray<double>& Curves,
     int32 ExpectedTransformCount,
     int32 ExpectedCurveCount,
+    const FString& Label,
     FString& OutError,
     bool& bOutStructuralError)
 {
-    OutError.Reset();
     bOutStructuralError = true;
-    if (Frame.Transforms.Num() != ExpectedTransformCount)
+    if (Transforms.Num() != ExpectedTransformCount)
     {
         OutError = FString::Printf(
-            TEXT("Transform count mismatch: expected %d, got %d."),
+            TEXT("%sTransform count mismatch: expected %d, got %d."),
+            *Label,
             ExpectedTransformCount,
-            Frame.Transforms.Num());
+            Transforms.Num());
         return false;
     }
-    if (Frame.Curves.Num() != ExpectedCurveCount)
+    if (Curves.Num() != ExpectedCurveCount)
     {
         OutError = FString::Printf(
-            TEXT("Curve count mismatch: expected %d, got %d."),
+            TEXT("%sCurve count mismatch: expected %d, got %d."),
+            *Label,
             ExpectedCurveCount,
-            Frame.Curves.Num());
+            Curves.Num());
         return false;
     }
 
-    for (int32 Index = 0; Index < Frame.Transforms.Num(); ++Index)
+    for (int32 Index = 0; Index < Transforms.Num(); ++Index)
     {
-        const FMtoUTransform& Transform = Frame.Transforms[Index];
+        const FMtoUTransform& Transform = Transforms[Index];
         const double Values[] = {
             Transform.Translation.X, Transform.Translation.Y, Transform.Translation.Z,
             Transform.Rotation.X, Transform.Rotation.Y, Transform.Rotation.Z, Transform.Rotation.W,
@@ -1675,30 +1850,82 @@ bool FMtoUProtocol::ValidateFrame(
             {
                 bOutStructuralError = false;
                 OutError = FString::Printf(
-                    TEXT("Non-finite bone %d transform value %d."), Index, ValueIndex);
+                    TEXT("%sNon-finite bone %d transform value %d."), *Label, Index, ValueIndex);
                 return false;
             }
         }
         if (!Transform.Rotation.IsNormalized())
         {
-            OutError = FString::Printf(TEXT("Bone %d quaternion must be normalized and non-zero."), Index);
+            OutError = FString::Printf(
+                TEXT("%sBone %d quaternion must be normalized and non-zero."), *Label, Index);
             return false;
         }
     }
 
-    for (int32 Index = 0; Index < Frame.Curves.Num(); ++Index)
+    for (int32 Index = 0; Index < Curves.Num(); ++Index)
     {
-        if (!FMath::IsFinite(Frame.Curves[Index]))
+        if (!FMath::IsFinite(Curves[Index]))
         {
             bOutStructuralError = false;
-            OutError = FString::Printf(TEXT("Non-finite curve %d."), Index);
+            OutError = FString::Printf(TEXT("%sNon-finite curve %d."), *Label, Index);
             return false;
         }
-        if (FMath::Abs(Frame.Curves[Index]) > TNumericLimits<float>::Max())
+        if (FMath::Abs(Curves[Index]) > TNumericLimits<float>::Max())
         {
             bOutStructuralError = false;
             OutError = FString::Printf(
-                TEXT("Curve %d cannot be represented as a finite Live Link float."), Index);
+                TEXT("%sCurve %d cannot be represented as a finite Live Link float."), *Label, Index);
+            return false;
+        }
+    }
+    bOutStructuralError = false;
+    return true;
+}
+}
+
+bool FMtoUProtocol::ValidateFrame(
+    const FMtoUFrameMessage& Frame,
+    int32 ExpectedTransformCount,
+    int32 ExpectedCurveCount,
+    FString& OutError,
+    bool& bOutStructuralError,
+    const TMap<FString, FIntPoint>* ExpectedObjects)
+{
+    OutError.Reset();
+    if (!ValidateFrameValues(Frame.Transforms, Frame.Curves, ExpectedTransformCount,
+            ExpectedCurveCount, FString(), OutError, bOutStructuralError))
+    {
+        return false;
+    }
+    // A frame of another set is dropped, not a broken stream: Maya sends the
+    // set it had, and a removal in flight changes the set under it.
+    static const TMap<FString, FIntPoint> NoObjects;
+    const TMap<FString, FIntPoint>& Expected = ExpectedObjects ? *ExpectedObjects : NoObjects;
+    for (const FMtoUFrameObject& Row : Frame.Objects)
+    {
+        if (!Expected.Contains(Row.ObjectId))
+        {
+            bOutStructuralError = false;
+            OutError = FString::Printf(
+                TEXT("The frame names object '%s', which is not part of the current set."),
+                *Row.ObjectId);
+            return false;
+        }
+    }
+    for (const TPair<FString, FIntPoint>& Object : Expected)
+    {
+        const FMtoUFrameObject* Row = Frame.Objects.FindByPredicate(
+            [&Object](const FMtoUFrameObject& Candidate) { return Candidate.ObjectId == Object.Key; });
+        if (!Row)
+        {
+            bOutStructuralError = false;
+            OutError = FString::Printf(
+                TEXT("The frame lacks object '%s' of the current set."), *Object.Key);
+            return false;
+        }
+        if (!ValidateFrameValues(Row->Transforms, Row->Curves, Object.Value.X, Object.Value.Y,
+                FString::Printf(TEXT("Object '%s': "), *Row->ObjectId), OutError, bOutStructuralError))
+        {
             return false;
         }
     }
@@ -1771,10 +1998,7 @@ TArray<uint8> FMtoUProtocol::EncodeHelloAck(
     bool bReference,
     bool bCache,
     bool bModel,
-    const FString& TargetObjectId,
-    const FString& TargetKind,
-    const FString& TargetBindingPath,
-    const FString& TargetGeneration,
+    const TArray<FMtoUHelloTarget>& Targets,
     int32 SpaceRevision,
     const TSharedPtr<FJsonObject>& Anchor)
 {
@@ -1790,14 +2014,19 @@ TArray<uint8> FMtoUProtocol::EncodeHelloAck(
     Capabilities->SetBoolField(TEXT("model"), bModel);
     Object->SetObjectField(TEXT("capabilities"), Capabilities);
 
-    // The target describes the explicitly selected target and stays empty
-    // until the user pairs one; an empty descriptor never names a takeover.
-    const TSharedRef<FJsonObject> Target = MakeShared<FJsonObject>();
-    Target->SetStringField(TEXT("object_id"), TargetObjectId);
-    Target->SetStringField(TEXT("kind"), TargetKind);
-    Target->SetStringField(TEXT("binding_path"), TargetBindingPath);
-    Target->SetStringField(TEXT("generation"), TargetGeneration);
-    Object->SetObjectField(TEXT("target"), Target);
+    // The targets are the explicitly paired targets, primary first; the list
+    // stays empty until the user pairs one, so nothing names a takeover early.
+    TArray<TSharedPtr<FJsonValue>> TargetValues;
+    for (const FMtoUHelloTarget& Target : Targets)
+    {
+        const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+        Row->SetStringField(TEXT("object_id"), Target.ObjectId);
+        Row->SetStringField(TEXT("kind"), Target.Kind);
+        Row->SetStringField(TEXT("binding_path"), Target.BindingPath);
+        Row->SetStringField(TEXT("generation"), Target.Generation);
+        TargetValues.Add(MakeShared<FJsonValueObject>(Row));
+    }
+    Object->SetArrayField(TEXT("targets"), TargetValues);
 
     const TSharedRef<FJsonObject> Space = MakeShared<FJsonObject>();
     Space->SetNumberField(TEXT("space_revision"), SpaceRevision);
@@ -1805,6 +2034,23 @@ TArray<uint8> FMtoUProtocol::EncodeHelloAck(
         ? Anchor.ToSharedRef()
         : MakeShared<FJsonObject>());
     Object->SetObjectField(TEXT("space"), Space);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeObjectRemoved(
+    int32 SessionId,
+    const FString& ObjectId,
+    int32 SetRevision,
+    bool bRestored,
+    const FString& Detail)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("object_removed"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetStringField(TEXT("object_id"), ObjectId);
+    Object->SetNumberField(TEXT("set_revision"), SetRevision);
+    Object->SetBoolField(TEXT("restored"), bRestored);
+    Object->SetStringField(TEXT("detail"), Detail);
     return EncodeObject(Object);
 }
 
