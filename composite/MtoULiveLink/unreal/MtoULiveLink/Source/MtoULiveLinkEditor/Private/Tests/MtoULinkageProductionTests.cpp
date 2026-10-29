@@ -2586,10 +2586,20 @@ private:
         });
         Add(TEXT("[set] the right skeleton connects again"), 600.0, [this]()
         {
-            if (RefusalPhase == 0 && !bStepReconnecting)
+            if (bStepReconnecting)
+            {
+                if (!ReconnectSet(TEXT("[set] the right skeleton")))
+                {
+                    return false;
+                }
+                bStepReconnecting = false;
+                return true;
+            }
+            if (RefusalPhase == 0)
             {
                 // A refused object may leave Maya connected with the main
-                // character only; the right Binding needs a new connection.
+                // character only; that session is ended before the right
+                // Binding is set.
                 if (MayaConnected() || OnceId >= 0)
                 {
                     if (OnceId >= 0 || !bDisconnectSent)
@@ -2603,19 +2613,12 @@ private:
                 RefusalPhase = 1;
                 return false;
             }
-            if (RefusalPhase == 1)
-            {
-                // The disconnect may still be tearing down: ReconnectSet waits
-                // for it before clicking 连接.
-                RefusalPhase = 0;
-                bStepReconnecting = true;
-            }
-            if (!ReconnectSet(TEXT("[set] the right skeleton")))
-            {
-                return false;
-            }
-            bStepReconnecting = false;
-            return true;
+            // With the right Binding, the session still negotiating after the
+            // refusal completes by itself; one that ended instead needs a new
+            // 连接. ReconnectSet handles both.
+            RefusalPhase = 0;
+            bStepReconnecting = true;
+            return false;
         });
     }
 
@@ -3141,9 +3144,11 @@ private:
                 SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no actor")));
             bReconnectWaitLogged = true;
         }
-        // Callers reach this only after the previous set ended, so a set that
-        // is connected again before 连接 was clicked (a session that finished
-        // its negotiation itself) is the result already.
+        // A set that is connected before 连接 was clicked is the result
+        // already: a UE actor reads Connected only after a negotiation, and
+        // Maya never reconnects by itself, so it is a session that finished
+        // negotiating after the step's change (after the right Binding, for
+        // the refused session), never the set the step ended.
         if (RefusalPhase == 0 && !(OnceId < 0 && SetConnected()))
         {
             // The previous session must be gone before 连接 is clicked; once
