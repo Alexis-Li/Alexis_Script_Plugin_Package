@@ -118,6 +118,7 @@ from .config import (
     REFERENCE_ANCHOR_TOLERANCE_DEG,
     REFERENCE_CONTAINER,
     REFERENCE_GRAY_SHADER,
+    REFERENCE_INVENTORY_ATTRIBUTE,
     REFERENCE_MARK_ATTRIBUTE,
     REFERENCE_MARK_VALUE,
 )
@@ -2579,10 +2580,12 @@ class ReferenceImporter(object):
 
         The container also records the anchor it was placed for (identity when
         the manifest names none), so linkage can tell a reference exported
-        before the target moved from a current one.
+        before the target moved from a current one, and the final inventory of
+        the nodes this run created.
         """
         try:
             group = self._container_group(self.active_namespace)
+            _record_inventory(group, self.active_namespace)
             if not cmds.attributeQuery(
                     REFERENCE_ANCHOR_ATTRIBUTE, node=group, exists=True):
                 cmds.addAttr(group, longName=REFERENCE_ANCHOR_ATTRIBUTE,
@@ -2821,6 +2824,7 @@ class ReferenceImporter(object):
                 CATEGORY_IMPORT_EMPTY,
                 "the FBX {0} produced no geometry although the handoff declares {1} "
                 "object(s); the previous reference is kept".format(self.fbx, declared))
+        _record_inventory(group, staging)
         group_uuid = cmds.ls(group, uuid=True) or []
         self.report["container"].update({
             "staging_group_path": group,
@@ -3769,7 +3773,8 @@ def _namespace_ownership(name, accepted_marks):
             continue
         else:
             state["foreign"].append(path)
-    state["foreign"].extend(_foreign_descendants(_namespace_top_nodes(name), name))
+    state["foreign"] = _unique(
+        state["foreign"] + _unrecorded_nodes(name, state["marked"]))
     state["ours_only"] = bool(state["marked"]) and not state["foreign"]
     return state
 
@@ -3791,7 +3796,8 @@ def _remove_owned_nodes(namespace, accepted_marks):
             if not _node_type_in(path, TOLERATED_CONTAINER_TOP_TYPES):
                 left.append(path)
             continue
-        foreign = _foreign_descendants([path], namespace)
+        foreign = [node for node in _unrecorded_nodes(namespace, [path])
+                   if node == path or node.startswith(path + "|")]
         if foreign:
             # Deleting the group would delete the scene's nodes under it.
             errors.append("the marked node {0} holds nodes this tool did not "
@@ -3886,7 +3892,11 @@ def _container_state(name):
             state["incomplete"].append(path)
         else:
             state["foreign_nodes"].append(path)
-    state["foreign_nodes"].extend(_foreign_descendants(_namespace_top_nodes(name), name))
+    owned = [path for path in [state["group"], state["root_group"]]
+             + state["incomplete"] if path]
+    if state["namespace"] and owned:
+        state["foreign_nodes"] = _unique(
+            state["foreign_nodes"] + _unrecorded_nodes(name, owned))
     if state["foreign_nodes"]:
         state["conflict"] = (
             "the name {0!r} is used by nodes this tool does not own and never "
@@ -3926,29 +3936,75 @@ def _namespace_top_nodes(namespace):
     return [path for path in nodes if str(path).count("|") == 1]
 
 
-def _foreign_descendants(paths, namespace):
-    """DAG nodes under ``paths`` that the import into ``namespace`` did not create.
-
-    Everything an import creates lives in its namespace, so a node of another
-    namespace hanging anywhere below the container -- a scene object a person
-    parented under a reference mesh, for example -- belongs to the scene.
-    Deleting the namespace would delete it with its parent, so its presence
-    makes the container not entirely this tool's.
-    """
-    found = []
-    for path in paths:
-        try:
-            below = cmds.listRelatives(path, allDescendents=True, fullPath=True) or []
-        except Exception:  # noqa: BLE001 - an unreadable tree is not provably ours
-            found.append(path)
-            continue
-        for node in below:
-            leaf = str(node).rsplit("|", 1)[-1]
-            node_namespace = leaf.rsplit(":", 1)[0] if ":" in leaf else ""
-            if (node_namespace != namespace
-                    and not node_namespace.startswith(namespace + ":")):
-                found.append(str(node))
+def _namespace_uuids(namespace):
+    """``{uuid: path}`` of every node in ``namespace`` and its child namespaces."""
+    members = cmds.namespaceInfo(namespace, listNamespace=True, recurse=True,
+                                 dagPath=True) or []
+    found = {}
+    for member in members:
+        for uuid in cmds.ls(member, uuid=True) or []:
+            found[str(uuid)] = str(member)
     return found
+
+
+def _record_inventory(group, namespace):
+    """Record on ``group`` the UUIDs of every node the run created.
+
+    The inventory is taken while the run still holds the scene: the namespace
+    and the DAG below the group contain the import and nothing else yet.
+    """
+    uuids = set(_namespace_uuids(namespace))
+    for path in [group] + (cmds.listRelatives(group, allDescendents=True,
+                                              fullPath=True) or []):
+        uuids.update(str(uuid) for uuid in cmds.ls(path, uuid=True) or [])
+    if not cmds.attributeQuery(REFERENCE_INVENTORY_ATTRIBUTE, node=group,
+                               exists=True):
+        cmds.addAttr(group, longName=REFERENCE_INVENTORY_ATTRIBUTE,
+                     dataType="string")
+    cmds.setAttr(group + "." + REFERENCE_INVENTORY_ATTRIBUTE,
+                 " ".join(sorted(uuids)), type="string")
+
+
+def _inventory(group):
+    """The UUIDs ``group`` records; empty when it records none."""
+    try:
+        if not cmds.attributeQuery(REFERENCE_INVENTORY_ATTRIBUTE, node=group,
+                                   exists=True):
+            return set()
+        value = cmds.getAttr(group + "." + REFERENCE_INVENTORY_ATTRIBUTE)
+    except Exception:  # noqa: BLE001 - an unreadable inventory proves nothing
+        return set()
+    return set(str(value).split()) if value else set()
+
+
+def _unrecorded_nodes(namespace, groups):
+    """Nodes in ``namespace`` or under its groups that no import recorded.
+
+    Only the inventories of the marked ``groups`` prove a node is this tool's.
+    A node a person created in the namespace, or parented under the reference
+    from anywhere, is in none of them, so deleting the namespace would delete
+    it: its presence makes the namespace not entirely this tool's.
+    """
+    recorded = set()
+    for group in groups:
+        recorded |= _inventory(group)
+    candidates = _namespace_uuids(namespace)
+    for top in _unique(_namespace_top_nodes(namespace) + list(groups)):
+        try:
+            below = cmds.listRelatives(top, allDescendents=True, fullPath=True) or []
+        except Exception:  # noqa: BLE001 - an unreadable tree is not provably ours
+            candidates.setdefault("unreadable:" + top, top)
+            continue
+        for path in below:
+            for uuid in cmds.ls(path, uuid=True) or []:
+                candidates.setdefault(str(uuid), str(path))
+    return sorted(path for uuid, path in candidates.items() if uuid not in recorded)
+
+
+def _unique(paths):
+    """``paths`` without repeats, in their first order."""
+    seen = set()
+    return [path for path in paths if not (path in seen or seen.add(path))]
 
 
 def _root_nodes(name):

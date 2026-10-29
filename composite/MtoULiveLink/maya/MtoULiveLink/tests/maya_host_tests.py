@@ -1450,9 +1450,37 @@ class MayaHostTests(unittest.TestCase):
         self.assertEqual(before, self._scene_snapshot())
         self.assertEqual(1, len(cmds.ls(prop_uuid)))
 
-        # Once the node is moved out, a locked node makes the removal fail with
-        # its residual reported; unlocked, the removal completes.
         cmds.parent(cmds.ls(prop_uuid, long=True)[0], world=True)
+
+        # The container's namespace does not prove a node came from the import:
+        # nodes a person created there, under the reference, in a child
+        # namespace or as a DG node, are kept and refuse the update and removal.
+        container = mtou_config.REFERENCE_CONTAINER
+        group = self._container_group()
+        artist = [
+            cmds.createNode("transform", name=container + ":ArtistProp", parent=group),
+            cmds.createNode("lambert", name=container + ":ArtistShader"),
+        ]
+        cmds.namespace(add="Props", parent=container)
+        artist.append(cmds.createNode("transform", name=container + ":Props:Crate",
+                                      parent=mesh_transform))
+        artist_uuids = [cmds.ls(node, uuid=True)[0] for node in artist]
+        before = self._scene_snapshot()
+        with self.assertRaises(reference.ReferenceRefused) as caught:
+            reference.import_handoff(self._real_handoff(scratch / "g", "SM_Seventh"))
+        self.assertEqual("CONTAINER_NOT_OWNED", caught.exception.code)
+        with self.assertRaises(reference.ReferenceRefused) as caught:
+            reference.ReferenceContainer().remove()
+        self.assertEqual("CONTAINER_NOT_OWNED", caught.exception.code)
+        for name in ("ArtistProp", "ArtistShader", "Crate"):
+            self.assertIn(name, caught.exception.detail)
+        self.assertEqual(before, self._scene_snapshot())
+        self.assertEqual(3, len(cmds.ls(artist_uuids)))
+        cmds.delete(cmds.ls(artist_uuids))
+        cmds.namespace(removeNamespace=container + ":Props")
+
+        # A locked node makes the removal fail with its residual reported;
+        # unlocked, the removal completes.
         locked = cmds.ls(mtou_config.REFERENCE_CONTAINER + ":*", long=True,
                          type="mesh")[0]
         cmds.lockNode(locked, lock=True)

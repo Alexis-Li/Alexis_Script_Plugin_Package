@@ -1619,7 +1619,10 @@ class _FakeCommands(object):
         if flags.get("listOnlyNamespaces"):
             return sorted(self.scene.namespaces)
         namespace = args[0] if args else ""
-        return [node.long_name for node in self.scene.namespace_members(namespace)]
+        nodes = [node for node in self.scene.nodes
+                 if node.namespace == namespace
+                 or (flags.get("recurse") and node.namespace.startswith(namespace + ":"))]
+        return [node.long_name for node in nodes]
 
     def namespace(self, **flags):
         scene = self.scene
@@ -1855,6 +1858,18 @@ def mark_for(name):
     return "{0} {1}".format(reference.REFERENCE_MARK_VALUE, name)
 
 
+def record_inventory(scene, group):
+    """Record on ``group`` every node its import created, as the tool does."""
+    nodes = scene.namespace_members(group.namespace)
+    pending = list(group.children)
+    while pending:
+        node = pending.pop(0)
+        nodes.append(node)
+        pending.extend(node.children)
+    group.attributes["mtouSceneRefNodes"] = " ".join(
+        sorted(set(node.uuid for node in nodes + [group])))
+
+
 def owned_scene(scene, container=None, node_name=None):
     """A container this tool owns: one marked group, optionally with content."""
     container = container or reference.REFERENCE_CONTAINER
@@ -1867,6 +1882,7 @@ def owned_scene(scene, container=None, node_name=None):
     content = None
     if node_name is not None:
         content = scene.add_node(container, node_name, "transform", parent=group)
+    record_inventory(scene, group)
     return group, content
 
 
@@ -1877,6 +1893,7 @@ def staging_scene(scene, staging_name):
     group = scene.add_node(staging_name, staging_name, "transform")
     scene.current_namespace = ":"
     scene.mark(group, mark_for(staging_name))
+    record_inventory(scene, group)
     return group
 
 
@@ -2531,6 +2548,7 @@ class RecoveryTest(unittest.TestCase):
         staged = scene.add_node(container, "SM_Wall")
         scene.current_namespace = ":"
         scene.mark(staged, mark_for(container + reference.STAGING_SUFFIX))
+        record_inventory(scene, staged)
         report = import_fixture(scene, HandoffFixture(self.directory / "handoff"))
         self.assertTrue(report["accepted"], report["problems"])
         self.assertTrue(report["update"]["recovery"]
@@ -2550,6 +2568,7 @@ class RecoveryTest(unittest.TestCase):
         scene.current_namespace = ":"
         scene.mark(group, mark_for(container))
         content = scene.add_node(retiring, "SM_Old", parent=group)
+        record_inventory(scene, group)
         report = self._recover(scene)
         self.assertTrue(report["accepted"])
         self.assertEqual(retiring, report["restored_previous_reference"])
@@ -2586,6 +2605,7 @@ class RecoveryTest(unittest.TestCase):
         group = scene.add_node(retiring, container)
         scene.current_namespace = ":"
         scene.mark(group, mark_for(container))
+        record_inventory(scene, group)
         original = reference._remove_namespace
 
         def broken(namespace):
@@ -2654,6 +2674,25 @@ class ContainerRemovalTest(unittest.TestCase):
         self.assertIn("HeroProp", caught.exception.detail)
         self.assertEqual(before, self.scene.snapshots())
         self.assertIs(prop, self.scene.find(prop.long_name))
+
+    def test_a_node_created_in_the_container_namespace_refuses_the_removal(self):
+        # The namespace does not prove a node came from the import: a node a
+        # person created there, under the reference or beside it, is kept.
+        container = reference.REFERENCE_CONTAINER
+        group, mesh = owned_scene(self.scene, node_name="SM_Old")
+        prop = self.scene.add_node(container, "ArtistProp", parent=group)
+        shader = self.scene.add_node(container, "ArtistShader", "lambert")
+        self.scene.namespaces.add(container + ":Props")
+        child = self.scene.add_node(container + ":Props", "Crate", parent=mesh)
+        before = self.scene.snapshots()
+        with self.assertRaises(reference.ReferenceRefused) as caught:
+            self._remove(self.scene)
+        self.assertEqual("CONTAINER_NOT_OWNED", caught.exception.code)
+        for name in ("ArtistProp", "ArtistShader", "Crate"):
+            self.assertIn(name, caught.exception.detail)
+        self.assertEqual(before, self.scene.snapshots())
+        for node in (prop, shader, child):
+            self.assertIs(node, self.scene.find(node.uuid))
 
     def test_a_refused_deletion_is_reported_not_raised(self):
         owned_scene(self.scene, node_name="SM_Old")
