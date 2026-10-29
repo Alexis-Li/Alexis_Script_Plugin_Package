@@ -50,7 +50,8 @@
 - Camera linkage no longer starts with a scene reference exported before the
   target moved; Maya asks you to export it again or remove it. (#59)
 - Updating or removing the scene reference no longer deletes your own objects
-  parented under it; Maya refuses and names them. (#59)
+  parented under it or created in its namespace; Maya refuses and names them.
+  (#59)
 - A scene-reference file Maya cannot read no longer replaces the previous
   reference with an empty one. (#59)
 - Ending camera linkage after a locked camera or resolution-gate attribute
