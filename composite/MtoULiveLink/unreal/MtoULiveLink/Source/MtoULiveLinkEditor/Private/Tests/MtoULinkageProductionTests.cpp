@@ -3115,6 +3115,27 @@ private:
     /** Maya connects the set again; both objects negotiate. */
     bool ReconnectSet(const FString& What)
     {
+        if (ReconnectWaitStarted <= 0.0)
+        {
+            ReconnectWaitStarted = FPlatformTime::Seconds();
+        }
+        if (FPlatformTime::Seconds() - ReconnectWaitStarted > 60.0 && !bReconnectWaitLogged)
+        {
+            bool bMayaConnected = false;
+            int32 Ack = -1;
+            if (MayaResult.IsValid())
+            {
+                MayaResult->TryGetBoolField(TEXT("connected"), bMayaConnected);
+                MayaResult->TryGetNumberField(TEXT("ack"), Ack);
+            }
+            Log(FString::Printf(TEXT("%s: still waiting for the set: phase %d, once %d, Maya ack %d, session open %d, ")
+                TEXT("connected %d, second %d, UE '%s' / '%s'"),
+                *What, RefusalPhase, OnceId, Ack, MayaSessionOpen() ? 1 : 0, bMayaConnected ? 1 : 0,
+                MayaSetHasSecondary() ? 1 : 0,
+                Actor.IsValid() ? *Actor->GetConnectionStatus() : TEXT("no actor"),
+                SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no actor")));
+            bReconnectWaitLogged = true;
+        }
         if (RefusalPhase == 0)
         {
             if (MayaSessionOpen())
@@ -3137,22 +3158,10 @@ private:
                 Log(What + TEXT(": Maya stayed idle after 连接; connecting again"));
                 RefusalPhase = 0;
             }
-            else if (FPlatformTime::Seconds() - RefusalStarted > 60.0 && !bReconnectWaitLogged)
-            {
-                bool bMayaConnected = false;
-                if (MayaResult.IsValid())
-                {
-                    MayaResult->TryGetBoolField(TEXT("connected"), bMayaConnected);
-                }
-                Log(FString::Printf(TEXT("%s: still waiting for the set: Maya connected %d, Maya second %d, UE '%s' / '%s'"),
-                    *What, bMayaConnected ? 1 : 0, MayaSetHasSecondary() ? 1 : 0,
-                    Actor.IsValid() ? *Actor->GetConnectionStatus() : TEXT("no actor"),
-                    SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no actor")));
-                bReconnectWaitLogged = true;
-            }
             return false;
         }
         bReconnectWaitLogged = false;
+        ReconnectWaitStarted = 0.0;
         PairAgain();
         Log(FString::Printf(TEXT("%s: the set connected again with %d objects (UE '%s' / '%s')"), *What,
             NegotiatedObjects(), *Actor->GetConnectionStatus(), *SecondaryActor->GetConnectionStatus()));
@@ -4131,6 +4140,7 @@ private:
     TSharedPtr<FJsonObject> LifecycleBaseline, LifecycleLastCensus, LifecycleDisconnected;
     TSharedPtr<FJsonObject> LiveStateBefore;
     bool bReconnectWaitLogged = false;
+    double ReconnectWaitStarted = 0.0;
     TArray<TSharedPtr<FJsonValue>> LifecycleSamples;
     // Sustained playback (INT-10).
     int32 SustainedPhase = 0;

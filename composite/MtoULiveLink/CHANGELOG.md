@@ -59,6 +59,9 @@
 - With a second object, camera linkage no longer freezes it on an old pose after
   the Level Sequence loops, and a group Unreal could not show is sampled again
   instead of waiting for the next pause or jump. (#59)
+- Starting camera linkage from Unreal, or an Unreal reference offer, right
+  after Maya connects is no longer lost; Unreal no longer waits for a Maya
+  confirmation that never comes. (#59)
 - Closing the **MtoU 场景参考** window from its title bar no longer crashes Maya. (#80)
 - Linkage could show a stale pose at the target time. (#57)
 - Bone mapping depended on Maya's sibling order; duplicate short names now

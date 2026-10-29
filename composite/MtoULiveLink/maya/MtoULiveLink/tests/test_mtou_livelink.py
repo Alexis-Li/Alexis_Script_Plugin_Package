@@ -1777,6 +1777,119 @@ class SenderLifecycleTests(unittest.TestCase):
               "frame_count": 321}], received)
         self.assertEqual("disconnected", worker.status()[0])
 
+    def test_a_statement_before_the_listener_reaches_it_once_installed(self):
+        # Unreal may start linkage the moment the set is ready, before Maya's
+        # main thread installs the panel's listener; the statement must not
+        # be lost.
+        worker = mtou_session.SenderWorker({"type": "init", "revision": 7})
+        received = []
+        mode_state = {"type": "mode_state", "session_id": 1, "mode_revision": 1,
+                      "mode": "linkage", "control": "unreal", "detail": "",
+                      "anchor": {"location_cm": [0.0, 0.0, 0.0],
+                                 "rotation_deg": {"roll": 0.0, "pitch": 0.0,
+                                                  "yaw": 0.0}}}
+
+        class EarlySocket(object):
+            def __init__(self):
+                self.reply = mtou_protocol.encode_message({
+                    "type": "ready", "revision": 7,
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0,
+                }) + mtou_protocol.encode_message(mode_state)
+
+            def settimeout(self, timeout):
+                pass
+
+            def recv(self, size):
+                chunk, self.reply = self.reply[:size], self.reply[size:]
+                return chunk or b"\x00"
+
+            def sendall(self, packet):
+                pass
+
+            def close(self):
+                pass
+
+        fake_socket = EarlySocket()
+        calls = []
+
+        def selectable(unused_rlist, unused_wlist, unused_xlist, unused_timeout):
+            if fake_socket.reply:
+                return ([fake_socket], [], [])
+            calls.append(None)
+            if len(calls) == 1:
+                # The main thread installs the listener only now.
+                worker.set_reply_listener(received.append)
+            else:
+                worker.stop()
+            return ([], [], [])
+
+        with mock.patch.object(worker, "_connect", return_value=fake_socket), \
+             mock.patch.object(worker, "_send_initial", return_value=True), \
+             mock.patch.object(select, "select", side_effect=selectable):
+            worker.run()
+
+        self.assertEqual([mode_state], received)
+        self.assertEqual("disconnected", worker.status()[0])
+
+    def test_held_statements_precede_a_reply_read_once_the_listener_exists(self):
+        # The listener appears between the top of a loop and its read: the
+        # statement held before it still reaches the listener first.
+        worker = mtou_session.SenderWorker({"type": "init", "revision": 7})
+        received = []
+        anchor = {"location_cm": [0.0, 0.0, 0.0],
+                  "rotation_deg": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}}
+        held = {"type": "mode_state", "session_id": 1, "mode_revision": 1,
+                "mode": "linkage", "control": "unreal", "detail": "",
+                "anchor": anchor}
+        newer = {"type": "mode_state", "session_id": 1, "mode_revision": 2,
+                 "mode": "realtime", "control": "maya", "detail": ""}
+
+        class InterleavedSocket(object):
+            def __init__(self):
+                self.reply = mtou_protocol.encode_message({
+                    "type": "ready", "revision": 7,
+                    "missing_in_unreal": [], "missing_in_maya": [],
+                    "bone_name_remaps": [], "workflow": "animation",
+                    "target_morph_count": 0, "accepted_morph_count": 0,
+                }) + mtou_protocol.encode_message(held)
+
+            def settimeout(self, timeout):
+                pass
+
+            def recv(self, size):
+                chunk, self.reply = self.reply[:size], self.reply[size:]
+                return chunk or b"\x00"
+
+            def sendall(self, packet):
+                pass
+
+            def close(self):
+                pass
+
+        fake_socket = InterleavedSocket()
+        calls = []
+
+        def selectable(unused_rlist, unused_wlist, unused_xlist, unused_timeout):
+            if fake_socket.reply:
+                return ([fake_socket], [], [])
+            calls.append(None)
+            if len(calls) == 1:
+                # Installed after this loop's top, with a newer reply waiting.
+                worker.set_reply_listener(received.append)
+                fake_socket.reply = mtou_protocol.encode_message(newer)
+                return ([fake_socket], [], [])
+            worker.stop()
+            return ([], [], [])
+
+        with mock.patch.object(worker, "_connect", return_value=fake_socket), \
+             mock.patch.object(worker, "_send_initial", return_value=True), \
+             mock.patch.object(select, "select", side_effect=selectable):
+            worker.run()
+
+        self.assertEqual([held, newer], received)
+
     def test_ordered_controls_survive_the_switch_back_to_latest_mode(self):
         worker = mtou_session.SenderWorker({"type": "init", "revision": 7})
 
