@@ -4,7 +4,8 @@
 
 MtoU_LiveLink 连接同一台电脑上的 Maya 与 Unreal Editor，让你在 Maya 中制作时，
 直接在 Unreal 中查看角色动画、BlendShape 和服装修改效果。支持实时预览与动画
-缓存播放，不会创建动画或预览资产。
+缓存播放，可在 Maya 中跟随 Level Sequence 的镜头与时间，在主角色旁加入一个
+骨骼副对象，并把 Unreal 关卡作为参考几何体导入 Maya，不会创建动画或预览资产。
 
 ## 兼容性
 

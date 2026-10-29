@@ -4,8 +4,10 @@
 
 MtoU_LiveLink connects Maya to Unreal Editor on the same computer so you can
 preview character animation, BlendShapes, and garment changes in Unreal while
-working in Maya. It supports real-time preview and cached animation playback
-without creating animation or preview assets.
+working in Maya. It supports real-time preview and cached animation playback,
+follows a Level Sequence's camera and time in Maya, adds a second skeletal
+object beside the main character, and imports an Unreal level as reference
+geometry in Maya, without creating animation or preview assets.
 
 ## Compatibility
 

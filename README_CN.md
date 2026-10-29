@@ -17,7 +17,7 @@
 | 工具 | 用途 | 位置 |
 | --- | --- | --- |
 | Flatten Mesh To UV | 将模型的 UV 展开结果转换为平面多边形。 | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
-| MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，将一名已求值 Maya 角色流式发送到官方版 Unreal Live Link。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
+| MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，在 Unreal Editor 中实时或按缓存预览 Maya 角色动画，支持镜头联动、副对象和场景参考。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | 提供选择、拓扑、轴心、连接和循环边等多边形建模功能。 | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
 | StoUTextureSync | Painter 到 Unreal 的贴图同步项目，处于原型阶段。 | [独立仓库](https://github.com/Alexis-Li/StoUTextureSync) · 子模块 `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | 通过交互拖动均匀分布所选环线。 | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |

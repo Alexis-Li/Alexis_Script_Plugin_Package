@@ -1,7 +1,7 @@
 # 三项原型接入 MtoU 主流程的整合方案
 
-状态：**I-1／I-2／I-3 已完成并集成**。产品为 0.10.0（未发布）、协议 v11，
-位于 `codex/mtou-preview-workflow`。INT-01–14 的实际基线、结果及证据边界见
+状态：**I-1／I-2／I-3 已完成并集成**。产品为 0.10.0（未发布）、协议 v11。
+INT-01–14 的实际基线、结果及证据边界见
 [联合验收记录](../../../docs/project-history/mtou-livelink/preview-workflow-integration-acceptance.md)。
 本文保留 2026-10-13 接入前的设计与风险分析，文中的候选参数、版本和阶段任务
 描述该设计时点。当前需求由 [#56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56)

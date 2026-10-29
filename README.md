@@ -19,7 +19,7 @@ independent projects own their source, Issues and releases in their own reposito
 | Tool | Purpose | Location |
 | --- | --- | --- |
 | Flatten Mesh To UV | Converts a mesh's UV layout into flat polygon geometry. | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
-| MtoU Live Link | Streams one evaluated Maya character to stock Unreal Live Link through independently installable Maya and Unreal components. | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
+| MtoU Live Link | Previews Maya character animation in Unreal Editor in real time or from a cache, with camera linkage, a second object and scene reference, through independently installable Maya and Unreal components. | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | Provides polygon selection, topology, pivot, connection, and edge-loop workflows. | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
 | StoUTextureSync | Painter-to-Unreal texture synchronization, in prototyping. | [Independent repository](https://github.com/Alexis-Li/StoUTextureSync) · submodule `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | Evenly distributes selected edge loops through an interactive drag operation. | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
