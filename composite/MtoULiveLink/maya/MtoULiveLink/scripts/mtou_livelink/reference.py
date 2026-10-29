@@ -3945,7 +3945,8 @@ def _foreign_descendants(paths, namespace):
         for node in below:
             leaf = str(node).rsplit("|", 1)[-1]
             node_namespace = leaf.rsplit(":", 1)[0] if ":" in leaf else ""
-            if node_namespace != namespace                     and not node_namespace.startswith(namespace + ":"):
+            if (node_namespace != namespace
+                    and not node_namespace.startswith(namespace + ":")):
                 found.append(str(node))
     return found
 

@@ -1294,6 +1294,7 @@ class MayaHostTests(unittest.TestCase):
         """A handoff directory with an ASCII FBX Maya itself exported."""
         import hashlib
         import json
+
         import maya.mel as mel
         directory = pathlib.Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
@@ -1358,6 +1359,7 @@ class MayaHostTests(unittest.TestCase):
         # the swap and a scene node under the reference. The production node,
         # the previous reference and its UUID survive every failure.
         import hashlib
+
         from mtou_livelink import reference
         scratch = self._reference_scratch()
         d003 = {"location_cm": [60.0, 40.0, 0.0],

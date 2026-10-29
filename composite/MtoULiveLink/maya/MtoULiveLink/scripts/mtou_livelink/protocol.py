@@ -429,7 +429,8 @@ def validate_anchor(anchor):
         raise ValueError("a linkage mode_state must name its anchor")
     location = anchor.get("location_cm")
     rotation = anchor.get("rotation_deg")
-    if not isinstance(location, list) or len(location) != 3             or any(finite_float(value) is None for value in location):
+    if (not isinstance(location, list) or len(location) != 3
+            or any(finite_float(value) is None for value in location)):
         raise ValueError("anchor field 'location_cm' must be three finite numbers")
     if not isinstance(rotation, dict) or any(
             finite_float(rotation.get(name)) is None
