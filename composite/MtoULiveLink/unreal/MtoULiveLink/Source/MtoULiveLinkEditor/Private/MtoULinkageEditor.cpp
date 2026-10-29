@@ -1818,6 +1818,7 @@ void FMtoULinkageEditor::InstallHooks()
     Hooks.RestoreTarget = &RestoreTargetHook;
     Hooks.RestoreObject = &RestoreObjectHook;
     Hooks.ValidateTakeover = &ValidateTakeoverHook;
+    Hooks.GetAnchor = &FMtoULinkageEditor::TryGetPairedAnchor;
     Hooks.OnViewChanged = &OnViewChangedHook;
     MtoUSetLinkageHooks(Hooks);
     State.PropertyChangedHandle =

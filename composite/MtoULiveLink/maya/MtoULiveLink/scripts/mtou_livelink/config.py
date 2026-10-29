@@ -1,5 +1,6 @@
 """Constants shared by the Maya adapter: versions, wire limits and cache contracts."""
 
+import os
 
 __version__ = "0.10.0"
 
@@ -18,7 +19,16 @@ MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 HOST = "127.0.0.1"
 
-PORT = 54321
+def _port(value, default=54321):
+    """The Unreal listener's port; MTOU_LIVELINK_PORT moves it off the default."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+PORT = _port(os.environ.get("MTOU_LIVELINK_PORT"))
 
 SUBJECT_NAME = "MtoU_Character"
 
@@ -114,6 +124,15 @@ REFERENCE_CONTAINER = "MtoU_UE_SceneRef"
 REFERENCE_MARK_ATTRIBUTE = "mtouSceneRefContainer"
 
 REFERENCE_MARK_VALUE = "mtou-scene-ref-container/1"
+
+# The anchor the container was placed for, so a reference exported before the
+# target moved cannot enter linkage as if it were current.
+REFERENCE_ANCHOR_ATTRIBUTE = "mtouSceneRefAnchor"
+
+# A reference matches the linkage anchor within the common-anchor tolerances.
+REFERENCE_ANCHOR_TOLERANCE_CM = 0.01
+
+REFERENCE_ANCHOR_TOLERANCE_DEG = 0.01
 
 REFERENCE_GRAY_SHADER = "MtoU_UE_SceneRef_Gray"
 

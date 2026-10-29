@@ -51,6 +51,14 @@ _GROUP_DURING_TRANSITION = re.compile(r"^target mode revision -?\d+$")
 _GROUP_REVISION = re.compile(r"^group mode revision (-?\d+), current (-?\d+)$")
 
 
+STALE_REFERENCE_MESSAGE = "场景参考是为目标的另一摆放导出的，不能用于当前镜头联动"
+
+
+def message_anchor(message):
+    """The placement a linkage ``mode_state`` names (validated by the protocol)."""
+    return message["anchor"]
+
+
 def is_scheduling_conflict(details):
     """True when a MODE_CONFLICT answers a group that a mode change overtook."""
     text = str(details or "").strip()
@@ -355,13 +363,15 @@ class LinkageSession(object):
         return applied.get("applied") is True
 
     # ------------------------------------------------------------- transitions
-    def enter(self, mode_revision, remote=False):
+    def enter(self, mode_revision, remote=False, anchor=None):
         """Take linkage control: capture Maya state and announce the new mode.
 
         ``remote`` marks a transition Unreal started: Maya's ``mode`` message is
         then the answer Unreal waits for (Unreal echoes it with ``mode_state``),
         and a refusal is announced as a failed transition so Unreal hands its
-        borrowed writers back at once.
+        borrowed writers back at once. ``anchor`` is the placement that
+        ``mode_state`` named; a scene reference placed for another one refuses
+        the entry before Maya changes anything.
         """
         revision = exact_int(mode_revision)
         if revision is None or revision < 1:
@@ -377,6 +387,15 @@ class LinkageSession(object):
                     "MODE_CONFLICT",
                     "mode revision {0} is not newer than {1}".format(
                         revision, self._mode_revision))
+        problem = self._host.stale_reference(anchor) if anchor is not None else None
+        if problem:
+            if remote:
+                self._announce_failed(revision, problem)
+            self._emit(LinkageEvent(
+                "mode", mode=REALTIME_MODE, control=CONTROL_MAYA,
+                mode_revision=self._mode_revision, detail=problem,
+                diagnostic=self._diagnostic("REFERENCE_STALE", problem)))
+            raise LinkageError("REFERENCE_STALE", STALE_REFERENCE_MESSAGE, problem)
         try:
             state = self._host.capture_state()
         except Exception as exc:  # host refusal keeps the previous mode
@@ -521,14 +540,22 @@ class LinkageSession(object):
                     "INVALID_MESSAGE", "applied requires an integer sample_serial")
             self._applied = dict(message)
             self._applied_at = self._clock()
+            answers_issued = (self._issued is not None
+                              and self._issued.eval_id == message.get("eval_id")
+                              and sample_serial == self._issued_sample_serial)
             if message.get("applied"):
                 self._applied_count += 1
                 # The issued work is finished once Unreal confirms the actual
                 # components of that sample; a newer waiting target stays.
-                if self._issued is not None \
-                        and self._issued.eval_id == message.get("eval_id") \
-                        and sample_serial == self._issued_sample_serial:
+                if answers_issued:
                     self._issued = None
+            elif answers_issued:
+                # Unreal refused this sample and keeps its target issued, and
+                # nothing else would answer it: the target is sampled again
+                # unless a newer one already waits.
+                if self._pending is None:
+                    self._pending = self._issued
+                self._issued = None
             self._detail = (
                 "已应用 {0}".format(message.get("eval_id"))
                 if message.get("applied")
@@ -549,6 +576,8 @@ class LinkageSession(object):
           and calls :meth:`enter` with ``remote=True``;
         - ``"left"``: Unreal left linkage, refused or failed the transition and
           Maya restored itself (any residual is in the recovery records);
+        - ``"refused"``: Unreal confirmed a placement the scene reference was
+          not exported for; Maya failed the transition and restored itself;
         - ``"noted"``: nothing to do (an echo, or a stale statement).
         """
         validate_reply(message)
@@ -567,8 +596,10 @@ class LinkageSession(object):
                         message.get("session_id"), self._session_id))
             active = self._mode == LINKAGE_MODE
             current = self._mode_revision
+            confirming = False
             if mode == LINKAGE_MODE:
                 if active and revision == current:
+                    confirming = self._awaiting_confirmation
                     self._awaiting_confirmation = False
                     self._detail = detail or self._detail
                     outcome = "confirmed"
@@ -596,6 +627,11 @@ class LinkageSession(object):
                 outcome = "noted"
         if outcome == "left":
             return self._follow_remote_exit(revision, current, detail)
+        if confirming:
+            problem = self._host.stale_reference(message_anchor(message))
+            if problem:
+                self._fail_entered(revision, problem, "REFERENCE_STALE")
+                return "refused"
         if outcome != "enter":
             self._emit(LinkageEvent(
                 "mode", mode=self.mode(), control=self._control,
@@ -655,6 +691,18 @@ class LinkageSession(object):
             if self._mode != LINKAGE_MODE or not self._awaiting_confirmation:
                 return None
             revision = self._mode_revision
+        reason = "Unreal 未在 {0:g} 秒内确认镜头联动".format(
+            LINKAGE_MODE_CONFIRMATION_SECONDS)
+        return self._fail_entered(revision, reason, "MODE_CONFLICT")
+
+    def _fail_entered(self, revision, reason, code):
+        """Roll back an entered linkage Maya cannot keep and tell Unreal.
+
+        Maya restores itself and announces the failed transition, so Unreal
+        hands its writers back instead of driving a target nobody answers.
+        Returns the residual.
+        """
+        with self._lock:
             state = self._state
             self._state = None
             self._pending = None
@@ -664,8 +712,6 @@ class LinkageSession(object):
             self._mode = REALTIME_MODE
             self._control = CONTROL_MAYA
         residual = self._restore(state)
-        reason = "Unreal 未在 {0:g} 秒内确认镜头联动".format(
-            LINKAGE_MODE_CONFIRMATION_SECONDS)
         self._announce_failed(revision, reason)
         with self._lock:
             self._detail = reason + "，Maya 已恢复原状态"
@@ -674,7 +720,7 @@ class LinkageSession(object):
         self._emit(LinkageEvent(
             "failed", mode=REALTIME_MODE, control=CONTROL_MAYA,
             mode_revision=revision, detail=self._detail,
-            diagnostic=self._diagnostic("MODE_CONFLICT", reason)))
+            diagnostic=self._diagnostic(code, reason)))
         return tuple(residual)
 
     def _announce_failed(self, revision, error):

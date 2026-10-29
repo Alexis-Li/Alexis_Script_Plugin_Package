@@ -44,7 +44,12 @@ selected), ``objects_window`` (``target`` ``open``/``close``),
 this disposable process only), ``import_reference`` (the 场景参考 window's
 **导入/更新参考**), ``reference_snapshot`` (the world bounding-box centre of
 every transform under the reference container whose name holds ``name``),
-``quit``. Each runs the handler
+``resources`` (the census in ``resources``: live OpenMaya callbacks counted at
+their registration, the tool's scriptJobs, Python threads, open sockets,
+``MtoU_*`` nodes and MtoU windows), ``close_panel`` (the panel window closes),
+``open_panel`` (``run()`` again, then set the role and connect),
+``new_scene``, ``reopen_scene`` (the fixture scene again, then connect),
+``lock_link_camera`` (``target`` ``unlock`` unlocks and deletes it), ``quit``. Each runs the handler
 of the panel control it names. The result file always carries the latest
 linkage status, the object set and the panel's workflow, mode, cache state and
 status line; ``ack`` names the last finished command.
@@ -397,6 +402,115 @@ def record_plugins():
                          "loaded": sorted(cmds.pluginInfo(query=True, listPlugins=True) or [])}
 
 
+# ------------------------------------------------------------ resource census
+# INT-09: every Maya callback the tool registers is counted where it reaches
+# OpenMaya. The census wraps the add and remove entry points of the message
+# classes before the tool imports them, so it sees the registrations
+# themselves rather than the tool's own bookkeeping.
+LIVE_CALLBACKS = {}
+
+
+class _CountingMessages(object):
+    def __init__(self, real, family):
+        self._real = real
+        self._family = family
+
+    def __getattr__(self, name):
+        value = getattr(self._real, name)
+        if name.startswith("add") and callable(value):
+            def add(*args, **kwargs):
+                callback_id = value(*args, **kwargs)
+                LIVE_CALLBACKS[callback_id] = self._family
+                return callback_id
+            return add
+        if name in ("removeCallback", "removeCallbacks") and callable(value):
+            def remove(ids, *args, **kwargs):
+                result = value(ids, *args, **kwargs)
+                for callback_id in (ids if name == "removeCallbacks" else [ids]):
+                    LIVE_CALLBACKS.pop(callback_id, None)
+                return result
+            return remove
+        return value
+
+
+class _CountingOpenMaya(object):
+    FAMILIES = ("MSceneMessage", "MTimerMessage", "MEventMessage", "MNodeMessage",
+                "MDGMessage", "MMessage")
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        value = getattr(self._real, name)
+        if name in self.FAMILIES:
+            return _CountingMessages(value, name)
+        return value
+
+
+def install_callback_census():
+    from mtou_livelink import mayaapi
+    if not isinstance(mayaapi.om, _CountingOpenMaya):
+        mayaapi.om = _CountingOpenMaya(mayaapi.om)
+
+
+def census():
+    """What the tool holds in this Maya right now."""
+    import gc
+    import socket
+    import threading
+    families = {}
+    for family in LIVE_CALLBACKS.values():
+        families[family] = families.get(family, 0) + 1
+    jobs = [job for job in cmds.scriptJob(listJobs=True) or []
+            if "mtou" in job.lower() or "Controller" in job]
+    sockets = 0
+    for item in gc.get_objects():
+        try:
+            if isinstance(item, socket.socket) and item.fileno() != -1:
+                sockets += 1
+        except Exception:
+            continue
+    windows = [name for name in ("MtoULiveLinkWindow", "MtoULiveLinkReferenceWindow",
+                                 "MtoULiveLinkObjectsWindow")
+               if cmds.window(name, exists=True)]
+    return {"callbacks": len(LIVE_CALLBACKS), "callback_families": families,
+            "script_jobs": len(jobs),
+            "threads": sorted(thread.name for thread in threading.enumerate()
+                              if thread is not threading.main_thread()),
+            "sockets": sockets,
+            "nodes": sorted(cmds.ls("MtoU_*") or []),
+            "windows": windows,
+            "session_open": CONTROLLER is not None and CONTROLLER._session is not None}
+
+
+def open_panel():
+    """The public entry again, then the role and the connection."""
+    global CONTROLLER
+    import MtoULiveLink
+    CONTROLLER = MtoULiveLink.run()
+    connect_role()
+
+
+def reopen_scene():
+    """Open the fixture scene again, as an artist does, and connect."""
+    open_scene()
+    # The panel's SceneOpened scriptJob runs on the idle queue; Maya runs it
+    # before a person can click 设置角色, so the driver does too.
+    cmds.flushIdleQueue()
+    if "start_frame" in FIXTURE:
+        cmds.currentTime(float(FIXTURE["start_frame"]), update=True)
+    connect_role()
+
+
+def connect_role():
+    cmds.select(FIXTURE["root"], replace=True)
+    CONTROLLER.set_role()
+    if FIXTURE.get("secondary"):
+        select_secondary()
+        CONTROLLER.set_secondary_object()
+    CONTROLLER.connect()
+
+
 def run_command(command):
     action = command.get("action")
     if action == "enter":
@@ -457,6 +571,24 @@ def run_command(command):
         CONTROLLER.import_reference()
     elif action == "reference_snapshot":
         RESULT["reference_nodes"] = reference_nodes(command.get("name") or "")
+    elif action == "resources":
+        RESULT["resources"] = census()
+    elif action == "close_panel":
+        # The panel window's own close, as its title bar does.
+        cmds.deleteUI("MtoULiveLinkWindow", window=True)
+    elif action == "open_panel":
+        open_panel()
+    elif action == "new_scene":
+        cmds.file(new=True, force=True)
+    elif action == "reopen_scene":
+        reopen_scene()
+    elif action == "lock_link_camera":
+        # A restore that cannot delete the tool's camera: its residual must be
+        # reported, and the person removes the node.
+        locking = command.get("target") != "unlock"
+        cmds.lockNode("MtoU_LinkCamera", lock=locking)
+        if not locking:
+            cmds.delete("MtoU_LinkCamera")
     elif action == "quit":
         quit_maya()
         return
@@ -532,8 +664,10 @@ def tick():
         RESULT["panel"] = {
             "workflow": CONTROLLER._workflow, "mode": CONTROLLER._mode,
             "cached_state": getattr(view, "state", None) if view else None,
+            # The panel's controls are gone while it is closed (close_panel).
             "status": cmds.text(CONTROLLER._status_text, query=True, label=True)
-            if CONTROLLER._status_text else None}
+            if CONTROLLER._status_text and cmds.text(CONTROLLER._status_text, exists=True)
+            else None}
         try:
             command = json.loads(Path(FIXTURE["command"]).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
@@ -572,6 +706,7 @@ def start():
         RESULT["load_seconds"] = round(time.time() - load_start, 1)
         key_test_motion()
         key_test_morphs()
+        install_callback_census()
         import MtoULiveLink
         CONTROLLER = MtoULiveLink.run()
         RESULT["phase"] = "panel"
@@ -579,12 +714,7 @@ def start():
         if "start_frame" in FIXTURE:
             # Where the artist starts: linkage maps every target from here.
             cmds.currentTime(float(FIXTURE["start_frame"]), update=True)
-        cmds.select(FIXTURE["root"], replace=True)
-        CONTROLLER.set_role()
-        if FIXTURE.get("secondary"):
-            select_secondary()
-            CONTROLLER.set_secondary_object()
-        CONTROLLER.connect()
+        connect_role()
         RESULT["phase"] = "running"
         write_result()
         try:

@@ -1444,10 +1444,11 @@ class Controller(object):
             return
         self._start_linkage()
 
-    def _start_linkage(self, remote_revision=None):
+    def _start_linkage(self, remote_revision=None, remote_anchor=None):
         """Enter linkage for the panel's action or for Unreal's transition.
 
-        ``remote_revision`` is the revision of a transition Unreal started.
+        ``remote_revision`` is the revision of a transition Unreal started and
+        ``remote_anchor`` the target placement its ``mode_state`` named.
         Every refusal of such a transition is announced to Unreal as failed,
         so it hands back the writers it borrowed instead of waiting out its
         own confirmation timeout.
@@ -1519,7 +1520,7 @@ class Controller(object):
         try:
             linkage.set_session_id(session_id)
             session.begin_linkage(self._on_runtime_reply)
-            linkage.enter(revision, remote=remote)
+            linkage.enter(revision, remote=remote, anchor=remote_anchor)
         except StreamingSessionError as error:
             refuse(make_diagnostic(
                 error.code if error.code in DIAGNOSTICS else "INTERNAL_ERROR",
@@ -1580,7 +1581,8 @@ class Controller(object):
         linkage = self._linkage
         if linkage is None:
             if reply.get("mode") == LINKAGE_MODE and revision > self._linkage_revision:
-                self._start_linkage(remote_revision=revision)
+                self._start_linkage(remote_revision=revision,
+                                    remote_anchor=reply.get("anchor"))
             else:
                 self._linkage_revision = max(self._linkage_revision, revision)
             return
@@ -1590,12 +1592,20 @@ class Controller(object):
             self._report_linkage_refusal(error)
             return
         if outcome == "enter":
-            self._start_linkage(remote_revision=revision)
+            self._start_linkage(remote_revision=revision,
+                                remote_anchor=reply.get("anchor"))
             return
         self._linkage_revision = max(self._linkage_revision, linkage.mode_revision())
         if outcome == "left":
             self._finish_linkage_exit(
                 linkage, "已按 Unreal 的指令退出镜头联动：Maya 暂停在恢复帧，连接不变")
+        elif outcome == "refused":
+            self._finish_linkage_exit(
+                linkage, "未进入镜头联动：Maya 已恢复原状态，连接不变")
+            if not linkage.recovery_records():
+                # Without a residual the exit reported nothing; the refusal
+                # itself is what the user must act on.
+                self._report_linkage_failure(self._linkage_event.diagnostic)
         self._update_linkage_status()
         self._update_mode_controls()
 

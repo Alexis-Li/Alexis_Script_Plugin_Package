@@ -591,6 +591,39 @@ void AMtoULiveLinkActor::SetLiveLinkSubject(FName Subject)
     }
 }
 
+int32 AMtoULiveLinkActor::RestoreLiveLinkEvaluation()
+{
+    if (!bInLiveLinkSet)
+    {
+        return 0;
+    }
+    int32 Restored = 0;
+    const auto Restore = [this, &Restored](USkeletalMeshComponent* Component)
+    {
+        if (!Component || !Component->GetSkeletalMeshAsset())
+        {
+            return;
+        }
+        ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance());
+        if (!Instance)
+        {
+            ConfigureLiveLinkInstance(*Component);
+            ++Restored;
+        }
+        else if (!Instance->GetEnableLiveLinkEvaluation())
+        {
+            ApplyLiveLinkSubject(Component);
+            ++Restored;
+        }
+    };
+    Restore(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        Restore(Part.Get());
+    }
+    return Restored;
+}
+
 void AMtoULiveLinkActor::ReleaseLiveLinkSubject()
 {
     bInLiveLinkSet = false;

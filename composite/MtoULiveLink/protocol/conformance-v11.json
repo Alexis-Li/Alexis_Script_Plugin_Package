@@ -5095,6 +5095,75 @@
       }
     },
     {
+      "id": "mode-state-linkage-names-the-anchor",
+      "operation": "mode_state",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "mode_state",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "mode": "linkage",
+        "control": "unreal",
+        "detail": "Unreal owns the sequence time; Maya follows.",
+        "anchor": {
+          "location_cm": [
+            60.0,
+            40.0,
+            0.0
+          ],
+          "rotation_deg": {
+            "roll": 3.0,
+            "pitch": -4.0,
+            "yaw": 37.0
+          }
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": false
+      }
+    },
+    {
+      "id": "mode-state-linkage-without-anchor-refused",
+      "operation": "mode_state",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode_state",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "mode": "linkage",
+        "control": "unreal",
+        "detail": "Unreal owns the sequence time; Maya follows."
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "anchor"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": false
+      }
+    },
+    {
       "id": "leave-linkage-realtime-is-accepted",
       "operation": "leave_linkage",
       "applies_to": [

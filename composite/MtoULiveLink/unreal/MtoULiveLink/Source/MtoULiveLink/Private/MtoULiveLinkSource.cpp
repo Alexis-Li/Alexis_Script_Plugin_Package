@@ -34,6 +34,15 @@ namespace
 {
 // Live Link frame metadata key carrying one linkage publication's generation.
 const FName MtoULinkageGenerationKey(TEXT("MtoU.LinkageGeneration"));
+
+/** Raise a queue peak the worker and the game thread both report to. */
+void NoteQueuePeak(TAtomic<int32>& Peak, int32 Value)
+{
+    int32 Seen = Peak.Load();
+    while (Value > Seen && !Peak.CompareExchange(Seen, Value))
+    {
+    }
+}
 }
 
 namespace
@@ -533,6 +542,22 @@ void FMtoULiveLinkSource::Update()
         }
     }
     HandleCacheCommandsOnGameThread();
+
+    // A display of the set evaluates only its subject: a Sequencer restoring
+    // what a muted track saved before the takeover (an earlier anim instance
+    // with its evaluation stopped) would otherwise freeze it on an old frame.
+    for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
+    {
+        if (AMtoULiveLinkActor* Participant = Actor.Get())
+        {
+            if (const int32 Restored = Participant->RestoreLiveLinkEvaluation())
+            {
+                UE_LOG(LogMtoULiveLinkSource, Log,
+                    TEXT("%s: %d display(s) evaluate the Live Link subject again."),
+                    *Participant->GetName(), Restored);
+            }
+        }
+    }
 
     // Linkage intake and pump: the control messages and the staged pose groups
     // follow the greeting, and the camera/time pump asks the editor for the
@@ -1167,6 +1192,7 @@ uint32 FMtoULiveLinkSource::Run()
                             Pending.Message = MoveTemp(Hello);
                             PendingHellos.Enqueue(MoveTemp(Pending));
                             QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                            NoteQueuePeak(IncomingControlPeak, QueuedLinkageControls.Load());
                             continue;
                         }
                         FMtoUInitMessage Init;
@@ -1314,6 +1340,7 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                         PendingLinkageControls.Enqueue(MoveTemp(Control));
                         QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                        NoteQueuePeak(IncomingControlPeak, QueuedLinkageControls.Load());
                         continue;
                     }
                     if (MessageType == TEXT("group"))
@@ -1347,6 +1374,7 @@ uint32 FMtoULiveLinkSource::Run()
                         }
                         PendingPoseGroups.Enqueue(MoveTemp(Pending));
                         QueuedLinkageControls.Store(QueuedLinkageControls.Load() + 1);
+                        NoteQueuePeak(IncomingControlPeak, QueuedLinkageControls.Load());
                         continue;
                     }
                     if (MessageType == TEXT("cache_frame"))
@@ -2209,6 +2237,7 @@ void FMtoULiveLinkSource::RemoveSecondaryObjectOnGameThread(
     Reply.RemovedObjectId = ObjectId;
     Reply.bControl = true;
     QueuedOutgoingControls.Store(QueuedOutgoingControls.Load() + 1);
+    NoteQueuePeak(OutgoingControlPeak, QueuedOutgoingControls.Load());
     OutgoingReplies.Enqueue(MoveTemp(Reply));
     if (!Residual.IsEmpty())
     {
@@ -2789,9 +2818,12 @@ bool FMtoULiveLinkSource::MatchDisplayPose(
         if (!Local[MeshIndex].Equals(
                 Pending.ExpectedTransforms[TargetIndex], MtoUAppliedTransformTolerance))
         {
+            const FTransform& Expected = Pending.ExpectedTransforms[TargetIndex];
             OutMismatch = FString::Printf(
-                TEXT("display '%s' shows another pose at bone '%s'"),
-                *Display.GetName(), *Object.TargetBoneNames[TargetIndex].ToString());
+                TEXT("object '%s' display '%s' shows another pose at bone '%s' "
+                     "(shown %s, expected %s)"),
+                *Object.ObjectId, *Display.GetName(), *Object.TargetBoneNames[TargetIndex].ToString(),
+                *Local[MeshIndex].ToString(), *Expected.ToString());
             return false;
         }
         ++InOutComponent.BoneCount;
@@ -3117,12 +3149,14 @@ void FMtoULiveLinkSource::SendLinkageControlPacketOnGameThread(TArray<uint8> Pac
         Reply.bCloseAfter = true;
         Reply.bControl = true;
         QueuedOutgoingControls.Store(QueuedOutgoingControls.Load() + 1);
+        NoteQueuePeak(OutgoingControlPeak, QueuedOutgoingControls.Load());
         OutgoingReplies.Enqueue(MoveTemp(Reply));
         return;
     }
     if (bControl)
     {
         QueuedOutgoingControls.Store(QueuedOutgoingControls.Load() + 1);
+        NoteQueuePeak(OutgoingControlPeak, QueuedOutgoingControls.Load());
     }
     FMtoUOutgoing Reply;
     Reply.SessionId = SessionId;

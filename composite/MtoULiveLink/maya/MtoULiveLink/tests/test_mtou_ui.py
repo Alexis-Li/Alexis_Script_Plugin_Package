@@ -110,6 +110,10 @@ def applied_message(eval_id="seq@10+0/cam#c1", sample_serial=1, applied=True,
     }
 
 
+IDENTITY_ANCHOR = {"location_cm": [0.0, 0.0, 0.0],
+                   "rotation_deg": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}}
+
+
 class FakeLinkageHost(object):
     """The Maya host adapter's contract, without Maya."""
 
@@ -119,6 +123,11 @@ class FakeLinkageHost(object):
         self.applied = []
         self.restore_residual = list(residual)
         self.capture_error = capture_error
+        self.stale = None
+
+    def stale_reference(self, anchor):
+        del anchor
+        return self.stale
 
     def capture_state(self):
         self.captured += 1
@@ -673,7 +682,8 @@ class LinkagePanelTests(unittest.TestCase):
         with self.bindings:
             self.controller._on_runtime_reply({
                 "type": "mode_state", "session_id": 7, "mode_revision": 1,
-                "mode": "linkage", "control": "unreal", "detail": "UE 已接管"})
+                "mode": "linkage", "control": "unreal", "detail": "UE 已接管",
+                "anchor": IDENTITY_ANCHOR})
             # Mode statements are followed on Maya's main thread.
             self.flush()
         self.assertEqual("UE 已接管", self.controller.linkage_status()["detail"])
@@ -777,9 +787,12 @@ class LinkagePanelTests(unittest.TestCase):
         self.assertEqual("MODE_CONFLICT", self.show_error.call_args[0][0]["code"])
 
     def _mode_state(self, revision, mode="linkage", detail=""):
-        return {"type": "mode_state", "session_id": 7, "mode_revision": revision,
-                "mode": mode, "control": "unreal" if mode == "linkage" else "maya",
-                "detail": detail}
+        message = {"type": "mode_state", "session_id": 7, "mode_revision": revision,
+                   "mode": mode, "control": "unreal" if mode == "linkage" else "maya",
+                   "detail": detail}
+        if mode == "linkage":
+            message["anchor"] = IDENTITY_ANCHOR
+        return message
 
     def _route(self, reply):
         with self.bindings:
@@ -828,6 +841,22 @@ class LinkagePanelTests(unittest.TestCase):
         # A later Maya entry continues the connection's revision.
         self.enter_linkage()
         self.assertEqual(3, self.controller._linkage.mode_revision())
+
+    def test_a_stale_reference_ends_the_entry_and_says_why(self):
+        self.enter_linkage()
+        self.show_error.reset_mock()
+        self.host.stale = "the reference was placed for another anchor"
+        self._route(self._mode_state(1))
+
+        self.assertFalse(self.controller._linkage.is_active)
+        self.assertEqual(mtou_config.REALTIME_MODE, self.controller._mode)
+        self.assertEqual(1, len(self.host.restored))
+        self.assertEqual(1, self.session.resumed)
+        self.assertEqual("REFERENCE_STALE", self.show_error.call_args[0][0]["code"])
+        self.assertEqual(
+            ("realtime", "failed"),
+            (self.session.messages[-1]["mode"],
+             self.session.messages[-1]["transition"]))
 
     def test_unreal_refusing_maya_entry_rolls_the_panel_back(self):
         self.enter_linkage()

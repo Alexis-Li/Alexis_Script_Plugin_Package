@@ -3,6 +3,8 @@
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "ILiveLinkClient.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Modules/ModuleManager.h"
 
 class FMtoULiveLinkModule final : public IModuleInterface
@@ -36,7 +38,12 @@ public:
         // DestroyWorld path.
         WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddStatic(
             &MtoUNotifyEditorWorldCleanup);
-        Source = MakeShared<FMtoULiveLinkSource>();
+        // `-MtoULiveLinkPort=<n>` moves the listener off 54321, so a test
+        // editor and a person's own editor can run on one machine.
+        uint32 Port = 54321;
+        FParse::Value(FCommandLine::Get(), TEXT("MtoULiveLinkPort="), Port);
+        Source = MakeShared<FMtoULiveLinkSource>(
+            static_cast<uint16>(Port >= 1 && Port <= 65535 ? Port : 54321));
         MtoUSetActiveSource(Source);
         Client.AddSource(Source);
     }

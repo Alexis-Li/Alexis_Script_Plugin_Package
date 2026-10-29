@@ -47,6 +47,17 @@
 
 ### Fixed
 
+- Camera linkage no longer starts with a scene reference exported before the
+  target moved; Maya asks you to export it again or remove it. (#59)
+- Updating or removing the scene reference no longer deletes your own objects
+  parented under it; Maya refuses and names them. (#59)
+- A scene-reference file Maya cannot read no longer replaces the previous
+  reference with an empty one. (#59)
+- Ending camera linkage after a locked camera or resolution-gate attribute
+  stopped it no longer reports a restore failure. (#59)
+- With a second object, camera linkage no longer freezes it on an old pose after
+  the Level Sequence loops, and a group Unreal could not show is sampled again
+  instead of waiting for the next pause or jump. (#59)
 - Closing the **MtoU 场景参考** window from its title bar no longer crashes Maya. (#80)
 - Linkage could show a stale pose at the target time. (#57)
 - Bone mapping depended on Maya's sibling order; duplicate short names now
