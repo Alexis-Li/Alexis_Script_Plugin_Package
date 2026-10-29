@@ -12,7 +12,8 @@
 | --- | --- |
 | I-1 集成 | PR #70，`bc83e7414f58743c048074e1072b2f07171c4fca`（review-08） |
 | I-2 集成 | PR #82，`31fa0f94a2c7527fdf46d92e5caf92715bd97e38`（第三轮审核） |
-| I-3 交付 | `feature/mtou-daily-recovery`，比较基线 `8101ca0f171d59a4f736884f8c9893a59a81a353`；最终 head 与集成 SHA 见 #59 状态评论 |
+| I-3 交付与集成 | 比较基线 `8101ca0f171d59a4f736884f8c9893a59a81a353`；最终审核 head `27da41c8247a3abb92ce66c8d4e6af3221cd4513`，PR #90 集成 `7f6318298c3833acf44e9343feb45e17da32ce6a`；各片审核见 [#59 状态](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6492891726) |
+| 后续失败刷新修复 | #91／PR #92，审核 head `a5e5cedbd53e057c72625f4ed029dc3ca03cf032`，集成 `125f2d692ab93aba8583d7d3cc5e69f0c94b44d6`；[最终复审](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/92#issuecomment-6494709820)确认受影响路径，Maya、协议和联动实现未变，其他历史证据继续适用 |
 | 宿主 | Windows 11；Maya 2024 GUI（脚本后台驱动，`minimal` 插件偏好模板，SHA-256 `6aa456ab…2fa0`）；Maya 2022.4（cut 202205171752）；stock UE 5.7.4，`-RenderOffscreen -nocef` |
 | 生产输入 | 一次性测试工程 `<Backups.uproject>`：关卡 `Level_D002CP7_Act02`、序列 `Sequence_D002CP7_Act02`（0–3411，30 fps）；Maya `C04_Interaction_ScratchChin.ma`（C04＋C00，0–518 帧动画）；C04 用 `DA_C04_MtoUBinding`，C00 用 `SK_C000_Clothes_03_All`；非原点旋转 Anchor (120, -80, 0)／roll 3、pitch -4、yaw 37。单角色工作流回归用 C01 Clothes_05＋头＋头发、`SM_C01_Clothes_05` |
 | 端口 | I-3 宿主运行用 `-MtoULiveLinkPort=54329`，与同机使用 54321 的编辑器并存 |
@@ -63,6 +64,7 @@
 - Topia 5.7.4 由用户自行构建验证，本次未执行；Topia 的支持声明沿用[原记录](topia-engine-acceptance.md)。
 - 在含中文的路径下从源码编译 UE 插件失败（MSVC 无法打开该路径下的 PCH，C1083），属工具链限制；打包后的插件在含空格与中文路径的工程中可直接加载使用。
 - Maya 2022.4 只做了安装检查与编译检查，未跑交互联动。
+- PR #92 复审的默认套件中，`MtoULiveLink.Linkage.ObjectSet` 首次失败、单独重跑通过；交付方同源码默认套件 92/92。根因未定位，不能据重跑宣称已修复；该测试不调用 #91 的预览准备路径，复审将其列为非阻塞观察，再现时需单独调查集合调度与测试时序。
 - 失败刷新的内存（#91）：`GuiRegression` 以错误的服装槽逐帧重试刷新预览时编辑器内存耗尽，原因是回收时机，不是泄漏。强制 GC 后失败刷新不残留任何对象；但每次失败刷新在返回后仍持有 Driver 与 Preview 的完整几何副本，更晚失败时另有 Morph 临时网格和未提交的生成预览（含源网格描述、导入模型、渲染数据与 Morph 增量），直到下一次 GC，逐帧重试便在两次 GC 之间累积。现在刷新返回前清空这些对象持有的数据再丢弃对象，`GuiRegression` 只刷新一次并带诊断结束。
   - 默认测试 `MtoULiveLink.Editor.Preview.FailedRefreshRelease` 在 GC 前统计本次刷新创建、仍存在（含已标记为垃圾）的对象所持有的顶点与 Morph 增量，覆盖各失败阶段、“成功后失败”与“成功后再成功”。负向对照：去掉中间网格的清空，或只给未提交的生成预览打垃圾标记，该测试都会失败。Validation 阶段经内部准备接缝以更严格的阈值触发，只作补充证据。
   - 在 Backups 中用 C01 复跑 `GuiRegression`（Maya 2024 GUI，stock UE 5.7，`-NullRHI`）。错误槽 `M_C01_Clothes_06`：只刷新一次，测试带“unknown Driver material slot”诊断失败，50 s 结束，编辑器工作集稳定在约 2.3 GiB；该失败发生在生成预览之前。正确槽：各阶段 Success，6 次姿态比对均为 14 根骨骼 0.0000 cm；该夹具未键 Morph。生产规模的晚期失败（生成预览之后）未做宿主内存测量。

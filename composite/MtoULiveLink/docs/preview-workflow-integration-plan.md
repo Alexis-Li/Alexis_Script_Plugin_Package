@@ -1,10 +1,12 @@
 # 三项原型接入 MtoU 主流程的整合方案
 
-状态：**已由 #56／#57 承接并进入实施**。2026-10-13 复核 #56 的范围、源码和原型证据；
-2026-10-14 起按 [I-1（#57）](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/57)
-实施单角色接入。本文保留空间、时间、身份、驱动所有权与资源恢复的设计依据；
-已实施部分以 `protocol/v10.md`、[ADR 0014](../adr/0014-one-time-authority-and-staged-pose-groups.md)
-和实际源码为准，本文的推荐措辞不再覆盖这些生效结论。
+状态：**I-1／I-2／I-3 已完成并集成**。产品为 0.10.0（未发布）、协议 v11，
+位于 `codex/mtou-preview-workflow`。INT-01–14 的实际基线、结果及证据边界见
+[联合验收记录](../../../docs/project-history/mtou-livelink/preview-workflow-integration-acceptance.md)。
+本文保留 2026-10-13 接入前的设计与风险分析，文中的候选参数、版本和阶段任务
+描述该设计时点。当前需求由 [#56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56)
+拥有；生效契约以 [协议 v11](../protocol/v11.md)、[ADR 0014](adr/0014-one-time-authority-and-staged-pose-groups.md)
+及实际源码为准。
 
 推荐方向：**一个产品会话、一套空间约定、互斥时间控制、整组姿势提交**。
 先完成单角色在真实镜头下的正式路径，再扩为双对象，最后完成持续播放和交付
@@ -352,5 +354,5 @@ full-body／arms 更换只以合成手臂目标验证。
   深层子序列、复杂 Nanite／Landscape／WP、MRQ 分辨率自动发现、跨机器、PIE、
   打包运行和自动重连不在首版承诺。DOF 始终区分参数一致与图像等价。
 
-后续接手从 I-1 开始，在实施规格中固定推荐边界；有需求变化则先更新该规格。
-原型及既有验收证据保留用于对照，正式路径联合验收完成后再单独决定其维护与退役。
+I-1–I-3 的交付与验收见联合验收记录。合入 `main`、稳定里程碑与发布另行处理；
+原型及既有验收证据保留用于对照，其维护与退役另行决定。

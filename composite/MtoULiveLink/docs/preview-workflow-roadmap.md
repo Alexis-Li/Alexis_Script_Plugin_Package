@@ -4,8 +4,7 @@
 的四个实现任务和三个有界验证均已通过各自验收。母项汇总结论、适用基线和
 证据边界见[母规格验收记录](../../../docs/project-history/mtou-livelink/issue-47-preview-workflow-acceptance.md)。
 
-当前正式组件为 0.10.0、协议 v10（I-1 单角色接入实施于
-[#57](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/57)），位于
+当前正式组件为 0.10.0（未发布）、协议 v11；I-1／I-2／I-3 均已完成，位于
 `codex/mtou-preview-workflow`；下文 0.9.0／v9 为本文档记录的历史验收基线。
 `composite-mtou-livelink-v0.5.0` 保留为项目负责人接受的历史稳定里程碑；
 本轮验收不创建新发布标签、正式安装包或宿主版本认证。
@@ -38,30 +37,18 @@
 [#54 验收](../../../docs/project-history/mtou-livelink/issue-54-multi-subject-acceptance.md)。
 三者的原型使用入口仍位于各自 `prototypes/` 目录。
 
-## 下一阶段：共同方案后再实施
+## 正式接入与联合验收
 
-三个原型已经达到统一规划的前置条件。
-[整合方案草案](preview-workflow-integration-plan.md)一起处理空间、时间、对象身份、
-驱动所有权、资源恢复、产品接口与联合验收。2026-10-13 已完成一轮草案审查与
-修订，补充持续播放调度、模式转换、目标接管及阶段关口；未实施接入。
-后续范围由[方案票 #56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56)承接，
-尚未标记为可执行开发任务。
+[#56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56) 的 I-1（#57）、
+I-2（#58）、I-3（#59）均已审核并集成。正式入口支持参考准备、显式配对、
+单／双对象实时与镜头联动、返回实时和结束预览，保留单角色缓存与 Model 工作流。
+共同空间、互斥时间控制、整组显示和恢复行为的 INT-01–14 结果见
+[联合验收记录](../../../docs/project-history/mtou-livelink/preview-workflow-integration-acceptance.md)。
+该记录也说明后续 #91 失败刷新修复的验证范围，以及 Topia、Maya 2022.4 和宿主测量的限制。
 
-推荐沿用角色／默认参考的 `(x,z,y)`，将相机适配到同一空间；所有对象共享一个
-明确 Anchor，逆变换用于 Maya 相机和参考。实时、缓存、Sequencer 镜头联动
-采用互斥时间控制，完整对象姿势与已发出的相机求值目标绑定。连续播放使用一个
-在途目标和一个可替换的最新待发目标，允许显示明确标记的滞后完整组；停止后才
-要求收敛至最新镜头与时间。返回实时保留预览接管，结束预览才恢复原驱动。
-首版整合建议覆盖
-一个主角色加一个独立对象的实时／镜头联动，保持已验收单角色缓存和 Model 工作流。
-
-开发顺序为 I-1 单角色完整闭环 → I-2 双对象一致显示与独立移除 → I-3 日常
-宿主、持续播放及交付验收。I-1 内先冻结协议／fixture／预算，并用正式姿势路径
-验证真实 Sequence 接管、实际应用证据和延迟下持续前进；主风险未过关时不扩大
-到双对象。具体完成条件和 INT-01–12 映射由整合方案维护。
-
-这些是草案推荐，不覆盖现有 ADR。多对象缓存、Sequencer 驱动缓存和更广内容
-支持需要后续规格；联合宿主验收完成前不能称三个原型已经整合或任意时刻画面同帧。
+[接入设计](preview-workflow-integration-plan.md)保留设计依据；当前协议为
+[v11](../protocol/v11.md)。合入 `main`、确定稳定里程碑和发布是独立的下一阶段。
+多对象缓存、Sequencer 驱动缓存与更广内容支持需要另行定义范围。
 
 ## 持续约束
 
