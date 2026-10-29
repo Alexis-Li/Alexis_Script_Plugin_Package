@@ -4327,14 +4327,24 @@ def _recover_previous_runs(container):
             if state["exists"]:
                 recovery["skipped_namespaces"].append(name)
             continue
+        if state["foreign"]:
+            # A node the import did not record -- under the group, beside it, a
+            # DG node or one in a child namespace -- would go with the namespace.
+            recovery["partial_cleanups"].append({
+                "namespace": name, "removed": [], "left": state["foreign"],
+                "errors": []})
+            recovery["events"].append(
+                "STALE_STAGING_PARTIAL: the staging namespace {0} holds nodes this "
+                "tool did not create ({1}), so nothing in it was deleted".format(
+                    name, _node_summary(state["foreign"])))
+            continue
         removed, left, errors = _remove_owned_nodes(name, [_ownership_mark(name)])
         if left or errors:
             recovery["partial_cleanups"].append({
                 "namespace": name, "removed": removed, "left": left, "errors": errors})
             recovery["events"].append(
-                "STALE_STAGING_PARTIAL: the staging namespace {0} held nodes this "
-                "tool cannot prove are its own ({1}), so only its marked group was "
-                "deleted and the rest was left exactly as it is".format(
+                "STALE_STAGING_PARTIAL: the staging namespace {0} could not be fully "
+                "deleted; these nodes were left as they are: {1}".format(
                     name, _node_summary(left)))
             continue
         if not _namespace_top_nodes(name):

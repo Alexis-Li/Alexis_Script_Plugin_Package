@@ -1495,6 +1495,26 @@ class MayaHostTests(unittest.TestCase):
         self.assertIsNone(self._container_group())
         self.assertIsNone(reference.stale_reference(moved))
 
+        # A staging namespace an interrupted run left behind is kept whole while
+        # it holds a DG node or a child-namespace node the import did not record.
+        staging = container + reference.STAGING_SUFFIX
+        for extra in ("lambert", "Props:Crate"):
+            cmds.namespace(add=staging)
+            staged = cmds.createNode("transform", name=staging + ":" + staging)
+            reference._mark_owned(staged, staging)
+            reference._record_inventory(staged, staging)
+            if extra == "lambert":
+                node = cmds.createNode("lambert", name=staging + ":ArtistShader")
+            else:
+                cmds.namespace(add="Props", parent=staging)
+                node = cmds.createNode("transform", name=staging + ":Props:Crate")
+            node_uuid = cmds.ls(node, uuid=True)[0]
+            recovery = reference._recover_previous_runs(container)
+            self.assertEqual([], recovery["stale_staging_namespaces"])
+            self.assertEqual(1, len(cmds.ls(node_uuid)))
+            self.assertTrue(cmds.namespace(exists=staging))
+            cmds.namespace(removeNamespace=staging, deleteNamespaceContent=True)
+
         # The production nodes never changed.
         self.assertEqual(12.5, cmds.getAttr(hero + ".translateX"))
         self.assertEqual(1, len(cmds.ls("HeroCtrl")))

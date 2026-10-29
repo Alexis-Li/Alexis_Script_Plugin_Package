@@ -2540,6 +2540,23 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(1, len(recovery["partial_cleanups"]))
         self.assertIs(kept, scene.find("|{0}:ForeignNode".format(staging)))
 
+    def test_a_staging_namespace_with_unrecorded_nodes_is_kept_whole(self):
+        # A DG node, or a node in a child namespace, would go with the namespace.
+        for namespace, node_type in (("", "lambert"), (":Props", "transform")):
+            scene = FakeReferenceScene()
+            staging = reference.REFERENCE_CONTAINER + reference.STAGING_SUFFIX
+            group = staging_scene(scene, staging)
+            scene.namespaces.add(staging + namespace)
+            kept = scene.add_node(staging + namespace, "ArtistNode", node_type)
+            report = import_fixture(scene, HandoffFixture(self.directory / "handoff"))
+            self.assertTrue(report["accepted"], report["problems"])
+            recovery = report["update"]["recovery"]
+            self.assertEqual([], recovery["stale_staging_namespaces"])
+            self.assertEqual(1, len(recovery["partial_cleanups"]))
+            self.assertIn("ArtistNode", " ".join(recovery["events"]))
+            self.assertIs(kept, scene.find(kept.uuid))
+            self.assertIs(group, scene.find(group.uuid))
+
     def test_an_interrupted_takeover_is_finished_on_the_next_run(self):
         scene = FakeReferenceScene()
         container = reference.REFERENCE_CONTAINER
