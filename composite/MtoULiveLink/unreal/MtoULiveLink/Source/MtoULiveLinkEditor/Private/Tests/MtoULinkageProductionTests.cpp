@@ -591,19 +591,27 @@ private:
             Add(TEXT("[lifecycle] after the last exit Maya holds what a disconnected panel holds"), 120.0, [this]()
             {
                 // Close the session the last scenario left open, then count.
+                // A sent disconnect is acknowledged first, so its ack is never
+                // taken for the census request's.
                 if (LifecyclePhase == 0)
                 {
+                    if (LifecycleId >= 0)
+                    {
+                        if (MayaAcked(LifecycleId))
+                        {
+                            LifecycleId = -1;
+                        }
+                        return false;
+                    }
                     if (!MayaSessionOpen())
                     {
+                        bDisconnectSent = false;
                         LifecyclePhase = 1;
                     }
-                    else if (LifecycleId < 0)
+                    else if (!bDisconnectSent)
                     {
                         LifecycleId = SendMaya(TEXT("disconnect"));
-                    }
-                    else if (MayaAcked(LifecycleId))
-                    {
-                        LifecycleId = -1;
+                        bDisconnectSent = true;
                     }
                     return false;
                 }
@@ -2578,10 +2586,20 @@ private:
         });
         Add(TEXT("[set] the right skeleton connects again"), 600.0, [this]()
         {
+            if (bStepReconnecting)
+            {
+                if (!ReconnectSet(TEXT("[set] the right skeleton")))
+                {
+                    return false;
+                }
+                bStepReconnecting = false;
+                return true;
+            }
             if (RefusalPhase == 0)
             {
                 // A refused object may leave Maya connected with the main
-                // character only; the right Binding needs a new connection.
+                // character only; that session is ended before the right
+                // Binding is set.
                 if (MayaConnected() || OnceId >= 0)
                 {
                     if (OnceId >= 0 || !bDisconnectSent)
@@ -2595,22 +2613,12 @@ private:
                 RefusalPhase = 1;
                 return false;
             }
-            if (RefusalPhase == 1)
-            {
-                if (SendOnce(TEXT("connect")))
-                {
-                    RefusalPhase = 2;
-                }
-                return false;
-            }
-            if (!SetConnected())
-            {
-                return false;
-            }
-            PairAgain();
+            // With the right Binding, the session still negotiating after the
+            // refusal completes by itself; one that ended instead needs a new
+            // 连接. ReconnectSet handles both.
             RefusalPhase = 0;
-            Test->TestEqual(TEXT("the reconnected set has both objects"), NegotiatedObjects(), 2);
-            return true;
+            bStepReconnecting = true;
+            return false;
         });
     }
 
@@ -3136,7 +3144,12 @@ private:
                 SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no actor")));
             bReconnectWaitLogged = true;
         }
-        if (RefusalPhase == 0)
+        // A set that is connected before 连接 was clicked is the result
+        // already: a UE actor reads Connected only after a negotiation, and
+        // Maya never reconnects by itself, so it is a session that finished
+        // negotiating after the step's change (after the right Binding, for
+        // the refused session), never the set the step ended.
+        if (RefusalPhase == 0 && !(OnceId < 0 && SetConnected()))
         {
             // The previous session must be gone before 连接 is clicked; once
             // the click is sent, a session that opens before its ack is read
@@ -3167,8 +3180,9 @@ private:
         ReconnectWaitStarted = 0.0;
         PairAgain();
         Log(FString::Printf(TEXT("%s: the set connected again with %d objects (UE '%s' / '%s')"), *What,
-            NegotiatedObjects(), *Actor->GetConnectionStatus(), *SecondaryActor->GetConnectionStatus()));
-        Test->TestEqual(*(What + TEXT(": both objects negotiate")), NegotiatedObjects(), 2);
+            NegotiatedObjects(), *Actor->GetConnectionStatus(),
+            SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no second object")));
+        Test->TestEqual(*(What + TEXT(": every object negotiates")), NegotiatedObjects(), HasSecondary() ? 2 : 1);
         RefusalPhase = 0;
         return true;
     }
@@ -3776,6 +3790,16 @@ private:
         });
         Add(Tag + TEXT("the second object joins again"), 600.0, [this, Tag]()
         {
+            if (bStepReconnecting)
+            {
+                if (!ReconnectSet(Tag + TEXT("the second object")))
+                {
+                    return false;
+                }
+                bStepReconnecting = false;
+                Log(Tag + TEXT("the second object joined again after reconnecting"));
+                return true;
+            }
             if (RefusalPhase == 0)
             {
                 // 设为副对象 changes the set, which ends the connection.
@@ -3798,15 +3822,10 @@ private:
                 }
                 if (!MayaConnected())
                 {
-                    RefusalPhase = 2;
-                }
-                return false;
-            }
-            if (RefusalPhase == 2)
-            {
-                if (SendOnce(TEXT("connect")))
-                {
-                    RefusalPhase = 3;
+                    // The ended session may still be tearing down: ReconnectSet
+                    // waits for it before clicking 连接.
+                    RefusalPhase = 0;
+                    bStepReconnecting = true;
                 }
                 return false;
             }
@@ -3959,24 +3978,22 @@ private:
                 Reconnected = false;
                 return false;
             }
-            bool bConnected = false;
-            MayaResult->TryGetBoolField(TEXT("connected"), bConnected);
-            if (!SetConnected())
-            {
-                if (!bConnected && ReconnectId < 0)
-                {
-                    ReconnectId = SendMaya(TEXT("connect"));
-                }
-                return false;
-            }
             if (!Reconnected)
             {
+                // The deleted target ended the session, which may still be
+                // tearing down: ReconnectSet waits for it before clicking 连接.
+                if (!ReconnectSet(Tag + TEXT("the replaced target")))
+                {
+                    return false;
+                }
                 Reconnected = true;
-                ReconnectId = -1;
-                PairAgain();
                 FMtoULinkageEditor::SetObservedLinkageActor(Actor.Get());
                 WriterTracks.Reset();
                 WriteInventory();
+            }
+            else if (!SetConnected())
+            {
+                return false;
             }
         }
         const TSharedPtr<ISequencer> Sequencer = SequencerWeak.Pin();
@@ -4143,6 +4160,8 @@ private:
     TSharedPtr<FJsonObject> LifecycleBaseline, LifecycleLastCensus, LifecycleDisconnected;
     TSharedPtr<FJsonObject> LiveStateBefore;
     bool bReconnectWaitLogged = false;
+    // A step that has handed its reconnection to ReconnectSet.
+    bool bStepReconnecting = false;
     double ReconnectWaitStarted = 0.0;
     TArray<TSharedPtr<FJsonValue>> LifecycleSamples;
     // Sustained playback (INT-10).
@@ -4163,7 +4182,6 @@ private:
     bool bAnchorMoved = false;
     FString LastStatus;
     FDelegateHandle CleanupHandle;
-    int32 ReconnectId = -1;
 };
 }
 
