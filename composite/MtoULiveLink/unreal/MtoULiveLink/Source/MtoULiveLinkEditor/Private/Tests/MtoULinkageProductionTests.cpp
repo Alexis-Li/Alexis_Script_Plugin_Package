@@ -3138,7 +3138,10 @@ private:
         }
         if (RefusalPhase == 0)
         {
-            if (MayaSessionOpen())
+            // The previous session must be gone before 连接 is clicked; once
+            // the click is sent, a session that opens before its ack is read
+            // is the new one, so only the ack is waited for.
+            if (OnceId < 0 && MayaSessionOpen())
             {
                 return false;
             }
