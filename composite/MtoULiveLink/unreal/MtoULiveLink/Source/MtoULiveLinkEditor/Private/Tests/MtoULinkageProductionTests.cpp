@@ -3137,8 +3137,22 @@ private:
                 Log(What + TEXT(": Maya stayed idle after 连接; connecting again"));
                 RefusalPhase = 0;
             }
+            else if (FPlatformTime::Seconds() - RefusalStarted > 60.0 && !bReconnectWaitLogged)
+            {
+                bool bMayaConnected = false;
+                if (MayaResult.IsValid())
+                {
+                    MayaResult->TryGetBoolField(TEXT("connected"), bMayaConnected);
+                }
+                Log(FString::Printf(TEXT("%s: still waiting for the set: Maya connected %d, Maya second %d, UE '%s' / '%s'"),
+                    *What, bMayaConnected ? 1 : 0, MayaSetHasSecondary() ? 1 : 0,
+                    Actor.IsValid() ? *Actor->GetConnectionStatus() : TEXT("no actor"),
+                    SecondaryActor.IsValid() ? *SecondaryActor->GetConnectionStatus() : TEXT("no actor")));
+                bReconnectWaitLogged = true;
+            }
             return false;
         }
+        bReconnectWaitLogged = false;
         PairAgain();
         Log(FString::Printf(TEXT("%s: the set connected again with %d objects (UE '%s' / '%s')"), *What,
             NegotiatedObjects(), *Actor->GetConnectionStatus(), *SecondaryActor->GetConnectionStatus()));
@@ -4116,6 +4130,7 @@ private:
     int32 LifecyclePhase = 0, LifecycleId = -1;
     TSharedPtr<FJsonObject> LifecycleBaseline, LifecycleLastCensus, LifecycleDisconnected;
     TSharedPtr<FJsonObject> LiveStateBefore;
+    bool bReconnectWaitLogged = false;
     TArray<TSharedPtr<FJsonValue>> LifecycleSamples;
     // Sustained playback (INT-10).
     int32 SustainedPhase = 0;
