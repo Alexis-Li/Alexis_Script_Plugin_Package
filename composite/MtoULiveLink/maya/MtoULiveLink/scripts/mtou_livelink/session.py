@@ -1,5 +1,6 @@
 """Real-time streaming session, sender worker and negotiation events."""
 
+import collections
 import contextlib
 import errno
 import json
@@ -66,6 +67,17 @@ CONTROL_REPLY_TYPES = (
     "object_removed",
 )
 
+# Statements Unreal may send the moment the set is ready, before the panel's
+# main thread installs its listener: they are held and handed to the listener
+# once it exists. Targets and receipts only matter inside linkage.
+HELD_REPLY_TYPES = (
+    "mode_state",
+    "reference_offer",
+    "reference_result",
+    "reference_removed",
+    "object_removed",
+)
+
 # A second object's negotiation differences are listed with this prefix, so
 # the warning dialog tells them apart from the primary character's.
 SECONDARY_WARNING_PREFIX = "副对象 · "
@@ -105,6 +117,7 @@ class SenderWorker(threading.Thread):
         self._initial_packet = initial
         self._hello_reply = None
         self._last_control_reply = None
+        self._held_replies = collections.deque(maxlen=config.MAX_CONTROL_QUEUE)
         self._latest = LatestFrame()
         # Unbounded by design: the cached upload streams hundreds of frames
         # through the same ordered path. Linkage controls keep their own bound
@@ -379,6 +392,24 @@ class SenderWorker(threading.Thread):
         with self._lock:
             return dict(self._hello_reply) if self._hello_reply else None
 
+    @staticmethod
+    def _deliver(listener, reply):
+        """Hand one reply to ``listener``; False when it leaves it to the session.
+
+        A listener returns False for a reply it leaves to the session's own
+        handling; one that raises has still consumed it.
+        """
+        try:
+            return listener(reply) is not False
+        except Exception as exc:
+            if cmds is not None:
+                try:
+                    cmds.warning(
+                        "MtoU_LiveLink cached reply listener failed: {0}".format(exc))
+                except Exception:
+                    pass
+            return True
+
     def last_control_reply(self):
         """The last control statement received without a registered listener."""
         with self._lock:
@@ -400,6 +431,17 @@ class SenderWorker(threading.Thread):
             self._set_status("ready", "Connected", warning=warning)
             sock.settimeout(0.25)
             while not self._stop_event.is_set():
+                with self._lock:
+                    listener = self._reply_listener
+                    held = []
+                    if listener is not None:
+                        held, self._held_replies = (
+                            list(self._held_replies),
+                            collections.deque(maxlen=config.MAX_CONTROL_QUEUE))
+                # Statements that arrived before the listener existed reach it
+                # first, in arrival order, ahead of anything read after them.
+                for reply in held:
+                    self._deliver(listener, reply)
                 with self._lock:
                     ordered_mode = self._ordered_mode
                     packet = None
@@ -435,22 +477,10 @@ class SenderWorker(threading.Thread):
                         return
                     with self._lock:
                         listener = self._reply_listener
-                    if listener is not None:
-                        try:
-                            # A listener returns False for a reply it leaves
-                            # to the session's own handling below.
-                            handled = listener(reply) is not False
-                        except Exception as exc:
-                            handled = True
-                            if cmds is not None:
-                                try:
-                                    cmds.warning(
-                                        "MtoU_LiveLink cached reply listener failed: {0}".format(
-                                            exc))
-                                except Exception:
-                                    pass
-                        if handled:
-                            continue
+                        if listener is None and reply.get("type") in HELD_REPLY_TYPES:
+                            self._held_replies.append(dict(reply))
+                    if listener is not None and self._deliver(listener, reply):
+                        continue
                     if reply.get("type") == "error":
                         diagnostic = make_diagnostic(
                             reply.get("code") or "STREAM_INTERRUPTED",
