@@ -1723,6 +1723,254 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// Issue #91: repeated failed refreshes of one actor must return to the same
+// object baseline. A refresh copies the Driver and Preview into transient
+// Dynamic Meshes and may build an actor-owned Generated Preview before it
+// fails; none of these may survive a forced GC, and their geometry must
+// already be released when the refresh returns instead of waiting for GC.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewFailedRefreshReleaseTest,
+    "MtoULiveLink.Editor.Preview.FailedRefreshRelease",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
+    // Ignored: the failed refresh shows the source-only malformed Driver.
+    AddExpectedMessagePlain(TEXT("has no render data"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFailedRefreshReleaseWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    UStaticMesh* MisalignedPreview = Driver
+        ? MakePreview(*Driver, *WorldPackage, false, false, false, true)
+        : nullptr;
+    UStaticMesh* SourcelessPreview = NewObject<UStaticMesh>(WorldPackage);
+    USkeletalMesh* MalformedDriver = Driver
+        ? NewObject<USkeletalMesh>(WorldPackage, NAME_None, RF_Transient)
+        : nullptr;
+    if (MalformedDriver)
+    {
+        MalformedDriver->SetSkeleton(Driver->GetSkeleton());
+        MalformedDriver->SetRefSkeleton(Driver->GetRefSkeleton());
+        FMeshDescription IndependentDescription;
+        if (Driver->CloneMeshDescription(0, IndependentDescription))
+        {
+            MalformedDriver->SetNumSourceModels(1);
+            MalformedDriver->CreateMeshDescription(0, MoveTemp(IndependentDescription));
+        }
+    }
+    FMeshDescription* MalformedDescription = MalformedDriver
+        ? MalformedDriver->GetMeshDescription(0)
+        : nullptr;
+    if (MalformedDescription)
+    {
+        FSkeletalMeshAttributes(*MalformedDescription).GetBoneNames().Set(
+            0, FName(TEXT("MissingInfluenceBone")));
+    }
+    USkeletalMesh* BrokenMorphDriver = Driver
+        ? DuplicateObject<USkeletalMesh>(Driver, WorldPackage)
+        : nullptr;
+    if (BrokenMorphDriver)
+    {
+        BrokenMorphDriver->GetMorphTargets().Add(NewObject<UMorphTarget>(
+            BrokenMorphDriver, FName(TEXT("BrokenRequired")), RF_Transient));
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUFailedRefreshReleaseWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    // The census forces GC, which would otherwise collect the fixtures that
+    // the Binding does not reference at that moment.
+    TArray<TStrongObjectPtr<UObject>> FixtureGuards;
+    for (UObject* Fixture : TArray<UObject*>{Binding, Driver, Preview, MisalignedPreview,
+        SourcelessPreview, MalformedDriver, BrokenMorphDriver})
+    {
+        FixtureGuards.Emplace(Fixture);
+    }
+    if (!Actor || !Driver || !Preview || !MisalignedPreview || !MalformedDescription
+        || !BrokenMorphDriver)
+    {
+        AddError(TEXT("failed-refresh fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    Actor->SetBinding(Binding);
+
+    // Live counts what still holds memory now; Alive also counts objects
+    // that are only marked as garbage, so a forced GC must remove them.
+    struct FCensus
+    {
+        int32 LiveMeshes = 0;
+        int32 AliveMeshes = 0;
+        int64 LiveMeshVertices = 0;
+        int32 LiveGenerated = 0;
+        int32 AliveGenerated = 0;
+    };
+    const auto Census = [Actor]()
+    {
+        FCensus Result;
+        for (TObjectIterator<UDynamicMesh> It; It; ++It)
+        {
+            if (It->GetOuter() == GetTransientPackage())
+            {
+                ++Result.AliveMeshes;
+                if (IsValid(*It))
+                {
+                    ++Result.LiveMeshes;
+                    Result.LiveMeshVertices += It->GetMeshRef().VertexCount();
+                }
+            }
+        }
+        for (TObjectIterator<USkeletalMesh> It; It; ++It)
+        {
+            if (It->GetOuter() == Actor)
+            {
+                ++Result.AliveGenerated;
+                Result.LiveGenerated += IsValid(*It) ? 1 : 0;
+            }
+        }
+        return Result;
+    };
+    const auto Describe = [](const FCensus& Value)
+    {
+        return FString::Printf(
+            TEXT("live meshes %d (%lld vertices), alive meshes %d, live generated %d, alive generated %d"),
+            Value.LiveMeshes, Value.LiveMeshVertices, Value.AliveMeshes,
+            Value.LiveGenerated, Value.AliveGenerated);
+    };
+    const auto UsedPhysicalMiB = []()
+    {
+        return static_cast<double>(FPlatformMemory::GetStats().UsedPhysical) / (1024.0 * 1024.0);
+    };
+
+    constexpr int32 Repeats = 5;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus Baseline = Census();
+    AddInfo(TEXT("baseline: ") + Describe(Baseline));
+
+    struct FFailureCase
+    {
+        const TCHAR* Name;
+        USkeletalMesh* Driver;
+        UStaticMesh* Preview;
+        TArray<FName> SlotOverride;
+        EMtoUPreviewBuildStage Stage;
+    };
+    const FFailureCase Cases[] = {
+        { TEXT("missing Preview source data"), Driver, SourcelessPreview, {},
+            EMtoUPreviewBuildStage::Preflight },
+        { TEXT("source influence absent from the skeleton"), MalformedDriver, Preview, {},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("unknown garment slot"), Driver, Preview, {FName(TEXT("M_NoSuchSlot"))},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("misaligned Preview"), Driver, MisalignedPreview, {},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("invalid required Morph"), BrokenMorphDriver, Preview, {},
+            EMtoUPreviewBuildStage::SkeletalMeshBuild },
+    };
+    for (const FFailureCase& Case : Cases)
+    {
+        Binding->SkeletalMesh = Case.Driver;
+        Binding->PreviewStaticMesh = Case.Preview;
+        Binding->DriverGarmentSlotOverride = Case.SlotOverride;
+        const double MemoryBefore = UsedPhysicalMiB();
+        FMtoUPreviewReadiness Failed;
+        bool bConsistent = true;
+        for (int32 Attempt = 0; Attempt < Repeats; ++Attempt)
+        {
+            Failed = FMtoUPreviewPreparation::RefreshActor(*Actor);
+            bConsistent &= Failed.State == EMtoUPreviewState::Error
+                && Failed.Stage == Case.Stage
+                && Failed.GeneratedPreview == nullptr
+                && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+                && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Case.Driver;
+        }
+        AddInfo(FString::Printf(TEXT("%s: %s"), Case.Name, *Failed.Diagnostics.Left(200)));
+        TestTrue(FString::Printf(
+            TEXT("%s fails at its stage every time and shows the original garment"), Case.Name),
+            bConsistent);
+        const FCensus Returned = Census();
+        const double MemoryReturned = UsedPhysicalMiB();
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        const FCensus Collected = Census();
+        AddInfo(FString::Printf(
+            TEXT("%s x%d: on return %s; after GC %s; used physical %.1f -> %.1f -> %.1f MiB"),
+            Case.Name, Repeats, *Describe(Returned), *Describe(Collected),
+            MemoryBefore, MemoryReturned, UsedPhysicalMiB()));
+        TestTrue(FString::Printf(TEXT("%s releases its intermediate geometry on return"), Case.Name),
+            Returned.LiveMeshes == Baseline.LiveMeshes
+            && Returned.LiveMeshVertices == Baseline.LiveMeshVertices
+            && Returned.LiveGenerated == Baseline.LiveGenerated);
+        TestTrue(FString::Printf(TEXT("%s leaves no object after GC"), Case.Name),
+            Collected.AliveMeshes == Baseline.AliveMeshes
+            && Collected.AliveGenerated == Baseline.AliveGenerated);
+    }
+
+    // A Validation failure is a quality verdict that the default thresholds
+    // cannot reach with these inputs; the preparation seam takes stricter
+    // thresholds and discards a fully built Generated Preview.
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    Binding->DriverGarmentSlotOverride.Reset();
+    FMtoUPreviewQualityThresholds UnsafeThresholds;
+    UnsafeThresholds.MaxWarningInpaintRatio = -1.0;
+    const FMtoUPreviewPreparationResult Unsafe =
+        MtoUPreparePreview(*Actor, *Binding, {}, UnsafeThresholds);
+    const FCensus UnsafeReturned = Census();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus UnsafeCollected = Census();
+    AddInfo(TEXT("validation failure: on return ") + Describe(UnsafeReturned)
+        + TEXT("; after GC ") + Describe(UnsafeCollected));
+    TestTrue(TEXT("a Validation failure releases the built Generated Preview"),
+        !Unsafe.bSucceeded
+        && Unsafe.FailureStage == EMtoUPreviewBuildStage::Validation
+        && UnsafeReturned.LiveMeshVertices == Baseline.LiveMeshVertices
+        && UnsafeReturned.LiveGenerated == Baseline.LiveGenerated
+        && UnsafeCollected.AliveMeshes == Baseline.AliveMeshes
+        && UnsafeCollected.AliveGenerated == Baseline.AliveGenerated);
+
+    // Success then success keeps only the latest Generated Preview.
+    const FMtoUPreviewReadiness First = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const FMtoUPreviewReadiness Second = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const FCensus SuccessReturned = Census();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus SuccessCollected = Census();
+    AddInfo(TEXT("success twice: on return ") + Describe(SuccessReturned)
+        + TEXT("; after GC ") + Describe(SuccessCollected));
+    TestTrue(TEXT("two successful refreshes keep only the latest Generated Preview"),
+        First.IsUsable() && Second.IsUsable()
+        && First.GeneratedPreview != Second.GeneratedPreview
+        && Actor->GetPreviewReadiness().GeneratedPreview == Second.GeneratedPreview
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SuccessReturned.LiveMeshVertices == Baseline.LiveMeshVertices
+        && SuccessCollected.AliveMeshes == Baseline.AliveMeshes
+        && SuccessCollected.AliveGenerated == Baseline.AliveGenerated + 1);
+
+    // Success then failure releases the committed preview and shows the Driver.
+    Binding->DriverGarmentSlotOverride = {FName(TEXT("M_NoSuchSlot"))};
+    const FMtoUPreviewReadiness AfterSuccess = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus AfterSuccessCollected = Census();
+    AddInfo(TEXT("failure after success, after GC: ") + Describe(AfterSuccessCollected));
+    TestTrue(TEXT("a failure after success releases the Generated Preview and shows the Driver"),
+        AfterSuccess.State == EMtoUPreviewState::Error
+        && AfterSuccess.GeneratedPreview == nullptr
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver
+        && AfterSuccessCollected.AliveMeshes == Baseline.AliveMeshes
+        && AfterSuccessCollected.AliveGenerated == Baseline.AliveGenerated);
+
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewMeshDataTest,
     "MtoULiveLink.Editor.Preview.MeshData",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

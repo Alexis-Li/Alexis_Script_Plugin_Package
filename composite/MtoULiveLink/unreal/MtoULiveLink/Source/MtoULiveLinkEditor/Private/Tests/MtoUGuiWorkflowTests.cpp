@@ -311,11 +311,14 @@ private:
 
         // ---- Model, Refresh and garment comparison --------------------------
         AddStage(TEXT("refresh"));
+        // A failed Refresh is deterministic for the fixture, so the step
+        // refreshes once and ends the run with its diagnostics.
         Add(TEXT("刷新预览 builds the Generated Preview"), 300.0, [this]()
         {
             const FMtoUPreviewReadiness Ready = FMtoUPreviewPreparation::RefreshActor(*Actor);
             Log(TEXT("Refresh: ") + Ready.Diagnostics.Left(400));
-            return Test->TestTrue(TEXT("Refresh reaches a usable Generated Preview"), Ready.IsUsable() && Ready.GeneratedPreview);
+            return (Ready.IsUsable() && Ready.GeneratedPreview)
+                || Abort(TEXT("Refresh did not reach a usable Generated Preview: ") + Ready.Diagnostics);
         });
         Add(TEXT("Refresh ends the session in Maya"), 60.0, [this]() { return !MayaConnected(); });
         AddStage(TEXT("model"));
