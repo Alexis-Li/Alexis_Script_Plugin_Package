@@ -73,8 +73,6 @@ CONTROL_REPLY_TYPES = (
 HELD_REPLY_TYPES = (
     "mode_state",
     "reference_offer",
-    "reference_result",
-    "reference_removed",
     "object_removed",
 )
 
@@ -392,6 +390,18 @@ class SenderWorker(threading.Thread):
         with self._lock:
             return dict(self._hello_reply) if self._hello_reply else None
 
+    def _take_held(self):
+        """``(listener, held)``: the listener and, once it exists, the held replies.
+
+        Called with ``_lock`` held; the held replies leave the queue with it.
+        """
+        listener = self._reply_listener
+        if listener is None or not self._held_replies:
+            return listener, []
+        held = list(self._held_replies)
+        self._held_replies.clear()
+        return listener, held
+
     @staticmethod
     def _deliver(listener, reply):
         """Hand one reply to ``listener``; False when it leaves it to the session.
@@ -432,12 +442,7 @@ class SenderWorker(threading.Thread):
             sock.settimeout(0.25)
             while not self._stop_event.is_set():
                 with self._lock:
-                    listener = self._reply_listener
-                    held = []
-                    if listener is not None:
-                        held, self._held_replies = (
-                            list(self._held_replies),
-                            collections.deque(maxlen=config.MAX_CONTROL_QUEUE))
+                    listener, held = self._take_held()
                 # Statements that arrived before the listener existed reach it
                 # first, in arrival order, ahead of anything read after them.
                 for reply in held:
@@ -476,9 +481,13 @@ class SenderWorker(threading.Thread):
                             "error", diagnostic["summary"], diagnostic=diagnostic)
                         return
                     with self._lock:
-                        listener = self._reply_listener
+                        # A listener installed since the top of this loop takes
+                        # the held statements before this newer reply.
+                        listener, held = self._take_held()
                         if listener is None and reply.get("type") in HELD_REPLY_TYPES:
                             self._held_replies.append(dict(reply))
+                    for earlier in held:
+                        self._deliver(listener, earlier)
                     if listener is not None and self._deliver(listener, reply):
                         continue
                     if reply.get("type") == "error":
