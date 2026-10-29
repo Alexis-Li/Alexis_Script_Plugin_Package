@@ -248,9 +248,6 @@ FMtoULinkageView FMtoULinkageSession::GetView() const
 void FMtoULinkageSession::BeginSession(int32 InSessionId)
 {
     SessionId = InSessionId;
-    ResetScheduleStats();
-    bIssueOpen = false;
-    IssuedRecord = INDEX_NONE;
     SetRevision = 0;
     SpaceRevision = 1;
     SessionObjectId.Reset();
@@ -558,8 +555,7 @@ void FMtoULinkageSession::NoteMode(const FMtoUModeMessage& Message, double NowSe
             bTransitioning = false;
             Detail = TEXT("Maya follows the Unreal sequence time.");
             SendControl(FMtoUProtocol::EncodeModeState(
-                SessionId, ModeRevision, Mode, Control, Detail,
-                FMtoUProtocol::MakeAnchorObject(TakeoverAnchor)));
+                SessionId, ModeRevision, Mode, Control, Detail));
             PublishView();
             return;
         }
@@ -718,7 +714,6 @@ void FMtoULinkageSession::StagePoseGroup(const FMtoUPoseGroupMessage& Message, d
     FMtoUStagedPoseGroup& StagedGroup = Staged.AddDefaulted_GetRef();
     StagedGroup.Message = Message;
     StagedGroup.ReceivedSeconds = NowSeconds;
-    NoteQueuePeaks();
 }
 
 bool FMtoULinkageSession::TakeNextStagedGroup(FMtoUPoseGroupMessage& OutMessage)
@@ -888,7 +883,6 @@ void FMtoULinkageSession::NoteGroupApplied(
             // back; a newer waiting target keeps its place. The cadence gate
             // is released so the next target is asked for at once instead of
             // waiting out the interval on a busy game thread.
-            EndIssueRecord(TEXT("applied"), NowSeconds);
             Issued.Reset();
             LastPumpSeconds = 0.0;
             if (Desired.IsSet())
@@ -901,12 +895,6 @@ void FMtoULinkageSession::NoteGroupApplied(
     }
     else
     {
-        ++Stats.Failed;
-        if (bIssueOpen && Stats.Records.IsValidIndex(IssuedRecord)
-            && Issued.IsSet() && Issued->EvalId == EvalId)
-        {
-            ++Stats.Records[IssuedRecord].FailedApplications;
-        }
         Detail = FString::Printf(TEXT("Application failed for %s: %s"), *EvalId, *Reason);
         Error = Reason;
         ErrorCode = ErrorCode.IsEmpty() ? TEXT("LINKAGE_APPLY_FAILED") : ErrorCode;
@@ -1273,12 +1261,7 @@ void FMtoULinkageSession::PumpCameraTargets(double NowSeconds, bool bAskEditorNo
             return;
         }
         // Only the waiting target is replaceable; the issued one keeps running.
-        if (Desired.IsSet() && Desired->EvalId != Target.EvalId)
-        {
-            ++Stats.Coalesced;
-        }
         Desired = Target;
-        NoteQueuePeaks();
         Detail = FString::Printf(TEXT("Waiting target %s."), *Target.EvalId);
         return;
     }
@@ -1294,27 +1277,8 @@ void FMtoULinkageSession::PumpCameraTargets(double NowSeconds, bool bAskEditorNo
 void FMtoULinkageSession::IssueTarget(const FMtoUCameraTimeTarget& Target, double NowSeconds)
 {
     ++IssueSerial;
-    // A target that was dropped without its group (a pause, cut, jump or
-    // exit) ends here at the latest; the tick normally saw it first.
-    EndIssueRecord(TEXT("cancelled"), NowSeconds);
     Issued = Target;
     IssuedSeconds = NowSeconds;
-    bIssueOpen = true;
-    ++Stats.Issued;
-    IssuedRecord = INDEX_NONE;
-    if (Stats.Records.Num() < FMtoULinkageScheduleStats::MaxRecords)
-    {
-        FMtoULinkageIssueRecord& Record = Stats.Records.AddDefaulted_GetRef();
-        Record.IssueSerial = IssueSerial;
-        Record.DisplayFrame = Target.DisplayFrame;
-        Record.IssuedSeconds = NowSeconds;
-        IssuedRecord = Stats.Records.Num() - 1;
-    }
-    else
-    {
-        ++Stats.DroppedRecords;
-    }
-    NoteQueuePeaks();
     Detail = FString::Printf(TEXT("Issued target %s at frame %.3f."), *Target.EvalId, Target.DisplayFrame);
     SendControl(FMtoUProtocol::EncodeCameraTime(
         SessionId, SetRevision, ModeRevision, SpaceRevision, Target));
@@ -1396,11 +1360,6 @@ bool FMtoULinkageSession::BeginTakeover(
     }
     bWritersBorrowed = true;
     bWritersRestored = false;
-    TakeoverAnchor = FTransform::Identity;
-    if (Hooks.GetAnchor)
-    {
-        Hooks.GetAnchor(TakeoverAnchor);
-    }
     RecoveryResidual.Reset();
     Mode = TEXT("linkage");
     Control = TEXT("unreal");
@@ -1414,8 +1373,7 @@ bool FMtoULinkageSession::BeginTakeover(
     Detail = bAwaitPeerConfirmation
         ? TEXT("Unreal owns the sequence time; waiting for Maya to confirm.")
         : TEXT("Unreal owns the sequence time; Maya follows.");
-    SendControl(FMtoUProtocol::EncodeModeState(SessionId, ModeRevision, Mode, Control, Detail,
-        FMtoUProtocol::MakeAnchorObject(TakeoverAnchor)));
+    SendControl(FMtoUProtocol::EncodeModeState(SessionId, ModeRevision, Mode, Control, Detail));
     PublishView();
     return true;
 }
@@ -1504,47 +1462,8 @@ void FMtoULinkageSession::RestoreBorrowedWriters(FString& OutResidual)
     RecoveryResidual = OutResidual;
 }
 
-void FMtoULinkageSession::EndIssueRecord(const TCHAR* Outcome, double NowSeconds)
-{
-    if (!bIssueOpen)
-    {
-        return;
-    }
-    bIssueOpen = false;
-    const FString Ended(Outcome);
-    if (Ended == TEXT("applied"))
-    {
-        ++Stats.Applied;
-    }
-    else
-    {
-        ++Stats.Cancelled;
-    }
-    if (Stats.Records.IsValidIndex(IssuedRecord))
-    {
-        FMtoULinkageIssueRecord& Record = Stats.Records[IssuedRecord];
-        Record.Outcome = Ended;
-        Record.AppliedSeconds = Ended == TEXT("applied") ? NowSeconds : 0.0;
-        Record.EndedSeconds = NowSeconds;
-    }
-    IssuedRecord = INDEX_NONE;
-}
-
-void FMtoULinkageSession::NoteQueuePeaks()
-{
-    Stats.InFlightPeak = FMath::Max(Stats.InFlightPeak, Issued.IsSet() ? 1 : 0);
-    Stats.PendingPeak = FMath::Max(Stats.PendingPeak, Desired.IsSet() ? 1 : 0);
-    Stats.StagedPeak = FMath::Max(Stats.StagedPeak, Staged.Num());
-}
-
 void FMtoULinkageSession::UpdateConvergence(double NowSeconds)
 {
-    if (bIssueOpen && !Issued.IsSet())
-    {
-        // The issued target was dropped without its group: a pause, cut,
-        // jump or exit cancelled it.
-        EndIssueRecord(TEXT("cancelled"), NowSeconds);
-    }
     const bool bConvergedNow = Mode == TEXT("linkage")
         && !bTransitioning
         && !Issued.IsSet()
@@ -1562,11 +1481,6 @@ void FMtoULinkageSession::UpdateConvergence(double NowSeconds)
         && NowSeconds - IssuedSeconds > FMtoUProtocol::LinkageConvergenceSeconds)
     {
         OverdueWaitSeconds = NowSeconds - IssuedSeconds;
-        if (Stats.Records.IsValidIndex(IssuedRecord) && !Stats.Records[IssuedRecord].bOverdue)
-        {
-            Stats.Records[IssuedRecord].bOverdue = true;
-            ++Stats.Overdue;
-        }
         // Not converged: the last target and the elapsed time are reported
         // instead of claiming a synchronisation that did not happen.
         Detail = FString::Printf(
@@ -1711,26 +1625,6 @@ FMtoULinkageView MtoUGetLinkageView()
         return Source->GetLinkageSession().GetView();
     }
     return FMtoULinkageView();
-}
-
-FMtoULinkageScheduleStats MtoUGetLinkageScheduleStats()
-{
-    if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
-    {
-        FMtoULinkageScheduleStats Stats = Source->GetLinkageSession().GetScheduleStats();
-        Source->GetControlQueuePeaks(Stats.OutgoingControlPeak, Stats.IncomingControlPeak);
-        return Stats;
-    }
-    return FMtoULinkageScheduleStats();
-}
-
-void MtoUResetLinkageScheduleStats()
-{
-    if (const TSharedPtr<FMtoULiveLinkSource> Source = MtoUGetActiveLinkageSource().Pin())
-    {
-        Source->GetLinkageSession().ResetScheduleStats();
-        Source->ResetControlQueuePeaks();
-    }
 }
 
 bool MtoURequestLinkageEnter(int32 ModeRevision, FString& OutError)

@@ -1737,12 +1737,6 @@ class _FakeCommands(object):
             for child in node.children:
                 found.append(child.long_name if flags.get("fullPath")
                              else child.short)
-        if flags.get("allDescendents"):
-            pending = list(node.children)
-            while pending:
-                child = pending.pop(0)
-                found.append(child.long_name if flags.get("fullPath") else child.short)
-                pending.extend(child.children)
         return found
 
     def xform(self, path, **flags):
@@ -1815,13 +1809,8 @@ class _FakeCommands(object):
         scene = self.scene
         scene.scene_at_import.append(scene.snapshots())
         namespace = flags.get("ns")
-        created = []
-        for name in scene.imported_nodes:
-            node = scene.add_node(namespace, name)
-            created.append(node.full_name)
-            # fbxmaya creates every mesh as a transform with its shape below.
-            created.append(scene.add_node(
-                namespace, name + "Shape", "mesh", parent=node).full_name)
+        created = [scene.add_node(namespace, name).full_name
+                   for name in scene.imported_nodes]
         scene.imports.append({"namespaces": set(scene.namespaces),
                               "nodes": len(scene.nodes)})
         if scene.fail_step == "import":
@@ -2096,8 +2085,7 @@ class StagedImportTest(unittest.TestCase):
         self.assertEqual(["SM_Wall"], [node.short for node in group.children])
         self.assertNotIn(container + reference.RETIRING_SUFFIX, scene.namespaces)
         self.assertNotIn(container + reference.STAGING_SUFFIX, scene.namespaces)
-        # The group, the imported transform and its mesh shape.
-        self.assertEqual(3, len(scene.namespace_members(container)))
+        self.assertEqual(2, len(scene.namespace_members(container)))
 
     def test_the_staging_namespace_is_the_one_the_report_names(self):
         scene = FakeReferenceScene()
@@ -2220,34 +2208,6 @@ class AnchorTest(unittest.TestCase):
             self.assertAlmostEqual(0.0, value, places=6)
 
 
-class AnchorDifferenceTest(unittest.TestCase):
-    """A reference fits the linkage anchor within the common-anchor tolerances."""
-
-    def test_the_same_placement_fits(self):
-        self.assertIsNone(reference.anchor_difference(D003_ANCHOR, D003_ANCHOR))
-
-    def test_a_shift_within_the_tolerance_fits(self):
-        near = ue_anchor((60.005, 40.0, 0.0), 3.0, -4.0, 37.0)
-        self.assertIsNone(reference.anchor_difference(D003_ANCHOR, near))
-
-    def test_a_moved_target_is_named_with_both_placements(self):
-        moved = ue_anchor((60.5, 40.0, 0.0), 3.0, -4.0, 37.0)
-        problem = reference.anchor_difference(D003_ANCHOR, moved)
-        self.assertIn("(60, 40, 0)", problem)
-        self.assertIn("(60.5, 40, 0)", problem)
-        self.assertIn("0.500 cm", problem)
-
-    def test_a_turned_target_is_named(self):
-        turned = ue_anchor((60.0, 40.0, 0.0), 3.0, -4.0, 37.05)
-        self.assertIn("0.050 deg", reference.anchor_difference(D003_ANCHOR, turned))
-
-    def test_an_unusable_anchor_on_either_side_does_not_fit(self):
-        self.assertIn("records no usable anchor",
-                      reference.anchor_difference({"location_cm": [0]}, D003_ANCHOR))
-        self.assertIn("names no usable anchor",
-                      reference.anchor_difference(D003_ANCHOR, None))
-
-
 class AnchorImportTest(unittest.TestCase):
     """The staged import places the container once the comparison passed."""
 
@@ -2288,41 +2248,6 @@ class AnchorImportTest(unittest.TestCase):
         self.assertTrue(any(entry.startswith("ANCHOR_ABSENT")
                             for entry in report["warnings"]))
 
-    def recorded_anchor(self, scene, report):
-        group = scene.find(report["container"]["group_path"])
-        return json.loads(group.attributes[reference.REFERENCE_ANCHOR_ATTRIBUTE])
-
-    def test_the_container_records_the_anchor_it_was_placed_for(self):
-        scene, report = self.imported(anchor=D003_ANCHOR)
-        self.assertTrue(report["accepted"], report["problems"])
-        self.assertIsNone(reference.anchor_difference(
-            self.recorded_anchor(scene, report), D003_ANCHOR))
-        with FakeBindings(scene):
-            self.assertIsNone(reference.stale_reference(D003_ANCHOR))
-            moved = reference.stale_reference(
-                ue_anchor((160.0, 40.0, 0.0), 3.0, -4.0, 37.0))
-        self.assertIn("100.000 cm", moved)
-
-    def test_a_reference_without_an_anchor_records_the_origin_frame(self):
-        scene, report = self.imported()
-        self.assertEqual(reference.IDENTITY_ANCHOR, self.recorded_anchor(scene, report))
-        with FakeBindings(scene):
-            self.assertIsNone(reference.stale_reference(
-                ue_anchor((0.0, 0.0, 0.0), 0.0, 0.0, 0.0)))
-            self.assertTrue(reference.stale_reference(D003_ANCHOR))
-
-    def test_a_reference_imported_by_an_earlier_version_is_stale(self):
-        scene, report = self.imported(anchor=D003_ANCHOR)
-        group = scene.find(report["container"]["group_path"])
-        del group.attributes[reference.REFERENCE_ANCHOR_ATTRIBUTE]
-        with FakeBindings(scene):
-            problem = reference.stale_reference(D003_ANCHOR)
-        self.assertIn("records no anchor", problem)
-
-    def test_no_reference_is_never_stale(self):
-        with FakeBindings(FakeReferenceScene()):
-            self.assertIsNone(reference.stale_reference(D003_ANCHOR))
-
     def test_a_malformed_anchor_refuses_the_import_and_changes_nothing(self):
         scene, report = self.imported(anchor=dict(D003_ANCHOR, location_cm=[1.0]))
         self.assertFalse(report["accepted"])
@@ -2351,19 +2276,6 @@ class SwapRollbackTest(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(str(self.directory), ignore_errors=True)
-
-    def test_an_import_without_geometry_keeps_the_previous_reference(self):
-        # fbxmaya reads an unreadable file as an empty scene.
-        scene = FakeReferenceScene()
-        _group, old = owned_scene(scene, node_name="SM_Old")
-        scene.imported_nodes = []
-        report = import_fixture(scene, HandoffFixture(self.directory / "handoff"))
-        self.assertFalse(report["accepted"])
-        self.assertTrue(any("FBX_IMPORT_EMPTY" in entry for entry in report["problems"]),
-                        report["problems"])
-        self.assertIs(old, scene.find(old.long_name))
-        self.assertNotIn(reference.REFERENCE_CONTAINER + reference.STAGING_SUFFIX,
-                         scene.namespaces)
 
     def test_a_failed_read_back_rolls_the_swap_back(self):
         fixture = HandoffFixture(self.directory / "handoff")
@@ -2444,20 +2356,6 @@ class ForeignNodeRefusalTest(unittest.TestCase):
         self.assertEqual(before, scene.snapshots())
         self.assertIs(foreign, scene.find("|{0}:ProductionObject".format(
             reference.REFERENCE_CONTAINER)))
-
-    def test_a_scene_node_deep_under_the_container_refuses_the_update(self):
-        # A person parented a production object under a reference mesh: it is in
-        # the scene's own namespace, so deleting the old container would take it.
-        scene = FakeReferenceScene()
-        _group, mesh = owned_scene(scene, node_name="SM_Old")
-        prop = scene.add_node("", "HeroProp", parent=mesh)
-        before = scene.snapshots()
-        with self.assertRaises(reference.ReferenceRefused) as caught:
-            self._run(scene)
-        self.assertEqual("CONTAINER_NOT_OWNED", caught.exception.code)
-        self.assertIn("HeroProp", caught.exception.detail)
-        self.assertEqual(before, scene.snapshots())
-        self.assertIs(prop, scene.find(prop.long_name))
 
     def test_a_foreign_root_node_of_the_container_name_is_refused(self):
         scene = FakeReferenceScene()
@@ -2643,17 +2541,6 @@ class ContainerRemovalTest(unittest.TestCase):
         self.assertIn(reference.REFERENCE_CONTAINER, caught.exception.detail)
         self.assertEqual(before, self.scene.snapshots())
         self.assertIs(foreign, self.scene.find("|" + reference.REFERENCE_CONTAINER))
-
-    def test_a_scene_node_deep_under_the_container_refuses_the_removal(self):
-        _group, mesh = owned_scene(self.scene, node_name="SM_Old")
-        prop = self.scene.add_node("", "HeroProp", parent=mesh)
-        before = self.scene.snapshots()
-        with self.assertRaises(reference.ReferenceRefused) as caught:
-            self._remove(self.scene)
-        self.assertEqual("CONTAINER_NOT_OWNED", caught.exception.code)
-        self.assertIn("HeroProp", caught.exception.detail)
-        self.assertEqual(before, self.scene.snapshots())
-        self.assertIs(prop, self.scene.find(prop.long_name))
 
     def test_a_refused_deletion_is_reported_not_raised(self):
         owned_scene(self.scene, node_name="SM_Old")

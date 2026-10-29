@@ -97,15 +97,6 @@ public:
     /** Current status snapshot for the panel and the editor pump. */
     FMtoULinkageView GetView() const;
 
-    /** Scheduling measurement since the session began or the last reset. */
-    const FMtoULinkageScheduleStats& GetScheduleStats() const { return Stats; }
-    void ResetScheduleStats()
-    {
-        Stats = FMtoULinkageScheduleStats();
-        bIssueOpen = false;
-        IssuedRecord = INDEX_NONE;
-    }
-
     /** Identity of the streaming session this state belongs to. */
     int32 GetSessionId() const { return SessionId; }
 
@@ -222,9 +213,6 @@ private:
     void UpdateConvergence(double NowSeconds);
     void PumpCameraTargets(double NowSeconds, bool bAskEditorNow);
     void IssueTarget(const FMtoUCameraTimeTarget& Target, double NowSeconds);
-    /** Close the measurement record of the issued target with its outcome. */
-    void EndIssueRecord(const TCHAR* Outcome, double NowSeconds);
-    void NoteQueuePeaks();
     bool IsCutChange(const FMtoUCameraTimeTarget& Left, const FMtoUCameraTimeTarget& Right) const;
     // One shared half of an entering transition: the pairing must still
     // resolve, the editor must isolate the writers, and only then does the
@@ -257,8 +245,6 @@ private:
     bool bTransitioning = false;
     double TransitionStartedSeconds = 0.0;
     bool bWritersBorrowed = false;
-    /** The takeover's common anchor, named by every linkage `mode_state`. */
-    FTransform TakeoverAnchor = FTransform::Identity;
     /** The last takeover's writers were handed back; the residual when they were not. */
     bool bWritersRestored = false;
     FString RecoveryResidual;
@@ -290,11 +276,6 @@ private:
     FString Detail;
     FString Error;
     FString ErrorCode;
-    FMtoULinkageScheduleStats Stats;
-    /** The issued target has not ended in the measurement yet. */
-    bool bIssueOpen = false;
-    /** Its record in `Stats.Records`, or INDEX_NONE once records are full. */
-    int32 IssuedRecord = INDEX_NONE;
     // Transfers this session offered, so a reference result for a handoff that
     // was never offered cannot report an outcome.
     TSet<FString> OfferedTransferIds;

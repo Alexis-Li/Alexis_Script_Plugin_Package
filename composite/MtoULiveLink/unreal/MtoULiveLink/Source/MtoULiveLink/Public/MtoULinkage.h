@@ -43,12 +43,6 @@ MTOULIVELINK_API bool MtoURequestRemoveSecondaryObject(FString& OutError);
 /** Current status snapshot for the panel and the editor pump. */
 MTOULIVELINK_API FMtoULinkageView MtoUGetLinkageView();
 
-/** Scheduling measurement of the active session (see FMtoULinkageScheduleStats). */
-MTOULIVELINK_API FMtoULinkageScheduleStats MtoUGetLinkageScheduleStats();
-
-/** Start a new measurement window in the active session. */
-MTOULIVELINK_API void MtoUResetLinkageScheduleStats();
-
 /** Enter the linkage mode; the editor must have taken over the target first. */
 MTOULIVELINK_API bool MtoURequestLinkageEnter(int32 ModeRevision, FString& OutError);
 

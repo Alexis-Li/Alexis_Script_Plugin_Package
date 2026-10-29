@@ -2059,8 +2059,7 @@ TArray<uint8> FMtoUProtocol::EncodeModeState(
     int32 ModeRevision,
     const FString& Mode,
     const FString& Control,
-    const FString& Detail,
-    const TSharedPtr<FJsonObject>& Anchor)
+    const FString& Detail)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("mode_state"));
@@ -2069,28 +2068,7 @@ TArray<uint8> FMtoUProtocol::EncodeModeState(
     Object->SetStringField(TEXT("mode"), Mode);
     Object->SetStringField(TEXT("control"), Control);
     Object->SetStringField(TEXT("detail"), Detail);
-    if (Anchor.IsValid())
-    {
-        Object->SetObjectField(TEXT("anchor"), Anchor);
-    }
     return EncodeObject(Object);
-}
-
-TSharedRef<FJsonObject> FMtoUProtocol::MakeAnchorObject(const FTransform& Placement)
-{
-    const FTransform Rigid(Placement.GetRotation(), Placement.GetLocation());
-    const FRotator Rotation = Rigid.Rotator();
-    const TSharedRef<FJsonObject> Anchor = MakeShared<FJsonObject>();
-    Anchor->SetArrayField(TEXT("location_cm"), {
-        MakeShared<FJsonValueNumber>(Rigid.GetLocation().X),
-        MakeShared<FJsonValueNumber>(Rigid.GetLocation().Y),
-        MakeShared<FJsonValueNumber>(Rigid.GetLocation().Z)});
-    const TSharedRef<FJsonObject> Degrees = MakeShared<FJsonObject>();
-    Degrees->SetNumberField(TEXT("roll"), Rotation.Roll);
-    Degrees->SetNumberField(TEXT("pitch"), Rotation.Pitch);
-    Degrees->SetNumberField(TEXT("yaw"), Rotation.Yaw);
-    Anchor->SetObjectField(TEXT("rotation_deg"), Degrees);
-    return Anchor;
 }
 
 TArray<uint8> FMtoUProtocol::EncodeCameraTime(

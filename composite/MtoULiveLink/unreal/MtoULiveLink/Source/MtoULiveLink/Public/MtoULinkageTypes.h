@@ -133,58 +133,6 @@ struct MTOULIVELINK_API FMtoULinkageView
     FString ErrorCode;
 };
 
-/** One issued linkage target and how it ended, on the game thread's monotonic clock. */
-struct MTOULIVELINK_API FMtoULinkageIssueRecord
-{
-    int32 IssueSerial = 0;
-    double DisplayFrame = 0.0;
-    double IssuedSeconds = 0.0;
-    /** When its whole group was read back complete; 0 unless `Outcome` is `applied`. */
-    double AppliedSeconds = 0.0;
-    /** When it was applied or cancelled; 0 while open. */
-    double EndedSeconds = 0.0;
-    /** `open`, `applied` or `cancelled` (a pause, cut, jump or exit). */
-    FString Outcome = TEXT("open");
-    /** Answers to this target the barrier refused; a later one may still apply. */
-    int32 FailedApplications = 0;
-    /** The target waited past the convergence window before it ended. */
-    bool bOverdue = false;
-};
-
-/**
- * Scheduling measurement of one streaming session, reset when a session
- * begins: how issued targets ended, how many waiting targets a newer one
- * replaced, and the queue peaks, so sustained playback can be measured
- * against the frozen budgets.
- */
-struct MTOULIVELINK_API FMtoULinkageScheduleStats
-{
-    static constexpr int32 MaxRecords = 20000;
-
-    int32 Issued = 0;
-    int32 Applied = 0;
-    int32 Cancelled = 0;
-    /** Refused applications; the target they answered stays issued. */
-    int32 Failed = 0;
-    /** Issued targets that waited past the convergence window. */
-    int32 Overdue = 0;
-    /** Waiting targets a newer one replaced before they were issued. */
-    int32 Coalesced = 0;
-    /** Peak count of issued targets in flight (the contract allows 1). */
-    int32 InFlightPeak = 0;
-    /** Peak count of waiting targets (the contract allows 1). */
-    int32 PendingPeak = 0;
-    /** Peak count of staged groups waiting for the game thread. */
-    int32 StagedPeak = 0;
-    /** Peak undelivered control messages towards Maya and from Maya. */
-    int32 OutgoingControlPeak = 0;
-    int32 IncomingControlPeak = 0;
-    /** Issues past `MaxRecords` are counted, not recorded. */
-    int32 DroppedRecords = 0;
-    /** Every recorded issue in order. */
-    TArray<FMtoULinkageIssueRecord> Records;
-};
-
 /**
  * Editor-side seam. The runtime asks the editor to evaluate the current
  * sequence camera/time and to take over or restore the paired target's
@@ -213,12 +161,6 @@ struct MTOULIVELINK_API FMtoULinkageHooks
      * paired target was destroyed. The runtime then ends the linkage.
      */
     TFunction<bool(FString& OutReason)> ValidateTakeover;
-    /**
-     * The common anchor of the takeover: the primary target's placement.
-     * Linkage's `mode_state` names it so Maya can tell a scene reference
-     * exported for another placement from a current one.
-     */
-    TFunction<bool(FTransform& OutAnchor)> GetAnchor;
     /** Report a new view snapshot for the panel. */
     TFunction<void(const FMtoULinkageView&)> OnViewChanged;
 };

@@ -173,17 +173,11 @@ public:
         WriteJsonFile(DriverFixture, MayaFixture.ToSharedRef());
         FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LINKAGE_DRIVER_FIXTURE"), *DriverFixture);
         FPlatformMisc::SetEnvironmentVar(TEXT("MAYA_APP_DIR"), *AppDir);
-        // A listener moved off the default port is where this Maya connects.
-        FString Port;
-        if (FParse::Value(FCommandLine::Get(), TEXT("MtoULiveLinkPort="), Port))
-        {
-            FPlatformMisc::SetEnvironmentVar(TEXT("MTOU_LIVELINK_PORT"), *Port);
-        }
         const FString Args = FString::Printf(
             TEXT("-log \"%s\" -command \"python(\\\"import runpy; runpy.run_path(r'%s')\\\")\""),
             *FPaths::Combine(EvidenceDir, TEXT("maya.log")), *MayaFixture->GetStringField(TEXT("driver")));
         Process = FPlatformProcess::CreateProc(*MayaFixture->GetStringField(TEXT("exe")), *Args,
-            true, true, false, &ProcessId, 0, nullptr, nullptr);
+            true, true, false, nullptr, 0, nullptr, nullptr);
         return Test.TestTrue(TEXT("Maya starts through the driver"), Process.IsValid());
     }
 
@@ -219,13 +213,6 @@ public:
     }
 
     bool IsRunning() { return Process.IsValid() && FPlatformProcess::IsProcRunning(Process); }
-
-    /** Working set of the Maya process this test started, in bytes; 0 when unknown. */
-    uint64 MemoryBytes() const
-    {
-        SIZE_T Bytes = 0;
-        return ProcessId != 0 && FPlatformProcess::GetApplicationMemoryUsage(ProcessId, &Bytes) ? Bytes : 0;
-    }
 
     /** Stops only the Maya process this test started. */
     void Terminate()
@@ -283,7 +270,6 @@ private:
     FString CommandPath;
     FString ResultPath;
     FProcHandle Process;
-    uint32 ProcessId = 0;
     TSharedPtr<FJsonObject> Result;
     int32 CommandId = 0;
 };

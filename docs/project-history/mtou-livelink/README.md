@@ -12,7 +12,6 @@ their test results do not automatically apply to later code.
 | 0.4.0, 2026-09-03 | Integrated through [PR #36](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/36), followed by owner C01/Topia verification. See [stock-engine acceptance](stock-engine-acceptance.md) and [Topia acceptance](topia-engine-acceptance.md). |
 | 0.5.0, 2026-09-22 | Owner accepted practical use; local tag `composite-mtou-livelink-v0.5.0`, implementation checkpoint `278e16a001037a08933e8f180c82899a2e567e8e`. No installation packages or additional host-version certification were produced. |
 | Preview workflow, 2026-10-13 | [Parent acceptance #47](issue-47-preview-workflow-acceptance.md) covers four delivered workflows and three bounded prototypes on `codex/mtou-preview-workflow`; prototype integration remains a separate task. |
-| Preview workflow integration, 2026-10-29 | [INT-01–14 acceptance](preview-workflow-integration-acceptance.md) maps the #56 joint criteria to the I-1, I-2 and I-3 baselines on `codex/mtou-preview-workflow`; not on `main`, not released. |
 
 The [joint integration proposal](../../../composite/MtoULiveLink/docs/preview-workflow-integration-plan.md)
 is tracked in [Issue #56](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/56).

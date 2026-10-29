@@ -140,11 +140,6 @@ class MayaLinkageHost(object):
             })
         return rows
 
-    def stale_reference(self, anchor):
-        """Why the scene reference does not fit the linkage anchor, or None."""
-        from . import reference
-        return reference.stale_reference(anchor)
-
     def set_origin_frame(self, frame):
         self._origin = float(frame)
 

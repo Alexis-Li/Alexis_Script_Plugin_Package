@@ -292,18 +292,14 @@ workflow requires it, and the handoff never delivers image data.
    Discarded nodes, rollback and leftovers are listed only when an import fails.
    The handoff identity, digest, space revision and budgets are in 诊断详情.
 3. **移除参考** deletes only that container; **恢复上次更新** finishes or
-   discards an interrupted update. If you parented one of your own objects under
-   the reference, the update and the removal are refused and name it: move it
-   out of the reference, then try again.
+   discards an interrupted update.
 
 The reference is placed in the same frame as the character and the linked
 camera, so it follows a moved or rotated target. The placement is the paired
 target's position when Unreal exports. Export and import again after moving or
 rotating the target, and for any reference exported by an earlier version; if
 the status line says the manifest carried no anchor, the reference sits at the
-Maya origin until you do. Camera linkage does not start while the imported
-reference belongs to another placement (场景参考属于旧的共同空间): export and
-import it again, or click **移除参考** to continue without it.
+Maya origin until you do.
 
 ## Garment model preview
 

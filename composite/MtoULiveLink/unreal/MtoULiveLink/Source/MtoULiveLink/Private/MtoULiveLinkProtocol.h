@@ -370,22 +370,13 @@ public:
         int32 SetRevision,
         bool bRestored,
         const FString& Detail);
-    /**
-     * Unreal's authority statement for the current time-control state. A
-     * linkage statement names the takeover's anchor (`MakeAnchorObject`).
-     */
+    /** Unreal's authority statement for the current time-control state. */
     static TArray<uint8> EncodeModeState(
         int32 SessionId,
         int32 ModeRevision,
         const FString& Mode,
         const FString& Control,
-        const FString& Detail,
-        const TSharedPtr<FJsonObject>& Anchor = nullptr);
-    /**
-     * A rigid placement in the shape of the handoff manifest's `world.anchor`:
-     * `location_cm[3]` and `rotation_deg{roll, pitch, yaw}`.
-     */
-    static TSharedRef<FJsonObject> MakeAnchorObject(const FTransform& Placement);
+        const FString& Detail);
     /** The current linkage target the editor evaluated from its sequence. */
     static TArray<uint8> EncodeCameraTime(
         int32 SessionId,
