@@ -54,6 +54,8 @@
   (#59)
 - A scene-reference file Maya cannot read no longer replaces the previous
   reference with an empty one. (#59)
+- Clicking **刷新预览** repeatedly while it keeps failing no longer makes the
+  Unreal editor's memory grow; each refresh frees its working copies when it ends. (#91)
 - Ending camera linkage after a locked camera or resolution-gate attribute
   stopped it no longer reports a restore failure. (#59)
 - With a second object, camera linkage no longer freezes it on an old pose after

@@ -17,9 +17,12 @@
 #include "GeometryScript/GeometryScriptTypes.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "MeshDescription.h"
+#include "Misc/ScopeExit.h"
 #include "Operations/TransferBoneWeights.h"
 #include "Rendering/SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "SkeletalMeshAttributes.h"
+#include "SkinnedAssetCompiler.h"
 #include "UDynamicMesh.h"
 
 using namespace UE::Geometry;
@@ -136,6 +139,52 @@ bool MeasureSurfaceDistances(
     OutStats.Average = Sum / Count / NormalizeLength;
     OutStats.Rms = FMath::Sqrt(SumSquares / Count) / NormalizeLength;
     return true;
+}
+
+// A refresh owns its intermediate Dynamic Meshes. Emptying them when it
+// returns frees their geometry immediately, so repeated refreshes do not
+// accumulate copies until the next GC (Issue #91).
+void ReleaseIntermediateMesh(UDynamicMesh* Mesh)
+{
+    Mesh->Reset();
+    Mesh->MarkAsGarbage();
+}
+
+// A Generated Preview the actor never received would keep its source mesh
+// description, imported model, render data and Morph deltas until GC
+// destroys it. Empty them now so late failures do not accumulate either.
+void DiscardGeneratedPreview(USkeletalMesh& Mesh)
+{
+    FSkinnedAssetCompilingManager::Get().FinishCompilation({&Mesh});
+    for (const TObjectPtr<UMorphTarget>& Morph : Mesh.GetMorphTargets())
+    {
+        if (Morph)
+        {
+            Morph->EmptyMorphLODModels();
+            Morph->MarkAsGarbage();
+        }
+    }
+    Mesh.GetMorphTargets().Empty();
+    Mesh.ReleaseResources();
+    Mesh.ReleaseResourcesFence.Wait();
+    if (FSkeletalMeshRenderData* RenderData = Mesh.GetResourceForRendering())
+    {
+        // LOD render data is reference counted; release it the way
+        // ~FSkeletalMeshRenderData does instead of deleting it through the array.
+        FSkeletalMeshLODRenderData** LODs = RenderData->LODRenderData.GetData();
+        for (int32 LODIndex = 0; LODIndex < RenderData->LODRenderData.Num(); ++LODIndex)
+        {
+            LODs[LODIndex]->Release();
+            LODs[LODIndex] = nullptr;
+        }
+        RenderData->LODRenderData.Empty();
+    }
+    if (FSkeletalMeshModel* Model = Mesh.GetImportedModel())
+    {
+        Model->LODModels.Empty();
+    }
+    Mesh.SetNumSourceModels(0);
+    Mesh.MarkAsGarbage();
 }
 
 void ObserveStage(
@@ -314,6 +363,7 @@ bool GeneratePreviewMorphs(
         BasePositions[PreviewVertexID] = PreviewMesh.GetVertex(PreviewVertexID);
     }
     UDynamicMesh* ScratchMorphMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+    ON_SCOPE_EXIT { ReleaseIntermediateMesh(ScratchMorphMesh); };
     ScratchMorphMesh->SetMesh(FDynamicMesh3(PreviewMesh));
     for (const TObjectPtr<UMorphTarget>& DriverMorph : DriverAsset.GetMorphTargets())
     {
@@ -488,6 +538,11 @@ FMtoUPreviewPreparationResult MtoUPreparePreview(
     ObserveStage(Result, EMtoUPreviewBuildStage::GeometryConversion, OnStage);
     UDynamicMesh* DriverDynamic = NewObject<UDynamicMesh>(GetTransientPackage());
     UDynamicMesh* PreviewDynamic = NewObject<UDynamicMesh>(GetTransientPackage());
+    ON_SCOPE_EXIT
+    {
+        ReleaseIntermediateMesh(DriverDynamic);
+        ReleaseIntermediateMesh(PreviewDynamic);
+    };
     FGeometryScriptCopyMeshFromAssetOptions ReadOptions;
     ReadOptions.bApplyBuildSettings = false;
     ReadOptions.bRequestTangents = true;
@@ -623,6 +678,15 @@ FMtoUPreviewPreparationResult MtoUPreparePreview(
         return Result;
     }
     USkeletalMesh* Generated = NewObject<USkeletalMesh>(&Owner, NAME_None, RF_Transient);
+    // Only a successful result hands the Generated Preview to the actor; every
+    // failure below discards it.
+    ON_SCOPE_EXIT
+    {
+        if (!Result.bSucceeded)
+        {
+            DiscardGeneratedPreview(*Generated);
+        }
+    };
     Generated->SetSkeleton(Driver->GetSkeleton());
     Generated->SetRefSkeleton(Driver->GetRefSkeleton());
     Generated->CalculateInvRefMatrices();
