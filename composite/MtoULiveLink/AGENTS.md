@@ -95,6 +95,10 @@ Before 2026-10-19 these tests used the `MtoULiveLink.` prefix with the same
 remaining path, and the `MtoUOptIn.Actor.*` tests kept that prefix until
 2026-10-28; acceptance records use the old names.
 
+A test editor can run beside a person's own: `-MtoULiveLinkPort=<n>` moves
+the Unreal listener off 54321, the two Maya GUI tests pass it to the Maya they
+start, and `MTOU_LIVELINK_PORT` does the same for any other Maya.
+
 `prototypes/` is frozen verification scaffolding. Its Unreal plugins are
 disabled in `unreal/ToolsLab.uproject`, and product work does not run its tests.
 
