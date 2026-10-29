@@ -1803,15 +1803,16 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
     Binding->PreviewStaticMesh = Preview;
     Actor->SetBinding(Binding);
 
-    // Live counts what still holds memory now; Alive also counts objects
-    // that are only marked as garbage, so a forced GC must remove them.
+    // The census counts every refresh-created object that still exists,
+    // including garbage-marked ones, and the data each one still holds, so
+    // data left in an object that is only waiting for GC is detected.
     struct FCensus
     {
-        int32 LiveMeshes = 0;
-        int32 AliveMeshes = 0;
-        int64 LiveMeshVertices = 0;
-        int32 LiveGenerated = 0;
-        int32 AliveGenerated = 0;
+        int32 Meshes = 0;
+        int64 MeshVertices = 0;
+        int32 Generated = 0;
+        /** Vertices and Morph deltas held by actor-owned meshes other than the current preview. */
+        int64 GeneratedData = 0;
     };
     const auto Census = [Actor]()
     {
@@ -1820,20 +1821,52 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
         {
             if (It->GetOuter() == GetTransientPackage())
             {
-                ++Result.AliveMeshes;
-                if (IsValid(*It))
+                ++Result.Meshes;
+                Result.MeshVertices += It->GetMeshRef().VertexCount();
+            }
+        }
+        const USkeletalMesh* Current = Actor->GetPreviewReadiness().GeneratedPreview;
+        for (TObjectIterator<USkeletalMesh> It; It; ++It)
+        {
+            if (It->GetOuter() != Actor)
+            {
+                continue;
+            }
+            ++Result.Generated;
+            if (*It == Current)
+            {
+                continue;
+            }
+            if (const FSkeletalMeshModel* Model = It->GetImportedModel())
+            {
+                for (const FSkeletalMeshLODModel& LOD : Model->LODModels)
                 {
-                    ++Result.LiveMeshes;
-                    Result.LiveMeshVertices += It->GetMeshRef().VertexCount();
+                    Result.GeneratedData += LOD.NumVertices;
+                }
+            }
+            for (int32 LODIndex = 0; LODIndex < It->GetNumSourceModels(); ++LODIndex)
+            {
+                if (It->HasMeshDescription(LODIndex))
+                {
+                    Result.GeneratedData += It->GetMeshDescription(LODIndex)->Vertices().Num();
+                }
+            }
+            if (const FSkeletalMeshRenderData* RenderData = It->GetResourceForRendering())
+            {
+                for (const FSkeletalMeshLODRenderData& LOD : RenderData->LODRenderData)
+                {
+                    Result.GeneratedData += LOD.GetNumVertices();
                 }
             }
         }
-        for (TObjectIterator<USkeletalMesh> It; It; ++It)
+        for (TObjectIterator<UMorphTarget> It; It; ++It)
         {
-            if (It->GetOuter() == Actor)
+            if (It->GetOuter() && It->GetOuter()->GetOuter() == Actor && It->GetOuter() != Current)
             {
-                ++Result.AliveGenerated;
-                Result.LiveGenerated += IsValid(*It) ? 1 : 0;
+                for (const FMorphTargetLODModel& LOD : It->GetMorphLODModels())
+                {
+                    Result.GeneratedData += LOD.Vertices.Num();
+                }
             }
         }
         return Result;
@@ -1841,9 +1874,8 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
     const auto Describe = [](const FCensus& Value)
     {
         return FString::Printf(
-            TEXT("live meshes %d (%lld vertices), alive meshes %d, live generated %d, alive generated %d"),
-            Value.LiveMeshes, Value.LiveMeshVertices, Value.AliveMeshes,
-            Value.LiveGenerated, Value.AliveGenerated);
+            TEXT("%d meshes (%lld vertices), %d generated (%lld held vertices and deltas)"),
+            Value.Meshes, Value.MeshVertices, Value.Generated, Value.GeneratedData);
     };
     const auto UsedPhysicalMiB = []()
     {
@@ -1854,6 +1886,23 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     const FCensus Baseline = Census();
     AddInfo(TEXT("baseline: ") + Describe(Baseline));
+
+    // Control: data in garbage-marked objects counts until GC destroys them.
+    UDynamicMesh* ControlMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+    ControlMesh->ResetToCube();
+    ControlMesh->MarkAsGarbage();
+    USkeletalMesh* ControlGenerated = DuplicateObject<USkeletalMesh>(Driver, Actor);
+    ControlGenerated->MarkAsGarbage();
+    const FCensus Control = Census();
+    AddInfo(TEXT("garbage-marked control: ") + Describe(Control));
+    TestTrue(TEXT("the census counts data held by garbage-marked objects"),
+        Control.MeshVertices > Baseline.MeshVertices
+        && Control.GeneratedData > Baseline.GeneratedData);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus ControlCollected = Census();
+    TestTrue(TEXT("GC removes the garbage-marked control"),
+        ControlCollected.Meshes == Baseline.Meshes
+        && ControlCollected.Generated == Baseline.Generated);
 
     struct FFailureCase
     {
@@ -1904,13 +1953,12 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
             TEXT("%s x%d: on return %s; after GC %s; used physical %.1f -> %.1f -> %.1f MiB"),
             Case.Name, Repeats, *Describe(Returned), *Describe(Collected),
             MemoryBefore, MemoryReturned, UsedPhysicalMiB()));
-        TestTrue(FString::Printf(TEXT("%s releases its intermediate geometry on return"), Case.Name),
-            Returned.LiveMeshes == Baseline.LiveMeshes
-            && Returned.LiveMeshVertices == Baseline.LiveMeshVertices
-            && Returned.LiveGenerated == Baseline.LiveGenerated);
+        TestTrue(FString::Printf(TEXT("%s holds no mesh data after it returns"), Case.Name),
+            Returned.MeshVertices == Baseline.MeshVertices
+            && Returned.GeneratedData == Baseline.GeneratedData);
         TestTrue(FString::Printf(TEXT("%s leaves no object after GC"), Case.Name),
-            Collected.AliveMeshes == Baseline.AliveMeshes
-            && Collected.AliveGenerated == Baseline.AliveGenerated);
+            Collected.Meshes == Baseline.Meshes
+            && Collected.Generated == Baseline.Generated);
     }
 
     // A Validation failure is a quality verdict that the default thresholds
@@ -1931,10 +1979,10 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("a Validation failure releases the built Generated Preview"),
         !Unsafe.bSucceeded
         && Unsafe.FailureStage == EMtoUPreviewBuildStage::Validation
-        && UnsafeReturned.LiveMeshVertices == Baseline.LiveMeshVertices
-        && UnsafeReturned.LiveGenerated == Baseline.LiveGenerated
-        && UnsafeCollected.AliveMeshes == Baseline.AliveMeshes
-        && UnsafeCollected.AliveGenerated == Baseline.AliveGenerated);
+        && UnsafeReturned.MeshVertices == Baseline.MeshVertices
+        && UnsafeReturned.GeneratedData == Baseline.GeneratedData
+        && UnsafeCollected.Meshes == Baseline.Meshes
+        && UnsafeCollected.Generated == Baseline.Generated);
 
     // Success then success keeps only the latest Generated Preview.
     const FMtoUPreviewReadiness First = FMtoUPreviewPreparation::RefreshActor(*Actor);
@@ -1949,9 +1997,10 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
         && First.GeneratedPreview != Second.GeneratedPreview
         && Actor->GetPreviewReadiness().GeneratedPreview == Second.GeneratedPreview
         && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
-        && SuccessReturned.LiveMeshVertices == Baseline.LiveMeshVertices
-        && SuccessCollected.AliveMeshes == Baseline.AliveMeshes
-        && SuccessCollected.AliveGenerated == Baseline.AliveGenerated + 1);
+        && SuccessReturned.MeshVertices == Baseline.MeshVertices
+        && SuccessCollected.Meshes == Baseline.Meshes
+        && SuccessCollected.Generated == Baseline.Generated + 1
+        && SuccessCollected.GeneratedData == Baseline.GeneratedData);
 
     // Success then failure releases the committed preview and shows the Driver.
     Binding->DriverGarmentSlotOverride = {FName(TEXT("M_NoSuchSlot"))};
@@ -1964,8 +2013,8 @@ bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
         && AfterSuccess.GeneratedPreview == nullptr
         && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver
-        && AfterSuccessCollected.AliveMeshes == Baseline.AliveMeshes
-        && AfterSuccessCollected.AliveGenerated == Baseline.AliveGenerated);
+        && AfterSuccessCollected.Meshes == Baseline.Meshes
+        && AfterSuccessCollected.Generated == Baseline.Generated);
 
     World->DestroyWorld(false);
     return true;
