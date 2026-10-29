@@ -483,6 +483,21 @@ def census():
             "session_open": CONTROLLER is not None and CONTROLLER._session is not None}
 
 
+def scene_state():
+    """What linkage captures and must put back: time, range, gate, cameras, undo."""
+    from mtou_livelink.camera import RESOLUTION_PLUGS, model_panels, panel_camera
+    return {
+        "time": cmds.currentTime(query=True),
+        "range": [cmds.playbackOptions(query=True, **{flag: True})
+                  for flag in ("minTime", "maxTime", "animationStartTime",
+                               "animationEndTime")],
+        "gate": dict((plug, cmds.getAttr(plug)) for plug in RESOLUTION_PLUGS),
+        "panels": dict((panel, panel_camera(panel)) for panel in model_panels()),
+        "undo": bool(cmds.undoInfo(query=True, state=True)),
+        "link_camera": bool(cmds.objExists("MtoU_LinkCamera")),
+    }
+
+
 def open_panel():
     """The public entry again, then the role and the connection."""
     global CONTROLLER
@@ -573,6 +588,8 @@ def run_command(command):
         RESULT["reference_nodes"] = reference_nodes(command.get("name") or "")
     elif action == "resources":
         RESULT["resources"] = census()
+    elif action == "scene_state":
+        RESULT["scene_state"] = scene_state()
     elif action == "close_panel":
         # The panel window's own close, as its title bar does.
         cmds.deleteUI("MtoULiveLinkWindow", window=True)

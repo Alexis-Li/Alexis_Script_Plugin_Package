@@ -546,15 +546,20 @@ void FMtoULiveLinkSource::Update()
     // A display of the set evaluates only its subject: a Sequencer restoring
     // what a muted track saved before the takeover (an earlier anim instance
     // with its evaluation stopped) would otherwise freeze it on an old frame.
-    for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
+    // Only while the takeover holds the writers: once they are handed back,
+    // the restored animation owns the display again.
+    if (LinkageSession.GetView().bTakeoverHeld)
     {
-        if (AMtoULiveLinkActor* Participant = Actor.Get())
+        for (const TWeakObjectPtr<AMtoULiveLinkActor>& Actor : ParticipatingActors)
         {
-            if (const int32 Restored = Participant->RestoreLiveLinkEvaluation())
+            if (AMtoULiveLinkActor* Participant = Actor.Get())
             {
-                UE_LOG(LogMtoULiveLinkSource, Log,
-                    TEXT("%s: %d display(s) evaluate the Live Link subject again."),
-                    *Participant->GetName(), Restored);
+                if (const int32 Restored = Participant->RestoreLiveLinkEvaluation())
+                {
+                    UE_LOG(LogMtoULiveLinkSource, Log,
+                        TEXT("%s: %d display(s) evaluate the Live Link subject again."),
+                        *Participant->GetName(), Restored);
+                }
             }
         }
     }

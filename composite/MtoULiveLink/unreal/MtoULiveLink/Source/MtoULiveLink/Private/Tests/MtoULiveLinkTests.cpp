@@ -13246,6 +13246,14 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     }
     TestEqual(TEXT("Maya restores its own state, so Unreal keeps the takeover"),
         Hooks.RestoreCalls, 0);
+    // Realtime under the kept takeover still streams into the set's displays.
+    if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(PrimaryDisplay->GetAnimInstance()))
+    {
+        Stopped->EnableLiveLinkEvaluation(false);
+        Source->Update();
+        TestTrue(TEXT("the kept takeover evaluates the subject again in realtime"),
+            Stopped->GetEnableLiveLinkEvaluation());
+    }
 
     TestTrue(TEXT("entering linkage again is accepted"), MtoURequestLinkageEnter(3, EnterError));
     const TArray<uint8> ModeConfirm = Packet(
@@ -13265,6 +13273,16 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
         Source->Update();
         return !MtoUGetLinkageView().bTransitioning;
     });
+    // The restored writer takes the display back from Live Link, as a
+    // restored Level Sequence or animation does.
+    FMtoULinkageHooks HandBackHooks = Hooks.Hooks;
+    HandBackHooks.RestoreTarget = [&Hooks, PrimaryDisplay](FString& OutError, FString& OutErrorCode)
+    {
+        const bool bRestored = Hooks.Hooks.RestoreTarget(OutError, OutErrorCode);
+        PrimaryDisplay->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+        return bRestored;
+    };
+    MtoUSetLinkageHooks(HandBackHooks);
     FString EndError;
     TestTrue(TEXT("ending the preview is accepted"),
         MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
@@ -13272,6 +13290,13 @@ bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
     const FMtoULinkageView EndedView = MtoUGetLinkageView();
     TestEqual(TEXT("the ended linkage reports realtime"), EndedView.Mode, FString(TEXT("realtime")));
     Pump();
+    for (int32 Update = 0; Update < 3; ++Update)
+    {
+        Source->Update();
+    }
+    TestEqual(TEXT("after the end the restored writer keeps the display"),
+        static_cast<int32>(PrimaryDisplay->GetAnimationMode()),
+        static_cast<int32>(EAnimationMode::AnimationSingleNode));
     TestTrue(TEXT("realtime gives the primary display its own tick back"),
         PrimaryDisplay->IsComponentTickEnabled());
     TestTrue(TEXT("realtime gives the part its own tick back"),
@@ -13634,6 +13659,18 @@ bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("no writer stays borrowed"), LostView.bTakeoverHeld);
     TestEqual(TEXT("the borrowed writers were restored once"),
         Hooks.RestoreCalls, RestoresBeforeLoss + 1);
+    // The writer handed back after a failed exit keeps the display.
+    if (USkeletalMeshComponent* Display = Actor->GetSkeletalMeshComponent())
+    {
+        Display->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+        for (int32 Update = 0; Update < 3; ++Update)
+        {
+            Source->Update();
+        }
+        TestEqual(TEXT("after a failed exit the restored writer keeps the display"),
+            static_cast<int32>(Display->GetAnimationMode()),
+            static_cast<int32>(EAnimationMode::AnimationSingleNode));
+    }
     TestTrue(TEXT("the stale synchronisation is dropped"),
         LostView.AppliedEvalId.IsEmpty() && !LostView.bConverged);
 

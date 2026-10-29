@@ -293,8 +293,9 @@ workflow requires it, and the handoff never delivers image data.
    The handoff identity, digest, space revision and budgets are in 诊断详情.
 3. **移除参考** deletes only that container; **恢复上次更新** finishes or
    discards an interrupted update. If you parented one of your own objects under
-   the reference, the update and the removal are refused and name it: move it
-   out of the reference, then try again.
+   the reference, or created one in its `MtoU_UE_SceneRef` namespace, the update
+   and the removal are refused and name it: move it out of the reference and that
+   namespace, then try again.
 
 The reference is placed in the same frame as the character and the linked
 camera, so it follows a moved or rotated target. The placement is the paired

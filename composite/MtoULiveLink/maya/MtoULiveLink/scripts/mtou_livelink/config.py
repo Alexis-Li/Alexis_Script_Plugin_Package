@@ -129,6 +129,10 @@ REFERENCE_MARK_VALUE = "mtou-scene-ref-container/1"
 # target moved cannot enter linkage as if it were current.
 REFERENCE_ANCHOR_ATTRIBUTE = "mtouSceneRefAnchor"
 
+# The UUIDs of every node one import created, so cleanup deletes only those:
+# a namespace alone does not prove where a node came from.
+REFERENCE_INVENTORY_ATTRIBUTE = "mtouSceneRefNodes"
+
 # A reference matches the linkage anchor within the common-anchor tolerances.
 REFERENCE_ANCHOR_TOLERANCE_CM = 0.01
 
