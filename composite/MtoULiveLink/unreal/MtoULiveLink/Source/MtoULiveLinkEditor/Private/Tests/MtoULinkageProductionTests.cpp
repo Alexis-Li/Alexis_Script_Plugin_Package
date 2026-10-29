@@ -1731,7 +1731,8 @@ private:
      * what the tool holds (live OpenMaya callbacks counted at registration,
      * scriptJobs, Python threads, open sockets, MtoU nodes and windows) is the
      * baseline; `lifecycle.cycles` rounds of connect, linkage and 结束预览,
-     * closing and reopening the panel, replacing the scene and a restore that
+     * closing and reopening the panel, replacing the scene, closing the panel
+     * or replacing the scene in the middle of linkage, and a restore that
      * cannot delete the tool's camera must each return to it.
      */
     void AddLifecycle()
@@ -1775,6 +1776,14 @@ private:
                 return LifecycleCycle(TEXT("scene")) && CompareCensus(FString::Printf(TEXT("scene %d"), Index));
             });
         }
+        Add(TEXT("[lifecycle] the panel closes in the middle of linkage"), 300.0, [this]()
+        {
+            return LifecycleCycle(TEXT("panel_live")) && CompareCensus(TEXT("panel closed during linkage"));
+        });
+        Add(TEXT("[lifecycle] the scene is replaced in the middle of linkage"), 600.0, [this]()
+        {
+            return LifecycleCycle(TEXT("scene_live")) && CompareCensus(TEXT("scene replaced during linkage"));
+        });
         Add(TEXT("[lifecycle] a restore that cannot delete the tool camera reports it"), 300.0, [this]()
         {
             return LifecycleCycle(TEXT("recovery")) && CompareCensus(TEXT("after the reported residual was removed"));
@@ -1822,13 +1831,18 @@ private:
      * `cycle`: 镜头联动, 结束预览, 断开, 连接. `panel`: the same linkage, then the
      * panel closes (the session ends) and `run()` opens it again and connects.
      * `scene`: a new scene replaces the open one, then the fixture scene is
-     * opened again and connected. `recovery`: the tool's camera is locked
+     * opened again and connected. `panel_live` / `scene_live`: the panel
+     * closes, or a new scene replaces the open one, while linkage is active,
+     * without leaving it first. `recovery`: the tool's camera is locked
      * before 结束预览, its residual must be reported, then the person unlocks
      * and deletes it and reconnects.
      */
     bool LifecycleCycle(const FString& Kind)
     {
         const bool bWithLinkage = Kind != TEXT("scene");
+        const bool bInterrupted = Kind == TEXT("panel_live") || Kind == TEXT("scene_live");
+        const bool bPanel = Kind == TEXT("panel") || Kind == TEXT("panel_live");
+        const bool bScene = Kind == TEXT("scene") || Kind == TEXT("scene_live");
         switch (LifecyclePhase)
         {
         case 0:
@@ -1837,16 +1851,55 @@ private:
                 ++LifecyclePhase;
                 return false;
             }
+            if (bInterrupted && !LiveStateBefore.IsValid())
+            {
+                // What linkage captures, read before it starts.
+                if (LifecycleId < 0)
+                {
+                    LifecycleId = SendMaya(TEXT("scene_state"));
+                    return false;
+                }
+                if (!MayaAcked(LifecycleId))
+                {
+                    return false;
+                }
+                LifecycleId = -1;
+                LiveStateBefore = MayaResult->GetObjectField(TEXT("scene_state"));
+                return false;
+            }
             return LifecycleSend(TEXT("enter"), FString(), [this]() { return LinkageEntered(); });
         case 1:
             if (Kind == TEXT("recovery"))
             {
                 return LifecycleSend(TEXT("lock_link_camera"), FString(), []() { return true; });
             }
+            if (bInterrupted)
+            {
+                // Linkage has applied a target and holds Maya's state, so the
+                // interruption has something to restore.
+                if (LifecycleId < 0)
+                {
+                    const FMtoULinkageView View = MtoUGetLinkageView();
+                    bool bCamera = false;
+                    if (!View.bConverged || View.AppliedEvalId.IsEmpty()
+                        || !MayaResult->TryGetBoolField(TEXT("link_camera_exists"), bCamera) || !bCamera)
+                    {
+                        return false;
+                    }
+                }
+                return LifecycleSend(TEXT("scene_state"), FString(), [this]()
+                {
+                    const FString During = DescribeCensus(MayaResult->GetObjectField(TEXT("scene_state")));
+                    Log(TEXT("[lifecycle] during linkage ") + During);
+                    Test->TestNotEqual(TEXT("[lifecycle] linkage changed what it captured"),
+                        During, DescribeCensus(LiveStateBefore));
+                    return true;
+                });
+            }
             ++LifecyclePhase;
             return false;
         case 2:
-            if (!bWithLinkage)
+            if (!bWithLinkage || bInterrupted)
             {
                 ++LifecyclePhase;
                 return false;
@@ -1872,11 +1925,23 @@ private:
                 Test->TestTrue(TEXT("[lifecycle] Unreal still handed every writer back"),
                     WritersMuted(false, TEXT("[lifecycle] after the failed restore")));
             }
-            const FString Action = Kind == TEXT("panel") ? TEXT("close_panel")
-                : Kind == TEXT("scene") ? TEXT("new_scene") : TEXT("disconnect");
-            return LifecycleSend(Action, FString(), [this]() { return !MayaSessionOpen(); });
+            const FString Action = bPanel ? TEXT("close_panel")
+                : bScene ? TEXT("new_scene") : TEXT("disconnect");
+            return LifecycleSend(Action, FString(), [this]()
+            {
+                const FMtoULinkageView View = MtoUGetLinkageView();
+                return !MayaSessionOpen() && View.Mode == TEXT("realtime") && !View.bTakeoverHeld;
+            });
         }
         case 4:
+            if (bInterrupted)
+            {
+                return LifecycleSend(TEXT("scene_state"), FString(), [this, bPanel]()
+                {
+                    CheckInterruptedRestore(bPanel);
+                    return true;
+                });
+            }
             if (Kind == TEXT("recovery"))
             {
                 return LifecycleSend(TEXT("lock_link_camera"), TEXT("unlock"), []() { return true; });
@@ -1894,8 +1959,8 @@ private:
             return false;
         case 5:
         {
-            const FString Action = Kind == TEXT("panel") ? TEXT("open_panel")
-                : Kind == TEXT("scene") ? TEXT("reopen_scene") : TEXT("connect");
+            const FString Action = bPanel ? TEXT("open_panel")
+                : bScene ? TEXT("reopen_scene") : TEXT("connect");
             return LifecycleSend(Action, FString(), [this]() { return MayaConnected(); });
         }
         case 6:
@@ -1909,6 +1974,48 @@ private:
             LifecycleSamples.Add(MakeShared<FJsonValueObject>(LifecycleLastCensus.ToSharedRef()));
             return true;
         }
+    }
+
+    /**
+     * After the panel closed, or the scene was replaced, in the middle of
+     * linkage: Unreal handed every writer back and Maya reports no residual.
+     * With the panel closed the same scene must hold what linkage captured;
+     * a replaced scene keeps none of it, so only the session-wide undo state
+     * and the absent tool camera are compared.
+     */
+    void CheckInterruptedRestore(bool bPanel)
+    {
+        const FString Tag = bPanel ? TEXT("[lifecycle] panel closed during linkage: ")
+                                   : TEXT("[lifecycle] scene replaced during linkage: ");
+        Test->TestTrue(*(Tag + TEXT("Unreal handed every writer back")),
+            WritersMuted(false, *(Tag + TEXT("writers"))));
+        const TSharedPtr<FJsonObject> Status = MayaStatus();
+        const TArray<TSharedPtr<FJsonValue>>* Records = nullptr;
+        FString Residual;
+        if (Status.IsValid() && Status->TryGetArrayField(TEXT("recovery_records"), Records))
+        {
+            for (const TSharedPtr<FJsonValue>& Record : *Records)
+            {
+                Residual += Record->AsString() + TEXT("; ");
+            }
+        }
+        Test->TestTrue(*(Tag + TEXT("Maya reports no restore residual: ") + Residual), Residual.IsEmpty());
+        const TSharedPtr<FJsonObject> After = MayaResult->GetObjectField(TEXT("scene_state"));
+        const FString Before = DescribeCensus(LiveStateBefore);
+        const FString Now = DescribeCensus(After);
+        Log(Tag + TEXT("before ") + Before);
+        Log(Tag + TEXT("after ") + Now);
+        if (bPanel)
+        {
+            Test->TestEqual(*(Tag + TEXT("time, range, gate, cameras, undo and tool camera are restored")), Now, Before);
+        }
+        else
+        {
+            Test->TestEqual(*(Tag + TEXT("undo is restored")),
+                After->GetBoolField(TEXT("undo")), LiveStateBefore->GetBoolField(TEXT("undo")));
+            Test->TestFalse(*(Tag + TEXT("no tool camera is left")), After->GetBoolField(TEXT("link_camera")));
+        }
+        LiveStateBefore.Reset();
     }
 
     static FString DescribeCensus(const TSharedPtr<FJsonObject>& Census)
@@ -4008,6 +4115,7 @@ private:
     // Lifecycle census (INT-09).
     int32 LifecyclePhase = 0, LifecycleId = -1;
     TSharedPtr<FJsonObject> LifecycleBaseline, LifecycleLastCensus, LifecycleDisconnected;
+    TSharedPtr<FJsonObject> LiveStateBefore;
     TArray<TSharedPtr<FJsonValue>> LifecycleSamples;
     // Sustained playback (INT-10).
     int32 SustainedPhase = 0;
