@@ -7,24 +7,9 @@
     {
       "Name": "MtoULiveLink",
       "Enabled": true
-    },
-    {
-      "Name": "MtoUCameraSyncPrototype",
-      "Enabled": false
-    },
-    {
-      "Name": "MtoUSceneRefPrototype",
-      "Enabled": false
-    },
-    {
-      "Name": "MtoUMultiSubjectPrototype",
-      "Enabled": false
     }
   ],
   "AdditionalPluginDirectories": [
-    "../composite/MtoULiveLink/unreal",
-    "../composite/MtoULiveLink/prototypes/camera-sync/unreal",
-    "../composite/MtoULiveLink/prototypes/scene-reference/unreal",
-    "../composite/MtoULiveLink/prototypes/multi-subject/unreal"
+    "../composite/MtoULiveLink/unreal"
   ]
 }
