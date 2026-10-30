@@ -234,6 +234,11 @@ class LinkageSession(object):
         self._issued = None
         self._sample_serial = 0
         self._issued_sample_serial = 0
+        # The target Unreal currently asks for and the first sample Maya sent
+        # for it: only a completed group from that sample on answers it. A
+        # resample after a refusal keeps both; a new target or set starts over.
+        self._request = None
+        self._request_first_sample = 0
         # The latest complete application; a refused group never replaces it.
         self._applied = None
         self._applied_at = None
@@ -303,6 +308,10 @@ class LinkageSession(object):
             self._object_ids = tuple(object_ids)
             self._removing = False
             self._issued = None
+            # The old set's results answer nothing the new set is asked for;
+            # the latest complete application stays what Unreal last showed.
+            self._request = None
+            self._apply_failure = None
             self._detail = "对象集合已更新（{0} 个对象）".format(len(self._object_ids))
         self._emit(LinkageEvent(
             "set", mode=self.mode(), control=self._control,
@@ -846,6 +855,9 @@ class LinkageSession(object):
             sample_serial = self._sample_serial
             self._issued = target
             self._issued_sample_serial = sample_serial
+            if target is not self._request:
+                self._request = target
+                self._request_first_sample = sample_serial
             self._detail = "已采样 {0}".format(target.eval_id)
         message = make_group_message(
             self._session_id, set_revision, self._mode_revision,
@@ -886,7 +898,9 @@ class LinkageSession(object):
         """Seconds the current target has been waiting for an applied result.
 
         A target Unreal refused waits to be sampled again and keeps the time it
-        was received, so its retries count toward convergence.
+        was received, so its retries count toward convergence. Only a group
+        completed for this request answers it: an earlier success of the same
+        evaluation, for example by the set before a removal, does not.
         """
         with self._lock:
             target = self._issued
@@ -894,8 +908,11 @@ class LinkageSession(object):
                 target = self._pending
             if target is None:
                 return 0.0
-            if self._applied is not None \
-                    and self._applied.get("eval_id") == target.eval_id:
+            applied = self._applied
+            if applied is not None and target is self._request \
+                    and applied.get("eval_id") == target.eval_id \
+                    and (exact_int(applied.get("sample_serial")) or 0) \
+                    >= self._request_first_sample:
                 return 0.0
             return self._clock() - target.received
 

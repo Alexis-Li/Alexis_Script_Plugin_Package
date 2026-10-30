@@ -47,6 +47,10 @@
 
 ### Fixed
 
+- A scene reference whose Unreal actor names contain Chinese or other non-ASCII
+  text now imports into Maya instead of being refused as changed. (#56)
+- Camera linkage no longer shows 同步正常 while Unreal refuses a pose, including
+  right after **移除副对象**; Maya shows 应用失败 and retries. (#56)
 - Camera linkage no longer starts with a scene reference exported before the
   target moved; Maya asks you to export it again or remove it. (#59)
 - Updating or removing the scene reference no longer deletes your own objects

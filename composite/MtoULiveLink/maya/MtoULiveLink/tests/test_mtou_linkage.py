@@ -432,6 +432,42 @@ class LinkageEvidenceTests(unittest.TestCase):
         self.assertTrue(status.converged)
         self.assertIsNone(status.apply_failure)
 
+    def test_the_old_sets_success_does_not_answer_the_new_set(self):
+        # Paused at one frame with two objects, the second object is removed:
+        # Unreal issues the same evaluation again for the new set.
+        instance, host, session, events = build()
+        clock = {"now": 0.0}
+        instance = mtou_linkage.LinkageSession(
+            host, session, on_event=events.append, clock=lambda: clock["now"],
+            object_ids=("character", "secondary"))
+        instance.set_session_id(5)
+        instance.enter(1)
+        instance.offer_target(camera_time())
+        instance.pump()
+        instance.note_applied(applied_message(sample_serial=1))
+        self.assertTrue(instance.status().converged)
+        self.assertTrue(instance.adopt_set(2, ("character",)))
+        instance.offer_target(camera_time(eval_serial=2, set_revision=2))
+        instance.pump()
+        clock["now"] = 5.0
+        self.assertAlmostEqual(5.0, instance.wait_seconds())
+        self.assertTrue(instance.convergence_overdue())
+        # The old set's frame stays the latest complete application.
+        self.assertEqual(1, instance.status().applied_sample_serial)
+        # A refusal and its retry keep counting from the new request.
+        instance.note_applied(applied_message(sample_serial=2, applied=False,
+                                              reason="display busy"))
+        instance.pump()
+        clock["now"] = 8.0
+        self.assertAlmostEqual(8.0, instance.wait_seconds())
+        self.assertEqual("display busy", instance.status().apply_failure)
+        instance.note_applied(applied_message(sample_serial=3))
+        self.assertEqual(0.0, instance.wait_seconds())
+        status = instance.status()
+        self.assertTrue(status.converged)
+        self.assertIsNone(status.apply_failure)
+        self.assertEqual(3, status.applied_sample_serial)
+
     def test_a_newer_waiting_target_goes_before_the_refused_one(self):
         self.instance.offer_target(camera_time())
         self.instance.pump()
