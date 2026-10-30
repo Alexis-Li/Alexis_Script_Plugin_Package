@@ -219,8 +219,10 @@ comparison work without it.
    镜头联动中 · Unreal 控制时间 · 同步正常. When Maya cannot keep up, the line
    says Maya 跟不上 with the lag; pause the Sequencer to let Maya catch up, or
    close programs that load the machine. If it happens often, see
-   [Common problems](#common-problems). A lagging pose is never reported as
-   synchronised. The evaluation, sample and revision read-back stays in Maya's
+   [Common problems](#common-problems). When Unreal cannot display a pose
+   completely, Maya's line says 应用失败 and Maya retries on its own; if it
+   persists, read the reason in Maya's 诊断详情. A lagging or refused pose is
+   never reported as synchronised. The evaluation, sample and revision read-back stays in Maya's
    诊断详情 and Unreal's **高级设置与诊断**, ready for **复制完整诊断**.
 4. **返回实时** restores Maya's timeline, view and gate and keeps Maya paused
    while Unreal keeps its takeover; user playback resumes in Maya. **结束预览**

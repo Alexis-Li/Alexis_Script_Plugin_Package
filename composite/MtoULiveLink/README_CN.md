@@ -174,8 +174,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_mtou_topia
    跟随 Sequence 时间与求值相机，并回传角色的完整姿势。
 3. 两端都用一行状态显示联动情况，例如“镜头联动中 · Unreal 控制时间 · 同步正常”。
    Maya 跟不上时会显示“Maya 跟不上”和滞后时间；可暂停 Sequencer 等待 Maya 追上，
-   或关闭占用性能的程序；经常出现时见[常见问题](#常见问题)。滞后的姿势不会被报成
-   已同步。求值、样本与 revision 等读回值保留在 Maya 的诊断详情和 Unreal 的
+   或关闭占用性能的程序；经常出现时见[常见问题](#常见问题)。Unreal 无法完整显示
+   某个姿势时，Maya 显示“应用失败”并自动重试；持续出现时在 Maya 的诊断详情中查看
+   原因。滞后或被拒绝的姿势不会被报成已同步。求值、样本与 revision 等读回值保留在 Maya 的诊断详情和 Unreal 的
    **高级设置与诊断** 中，可用 **复制完整诊断** 一并复制。
 4. **返回实时** 会恢复 Maya 的时间轴、视图与门，并保持 Maya 暂停，Unreal 继续
    保持接管；Maya 播放由用户自行恢复。**结束预览** 另外把原 writer 交还给 Sequence，
