@@ -3,14 +3,19 @@
 ## Product and component boundaries
 
 - Each direct child of `composite/` is one cross-host product with a PascalCase
-  name. Lowercase host directories contain independently installable components:
-  `composite/<ProjectName>/<host>/<ComponentName>/`.
-- Components cooperate through documented protocols; they must not load source,
-  configuration, or runtime files from sibling host directories. Keep versions,
-  dependencies, packaging, tests, and lifecycle cleanup independently verifiable.
-- Apply `maya/AGENTS.md` to Maya components and `unreal/AGENTS.md` to Unreal
-  components, using paths relative to the repository root. These sibling files
-  need explicit reading; their standalone metadata layouts do not apply here.
+  name. Host directories use the registered host names from the root AGENTS.md
+  (`maya`, `unreal`, `substance-painter`) and contain independently installable
+  components: `composite/<ProjectName>/<host>/<ComponentName>/`.
+- A product contains at least two host directories. Other lowercase kebab-case
+  directories, such as `docs/`, `protocol/`, or `prototypes/`, hold shared
+  product material and are not installed.
+- Components cooperate through documented protocols or file contracts; they
+  must not load source, configuration, or runtime files from sibling host
+  directories. Keep versions, dependencies, packaging, tests, and lifecycle
+  cleanup independently verifiable.
+- Apply each host's rule file (`<host>/AGENTS.md`) to that host's components,
+  using paths relative to the repository root. These sibling files need explicit
+  reading; their standalone metadata layouts do not apply here.
 
 ## Ownership
 
@@ -19,9 +24,11 @@
 - Components own implementation, host-required descriptors/assets, and relevant
   tests. A local AGENTS.md may capture component-specific contracts or commands;
   do not duplicate inherited rules or product metadata.
-- Maya components use the standard tool runtime folders, including at least one
-  of `scripts/`, `plug-ins/`, or `icons/`. Unreal code components contain one
-  root `.uplugin` and `Source/`; keep Automation tests with their modules.
+- Components follow their host's runtime layout: Maya components use the
+  standard tool runtime folders, including at least one of `scripts/`,
+  `plug-ins/`, or `icons/`; Unreal code components contain one root `.uplugin`
+  and `Source/`, keeping Automation tests with their modules; Substance Painter
+  components contain `plugins/` or `startup/`.
 
 ## Acceptance
 

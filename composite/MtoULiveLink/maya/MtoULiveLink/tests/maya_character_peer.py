@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Opt-in character peer for the Unreal CharacterAcceptance test.
 
 Reads a supplied scene without saving it. Fixture paths and pose edits are
@@ -7,10 +8,30 @@ Maya process only. Uses the production capture/controller/socket lifecycle.
 import argparse
 import importlib.util
 import json
+import pathlib
+import sys
 import time
 import traceback
 from pathlib import Path
 from unittest import mock
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
+from mtou_livelink import (  # noqa: E402
+    config as mtou_config,
+)
+from mtou_livelink import (
+    controller as mtou_controller,
+)
+from mtou_livelink import (
+    mayaapi as mtou_mayaapi,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
 
 
 def read_json(path):
@@ -32,6 +53,44 @@ def write_json(path, value):
             time.sleep(0.02)
 
 
+def _create_secondary_bone_character(cmds, bones):
+    """Disposable split-export fixture; never reads or saves production assets."""
+    cmds.file(new=True, force=True)
+    cmds.currentUnit(linear="cm", time="ntsc")
+    group = cmds.createNode("transform", name="Group")
+    motion = cmds.createNode("transform", name="MotionSystem", parent=group)
+    add = cmds.createNode("transform", name="Add_Ctrl_grp", parent=motion)
+    display_group = cmds.createNode("transform", name="Display_ctrl_grp", parent=add)
+    display = cmds.createNode("transform", name="Display_ctrl", parent=display_group)
+    cmds.addAttr(display, longName="clothes", attributeType="enum", enumName="Clothes01")
+    import maya.api.OpenMaya as om
+    joints = []
+    for name, parent, transform in bones:
+        joint = cmds.createNode("joint", name=name,
+                                parent=group if parent < 0 else joints[parent])
+        matrix = om.MTransformationMatrix()
+        matrix.setTranslation(om.MVector(transform[0], transform[2], transform[1]), om.MSpace.kTransform)
+        matrix.setRotation(om.MQuaternion(-transform[3], -transform[5], -transform[4], transform[6]))
+        matrix.setScale((transform[7], transform[9], transform[8]), om.MSpace.kTransform)
+        cmds.xform(joint, objectSpace=True, matrix=list(matrix.asMatrix()))
+        joints.append(joint)
+    cmds.createNode("joint", name="UnusedMaya", parent=joints[0])
+    for mesh_name, joint, aliases in (("Body", joints[1], ["Shared"]),
+                                       ("Head", joints[1], ["HeadOnly"]),
+                                       ("SM_Clothes01", "ClothTip", ["Shared"])):
+        mesh = cmds.polyCube(name=mesh_name)[0]
+        cmds.parent(mesh, group)
+        target = cmds.duplicate(mesh, name=mesh_name + "ShapeTarget")[0]
+        cmds.move(0.2, 0, 0, target + ".vtx[*]", relative=True)
+        blend = cmds.blendShape(target, mesh)[0]
+        cmds.aliasAttr(aliases[0], blend + ".weight[0]")
+        cmds.delete(target)
+        cmds.skinCluster(joint, mesh, toSelectedBones=True)
+    cmds.setKeyframe("ClothTip.translateY", time=1, value=5)
+    cmds.setKeyframe("ClothTip.translateY", time=12, value=16)
+    cmds.currentTime(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", required=True)
@@ -49,16 +108,28 @@ def main():
         spec = importlib.util.spec_from_file_location("MtoUCharacterPeer", str(script))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.PORT = fixture["port"]
-        cmds.file(fixture["scene"], open=True, force=True, prompt=False,
-                  executeScriptNodes=False, ignoreVersion=True)
+        mtou_config.PORT = fixture["port"]
+        if fixture.get("synthetic_secondary_bones"):
+            _create_secondary_bone_character(cmds, fixture["synthetic_bones"])
+        else:
+            try:
+                cmds.file(fixture["scene"], open=True, force=True, prompt=False,
+                          executeScriptNodes=False, ignoreVersion=True)
+            except RuntimeError as exc:
+                # Older production scenes can report unavailable optional
+                # render/skin-layer plug-ins after loading their DAG. Continue
+                # only when this opt-in fixture explicitly allows that host
+                # condition and the requested character root actually loaded.
+                if not fixture.get("allow_scene_load_warnings") or not cmds.objExists(fixture["root"]):
+                    raise
+                result["scene_load_warning"] = str(exc)[:400]
 
-        class Controller(module._Controller):
+        class Controller(mtou_controller.Controller):
             def _show_error(self, diagnostic):
                 result.setdefault("diagnostics", []).append(diagnostic)
 
         controller = Controller()
-        controller._scene = module._CharacterScene.capture(fixture["root"])
+        controller._scene = mtou_scene.CharacterScene.capture(fixture["root"])
         scene = controller._scene
         snapshot = scene.snapshot()
         result.update(maya_version=cmds.about(version=True),
@@ -79,9 +150,10 @@ def main():
                     continue
                 pairs = cmds.aliasAttr(node, query=True) or []
                 for alias, attribute in zip(pairs[0::2], pairs[1::2]):
-                    alias_plugs.setdefault(alias, node + "." + attribute)
+                    alias_plugs.setdefault(alias, set()).add(node + "." + attribute)
 
         base = {}
+        driven_aliases = {}
 
         def detach(plug):
             """Make one authored plug writable in this disposable process."""
@@ -103,7 +175,7 @@ def main():
             cached = controller._cached_playback
             # Live sampling belongs to real-time mode; cached mode is driven by
             # the cache callbacks below.
-            if session is not None and controller._mode == module.REALTIME_MODE:
+            if session is not None and controller._mode == mtou_config.REALTIME_MODE:
                 session._sample_and_submit(force=True)
             cached = controller._cached_playback
             if cached is not None:
@@ -112,6 +184,7 @@ def main():
                 if cached.view.state == cached.CAPTURING:
                     cached._capture_step()
                 cached._poll()
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.002)
 
         def until(predicate, label, timeout=60):
@@ -126,7 +199,7 @@ def main():
         result.update(phase="loaded", ok=True)
         write_json(args.result, result)
         # Disable only warning-dialog presentation in standalone Maya.
-        with mock.patch.object(module.cmds, "checkBox", return_value=False):
+        with mock.patch.object(mtou_mayaapi.cmds, "checkBox", return_value=False):
             deadline = time.time() + 900
             while time.time() < deadline:
                 command = read_json(fixture["command"])
@@ -149,9 +222,14 @@ def main():
                         for plug, delta in pose.get("edits", {}).items():
                             cmds.setAttr(plug, base[plug] + delta)
                         for alias, value in pose.get("alias_edits", {}).items():
-                            plug = alias_plugs[alias]
-                            detach(plug)
-                            cmds.setAttr(plug, base[plug] + value)
+                            for plug in sorted(alias_plugs[alias]):
+                                detach(plug)
+                                cmds.setAttr(plug, base[plug] + value)
+                        # A separate alias command remains active while the
+                        # host changes poses and captures/replays a cache.
+                        for alias, value in driven_aliases.items():
+                            for plug in sorted(alias_plugs[alias]):
+                                cmds.setAttr(plug, base[plug] + value)
                         # Only the edited plugs are dirtied: a production scene
                         # re-evaluates the rest of the graph on read.
                         result["pose"] = command["pose"]
@@ -160,45 +238,40 @@ def main():
                         # Drive one BlendShape alias that the Unreal side asked
                         # for, resolved from the character's own libraries.
                         name = command["alias"]
-                        plug = alias_plugs[name]
-                        detach(plug)
-                        cmds.setAttr(plug, base[plug] + float(command["value"]))
+                        driven_aliases[name] = float(command["value"])
+                        for plug in sorted(alias_plugs[name]):
+                            detach(plug)
+                            cmds.setAttr(plug, base[plug] + driven_aliases[name])
                         result["alias"] = name
                         result["alias_value"] = float(command["value"])
                         result["phase"] = "alias"
-                    elif action == "cache_play":
-                        # Production path: enter cached mode, capture the
-                        # Playback Range, upload it, and replay locally.
+                    elif action == "cache_upload":
+                        # Production path: Maya captures and uploads; UE owns
+                        # the subsequent play, stop and replay actions.
                         result.pop("cache_error", None)
-                        controller._on_mode_changed(module.CACHED_MODE)
+                        controller._on_mode_changed(mtou_config.CACHED_MODE)
                         cached = controller._ensure_cached_playback()
                         started = time.time()
+                        selected_range = command.get("custom_range")
+                        controller._selected_capture_range = (
+                            lambda: tuple(selected_range) if selected_range else None)
                         controller._capture_cached_playback()
                         until(lambda: cached.view.state in (
-                            cached.COMPLETED, cached.FAILED, cached.REALTIME), "cache play")
+                            cached.READY, cached.FAILED, cached.REALTIME), "cache upload")
                         result["cache_capture_seconds"] = time.time() - started
                         result["cache_summary"] = cached.view.cache_summary._values()
                         result["cache_applied"] = cached.view.current
                         result["cache_state"] = cached.view.state
                         result["cache_upload_id"] = cached._upload_id
                         result["cache_play_id"] = cached._play_id
-                        result["phase"] = "cached"
-                    elif action == "cache_replay":
-                        cached = controller._cached_playback
-                        started = time.time()
-                        controller._replay_cached_playback()
-                        until(lambda: cached.view.state in (
-                            cached.COMPLETED, cached.FAILED), "cache replay")
-                        result["cache_replay_seconds"] = time.time() - started
-                        result["cache_applied"] = cached.view.current
-                        result["cache_state"] = cached.view.state
-                        result["phase"] = "replayed"
-                    elif action == "cache_stop":
-                        controller._stop_cached_replay()
+                        result["phase"] = "ready"
+                    elif action == "cache_observe":
                         result["cache_state"] = controller._cached_playback.view.state
-                        result["phase"] = "stopped"
+                        result["cache_applied"] = controller._cached_playback.view.current
+                        result["cache_play_id"] = controller._cached_playback._play_id
+                        result["phase"] = "observed"
                     elif action == "cache_live":
-                        controller._on_mode_changed(module.REALTIME_MODE)
+                        controller._on_mode_changed(mtou_config.REALTIME_MODE)
                         until(lambda: controller._cached_playback is None
                               or controller._cached_playback.view.state
                               == controller._cached_playback.REALTIME, "cache live")
@@ -229,7 +302,7 @@ def main():
             else:
                 raise AssertionError("Character acceptance command timeout")
     except Exception:
-        result.update(ok=False, error=traceback.format_exc())
+        result.update(ok=False, phase="failed", error=traceback.format_exc())
         write_json(args.result, result)
     finally:
         if controller is not None:

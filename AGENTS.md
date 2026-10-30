@@ -1,24 +1,58 @@
 # Repository Instructions
 
-This monorepo contains independent Autodesk Maya scripts/tools and Unreal Engine
-plugins for 3D art production. The repository root is the only Git repository.
+This collection contains scripts, tools, and plug-ins for 3D game-art production
+across DCC tools and game engines. Projects are either owned by this repository
+or registered as independent Git submodules at complete project roots.
+
+## Hosts
+
+A host is an application that loads the repository's code. Each supported host
+has a lowercase kebab-case top-level directory whose `AGENTS.md` (the host rule
+file) defines its standalone project locations, runtime layout, compatibility,
+safety, and verification rules.
+
+| Host | Directory | Standalone projects |
+| --- | --- | --- |
+| Autodesk Maya | `maya/` | `maya/scripts/<ToolName>/`, `maya/tools/<ToolName>/` |
+| Unreal Engine | `unreal/` | `unreal/Plugins/<PluginName>/` |
+| Adobe Substance 3D Painter | `substance-painter/` | `substance-painter/plugins/<PluginName>/` |
+
+To support another host, add its directory and host rule file, register it in
+`tools/validate_repository.py`, and update `docs/workspace-spec.md`,
+`docs/naming-conventions.md`, and the root README pair in the same change. Add
+templates, packaging, and version commands when its first project needs them.
 
 ## Layout and rule scope
 
-- `maya/scripts/<ToolName>/`: self-contained Maya shelf scripts.
-- `maya/tools/<ToolName>/`: structured Maya tools and plug-ins.
-- `unreal/Plugins/<PluginName>/`: standalone Unreal plugins.
+- `<host>/...`: standalone projects in the locations listed above.
 - `composite/<ProjectName>/<host>/<ComponentName>/`: cross-host products with
   independently installable components.
 - `templates/`, `tools/`, `tests/`: project templates and repository tooling.
-- `docs/`: shared guides; `docs/project-history/<project-name>/`: durable design
-  and acceptance records.
+- `docs/`: shared guides; `docs/proposals/<project-name>/`: requirement
+  baselines for products still in design; `docs/project-history/<project-name>/`:
+  durable design and acceptance records.
 
-Read the applicable nested AGENTS.md before editing. For Maya or Unreal code,
-including composite components and templates, also read `maya/AGENTS.md` or
-`unreal/AGENTS.md`; sibling rule files are not inherited automatically.
-Composite metadata ownership takes precedence over standalone layout examples.
-Keep nested rules focused on local exceptions, contracts, and useful commands.
+Read the applicable nested AGENTS.md before editing. For host code, including
+composite components and templates, also read that host's rule file; sibling
+rule files are not inherited automatically. Composite metadata ownership takes
+precedence over standalone layout examples. Keep nested rules focused on local
+exceptions, contracts, and useful commands.
+
+## Independent project repositories
+
+- Register submodules through both .gitmodules and a Git gitlink at a complete
+  standalone or composite project root. Use portable, credential-free HTTPS
+  clone URLs. Other nested repositories are prohibited.
+- The collection owns the registration, project index and pinned commit.
+  The independent repository owns its code, docs, rules, Issues, PRs, tests,
+  packaging, versions and releases. It must work when cloned alone.
+- Parent host layout checks apply to collection-owned projects. Submodules
+  define their internal layout and host contracts in their own AGENTS.md;
+  the collection validates their registration and pin, not their source tree.
+- Publish and verify the child commit before updating the collection pin.
+  Develop on a branch inside the child, not on a detached checkout. Do not
+  update unrelated submodules or switch an active sibling's branch.
+- For clone, update and migration procedures, read docs/submodules.md.
 
 ## Project contracts
 
@@ -29,15 +63,35 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 - Preserve public APIs and supported versions unless the task authorizes a
   breaking migration. Avoid unrelated refactoring and third-party edits;
   task-required changes to either should have a clear reason.
-- Do not check in secrets, machine-specific paths, caches, host/IDE build output,
-  or release archives. Intentional source assets and generated source required
-  by the project are distinct from disposable output.
-- General directories use lowercase kebab-case; Maya/Unreal project names follow
-  their platform rules. Python internals use snake_case and classes PascalCase.
+- Do not check in or publish in Issue/PR comments secrets, machine-specific
+  paths, caches, host/IDE build output, or release archives. Intentional source
+  assets and generated source required by the project are distinct from
+  disposable output.
+- General directories use lowercase kebab-case; host project names follow their
+  host rule file. Python internals use snake_case and classes PascalCase.
   Use Semantic Versioning where practical.
-- Do not create nested repositories, force-push, or discard unrelated history.
-  Keep commits coherent and release tags project-prefixed, for example
-  `maya-mesh-normal-tool-v0.2.0` or `ue-asset-audit-v1.1.0`.
+- Do not create unregistered nested repositories, force-push, or discard
+  unrelated history.
+  Keep commits coherent and release tags prefixed as defined in
+  `docs/naming-conventions.md`, for example `maya-mesh-normal-tool-v0.2.0` or
+  `ue-asset-audit-v1.1.0`.
+
+## Scratch files
+
+- For agent-created temporary files, first use the `.tmp` directory beside this
+  repository's root. Resolve it from the actual Git root (its parent directory
+  plus `.tmp`), rather than hard-coding a drive letter or the current shell
+  directory. The directory for this checkout is `../.tmp` relative to the root.
+- If that directory is absent or cannot be written under the current sandbox,
+  use the ignored `.tmp/` directory inside the repository. Keep scratch files
+  out of tracked source directories and remove them when they are no longer
+  needed. Do not choose the operating system's default temporary directory for
+  agent-created scratch files when either repository location is available.
+- A tool or host may create its own internal temporary files through `TEMP`,
+  `TMP`, or equivalent settings. This rule does not redirect those processes;
+  set their temporary-directory environment explicitly when a task requires it.
+- Clean issue-owned scratch, including closeout helpers and drafts, under the
+  completion checks in `docs/agents/issue-tracker.md`.
 
 ## Documentation
 
@@ -71,16 +125,36 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
   Split genuinely needed advanced usage into a linked user guide when it obscures
   the common workflow; do not use an arbitrary line limit or move the same bloat
   into another document.
-- Keep reusable architecture and acceptance conclusions in existing domain or
-  history records; use `docs/project-history/<project-name>/` for substantial
-  completed work. Small fixes do not need new documents. Replace completed plans
+- A product in design without any installable component keeps its requirement
+  baseline in `docs/proposals/<project-name>/` (see `docs/proposals/README.md`).
+  When development creates the owning project, move the surviving content into
+  that project and delete the proposal directory.
+  For an independent product, migrate these owners and outstanding Issues to
+  its repository; retain only its index entry and submodule pin here.
+- Use `docs/project-history/README.md` to decide what needs a durable record.
+  Routine delivery and review stay in Issues/PRs; extend an existing topic record
+  for reusable decisions or essential host evidence. Replace completed plans
   with durable conclusions when needed, rather than leaving active-looking plans.
+- Write acceptance records and issue comments as current conclusions, supporting
+  evidence, and material limits. Update an incorrect conclusion in place; keep
+  superseded debugging and correction narratives out of the final account.
+- Write documents, issues and comments as the current state, without change
+  notes or labels for removed content. When requirements or decisions become
+  outdated, agree the new decision with the user and rewrite it in place in
+  its issue, ADR, document or comment. Replace the old wording.
 
 ## Validation
 
+- Before implementing, and when acting on review findings, follow the design,
+  fix and verification-scope rules in `docs/development-conventions.md`.
 - Start with the owning project's relevant checks and scope generic linters to
   its files. Test changed composite components independently; include cross-host
   acceptance when shared behavior or contracts are affected.
+- During iterative development, rerun failed tests or the smallest affected test
+  selection after a change, resuming from the failure when the runner supports it.
+  Do not restart the full suite after every edit. Run required broader checks
+  when the implementation stabilizes, and repeat them only if later changes could
+  invalidate their results.
 - Run repository gates for tooling, templates, shared rules/workflows, root
   metadata, or layout changes:
 
@@ -97,8 +171,26 @@ Keep nested rules focused on local exceptions, contracts, and useful commands.
 
 ## Task-specific workflows
 
-- For requested issue/spec tracking, use GitHub Issues through `gh` and read
-  `docs/agents/issue-tracker.md`. Routine implementation does not require a ticket.
+- For Issue/PR work, read `docs/agents/issue-tracker.md` and use `gh` from this
+  clone. The issue owns scope and acceptance; the delivery owns its exact diff,
+  review and validation evidence. New branches use `feature/<topic>` or
+  `fix/<topic>` with a short kebab-case topic. Small documentation and rule
+  edits go directly on the current working branch under that protocol;
+  other work goes through a PR.
+- Every merge requires a published review of the latest PR head SHA; merge
+  authorization does not replace review. Record the integration SHA on the
+  issue. GitHub automatically deletes merged remote head branches; prune and
+  remove the merged local branch and its worktree as the tracker specifies.
+- Progress, review and acceptance use ordinary comments. Edit errors or
+  outdated content in one's own comment in place; new comments carry new facts
+  and end with a one- to three-line `**当前状态**：…` footer giving the whole
+  issue's state and next step, so the newest comment is the current state.
+  Do not re-edit older status comments between tidies. On requested tidying
+  or issue closure, consolidate useful content into one status comment or its
+  maintained document and delete the other comments.
+  Generate and validate status comments with `tools/issue_report.py`. Follow
+  the tracker protocol for publication and task-owned scratch cleanup. When
+  delegating, supply the protocol and let one coordinator publish the result.
 - For issue classification, read `docs/agents/triage-labels.md`.
 - For terminology or architecture work, read `docs/agents/domain.md` and relevant
   context/decision records. These workflows do not mandate extra artifacts for

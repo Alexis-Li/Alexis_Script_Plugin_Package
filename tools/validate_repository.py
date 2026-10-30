@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
-from _repo_tools import ROOT, emit, maya_version
+from _repo_tools import ROOT, emit, maya_version, substance_painter_version
+from submodule_registry import linked_worktrees, registered_submodules
 
 REQUIRED_PATHS = (
     ".github/workflows",
@@ -20,6 +24,9 @@ REQUIRED_PATHS = (
     "docs/unreal-development.md",
     "docs/release-process.md",
     "docs/project-history/README.md",
+    "docs/proposals/README.md",
+    "docs/agents/issue-tracker.md",
+    "tools/issue_report.py",
     "maya/AGENTS.md",
     "maya/scripts",
     "maya/tools",
@@ -29,6 +36,8 @@ REQUIRED_PATHS = (
     "unreal/Content",
     "unreal/Source",
     "unreal/Plugins",
+    "substance-painter/AGENTS.md",
+    "substance-painter/plugins",
     "composite/AGENTS.md",
     "templates/maya-shelf-script",
     "templates/maya-tool",
@@ -72,7 +81,9 @@ FORBIDDEN_SUFFIXES = {
     ".zip",
     ".7z",
 }
-ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.-])/(?:Users|home|private/tmp|var/folders)/"
+)
 TEXT_SUFFIXES = {
     ".py",
     ".md",
@@ -88,7 +99,8 @@ TEXT_SUFFIXES = {
     ".yaml",
 }
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
-HOST_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+STANDALONE_METADATA = ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE")
 COMPOSITE_ROOT_METADATA = (
     "README.md",
     "README_CN.md",
@@ -98,13 +110,17 @@ COMPOSITE_ROOT_METADATA = (
 COMPOSITE_COMPONENT_METADATA = COMPOSITE_ROOT_METADATA
 
 
-def _iter_files(root: Path):
-    for path in root.rglob("*"):
-        if ".git" in path.parts:
-            continue
-        if any(part.lower() in FORBIDDEN_DIRS for part in path.relative_to(root).parts):
-            continue
-        yield path
+def _iter_files(root: Path, excluded: frozenset[Path] = frozenset()):
+    for current, directories, files in os.walk(root):
+        base = Path(current)
+        directories[:] = [name for name in directories
+                          if name not in {".git", ".tmp", ".worktrees"}
+                          and name.lower() not in FORBIDDEN_DIRS
+                          and base / name not in excluded]
+        for name in directories + files:
+            path = base / name
+            if name != ".git" and path not in excluded:
+                yield path
 
 
 def _version_control_paths(root: Path) -> list[Path]:
@@ -139,9 +155,13 @@ def _validate_json(path: Path, errors: list[str], root: Path) -> None:
         errors.append("invalid JSON {0}: {1}".format(path.relative_to(root).as_posix(), exc))
 
 
-def _validate_shelf_scripts(root: Path, errors: list[str]) -> None:
+def _validate_shelf_scripts(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     scripts_root = root / "maya" / "scripts"
     for project in sorted(path for path in scripts_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         if not PASCAL_RE.fullmatch(project.name):
             errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
         files = [path for path in project.iterdir() if path.is_file() and path.name != ".gitkeep"]
@@ -181,7 +201,7 @@ def _validate_maya_project(
     if not PASCAL_RE.fullmatch(project.name):
         errors.append("Maya project directory must use PascalCase: {0}".format(project.name))
     if require_metadata:
-        for required in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
+        for required in STANDALONE_METADATA:
             if not (project / required).exists():
                 errors.append("Maya tool {0} is missing {1}".format(project.name, required))
     if (project / "package").exists():
@@ -203,9 +223,13 @@ def _validate_maya_project(
         errors.append("Maya tool {0}: {1}".format(project.name, exc))
 
 
-def _validate_maya_tools(root: Path, errors: list[str]) -> None:
+def _validate_maya_tools(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     tools_root = root / "maya" / "tools"
     for project in sorted(path for path in tools_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         _validate_maya_project(project, errors, root)
 
 
@@ -227,13 +251,64 @@ def _validate_unreal_plugin(
     _validate_json(descriptors[0], errors, root)
 
 
-def _validate_unreal(root: Path, errors: list[str]) -> None:
+def _validate_unreal(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     project_file = root / "unreal" / "ToolsLab.uproject"
     if project_file.is_file():
         _validate_json(project_file, errors, root)
     plugins_root = root / "unreal" / "Plugins"
     for plugin in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
+        if plugin in excluded:
+            continue
         _validate_unreal_plugin(plugin, errors, root)
+
+
+def _validate_substance_painter_project(
+    project: Path, errors: list[str], root: Path, require_metadata: bool = True
+) -> None:
+    if not PASCAL_RE.fullmatch(project.name):
+        errors.append(
+            "Substance Painter project directory must use PascalCase: {0}".format(project.name)
+        )
+    if require_metadata:
+        for required in STANDALONE_METADATA:
+            if not (project / required).is_file():
+                errors.append(
+                    "Substance Painter plug-in {0} is missing {1}".format(project.name, required)
+                )
+    if not any((project / name).is_dir() for name in ("plugins", "startup")):
+        errors.append(
+            "Substance Painter plug-in {0} needs plugins/ or startup/".format(project.name)
+        )
+        return
+    try:
+        substance_painter_version(project)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append("Substance Painter plug-in {0}: {1}".format(project.name, exc))
+
+
+def _validate_substance_painter(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
+    plugins_root = root / "substance-painter" / "plugins"
+    for project in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
+        _validate_substance_painter_project(project, errors, root)
+
+
+def _validate_proposals(root: Path, errors: list[str]) -> None:
+    proposals_root = root / "docs" / "proposals"
+    if not proposals_root.is_dir():
+        return
+    for proposal in sorted(path for path in proposals_root.iterdir() if path.is_dir()):
+        if not KEBAB_RE.fullmatch(proposal.name):
+            errors.append(
+                "proposal directory must use lowercase kebab-case: {0}".format(proposal.name)
+            )
+        if not (proposal / "requirements.md").is_file():
+            errors.append("proposal {0} is missing requirements.md".format(proposal.name))
 
 
 def _validate_composite_component_metadata(
@@ -249,11 +324,15 @@ def _validate_composite_component_metadata(
             )
 
 
-def _validate_composite(root: Path, errors: list[str]) -> None:
+def _validate_composite(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
     composite_root = root / "composite"
     if not composite_root.is_dir():
         return
     for project in sorted(path for path in composite_root.iterdir() if path.is_dir()):
+        if project in excluded:
+            continue
         if not PASCAL_RE.fullmatch(project.name):
             errors.append(
                 "Composite project directory must use PascalCase: {0}".format(project.name)
@@ -261,35 +340,41 @@ def _validate_composite(root: Path, errors: list[str]) -> None:
         for required in COMPOSITE_ROOT_METADATA:
             if not (project / required).is_file():
                 errors.append("Composite project {0} is missing {1}".format(project.name, required))
-        hosts = sorted(path for path in project.iterdir() if path.is_dir())
+        directories = sorted(path for path in project.iterdir() if path.is_dir())
+        for directory in directories:
+            if not KEBAB_RE.fullmatch(directory.name):
+                errors.append(
+                    "Composite directory must use lowercase kebab-case: {0}/{1}".format(
+                        project.name, directory.name
+                    )
+                )
+        hosts = [path for path in directories if path.name in HOST_COMPONENT_VALIDATORS]
         if len(hosts) < 2:
             errors.append(
-                "Composite project {0} must contain at least two host directories".format(
-                    project.name
+                "Composite project {0} must contain at least two host directories ({1})".format(
+                    project.name, ", ".join(sorted(HOST_COMPONENT_VALIDATORS))
                 )
             )
         for host in hosts:
-            if not HOST_RE.fullmatch(host.name):
-                errors.append(
-                    "Composite host directory must use lowercase kebab-case: {0}/{1}".format(
-                        project.name, host.name
-                    )
-                )
             components = sorted(path for path in host.iterdir() if path.is_dir())
-            if host.name in {"maya", "unreal"} and not components:
+            if not components:
                 errors.append(
                     "Composite host {0}/{1} must contain a component root".format(
                         project.name, host.name
                     )
                 )
-            if host.name == "maya":
-                for component in components:
-                    _validate_composite_component_metadata(project, host, component, errors)
-                    _validate_maya_project(component, errors, root, require_metadata=False)
-            elif host.name == "unreal":
-                for component in components:
-                    _validate_composite_component_metadata(project, host, component, errors)
-                    _validate_unreal_plugin(component, errors, root, require_metadata=False)
+            for component in components:
+                _validate_composite_component_metadata(project, host, component, errors)
+                HOST_COMPONENT_VALIDATORS[host.name](
+                    component, errors, root, require_metadata=False
+                )
+
+
+HOST_COMPONENT_VALIDATORS = {
+    "maya": _validate_maya_project,
+    "unreal": _validate_unreal_plugin,
+    "substance-painter": _validate_substance_painter_project,
+}
 
 
 def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
@@ -305,7 +390,7 @@ def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
     try:
         spec.loader.exec_module(module)
         errors.extend(module.check_generated(
-            protocol_root / "conformance-v6.json",
+            protocol_root / "conformance-v11.json",
             root / "composite" / "MtoULiveLink" / "unreal" / "MtoULiveLink"
             / "Source" / "MtoULiveLink" / "Private" / "Tests"
             / "MtoUConformanceCorpus.inl",
@@ -314,13 +399,113 @@ def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
         errors.append("invalid MtoU conformance corpus: {0}".format(exc))
 
 
-def _validate_nested_git(root: Path, errors: list[str]) -> None:
-    root_git = root / ".git"
-    for nested_git in root.rglob(".git"):
-        if nested_git != root_git and nested_git.is_dir():
-            errors.append(
-                "nested Git repository: {0}".format(nested_git.relative_to(root).as_posix())
-            )
+def _validate_nested_git(
+    root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
+) -> None:
+    for current, directories, files in os.walk(root):
+        base = Path(current)
+        if base != root and ".git" in directories + files:
+            errors.append("nested Git repository: {0}".format(
+                (base / ".git").relative_to(root).as_posix()))
+        directories[:] = [name for name in directories
+                          if name not in {".git", ".tmp", ".worktrees"}
+                          and base / name not in excluded]
+
+
+def _issue_archive_errors(archive: object) -> list[str]:
+    """Validate existing historical artifacts, not current issue status."""
+    if not isinstance(archive, dict):
+        return ["archive must be an object"]
+    errors = []
+    if archive.get("schema") != "github-issue-comment-archive/1":
+        errors.append("unsupported archive schema")
+    issue = archive.get("issue", "")
+    parsed = urlparse(issue if isinstance(issue, str) else "")
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or not re.fullmatch(r"/[^/]+/[^/]+/issues/[1-9][0-9]*", parsed.path)
+        or parsed.query
+        or parsed.fragment
+    ):
+        errors.append("issue must be a canonical GitHub issue URL")
+    for field in ("archived_on", "purpose", "current_status_comment"):
+        if not isinstance(archive.get(field), str) or not archive[field].strip():
+            errors.append(f"missing archive {field}")
+    try:
+        date.fromisoformat(archive.get("archived_on", ""))
+    except (TypeError, ValueError):
+        errors.append("archived_on must be an ISO date")
+    current = archive.get("current_status_comment", "")
+    if not isinstance(current, str) or not re.fullmatch(
+        re.escape(str(issue)) + r"#issuecomment-[1-9][0-9]*", current
+    ):
+        errors.append("current_status_comment must refer to this issue")
+    comments = archive.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return errors + ["archive must preserve at least one source comment"]
+    seen = set()
+    for index, comment in enumerate(comments):
+        prefix = f"comment {index + 1}: "
+        if not isinstance(comment, dict):
+            errors.append(prefix + "must be an object")
+            continue
+        comment_id = comment.get("id")
+        if type(comment_id) is not int or comment_id <= 0:
+            errors.append(prefix + "id must be a positive integer")
+        elif comment_id in seen:
+            errors.append(prefix + "duplicate id")
+        else:
+            seen.add(comment_id)
+        for field in ("author", "body", "created_at", "updated_at", "original_url"):
+            if not isinstance(comment.get(field), str) or not comment[field].strip():
+                errors.append(prefix + f"missing {field}")
+        for field in ("created_at", "updated_at"):
+            try:
+                timestamp = datetime.fromisoformat(comment.get(field, "").replace("Z", "+00:00"))
+                if timestamp.utcoffset() is None:
+                    raise ValueError
+            except (AttributeError, TypeError, ValueError):
+                errors.append(prefix + f"{field} must include a timezone")
+        if comment.get("original_url") != f"{issue}#issuecomment-{comment_id}":
+            errors.append(prefix + "original_url does not match issue and comment id")
+    metadata = dict(archive)
+    metadata["comments"] = [
+        {key: value for key, value in comment.items() if key != "body"}
+        if isinstance(comment, dict) else comment
+        for comment in comments
+    ]
+    if ABSOLUTE_PATH_RE.search(json.dumps(metadata, ensure_ascii=False)):
+        errors.append("archive metadata must not contain machine-specific absolute paths")
+    return errors
+
+
+def _validate_issue_archives(root: Path, errors: list[str]) -> None:
+    for path in sorted((root / "docs" / "project-history").rglob("*comment-archive.json")):
+        try:
+            archive = json.loads(path.read_text(encoding="utf-8-sig"))
+            problems = _issue_archive_errors(archive)
+        except (OSError, UnicodeError, ValueError) as exc:
+            problems = [str(exc)]
+        errors.extend(f"{path.relative_to(root).as_posix()}: {problem}" for problem in problems)
+
+
+def _path_policy_text(relative_path: str, text: str) -> str:
+    """Exclude only preserved source bodies in structurally valid issue archives."""
+    if relative_path.startswith("docs/project-history/") and relative_path.endswith(
+        "comment-archive.json"
+    ):
+        try:
+            archive = json.loads(text)
+        except ValueError:
+            return text
+        if not _issue_archive_errors(archive):
+            # Historical comments must remain exact, including old machine paths.
+            # Metadata and all other files still obey the portable-path policy.
+            for comment in archive["comments"]:
+                comment.pop("body")
+            return json.dumps(archive, ensure_ascii=False)
+    return text
 
 
 def validate(root: Path = ROOT) -> dict:
@@ -331,7 +516,9 @@ def validate(root: Path = ROOT) -> dict:
         if not (root / relative_path).exists():
             errors.append("missing required path: {0}".format(relative_path))
 
-    for path in _iter_files(root):
+    excluded = registered_submodules(root, errors, warnings) | linked_worktrees(root)
+
+    for path in _iter_files(root, excluded):
         relative_path = path.relative_to(root).as_posix()
         if (
             path.is_file()
@@ -343,7 +530,7 @@ def validate(root: Path = ROOT) -> dict:
             except UnicodeError:
                 errors.append("text file is not UTF-8: {0}".format(relative_path))
             else:
-                if ABSOLUTE_PATH_RE.search(text):
+                if ABSOLUTE_PATH_RE.search(_path_policy_text(relative_path, text)):
                     errors.append("machine-specific absolute path in {0}".format(relative_path))
 
     for path in _version_control_paths(root):
@@ -354,16 +541,21 @@ def validate(root: Path = ROOT) -> dict:
         if path.name.lower().endswith(tuple(FORBIDDEN_SUFFIXES)):
             errors.append("version-control-visible generated file: {0}".format(relative_path))
 
-    _validate_nested_git(root, errors)
+    _validate_nested_git(root, errors, excluded)
+    _validate_issue_archives(root, errors)
 
     if (root / "maya" / "scripts").is_dir():
-        _validate_shelf_scripts(root, errors)
+        _validate_shelf_scripts(root, errors, excluded)
     if (root / "maya" / "tools").is_dir():
-        _validate_maya_tools(root, errors)
+        _validate_maya_tools(root, errors, excluded)
     if (root / "unreal" / "Plugins").is_dir():
-        _validate_unreal(root, errors)
-    _validate_composite(root, errors)
-    _validate_mtou_conformance(root, errors)
+        _validate_unreal(root, errors, excluded)
+    if (root / "substance-painter" / "plugins").is_dir():
+        _validate_substance_painter(root, errors, excluded)
+    _validate_composite(root, errors, excluded)
+    _validate_proposals(root, errors)
+    if root / "composite" / "MtoULiveLink" not in excluded:
+        _validate_mtou_conformance(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}
 

@@ -135,11 +135,20 @@ implementation they exercise.
 
 ### Maya tool
 
-The Maya side is one directly runnable Python file:
+The Maya side is a directly runnable entry file plus one internal package:
 
-`composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py`
+- `composite/MtoULiveLink/maya/MtoULiveLink/scripts/MtoULiveLink.py` (thin
+  entry: `run()`, `main()`, version, window names, directory bootstrap);
+- `composite/MtoULiveLink/maya/MtoULiveLink/scripts/mtou_livelink/` with one
+  module per lifecycle: `config`, `diagnostics`, `protocol`, `space`, `scene`,
+  `timeline`, `session`, `cache`, `linkage`, `reference`, `controller` and the
+  panel widgets under `ui/`.
 
-It owns:
+Installation copies the whole `scripts` directory; the entry adds its own
+directory to `sys.path`, so the package imports without the repository on
+`PYTHONPATH` and without a second implementation.
+
+Together they own:
 
 - the small native Maya UI;
 - a character-scene module that owns deformation-root and Display validation,
@@ -361,8 +370,9 @@ Socket closure communicates transport or structural failure. Cache validation
 and playback-performance failures remain recoverable inside the negotiated
 connection and identify the upload or play attempt they belong to.
 
-The machine-authoritative conformance corpus is
-[`conformance-v6.json`](../../../composite/MtoULiveLink/protocol/conformance-v6.json).
+This historical cache baseline used `protocol/conformance-v6.json`, retained
+in Git history. The active contract is linked from
+[ADR 0013](../../../composite/MtoULiveLink/docs/adr/0013-upload-the-cache-before-local-replay.md).
 Maya repository tests read it directly, and a Python-standard-library generator
 projects the same cases into a checked-in, test-only Unreal `.inl`; repository
 validation fails if that projection is stale. Neither shipped host component
@@ -399,14 +409,27 @@ During `init`, Unreal requires exactly one placed binding actor and compares
 the static Maya skeleton with its Skeletal Mesh. Maya publishes every joint
 under the selected root plus the intermediate `transform` nodes required to
 preserve joint parentage; branches without joints are excluded. Unreal compares
-normalized node name to parent name, not array position. A link succeeds when
-every published node and parent can be mapped uniquely and completely. An
-Unreal importer rename may map a duplicate Maya short name only below an
+normalized node name and mapped parent, not array position. A connection
+requires each enabled part's necessary skinning bones and ancestors to map
+uniquely; unrelated exported Maya branches may remain unused. Unreal importer
+renames may map a duplicate Maya short name only below an
 already mapped parent: either the numeric suffix the engine appends, or the
 complete short name followed by `_` and exactly 32 hexadecimal digits. A
 partial original name, another separator, a different hash length, an
-unduplicated Maya name, a different parent, and several candidates stay
-blocking rather than selecting one.
+unduplicated Maya name, a different parent, and a candidate set the scope
+relation does not settle stay blocking rather than selecting one. Within each
+mapped parent scope, all
+exact-name Maya sources reserve their targets before import-renamed candidates
+are resolved, and the remaining rename candidates are resolved as one relation:
+a connection requires exactly one assignment of sources to that scope's required
+targets. A target no source can drive, a target two or more sources claim, and a
+source whose several feasible targets the relation does not settle are all
+blocking, so neither capture order nor prefix length decides a mapping.
+Same-parent, same-name Maya siblings remain ambiguous even when both a plain and
+a suffixed target are free. Every competing claim is reported with the target,
+parent, and both complete Maya paths. An unrelated short name in another mapped
+parent scope imposes no conflict. Only a source that matches no required bone in
+its own scope is treated as an unused branch.
 
 The validation response leads with the root cause of the first unmapped bone:
 its complete Maya path, the mapped Unreal parent it had to match, the blocked
@@ -423,7 +446,7 @@ mapped onto the Skeletal Mesh reference pose before Live Link publication.
 Finite non-zero tiny scales remain valid through checked matrix inversion and
 TRS decomposition; zero-scale or non-finite transforms fail closed with the
 affected node index.
-Permissive skeleton subsets and fuzzy name matching remain outside scope.
+Arbitrary partial mappings and fuzzy name matching remain outside scope.
 
 ## UI
 
@@ -506,14 +529,12 @@ bottleneck.
 Standard-library tests cover protocol conformance, hierarchy and transform
 conversion, character-scene capture and revision behavior, streaming-session
 startup rollback and terminal races, frame-rate timer replacement, worker
-shutdown, and dynamically sized messages. Maya 2022 host tests exercise real
+shutdown, and dynamically sized messages. Maya host tests exercise real
 DAG, skinning, BlendShape, callback, and timer behavior through the same
 character-scene and streaming-session interfaces.
 
-Run the pure suite under repository Python with
-`python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p test_mtou_livelink.py -q`,
-and the host suite under Maya 2022 `mayapy` with
-`mayapy -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p maya_host_tests.py -q`.
+The commands, the default and opt-in test tiers, and when each build runs are
+kept in [the product rules](../../../composite/MtoULiveLink/AGENTS.md).
 
 ### Unreal Automation tests
 
@@ -546,6 +567,10 @@ Development-only automation tests cover:
   integration, replacing the former `GarmentResolution` and
   `GarmentFaultLines` rule assertions.
 
+Tests that need a real Maya process, a production fixture, or a long
+measurement use the `MtoUOptIn.` prefix, so `RunTests MtoULiveLink` leaves
+them out; the refresh benchmark is one of them.
+
 ### Build and repository verification
 
 Apply these checks to the changed host components. Cross-host behavior changes
@@ -557,8 +582,10 @@ consistency checks. The root repository rules own the current acceptance scope.
   `tools/build_mtou_topia.ps1`; keep every writable build intermediate outside
   the engine and production project.
 - Load the plugin in `unreal/ToolsLab.uproject` and inspect warnings.
-- Run the plugin's Unreal Automation tests.
-- Run the Maya project tests with Maya 2022 `mayapy`.
+- Run the plugin's default Unreal Automation tests and the opt-in tests the
+  change affects.
+- Run the Maya project tests with Maya 2024 `mayapy`, adding Maya 2022.4 when
+  a change can affect it.
 - Run root repository unit tests and `tools/validate_repository.py` only for
   repository tooling, templates, shared rules/workflows, root metadata, or
   project-layout changes, or when explicitly requested.
@@ -872,8 +899,11 @@ deletion interface to Controller. `_PlaybackCache` remains the disk module and
 Date: 2026-08-29
 
 Issue #25 deepened Preview readiness on the Binding Actor without changing
-ADR-0003 actor-owned, explicit, stale-safe readiness, ADR-0009 workflow
-negotiation, ADR-0010 transactional Preview Morph transfer, or ADR-0011
+actor-owned, explicit, stale-safe readiness (now consolidated in
+[ADR 0001](../../../composite/MtoULiveLink/docs/adr/0001-keep-preview-meshes-transient.md)),
+workflow negotiation (now consolidated in
+[ADR 0008](../../../composite/MtoULiveLink/docs/adr/0008-add-model-preview-to-the-existing-product.md)),
+ADR-0010 transactional Preview Morph transfer, or ADR-0011
 Accepted Preview Morph semantics.
 
 The actor exposes one coherent `FMtoUPreviewReadiness` snapshot (state, stage,
@@ -1022,11 +1052,16 @@ renaming or reordering a part is never a change of identity.
 One private resolution owns every composition rule for placement, connection,
 and diagnostics. It reports the Primary Driver and each Additional Part with the
 named reason a part cannot join the character: an enabled part without a mesh, a
-part that repeats the Primary Driver, a different Skeleton asset, bones that are
-absent from the Primary or hang under a different parent, and skinning bones
-from any LOD (including their ancestors) whose component-space reference pose
-differs beyond a scale-relative tolerance that
-also covers a different import space. Disabled parts are neither validated nor
+part that repeats the Primary Driver, a different Skeleton asset, conflicting
+parents for shared required names, or shared required component-space reference
+poses differing beyond the translation/scale-relative and rotation tolerances.
+Positive vertex influences (not palette membership alone) across all LODs and
+complete ancestors form a parent-first union; unreadable weights fail closed.
+Primary is processed first, then parts in stable identity order. Each union
+bone records its requiring parts for diagnostics. Unique secondary branches
+remain in the target even when absent from Primary. The frozen source-index
+projection feeds both real-time and cached bind/current conversion and one
+Live Link subject, while transport/cache validation keeps the full Maya snapshot. Disabled parts are neither validated nor
 displayed. Placement refuses only a missing Primary Driver, connection refuses
 any unusable composition with the part-named diagnostics behind
 `SKELETON_MISMATCH` or `INVALID_BINDING`, and the Binding Actor publishes the same
@@ -1063,6 +1098,43 @@ undo leave no ghost or duplicate part. Protocol v6 is unchanged: Maya already
 publishes every visible skinned mesh of the character with one alias per
 BlendShape name, so a separated Head contributes its own aliases through the
 existing discovery rule.
+
+## Preview Linkage (Protocol v10, Issue #57)
+
+The single-character linkage workflow adds one exclusive time-control state on
+top of the existing realtime and cached modes. `protocol/v10.md` is the frozen
+wire contract; the executable form is `protocol/conformance-v10.json`, which
+both adapters run in their own suites.
+
+- **Identity.** A connection starts with `hello`/`hello_ack` and carries a
+  `session_id`; the object description adds a stable `object_id` plus
+  `set_revision` and `space_revision`, and every later message repeats the
+  session, set, space and mode identity. A mismatched pair is refused before a
+  target is discovered, a writer is muted or a handoff is read.
+- **Authority.** Maya owns the character scene and its own timeline; Unreal owns
+  the paired target, its writers, the Level Sequence time, the evaluated camera
+  and the output gate. `mode_revision` increments per accepted transition and
+  the pose gate is closed while a transition is in progress.
+- **Scheduling.** Unreal keeps `desired`, `issued` and `applied` apart with at
+  most one target in flight and one replaceable pending target, so an advancing
+  camera never cancels the work already issued; a cancelled or superseded
+  target is refused with `EVAL_STALE` and the last complete display stays.
+  Maya's `LinkageSession` mirrors the same discipline: it applies the newest
+  waiting target on the Maya main thread, samples the complete object set and
+  answers with one `group` whose `sample_serial` counts new samples of the same
+  evaluation target.
+- **Applied evidence.** Unreal applies a staged, immutable group on the game
+  thread, reads the actual bone and Morph values back, and only then sends
+  `applied` with the counts and lag; both panels show the time control owner,
+  the target time, the latest complete application time and the convergence
+  state. A failed group keeps the previous complete display.
+- **Recovery.** Returning to realtime restores Maya's timeline, view and gate
+  and keeps Maya paused while Unreal keeps its takeover; ending the preview
+  restores Unreal's original writers. Restores are per resource and idempotent,
+  and a residual failure is reported instead of being hidden. The scene
+  reference lives in a tool-owned container with an ownership mark, a staged
+  swap, rollback and interrupted-run recovery, so a failed update never loses
+  the previous reference.
 
 ## Documentation and Packaging
 

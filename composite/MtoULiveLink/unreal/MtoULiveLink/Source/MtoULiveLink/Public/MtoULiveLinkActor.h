@@ -2,6 +2,7 @@
 
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
+#include "MtoUCachePlayback.h"
 
 #include "MtoULiveLinkActor.generated.h"
 
@@ -55,14 +56,32 @@ enum class EMtoUDisplayTarget : uint8
 {
     Hidden,
     Driver,
-    GeneratedPreview
+    GeneratedPreview,
+    OriginalGarment
+};
+
+/**
+ * Local session lifecycle of one Binding actor, owned by the actor and the
+ * source that streams to it. The connection status string cannot express it:
+ * an actor that never streamed and one whose session ended both report
+ * "Disconnected". Never serialized and never sent on the wire.
+ */
+UENUM()
+enum class EMtoULinkSessionState : uint8
+{
+    /** No session has reached streaming on this actor yet. */
+    Idle,
+    /** A negotiated session is streaming to this actor. */
+    Streaming,
+    /** A session that was Streaming has ended. */
+    Ended
 };
 
 /**
  * Display component of one enabled Additional Part. Each part evaluates the
  * one character Live Link subject itself, so the whole character poses from the
- * same session, while the Primary Driver stays the only source of skeleton
- * baseline, garment Preview data, and accepted Preview Morphs.
+ * same session, while the Primary Driver stays the only source of garment
+ * Preview data and accepted Preview Morphs.
  */
 UCLASS(ClassGroup = MtoULiveLink)
 class MTOULIVELINK_API UMtoUCharacterPartComponent : public USkeletalMeshComponent
@@ -115,6 +134,8 @@ class MTOULIVELINK_API AMtoULiveLinkActor : public AActor
 public:
     AMtoULiveLinkActor();
 
+    virtual void Tick(float DeltaSeconds) override;
+    virtual bool ShouldTickIfViewportsOnly() const override;
     virtual void OnConstruction(const FTransform& Transform) override;
     virtual void PostRegisterAllComponents() override;
     virtual void PostLoad() override;
@@ -128,6 +149,43 @@ public:
     UMtoULiveLinkBinding* GetBinding() const { return Binding; }
     const FString& GetConnectionStatus() const { return ConnectionStatus; }
 
+    /** Whether this actor is idle, streaming, or past a session that ended. */
+    EMtoULinkSessionState GetLinkSessionState() const { return LinkSessionState; }
+
+    /** A negotiated session started streaming to this actor. */
+    void NoteSessionStreaming();
+    /**
+     * A streaming session ended, whether the peer closed the socket or this
+     * editor requested the end. An actor that never streamed stays Idle.
+     */
+    void NoteSessionEnded();
+
+    /**
+     * The Live Link subject every display of this actor evaluates: the
+     * primary character's subject unless a session negotiated the actor as the
+     * second object of its set.
+     */
+    FName GetLiveLinkSubject() const { return LiveLinkSubjectName; }
+
+    /**
+     * The displays evaluate their subject only while a session negotiated this
+     * actor as one object of its set; any other placed actor shows no stream.
+     */
+    bool IsInLiveLinkSet() const { return bInLiveLinkSet; }
+
+    /** Current negotiated session's transient cache; never serialized on the actor. */
+    FMtoUCachePlaybackView GetCachePlaybackView() const;
+    bool StartCachedPlayback();
+    bool StopCachedPlayback();
+    /** Holds the current pose; an arbitrary wait never fails playback. */
+    bool PauseCachedPlayback();
+    /** Continues from the held position and rebuilds the timing baseline. */
+    bool ResumeCachedPlayback();
+    /** Displays one sampled Maya source frame and holds it paused. */
+    bool SeekCachedPlayback(int32 SourceFrame);
+    /** Loops the cache or completes the current round, without re-upload. */
+    bool SetCachedLoopEnabled(bool bEnabled);
+
     /**
      * Enabled Additional Part components in canonical part order. They are a
      * display concern of the same character; the Primary Driver remains
@@ -137,6 +195,9 @@ public:
     {
         return CharacterPartComponents;
     }
+
+    /** The original Driver display that follows the generated garment in Model preview. */
+    USkeletalMeshComponent* GetModelFollowerComponent() const { return DriverMeshComponent; }
 
     /** Part-level composition problems of the current Binding; empty when every enabled part is compatible. */
     const FString& GetCharacterPartDiagnostics() const { return CharacterPartDiagnostics; }
@@ -154,6 +215,10 @@ public:
     /** Display selection is a separate concern that consumes readiness. */
     void ShowDriverMesh();
     void ShowGeneratedPreview(bool bBoneOnlyDiagnostic);
+    /** Compare the two garments without changing the Model session or Preview readiness. */
+    bool CanCompareGarments() const;
+    bool ShowOriginalGarment();
+    bool RestoreGeneratedGarment();
 
     /**
      * Connection-time Model diagnostics are separate evidence; they never
@@ -203,6 +268,8 @@ private:
 
     void RefreshBinding();
     void ReapplyDisplayTarget();
+    void ApplyGarmentVisibility();
+    void RefreshComparisonPose();
     void ApplyModelMorphCurves(
         const TArray<FName>& CurveNames, const TArray<float>& CurveValues);
     void RebindInputNotifications();
@@ -225,13 +292,25 @@ private:
     void ReconcileCharacterPartComponents(const FMtoUCharacterComposition& Composition);
     void DestroyCharacterPartComponent(UMtoUCharacterPartComponent& Component);
     void ConfigureLiveLinkInstance(USkeletalMeshComponent& Component);
+    /** Point every display at one object's subject and evaluate it; the source negotiates it. */
+    void SetLiveLinkSubject(FName Subject);
+    /** The actor left the set: its displays stop evaluating any subject. */
+    void ReleaseLiveLinkSubject();
+    /**
+     * While the actor is in the set, every display evaluates its subject
+     * again if something replaced its anim instance or stopped its Live Link
+     * evaluation (a Sequencer restoring the state a muted track saved before
+     * the takeover does both). Returns the displays it reconfigured.
+     */
+    int32 RestoreLiveLinkEvaluation();
+    void ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const;
     void InheritPrimaryDisplaySettings(USkeletalMeshComponent& Component);
     void HandleCharacterPartMeshChanged();
 
     UPROPERTY(VisibleAnywhere, Category = "MtoU_LiveLink")
     TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
 
-    /** Original Driver display used behind the generated garment in Model preview. */
+    /** Original Driver display following the generated garment in Model preview. */
     UPROPERTY()
     TObjectPtr<USkeletalMeshComponent> DriverMeshComponent;
 
@@ -268,6 +347,14 @@ private:
     FString ConnectionStatus = TEXT("Disconnected");
 
     /**
+     * Session bookkeeping kept off the wire and off the saved actor, so a
+     * reloaded or PIE-duplicated actor starts Idle instead of inheriting the
+     * previous session's ending.
+     */
+    UPROPERTY(Transient, DuplicateTransient)
+    EMtoULinkSessionState LinkSessionState = EMtoULinkSessionState::Idle;
+
+    /**
      * Display components of the enabled Additional Parts, in canonical part
      * order. They are transient runtime state rebuilt from the Binding, never
      * saved with the actor.
@@ -289,6 +376,11 @@ private:
     };
 
     TArray<FMtoUObservedPartMesh> ObservedPartMeshes;
+
+    /** The subject the negotiated session publishes this actor's object as; never saved. */
+    FName LiveLinkSubjectName = FName(TEXT("MtoU_Character"));
+    /** A session negotiated this actor as an object of its set; never saved. */
+    bool bInLiveLinkSet = false;
 
     TWeakObjectPtr<USkeletalMesh> ObservedDriverMesh;
     TWeakObjectPtr<UStaticMesh> ObservedPreviewMesh;

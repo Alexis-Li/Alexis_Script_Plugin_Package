@@ -2,6 +2,7 @@
 #include "MtoULiveLinkFactories.h"
 #include "MtoULiveLinkPreview.h"
 #include "MtoULiveLinkActorDetails.h"
+#include "MtoULinkageEditor.h"
 
 #include "Editor.h"
 #include "IDetailCustomization.h"
@@ -45,8 +46,15 @@ public:
         TSharedRef<FPropertySection> MtoUSection = PropertyEditor.FindOrCreateSection(
             AMtoULiveLinkActor::StaticClass()->GetFName(), "MtoU",
             LOCTEXT("MtoUSection", "MtoU"), 1000);
-        MtoUSection->AddCategory("MtoU_LiveLink");
-        MtoUSection->AddCategory("MtoU Preview");
+        MtoUSection->AddCategory("MtoU Runtime");
+        MtoUSection->AddCategory("MtoU Character");
+        MtoUSection->AddCategory("MtoU Preview Controls");
+        MtoUSection->AddCategory("MtoU Linkage");
+        MtoUSection->AddCategory("MtoU Scene Reference");
+        MtoUSection->AddCategory("MtoU Advanced");
+
+        // The editor half of the v10 linkage boundary, once per editor session.
+        FMtoULinkageEditor::InstallHooks();
 
         AssetReimportHandle = GEditor->GetEditorSubsystem<UImportSubsystem>()
             ->OnAssetReimport.AddRaw(this, &FMtoULiveLinkEditorModule::HandleAssetReimport);
@@ -83,6 +91,8 @@ public:
             PropertyEditor.RemoveSection(
                 AMtoULiveLinkActor::StaticClass()->GetFName(), "MtoU");
         }
+        // Detach the linkage hooks; an active takeover restores its writers first.
+        FMtoULinkageEditor::UninstallHooks();
         for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
         {
             if (!It->HasAnyFlags(RF_ClassDefaultObject))

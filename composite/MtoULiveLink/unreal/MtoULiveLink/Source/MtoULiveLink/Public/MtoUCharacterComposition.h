@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ReferenceSkeleton.h"
 
 class UMtoULiveLinkBinding;
 class USkeletalMesh;
@@ -47,27 +48,31 @@ struct MTOULIVELINK_API FMtoUCompositionFailures
 {
     /** The Binding names no usable Primary Driver or an enabled part has no mesh. */
     static constexpr TCHAR InvalidBinding[] = TEXT("INVALID_BINDING");
-    /** An enabled part cannot map onto the Primary Driver. */
+    /** An enabled part's required bones conflict with Skeleton, parent path, or reference pose. */
     static constexpr TCHAR SkeletonMismatch[] = TEXT("SKELETON_MISMATCH");
 };
 
 /**
  * The one centralized resolution of a Binding's character composition: which
- * parts form the character, whether each enabled part is compatible with the
- * Primary Driver, and which Morph Target library the composed character
- * exposes. Placement, connection negotiation, and diagnostics all consume this
- * result instead of restating its rules.
+ * parts form the character, whether every enabled part's required bones are
+ * compatible, and which Morph Target library the composed character exposes.
+ * Placement, connection negotiation, and diagnostics all consume this result
+ * instead of restating its rules.
  *
- * The Primary Driver defines the skeleton baseline. Every enabled Additional
- * Part must share the Primary's Skeleton asset, map every bone it contains onto
- * the Primary by name and parent path, and match the Primary's reference pose
- * for its skinning bones across all LODs and their ancestors; unrelated branches
- * may differ in reference pose. A part may use fewer bones and different geometry.
+ * Enabled meshes share a Skeleton asset. Their positive skin influences across
+ * every LOD and complete ancestor chains form one deterministic target. Bones
+ * another mesh requires must agree in name, parent path and component reference
+ * pose; branches no enabled mesh skins impose no requirement.
  */
 struct MTOULIVELINK_API FMtoUCharacterComposition
 {
     /** The Primary Driver first, then every Additional Part in Binding order. */
     TArray<FMtoUCharacterPartResolution> Parts;
+
+    /** Parent-first union of required bones; never persisted into a mesh asset. */
+    FReferenceSkeleton RequiredSkeleton;
+    /** Part labels requiring each union bone, for negotiation diagnostics. */
+    TArray<FString> BoneOwners;
 
     /** One named section per incompatible part; empty when the composition is usable. */
     FString Diagnostics;

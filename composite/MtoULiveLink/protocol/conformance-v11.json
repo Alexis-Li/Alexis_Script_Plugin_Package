@@ -1,0 +1,7375 @@
+{
+  "schema_version": 1,
+  "protocol_version": 11,
+  "cases": [
+    {
+      "id": "framing-partial-packet",
+      "operation": "framing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payloads": [
+        {
+          "type": "ready",
+          "revision": 7,
+          "missing_in_unreal": [],
+          "missing_in_maya": [],
+          "bone_name_remaps": [],
+          "workflow": "animation",
+          "target_morph_count": 0,
+          "accepted_morph_count": 0
+        }
+      ],
+      "chunk_sizes": [
+        1,
+        3,
+        4,
+        7
+      ],
+      "expected": {
+        "accepted": true,
+        "message_count": 1,
+        "close": false
+      }
+    },
+    {
+      "id": "framing-combined-packets",
+      "operation": "framing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payloads": [
+        {
+          "type": "ready",
+          "revision": 7,
+          "missing_in_unreal": [],
+          "missing_in_maya": [],
+          "bone_name_remaps": [],
+          "workflow": "animation",
+          "target_morph_count": 0,
+          "accepted_morph_count": 0
+        },
+        {
+          "type": "error",
+          "code": "INVALID_MESSAGE",
+          "message": "bad",
+          "details": "bad payload"
+        }
+      ],
+      "expected": {
+        "accepted": true,
+        "message_count": 2,
+        "close": false
+      }
+    },
+    {
+      "id": "framing-length-overflow",
+      "operation": "framing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "raw_hex": "0000000080000000",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "length"
+        ]
+      }
+    },
+    {
+      "id": "framing-length-over-message-limit",
+      "operation": "framing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "raw_hex": "0000000002000001",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "length"
+        ]
+      }
+    },
+    {
+      "id": "init-basic-animation-workflow",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-two-object-set-primary",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-two-object-set-secondary",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "prop_jnt",
+            0,
+            [
+              0,
+              0,
+              5,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-missing-set-objects-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-object-outside-set-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-set-primary-not-first-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "secondary",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "secondary",
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "character"
+        ]
+      }
+    },
+    {
+      "id": "init-set-duplicate-object-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "init-set-over-budget-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary",
+          "third"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "OBJECT_SET_UNSUPPORTED",
+        "close": true,
+        "keywords": [
+          "max_set_objects"
+        ]
+      }
+    },
+    {
+      "id": "init-model-two-object-set-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character",
+          "secondary"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "OBJECT_SET_UNSUPPORTED",
+        "close": true,
+        "keywords": [
+          "Model"
+        ]
+      }
+    },
+    {
+      "id": "init-model-workflow-bone-only",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": false,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "Smile"
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-model-workflow-empty-curves",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-utf8-duplicates-and-unknown-field",
+      "operation": "init",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "根",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "臂",
+            0,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "臂",
+            0,
+            [
+              0,
+              0,
+              -10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [
+          "笑"
+        ],
+        "future": {
+          "ignored": true
+        },
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "init-version-mismatch",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 2,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "init-v6-client-rejected",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 6,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "init-v7-client-rejected",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 7,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "init-v4-client-rejected",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 4,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "init-version-wrong-type",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": "6",
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "init-missing-workflow",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "id": "init-workflow-wrong-type",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": 7,
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "id": "init-workflow-invalid-value",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "preview",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "id": "init-missing-blendshapes-enabled",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "blendshapes_enabled"
+        ]
+      }
+    },
+    {
+      "id": "init-blendshapes-enabled-wrong-type",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "model",
+        "blendshapes_enabled": "true",
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "blendshapes_enabled"
+        ]
+      }
+    },
+    {
+      "id": "init-missing-curves",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "curves"
+        ]
+      }
+    },
+    {
+      "id": "init-parent-not-before-child",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 11,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ],
+          [
+            "jaw",
+            1,
+            [
+              0,
+              0,
+              10,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": [],
+        "object_id": "character",
+        "set_revision": 1,
+        "space_revision": 1,
+        "set_objects": [
+          "character"
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "parent"
+        ]
+      }
+    },
+    {
+      "id": "init-invalid-utf8",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "raw_hex": "7b2274797065223a22696e6974222c2276657273696f6e223a352c22776f726b666c6f77223a22616e696d6174696f6e222c22626c656e647368617065735f656e61626c6564223a747275652c22626f6e6573223a5b5b2280222c2d312c5b302c302c302c302c302c302c312c312c312c315d5d5d2c22637572766573223a5b5d7d",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "UTF-8"
+        ]
+      }
+    },
+    {
+      "id": "frame-basic",
+      "operation": "frame",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "frame-unknown-field",
+      "operation": "frame",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [],
+        "future": 7
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 0
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "frame-two-object-set",
+      "operation": "frame",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.25
+            ]
+          }
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 2,
+            "curves": 1
+          }
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "frame-object-row-names-primary-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.5
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "object"
+        ]
+      }
+    },
+    {
+      "id": "frame-object-row-duplicated-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": []
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": []
+          }
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "frame-secondary-count-mismatch",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ],
+        "objects": [
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.25
+            ]
+          }
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 2,
+            "curves": 1
+          }
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "frame-secondary-missing-from-set-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1,
+        "objects": {
+          "secondary": {
+            "transforms": 1,
+            "curves": 0
+          }
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "frame-missing-curves",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "curves"
+        ]
+      }
+    },
+    {
+      "id": "frame-transform-width",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "ten"
+        ]
+      }
+    },
+    {
+      "id": "frame-count-mismatch",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.25
+        ]
+      },
+      "expected_counts": {
+        "transforms": 2,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "count"
+        ]
+      }
+    },
+    {
+      "id": "frame-non-finite-curve",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "raw_utf8": "{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e400]}",
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "finite"
+        ]
+      }
+    },
+    {
+      "id": "frame-float-range",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "raw_utf8": "{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e40]}",
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "float"
+        ]
+      }
+    },
+    {
+      "id": "frame-unnormalized-quaternion",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "quaternion"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-basic",
+      "operation": "cache_begin",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-begin-reused-upload-id-is-stale",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "session": "uploaded",
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 0,
+        "end_frame": 0,
+        "frame_count": 1,
+        "payload_size": 64
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-unknown-field",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 24,
+        "start_frame": 0,
+        "end_frame": 0,
+        "frame_count": 1,
+        "payload_size": 64,
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-begin-missing-revision",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "revision"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-upload-id-zero",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 0,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-revision-wrong-type",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": "7",
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "revision"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-fps-below-minimum",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 0.5,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "fps"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-fps-above-maximum",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 120,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "fps"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-fps-wrong-type",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": "30",
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "fps"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-count-range-mismatch",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 20,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-count-zero",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 5,
+        "end_frame": 4,
+        "frame_count": 0,
+        "payload_size": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-missing-upload-id",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-upload-id-wrong-type",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": "1",
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-count-over-limit",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 0,
+        "end_frame": 20000,
+        "frame_count": 20001,
+        "payload_size": 4096,
+        "upload_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_PAYLOAD_TOO_LARGE",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-count-wrong-type",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21.5,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-payload-size-over-limit",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": 1073741825
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_PAYLOAD_TOO_LARGE",
+        "close": false,
+        "keywords": [
+          "payload_size"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-payload-size-wrong-type",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 1001,
+        "end_frame": 1021,
+        "frame_count": 21,
+        "payload_size": "small"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "payload_size"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-range-overflow-wraps-to-one",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": -2147483648,
+        "end_frame": 2147483647,
+        "frame_count": 1,
+        "payload_size": 64
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-payload-size-extreme-integer",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 1,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 0,
+        "end_frame": 0,
+        "frame_count": 1,
+        "payload_size": 9223372036854775808
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "payload_size"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-basic",
+      "operation": "cache_frame",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": 0,
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-frame-unknown-field",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": 320,
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [],
+        "future": null
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 0
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-frame-missing-index",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "index"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-index-wrong-type",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": "0",
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "index"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-negative-index",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": -1,
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_FRAME_INDEX_INVALID",
+        "close": false,
+        "keywords": [
+          "index"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-transform-width-closes",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": 0,
+        "transforms": [
+          [
+            0,
+            0,
+            0
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "ten"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-non-finite-value-rejects-upload",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "raw_utf8": "{\"type\":\"cache_frame\",\"index\":3,\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[1e400]}",
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_FRAME_CONTENTS_INVALID",
+        "close": false,
+        "keywords": [
+          "finite"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-unnormalized-quaternion-rejects-upload",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": 3,
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected_counts": {
+        "transforms": 1,
+        "curves": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_FRAME_CONTENTS_INVALID",
+        "close": false,
+        "keywords": [
+          "quaternion"
+        ]
+      }
+    },
+    {
+      "id": "cache-frame-count-mismatch-rejects-upload",
+      "operation": "cache_frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_frame",
+        "index": 0,
+        "transforms": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": []
+      },
+      "expected_counts": {
+        "transforms": 2,
+        "curves": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_FRAME_CONTENTS_INVALID",
+        "close": false,
+        "keywords": [
+          "count"
+        ]
+      }
+    },
+    {
+      "id": "cache-end-basic",
+      "operation": "cache_end",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_end"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-end-unknown-field",
+      "operation": "cache_end",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_end",
+        "future": {
+          "ok": true
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-end-without-begin-is-a-state-violation",
+      "operation": "cache_end",
+      "applies_to": [
+        "unreal"
+      ],
+      "session": "fresh",
+      "payload": {
+        "type": "cache_end"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_INVALID_STATE",
+        "close": false,
+        "keywords": [
+          "cache_end"
+        ]
+      }
+    },
+    {
+      "id": "cache-play-basic",
+      "operation": "cache_play",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_play",
+        "play_id": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-play-id-zero",
+      "operation": "cache_play",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_play",
+        "play_id": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_METADATA_INVALID",
+        "close": false,
+        "keywords": [
+          "play_id"
+        ]
+      },
+      "session": "fresh"
+    },
+    {
+      "id": "cache-play-missing-play-id",
+      "operation": "cache_play",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_play"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-play-id-non-integer",
+      "operation": "cache_play",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_play",
+        "play_id": 1.5
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-play-without-cache-is-not-ready",
+      "operation": "cache_play",
+      "applies_to": [
+        "unreal"
+      ],
+      "session": "fresh",
+      "payload": {
+        "type": "cache_play",
+        "play_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_NOT_READY",
+        "close": false,
+        "keywords": [
+          "cache"
+        ]
+      }
+    },
+    {
+      "id": "cache-begin-authoritative-revision-mismatch",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "session": "fresh",
+      "negotiated_revision": 9,
+      "payload": {
+        "type": "cache_begin",
+        "upload_id": 2,
+        "revision": 7,
+        "fps": 30,
+        "start_frame": 0,
+        "end_frame": 0,
+        "frame_count": 1,
+        "payload_size": 64
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "CACHE_REVISION_MISMATCH",
+        "close": false,
+        "keywords": [
+          "revision"
+        ]
+      }
+    },
+    {
+      "id": "cache-stop-basic",
+      "operation": "cache_stop",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_stop"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-stop-idempotent-without-playback",
+      "operation": "cache_stop",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_stop",
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-clear-basic",
+      "operation": "cache_clear",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_clear",
+        "clear_id": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-clear-idempotent-without-cache",
+      "operation": "cache_clear",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_clear",
+        "clear_id": 2,
+        "future": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-clear-missing-clear-id",
+      "operation": "cache_clear",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_clear"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "clear_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-clear-invalid-clear-id",
+      "operation": "cache_clear",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_clear",
+        "clear_id": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "clear_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-enter-basic",
+      "operation": "cache_enter",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_enter"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-enter-unknown-field",
+      "operation": "cache_enter",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_enter",
+        "future": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-progress-basic",
+      "operation": "cache_progress",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_progress",
+        "play_id": 3,
+        "applied": 118
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-progress-missing-applied",
+      "operation": "cache_progress",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_progress",
+        "play_id": 3
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "applied"
+        ]
+      }
+    },
+    {
+      "id": "cache-progress-applied-wrong-type",
+      "operation": "cache_progress",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_progress",
+        "play_id": 3,
+        "applied": "many"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "applied"
+        ]
+      }
+    },
+    {
+      "id": "cache-complete-missing-applied-count",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "elapsed_seconds": 10.67
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "applied_frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-complete-applied-count-wrong-type",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": [],
+        "elapsed_seconds": 10.67
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "applied_frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-stopped-basic",
+      "operation": "cache_stopped",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_stopped",
+        "play_id": 3
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-stopped-missing-play-id",
+      "operation": "cache_stopped",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_stopped"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-cleared-basic",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "upload_id": 1,
+        "play_id": 1,
+        "clear_id": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-cleared-missing-upload-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "play_id": 1,
+        "clear_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-cleared-missing-clear-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "upload_id": 1,
+        "play_id": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "clear_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-cleared-invalid-clear-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "upload_id": 1,
+        "play_id": 0,
+        "clear_id": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "clear_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-cleared-missing-play-id",
+      "operation": "cache_cleared",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_cleared",
+        "upload_id": 1,
+        "clear_id": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-playing-basic",
+      "operation": "cache_playing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_playing",
+        "upload_id": 1,
+        "play_id": 3,
+        "loop": false
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-playing-loop-enabled",
+      "operation": "cache_playing",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_playing",
+        "upload_id": 2,
+        "play_id": 4,
+        "loop": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-playing-missing-loop",
+      "operation": "cache_playing",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_playing",
+        "upload_id": 1,
+        "play_id": 3
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "loop"
+        ]
+      }
+    },
+    {
+      "id": "cache-paused-basic",
+      "operation": "cache_paused",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_paused",
+        "play_id": 3,
+        "applied_frames": 2,
+        "source_frame": 1002
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-paused-before-first-frame",
+      "operation": "cache_paused",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_paused",
+        "play_id": 3,
+        "applied_frames": 0
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-paused-missing-applied-frames",
+      "operation": "cache_paused",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_paused",
+        "play_id": 3,
+        "source_frame": 1002
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "applied_frames"
+        ]
+      }
+    },
+    {
+      "id": "cache-paused-source-frame-wrong-type",
+      "operation": "cache_paused",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_paused",
+        "play_id": 3,
+        "applied_frames": 2,
+        "source_frame": "1002"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "source_frame"
+        ]
+      }
+    },
+    {
+      "id": "cache-resumed-basic",
+      "operation": "cache_resumed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_resumed",
+        "play_id": 3,
+        "applied_frames": 2,
+        "source_frame": 1002
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-resumed-missing-play-id",
+      "operation": "cache_resumed",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_resumed",
+        "applied_frames": 2
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-seeked-basic",
+      "operation": "cache_seeked",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_seeked",
+        "play_id": 3,
+        "source_frame": 1002,
+        "applied_frames": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-seeked-missing-source-frame",
+      "operation": "cache_seeked",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_seeked",
+        "play_id": 3,
+        "applied_frames": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "source_frame"
+        ]
+      }
+    },
+    {
+      "id": "cache-looped-basic",
+      "operation": "cache_looped",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_looped",
+        "play_id": 3,
+        "round": 1,
+        "source_frame": 1000
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-looped-missing-round",
+      "operation": "cache_looped",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_looped",
+        "play_id": 3,
+        "source_frame": 1000
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "round"
+        ]
+      }
+    },
+    {
+      "id": "cache-loop-changed-basic",
+      "operation": "cache_loop_changed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_loop_changed",
+        "play_id": 3,
+        "loop": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-loop-changed-loop-wrong-type",
+      "operation": "cache_loop_changed",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_loop_changed",
+        "play_id": 3,
+        "loop": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "loop"
+        ]
+      }
+    },
+    {
+      "id": "cache-playing-missing-upload-id",
+      "operation": "cache_playing",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_playing",
+        "play_id": 3
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-playing-invalid-play-id",
+      "operation": "cache_playing",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_playing",
+        "upload_id": 1,
+        "play_id": "third"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "play_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-ready-basic",
+      "operation": "cache_ready",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_ready",
+        "upload_id": 1,
+        "revision": 7,
+        "frame_count": 321
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-ready-missing-frame-count",
+      "operation": "cache_ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_ready",
+        "upload_id": 1,
+        "revision": 7
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-ready-count-wrong-type",
+      "operation": "cache_ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_ready",
+        "upload_id": 1,
+        "revision": 7,
+        "frame_count": "all"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "frame_count"
+        ]
+      }
+    },
+    {
+      "id": "cache-ready-missing-upload-id",
+      "operation": "cache_ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_ready",
+        "revision": 7,
+        "frame_count": 321
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "upload_id"
+        ]
+      }
+    },
+    {
+      "id": "cache-ready-missing-revision",
+      "operation": "cache_ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_ready",
+        "upload_id": 1,
+        "frame_count": 321
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "revision"
+        ]
+      }
+    },
+    {
+      "id": "cache-complete-basic",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": 321,
+        "elapsed_seconds": 10.67,
+        "scope": "cache",
+        "start_frame": 1000,
+        "end_frame": 1320
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-complete-segment-scope",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 4,
+        "applied_frame_count": 12,
+        "elapsed_seconds": 0.4,
+        "scope": "segment",
+        "start_frame": 1010,
+        "end_frame": 1021
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "cache-complete-unknown-scope",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": 321,
+        "elapsed_seconds": 10.67,
+        "scope": "attempt",
+        "start_frame": 1000,
+        "end_frame": 1320
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "scope"
+        ]
+      }
+    },
+    {
+      "id": "cache-complete-missing-segment-range",
+      "operation": "cache_complete",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "cache_complete",
+        "play_id": 1,
+        "applied_frame_count": 321,
+        "elapsed_seconds": 10.67,
+        "scope": "cache"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "start_frame"
+        ]
+      }
+    },
+    {
+      "id": "ready-basic",
+      "operation": "ready",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [
+          "Blink_R"
+        ],
+        "missing_in_maya": [
+          "Corrective"
+        ],
+        "bone_name_remaps": [
+          "hair/tip -> tip1"
+        ],
+        "workflow": "animation",
+        "target_morph_count": 5,
+        "accepted_morph_count": 3
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "ready-model-workflow-counts",
+      "operation": "ready",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [],
+        "missing_in_maya": [
+          "UnrealOnly"
+        ],
+        "bone_name_remaps": [],
+        "workflow": "model",
+        "target_morph_count": 12,
+        "accepted_morph_count": 7
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "ready-utf8-and-unknown-field",
+      "operation": "ready",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [
+          "笑"
+        ],
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "workflow": "model",
+        "target_morph_count": 0,
+        "accepted_morph_count": 0,
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "ready-missing-remaps",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [],
+        "missing_in_maya": [],
+        "workflow": "animation",
+        "target_morph_count": 0,
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "bone_name_remaps"
+        ]
+      }
+    },
+    {
+      "id": "ready-list-wrong-type",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": "Blink",
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "workflow": "animation",
+        "target_morph_count": 0,
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "missing_in_unreal"
+        ]
+      }
+    },
+    {
+      "id": "ready-missing-workflow",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [],
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "target_morph_count": 0,
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "workflow"
+        ]
+      }
+    },
+    {
+      "id": "ready-missing-target-morph-count",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [],
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "workflow": "model",
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "target_morph_count"
+        ]
+      }
+    },
+    {
+      "id": "ready-count-wrong-type",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "revision": 7,
+        "missing_in_unreal": [],
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "workflow": "model",
+        "target_morph_count": "many",
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "target_morph_count"
+        ]
+      }
+    },
+    {
+      "id": "ready-missing-negotiated-revision",
+      "operation": "ready",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "ready",
+        "missing_in_unreal": [],
+        "missing_in_maya": [],
+        "bone_name_remaps": [],
+        "workflow": "animation",
+        "target_morph_count": 0,
+        "accepted_morph_count": 0
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "revision"
+        ]
+      }
+    },
+    {
+      "id": "error-basic",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "INVALID_MESSAGE",
+        "message": "Bad payload",
+        "details": "Field curves is required"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-utf8-and-unknown-field",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "SKELETON_MISMATCH",
+        "message": "骨架不匹配",
+        "details": "缺少 jaw",
+        "future": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-preview-not-ready",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "PREVIEW_NOT_READY",
+        "message": "Model preview is not ready",
+        "details": "No ready Generated Preview Skeletal Mesh"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-preview-build-failed",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "PREVIEW_BUILD_FAILED",
+        "message": "Preview build failed",
+        "details": "Weight transfer rejected the input",
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-preview-morph-mismatch",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "PREVIEW_MORPH_MISMATCH",
+        "message": "模型预览的 BlendShape 无交集",
+        "details": "Maya-only: Smile; Unreal-only: Corrective"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-cache-metadata-invalid",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_METADATA_INVALID",
+        "message": "The cache upload metadata is invalid.",
+        "details": "frame_count does not cover the capture range"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-payload-too-large",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_PAYLOAD_TOO_LARGE",
+        "message": "The declared cache size exceeds the supported transient limit.",
+        "details": "declared 134217729 bytes"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-frame-index-invalid",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_FRAME_INDEX_INVALID",
+        "message": "The cached frame sequence has a gap or duplicate.",
+        "details": "expected index 12, got 14",
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-frame-contents-invalid",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_FRAME_CONTENTS_INVALID",
+        "message": "A cached frame failed numeric validation.",
+        "details": "Non-finite curve 4."
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-not-ready",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_NOT_READY",
+        "message": "No completed cache is buffered for playback.",
+        "details": "cache_play arrived before cache_ready"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-revision-mismatch",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHE_REVISION_MISMATCH",
+        "message": "The buffered cache belongs to a different character snapshot.",
+        "details": "buffered revision 9, requested 8",
+        "future": true
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-cache-playback-performance",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "CACHED_PLAYBACK_PERFORMANCE",
+        "message": "Local playback fell behind the captured scene rate.",
+        "details": "frame 118 missed its schedule; replay stopped without dropping frames",
+        "upload_id": 1,
+        "play_id": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "error-object-set-unsupported",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "OBJECT_SET_UNSUPPORTED",
+        "message": "Bad payload",
+        "details": "Field curves is required"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-anchor-mismatch",
+      "operation": "error",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "ANCHOR_MISMATCH",
+        "message": "Bad payload",
+        "details": "Field curves is required"
+      },
+      "expected": {
+        "accepted": true,
+        "close": true
+      }
+    },
+    {
+      "id": "error-missing-details",
+      "operation": "error",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "error",
+        "code": "INVALID_MESSAGE",
+        "message": "Bad payload"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "details"
+        ]
+      }
+    },
+    {
+      "id": "error-code-wrong-type",
+      "operation": "error",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "error",
+        "code": 7,
+        "message": "Bad payload",
+        "details": "Bad code"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "code"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v9-init-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 9,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-init-refused",
+      "operation": "init",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "init",
+        "version": 10,
+        "revision": 7,
+        "workflow": "animation",
+        "blendshapes_enabled": true,
+        "bones": [
+          [
+            "root",
+            -1,
+            [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1
+            ]
+          ]
+        ],
+        "curves": []
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v9-frame-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "version": 9,
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-frame-refused",
+      "operation": "frame",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "frame",
+        "version": 10,
+        "transforms": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "curves": [
+          0.5
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v9-cache-begin-refused",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "version": 9,
+        "upload_id": 3,
+        "revision": 7,
+        "fps": 30.0,
+        "start_frame": 1,
+        "end_frame": 3,
+        "frame_count": 3,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": false,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-cache-begin-refused",
+      "operation": "cache_begin",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "cache_begin",
+        "version": 10,
+        "upload_id": 3,
+        "revision": 7,
+        "fps": 30.0,
+        "start_frame": 1,
+        "end_frame": 3,
+        "frame_count": 3,
+        "payload_size": 96
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": false,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v9-hello-ack-refused",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 9,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "target": {
+          "object_id": "",
+          "kind": "",
+          "binding_path": "",
+          "generation": ""
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "mixed-version-v10-hello-ack-refused",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 10,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "target": {
+          "object_id": "",
+          "kind": "",
+          "binding_path": "",
+          "generation": ""
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "PROTOCOL_VERSION_MISMATCH",
+        "close": true,
+        "keywords": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "hello-centimetre-scene-is-accepted",
+      "operation": "hello",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello",
+        "version": 11,
+        "host": "maya",
+        "maya_version": "2024",
+        "scene": {
+          "linear_unit": "cm",
+          "unit_scale_cm": 1.0,
+          "fps": 30.0
+        },
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "hello-scene-unit-is-not-centimetres",
+      "operation": "hello",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello",
+        "version": 11,
+        "host": "maya",
+        "maya_version": "2024",
+        "scene": {
+          "linear_unit": "m",
+          "unit_scale_cm": 1.0,
+          "fps": 30.0
+        },
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "unit_scale_cm"
+        ]
+      }
+    },
+    {
+      "id": "hello-scene-frame-rate-above-maximum",
+      "operation": "hello",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello",
+        "version": 11,
+        "host": "maya",
+        "maya_version": "2024",
+        "scene": {
+          "linear_unit": "cm",
+          "unit_scale_cm": 1.0,
+          "fps": 120.0
+        },
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "1",
+          "60"
+        ]
+      }
+    },
+    {
+      "id": "hello-scene-frame-rate-below-minimum",
+      "operation": "hello",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello",
+        "version": 11,
+        "host": "maya",
+        "maya_version": "2024",
+        "scene": {
+          "linear_unit": "cm",
+          "unit_scale_cm": 1.0,
+          "fps": 0.25
+        },
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "1",
+          "60"
+        ]
+      }
+    },
+    {
+      "id": "hello-ack-paired-target-is-accepted",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 11,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "targets": [
+          {
+            "object_id": "character",
+            "kind": "skeletal_mesh",
+            "binding_path": "/Game/Characters/Hero",
+            "generation": "1"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "hello-ack-empty-target-before-pairing",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 11,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "targets": []
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "hello-ack-two-paired-targets-is-accepted",
+      "operation": "hello_ack",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "hello_ack",
+        "version": 11,
+        "session_id": 4242,
+        "capabilities": {
+          "linkage": true,
+          "reference": true,
+          "cache": true,
+          "model": true
+        },
+        "space": {
+          "space_revision": 1,
+          "anchor": {
+            "translation": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "targets": [
+          {
+            "object_id": "character",
+            "kind": "skeletal_mesh",
+            "binding_path": "/Game/Characters/Hero",
+            "generation": "1"
+          },
+          {
+            "object_id": "secondary",
+            "kind": "binding_actor",
+            "binding_path": "/Game/Props/Sword",
+            "generation": "2"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "mode-linkage-control-handover-is-accepted",
+      "operation": "mode",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "mode": "linkage",
+        "control": "unreal",
+        "transition": "ready",
+        "detail": "Maya follows the Unreal sequence time"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "mode-realtime-is-accepted",
+      "operation": "mode",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "mode": "realtime",
+        "control": "maya",
+        "transition": "ready",
+        "detail": "Maya owns its own timeline again"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "mode-cached-is-accepted",
+      "operation": "mode",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 6,
+        "mode": "cached",
+        "control": "maya",
+        "transition": "ready",
+        "detail": "Maya replays the uploaded cache"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "mode-unknown-value-refused",
+      "operation": "mode",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "mode": "warp",
+        "control": "unreal",
+        "transition": "ready",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "mode"
+        ]
+      }
+    },
+    {
+      "id": "mode-unknown-control-owner-refused",
+      "operation": "mode",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "mode": "linkage",
+        "control": "spectator",
+        "transition": "ready",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "control"
+        ]
+      }
+    },
+    {
+      "id": "mode-failed-transition-without-detail-refused",
+      "operation": "mode",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "mode",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "mode": "realtime",
+        "control": "maya",
+        "transition": "failed",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "detail"
+        ]
+      }
+    },
+    {
+      "id": "mode-revision-conflict-refused",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 3,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": true,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "components": [
+          {
+            "object_id": "character",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 1
+          }
+        ],
+        "reason": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "MODE_CONFLICT",
+        "close": false,
+        "keywords": [
+          "mode revision"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "mode-state-unknown-mode-refused",
+      "operation": "mode_state",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode_state",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "mode": "warp",
+        "control": "unreal",
+        "detail": "linkage is active"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "mode"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "mode-state-linkage-names-the-anchor",
+      "operation": "mode_state",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "mode_state",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "mode": "linkage",
+        "control": "unreal",
+        "detail": "Unreal owns the sequence time; Maya follows.",
+        "anchor": {
+          "location_cm": [
+            60.0,
+            40.0,
+            0.0
+          ],
+          "rotation_deg": {
+            "roll": 3.0,
+            "pitch": -4.0,
+            "yaw": 37.0
+          }
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": false
+      }
+    },
+    {
+      "id": "mode-state-linkage-without-anchor-refused",
+      "operation": "mode_state",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "mode_state",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "mode": "linkage",
+        "control": "unreal",
+        "detail": "Unreal owns the sequence time; Maya follows."
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "anchor"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": false
+      }
+    },
+    {
+      "id": "leave-linkage-realtime-is-accepted",
+      "operation": "leave_linkage",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "leave_linkage",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "target": "realtime",
+        "detail": "time/view/gate restored"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "leave-linkage-end-is-accepted",
+      "operation": "leave_linkage",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "leave_linkage",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "target": "end",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "leave-linkage-unknown-target-refused",
+      "operation": "leave_linkage",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "leave_linkage",
+        "session_id": 4242,
+        "mode_revision": 5,
+        "target": "pause",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "target"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "leave-linkage-stale-revision-refused",
+      "operation": "leave_linkage",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "leave_linkage",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "target": "realtime",
+        "detail": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "MODE_CONFLICT",
+        "close": false,
+        "keywords": [
+          "mode revision"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-target-is-accepted",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-cut-object-is-accepted",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a-cut",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        },
+        "cut": {
+          "stage": "root",
+          "name": "shotA"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-missing-time-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "time"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-missing-camera-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "camera"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-missing-gate-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "gate"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-empty-eval-id-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "eval_id"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-non-integer-serial-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": "12",
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "transport_serial"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-negative-tick-resolution-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": -1,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "tick_resolution"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "camera-time-non-finite-display-frame-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "raw_utf8": "{\"type\": \"camera_time\", \"session_id\": 4242, \"set_revision\": 1, \"mode_revision\": 4, \"space_revision\": 1, \"eval_id\": \"eval-1000-0-camera-a\", \"eval_serial\": 7, \"transport_serial\": 12, \"frame_serial\": 3, \"time\": {\"display_frame\": NaN, \"source_frame\": 1001, \"seconds\": 33.3667, \"tick\": {\"numerator\": 1000, \"denominator\": 30000}, \"display_rate\": {\"numerator\": 30000, \"denominator\": 1001}, \"tick_resolution\": {\"numerator\": 60000, \"denominator\": 1001}, \"playback_range\": {\"start\": 1000, \"end\": 1100}}, \"camera\": {\"basis\": \"transferred\", \"focal_length\": 35.0}, \"gate\": {\"aspect\": 1.778, \"resolution\": [1920, 1080]}}",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "finite"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "identity-stale-set-revision-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 0,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SET_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "set revision"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "identity-stale-space-revision-refused",
+      "operation": "camera_time",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "camera_time",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 0,
+        "eval_id": "eval-1000-0-camera-a",
+        "eval_serial": 7,
+        "transport_serial": 12,
+        "frame_serial": 3,
+        "time": {
+          "display_frame": 1000.0,
+          "source_frame": 1001,
+          "seconds": 33.3667,
+          "tick": {
+            "numerator": 1000,
+            "denominator": 30000
+          },
+          "display_rate": {
+            "numerator": 30000,
+            "denominator": 1001
+          },
+          "tick_resolution": {
+            "numerator": 60000,
+            "denominator": 1001
+          },
+          "playback_range": {
+            "start": 1000,
+            "end": 1100
+          }
+        },
+        "camera": {
+          "basis": "transferred",
+          "focal_length": 35.0
+        },
+        "gate": {
+          "aspect": 1.778,
+          "resolution": [
+            1920,
+            1080
+          ]
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SPACE_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "space revision"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "identity-repeated-sample-serial-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "payloads": [
+        {
+          "type": "group",
+          "session_id": 4242,
+          "set_revision": 1,
+          "mode_revision": 4,
+          "space_revision": 1,
+          "eval_id": "eval-1000-0-camera-a",
+          "transport_serial": 12,
+          "sample_serial": 1,
+          "objects": [
+            {
+              "object_id": "character",
+              "transforms": [
+                [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  1,
+                  1,
+                  1
+                ]
+              ],
+              "curves": [
+                0.0
+              ]
+            }
+          ],
+          "camera": {
+            "camera": "basis"
+          },
+          "time": {
+            "maya_frame": 1000,
+            "ue_display_frame": 1000.0
+          }
+        },
+        {
+          "type": "group",
+          "session_id": 4242,
+          "set_revision": 1,
+          "mode_revision": 4,
+          "space_revision": 1,
+          "eval_id": "eval-1000-0-camera-a",
+          "transport_serial": 12,
+          "sample_serial": 1,
+          "objects": [
+            {
+              "object_id": "character",
+              "transforms": [
+                [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  1,
+                  1,
+                  1
+                ]
+              ],
+              "curves": [
+                0.0
+              ]
+            }
+          ],
+          "camera": {
+            "camera": "basis"
+          },
+          "time": {
+            "maya_frame": 1000,
+            "ue_display_frame": 1000.0
+          }
+        }
+      ],
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "sample_serial"
+        ]
+      }
+    },
+    {
+      "id": "group-complete-sample-is-accepted",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "group-two-object-set-is-accepted",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1001-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected_counts": {
+        "objects": 2,
+        "transforms": 1,
+        "curves": 1
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "group-partial-set-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1002-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "group-duplicate-object-refused",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1001-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "duplicate"
+        ]
+      }
+    },
+    {
+      "id": "group-object-outside-set-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1003-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          },
+          {
+            "object_id": "secondary",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                5,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.75
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "group-missing-object-refused",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "object"
+        ]
+      }
+    },
+    {
+      "id": "group-non-finite-transform-refused",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "raw_utf8": "{\"type\": \"group\", \"session_id\": 4242, \"set_revision\": 1, \"mode_revision\": 4, \"space_revision\": 1, \"eval_id\": \"eval-1000-0-camera-a\", \"transport_serial\": 12, \"sample_serial\": 1, \"objects\": [{\"object_id\": \"character\", \"transforms\": [[0, 0, 0, 0, 0, 0, 1, 1, 1, NaN]], \"curves\": [0.0]}], \"camera\": {\"camera\": \"basis\"}, \"time\": {\"maya_frame\": 1000, \"ue_display_frame\": 1000.0}}",
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "finite"
+        ]
+      }
+    },
+    {
+      "id": "group-non-integer-transport-serial-refused",
+      "operation": "group",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": "12",
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "transport serial"
+        ]
+      }
+    },
+    {
+      "id": "group-stale-set-revision-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 0,
+        "mode_revision": 4,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SET_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "set revision"
+        ]
+      }
+    },
+    {
+      "id": "group-stale-space-revision-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 4,
+        "space_revision": 0,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SPACE_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "space revision"
+        ]
+      }
+    },
+    {
+      "id": "group-stale-mode-revision-refused",
+      "operation": "group",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "group",
+        "session_id": 4242,
+        "set_revision": 1,
+        "mode_revision": 3,
+        "space_revision": 1,
+        "eval_id": "eval-1000-0-camera-a",
+        "transport_serial": 12,
+        "sample_serial": 1,
+        "objects": [
+          {
+            "object_id": "character",
+            "transforms": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "curves": [
+              0.0
+            ]
+          }
+        ],
+        "camera": {
+          "camera": "basis"
+        },
+        "time": {
+          "maya_frame": 1000,
+          "ue_display_frame": 1000.0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "MODE_CONFLICT",
+        "close": false,
+        "keywords": [
+          "mode revision"
+        ]
+      }
+    },
+    {
+      "id": "applied-completed-evidence-is-accepted",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": true,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "components": [
+          {
+            "object_id": "character",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 1
+          }
+        ],
+        "reason": ""
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "applied-two-object-evidence-is-accepted",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": true,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "components": [
+          {
+            "object_id": "character",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 1
+          },
+          {
+            "object_id": "secondary",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 0
+          }
+        ],
+        "reason": ""
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "applied-failed-without-reason-refused",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": false,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "components": [
+          {
+            "object_id": "character",
+            "bones": 2,
+            "morphs": 1,
+            "parts": 1
+          }
+        ],
+        "reason": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "reason"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "applied-without-components-refused",
+      "operation": "applied",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "applied",
+        "session_id": 4242,
+        "mode_revision": 4,
+        "eval_id": "eval-1000-0-camera-a",
+        "sample_serial": 1,
+        "applied": true,
+        "applied_display_frame": 1000.0,
+        "lag_seconds": 0.033,
+        "reason": ""
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": true,
+        "keywords": [
+          "components"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "reference-offer-is-accepted",
+      "operation": "reference_offer",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "directory": "handoff/transfer-1",
+        "manifest_digest": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+        "scope": {
+          "level": "/Game/Maps/Lvl",
+          "sublevels": [
+            "/Game/Maps/Lvl/Sub"
+          ],
+          "completeness": "complete",
+          "unloaded_sublevels": []
+        },
+        "space_revision": 1,
+        "counts": {
+          "objects": 12,
+          "triangles": 4500,
+          "bytes": 2048
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "reference-offer-stale-space-revision-refused",
+      "operation": "reference_offer",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "directory": "handoff/transfer-1",
+        "manifest_digest": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+        "scope": {
+          "level": "/Game/Maps/Lvl",
+          "sublevels": [
+            "/Game/Maps/Lvl/Sub"
+          ],
+          "completeness": "complete",
+          "unloaded_sublevels": []
+        },
+        "space_revision": 0,
+        "counts": {
+          "objects": 12,
+          "triangles": 4500,
+          "bytes": 2048
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SPACE_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "space revision"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "reference-offer-empty-digest-refused",
+      "operation": "reference_offer",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "directory": "handoff/transfer-1",
+        "manifest_digest": "",
+        "scope": {
+          "level": "/Game/Maps/Lvl",
+          "sublevels": [
+            "/Game/Maps/Lvl/Sub"
+          ],
+          "completeness": "complete",
+          "unloaded_sublevels": []
+        },
+        "space_revision": 1,
+        "counts": {
+          "objects": 12,
+          "triangles": 4500,
+          "bytes": 2048
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "manifest_digest"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "reference-offer-non-positive-byte-count-refused",
+      "operation": "reference_offer",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "directory": "handoff/transfer-1",
+        "manifest_digest": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+        "scope": {
+          "level": "/Game/Maps/Lvl",
+          "sublevels": [
+            "/Game/Maps/Lvl/Sub"
+          ],
+          "completeness": "complete",
+          "unloaded_sublevels": []
+        },
+        "space_revision": 1,
+        "counts": {
+          "objects": 12,
+          "triangles": 4500,
+          "bytes": 0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "bytes"
+        ]
+      },
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      }
+    },
+    {
+      "id": "reference-result-unknown-transfer-id-refused",
+      "operation": "reference_result",
+      "applies_to": [
+        "unreal"
+      ],
+      "payload": {
+        "type": "reference_result",
+        "session_id": 4242,
+        "transfer_id": "",
+        "accepted": false,
+        "detail": "no handoff of that identity",
+        "counts": {
+          "objects": 0,
+          "triangles": 0,
+          "bytes": 0
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "transfer_id"
+        ]
+      }
+    },
+    {
+      "id": "reference-result-import-is-accepted",
+      "operation": "reference_result",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_result",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "accepted": true,
+        "detail": "imported 12 objects",
+        "counts": {
+          "objects": 12,
+          "triangles": 4500,
+          "bytes": 2048
+        },
+        "container": "MtoU_UE_SceneRef"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "reference-removed-is-accepted",
+      "operation": "reference_removed",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_removed",
+        "session_id": 4242,
+        "detail": "user removed the tool-owned container"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "reference-query-scope-is-accepted",
+      "operation": "reference_query",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_query",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "scope": {
+          "level": "/Game/Maps/Lvl",
+          "sublevels": [
+            "/Game/Maps/Lvl/Sub"
+          ]
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "reference-query-missing-level-refused",
+      "operation": "reference_query",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "reference_query",
+        "session_id": 4242,
+        "transfer_id": "transfer-1",
+        "scope": {
+          "sublevels": []
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "level"
+        ]
+      }
+    },
+    {
+      "id": "resource-group-over-linkage-budget",
+      "operation": "resource_limit",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "group",
+        "budget": "max_linkage_group_bytes",
+        "measured": 33554433,
+        "limit": 33554432,
+        "unit": "bytes"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "RESOURCE_LIMIT",
+        "close": false,
+        "keywords": [
+          "max_linkage_group_bytes"
+        ]
+      }
+    },
+    {
+      "id": "resource-reference-objects-over-budget",
+      "operation": "resource_limit",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "budget": "max_reference_objects",
+        "measured": 20001,
+        "limit": 20000,
+        "unit": "objects"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "RESOURCE_LIMIT",
+        "close": false,
+        "keywords": [
+          "max_reference_objects"
+        ]
+      }
+    },
+    {
+      "id": "resource-reference-triangles-over-budget",
+      "operation": "resource_limit",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "reference_offer",
+        "budget": "max_reference_triangles",
+        "measured": 20000001,
+        "limit": 20000000,
+        "unit": "triangles"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "RESOURCE_LIMIT",
+        "close": false,
+        "keywords": [
+          "max_reference_triangles"
+        ]
+      }
+    },
+    {
+      "id": "resource-control-queue-over-budget",
+      "operation": "resource_limit",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "control_queue",
+        "budget": "max_control_queue",
+        "measured": 17,
+        "limit": 16,
+        "unit": "undelivered control messages",
+        "direction": "unreal_to_maya"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "RESOURCE_LIMIT",
+        "close": false,
+        "keywords": [
+          "max_control_queue"
+        ]
+      }
+    },
+    {
+      "id": "remove-object-is-accepted",
+      "operation": "remove_object",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "remove-object-primary-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "character",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "character"
+        ]
+      }
+    },
+    {
+      "id": "remove-object-stale-set-revision-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character",
+        "secondary"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 3,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "SET_REVISION_STALE",
+        "close": false,
+        "keywords": [
+          "set revision"
+        ]
+      }
+    },
+    {
+      "id": "remove-object-outside-set-refused",
+      "operation": "remove_object",
+      "applies_to": [
+        "unreal"
+      ],
+      "negotiated_set": [
+        "character"
+      ],
+      "linkage": {
+        "session_id": 4242,
+        "mode_revision": 4,
+        "set_revision": 1,
+        "space_revision": 1,
+        "active": true
+      },
+      "payload": {
+        "type": "remove_object",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "detail": "removed in the pairing window"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "secondary"
+        ]
+      }
+    },
+    {
+      "id": "object-removed-is-accepted",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "restored": true,
+        "detail": "the secondary target was restored"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "object-removed-with-residual-is-accepted",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya",
+        "unreal"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "set_revision": 2,
+        "restored": false,
+        "detail": "the muted writer 'transform:Sword' no longer exists"
+      },
+      "expected": {
+        "accepted": true,
+        "close": false
+      }
+    },
+    {
+      "id": "object-removed-missing-set-revision-refused",
+      "operation": "object_removed",
+      "applies_to": [
+        "maya"
+      ],
+      "payload": {
+        "type": "object_removed",
+        "session_id": 4242,
+        "object_id": "secondary",
+        "restored": true,
+        "detail": "the secondary target was restored"
+      },
+      "expected": {
+        "accepted": false,
+        "error_code": "INVALID_MESSAGE",
+        "close": false,
+        "keywords": [
+          "set_revision"
+        ]
+      }
+    }
+  ],
+  "limits": {
+    "max_message_bytes": 33554432,
+    "max_linkage_group_bytes": 33554432,
+    "max_control_queue": 16,
+    "max_reference_bytes": 268435456,
+    "max_reference_objects": 20000,
+    "max_reference_triangles": 20000000,
+    "max_cache_payload_bytes": 1073741824,
+    "max_cache_frame_count": 20000,
+    "max_set_objects": 2
+  }
+}

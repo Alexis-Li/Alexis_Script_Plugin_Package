@@ -10,10 +10,12 @@
 #include "Serialization/JsonWriter.h"
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoUCharacterComposition.h"
 #include "MtoULiveLinkPreview.h"
 #include "MtoULiveLinkSource.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Editor.h"
 #include "DrawDebugHelpers.h"
@@ -113,8 +115,8 @@ public:
         else if (Stage == 1 || Stage == 4)
         {
             if (!Acknowledged(Result)) { return false; }
-            Test->TestEqual(TEXT("complete Maya skeleton"), Result->GetArrayField(TEXT("bones")).Num(),
-                Binding->SkeletalMesh->GetRefSkeleton().GetNum());
+            Test->TestTrue(TEXT("Maya publishes a nonempty scene snapshot"),
+                Result->GetArrayField(TEXT("bones")).Num() > 0);
             Test->AddInfo(TEXT("Negotiated remaps: ") + JsonText(Result->GetObjectField(TEXT("warning"))));
             if (Fixture->HasField(TEXT("expected_remaps")))
             {
@@ -136,15 +138,32 @@ public:
             if (!FParse::Param(FCommandLine::Get(), TEXT("NullRHI")))
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::Combine(Evidence, Label + TEXT(".png")), false, false);
+                // The viewport captures on a later tick. Keep this pose until
+                // the image has been written instead of switching Maya to the
+                // next pose while the screenshot is still pending.
+                Stage = 10;
+                Settled = FPlatformTime::Seconds();
             }
             Test->AddInfo(TEXT("Accepted ") + Label);
-            if (++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
+            if (Stage != 10 && ++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
             {
                 Send(TEXT("pose"), Pose); Settled = 0;
             }
+            else if (Stage != 10)
+            {
+                Stage = bPreviewStages ? 3 : 9; Settled = FPlatformTime::Seconds();
+            }
+        }
+        else if (Stage == 10)
+        {
+            if (FScreenshotRequest::IsScreenshotRequested() || FPlatformTime::Seconds() - Settled < 1.0)
+            { return false; }
+            if (++Pose < Fixture->GetArrayField(TEXT("poses")).Num())
+            {
+                Send(TEXT("pose"), Pose); Settled = 0; Stage = 2;
+            }
             else
             {
-                // Give the screenshot a frame before the synchronous Refresh.
                 Stage = bPreviewStages ? 3 : 9; Settled = FPlatformTime::Seconds();
             }
         }
@@ -233,6 +252,55 @@ private:
         // one the run stays on the Animation phases and reconnects instead.
         bPreviewStages = Original->PreviewStaticMesh != nullptr;
         Binding.Reset(DuplicateObject<UMtoULiveLinkBinding>(Original, GetTransientPackage()));
+        // Optional fixture overrides stay on this transient duplicate. They let
+        // a production project's existing meshes be accepted in a new outfit
+        // combination without editing or saving the owner's Binding asset.
+        if (Fixture->HasField(TEXT("primary_mesh")))
+        {
+            const FString Path = Fixture->GetStringField(TEXT("primary_mesh"));
+            Binding->SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+            if (!Binding->SkeletalMesh)
+            { Test->AddError(TEXT("Could not load fixture Primary Driver: ") + Path); return false; }
+            Binding->PreviewStaticMesh = nullptr;
+            Binding->DriverGarmentSlotOverride.Reset();
+        }
+        if (Fixture->HasField(TEXT("preview_mesh")))
+        {
+            const FString Path = Fixture->GetStringField(TEXT("preview_mesh"));
+            Binding->PreviewStaticMesh = Path.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *Path);
+            if (!Path.IsEmpty() && !Binding->PreviewStaticMesh)
+            { Test->AddError(TEXT("Could not load fixture Preview Static Mesh: ") + Path); return false; }
+        }
+        if (Fixture->HasField(TEXT("driver_garment_slots")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>* Slots = nullptr;
+            if (!Fixture->TryGetArrayField(TEXT("driver_garment_slots"), Slots))
+            { Test->AddError(TEXT("Fixture driver_garment_slots must be an array")); return false; }
+            for (const TSharedPtr<FJsonValue>& Value : *Slots)
+            {
+                if (!Value.IsValid() || Value->Type != EJson::String || Value->AsString().IsEmpty())
+                { Test->AddError(TEXT("Fixture driver_garment_slots must contain nonempty names")); return false; }
+                Binding->DriverGarmentSlotOverride.AddUnique(FName(*Value->AsString()));
+            }
+        }
+        if (Fixture->HasField(TEXT("parts")))
+        {
+            Binding->AdditionalParts.Reset();
+            for (const TSharedPtr<FJsonValue>& Value : Fixture->GetArrayField(TEXT("parts")))
+            {
+                const TSharedPtr<FJsonObject> PartValue = Value->AsObject();
+                if (!PartValue) { Test->AddError(TEXT("Fixture part must be an object")); return false; }
+                FMtoUCharacterPart& Part = Binding->AdditionalParts.AddDefaulted_GetRef();
+                Part.PartName = PartValue->GetStringField(TEXT("name"));
+                const FString Path = PartValue->GetStringField(TEXT("mesh"));
+                Part.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+                Part.bEnabled = !PartValue->HasField(TEXT("enabled")) || PartValue->GetBoolField(TEXT("enabled"));
+                if (!Part.SkeletalMesh)
+                { Test->AddError(TEXT("Could not load fixture Additional Part: ") + Path); return false; }
+            }
+            Binding->EnsureCharacterPartIds();
+        }
+        bPreviewStages = Binding->PreviewStaticMesh != nullptr;
         UWorld* World = GEditor->GetEditorWorldContext().World();
         if (!World->GetOutermost()->GetName().StartsWith(TEXT("/Engine/")))
         { Test->AddError(TEXT("Run character acceptance in a disposable editor launched on /Engine/Maps/Entry.")); return false; }
@@ -251,7 +319,8 @@ private:
             const FVector Center = Bounds.Origin;
             const FVector Eye = Center + FVector(0.8, 3.5, 0.4) * Bounds.SphereRadius;
             View->SetViewLocation(Eye); View->SetViewRotation((Center - Eye).Rotation());
-            View->SetRealtime(true); View->SetViewMode(VMI_Unlit); View->FocusViewportOnBox(Bounds.GetBox().ExpandBy(Bounds.SphereRadius * 0.15), true); View->Invalidate();
+            View->SetRealtime(true); View->ChangeBufferVisualizationMode(FName(TEXT("BaseColor")));
+            View->FocusViewportOnBox(Bounds.GetBox().ExpandBy(Bounds.SphereRadius * 0.15), true); View->Invalidate();
         }
         auto* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
         FSocket* Socket = Sockets->CreateSocket(NAME_Stream, TEXT("Character acceptance port"));
@@ -290,13 +359,104 @@ private:
             Client->EvaluateFrameFromSource_AnyThread(Key, ULiveLinkAnimationRole::StaticClass(), Frame))) { return false; }
         const auto* Static = Frame.StaticData.Cast<FLiveLinkSkeletonStaticData>();
         const auto* Animation = Frame.FrameData.Cast<FLiveLinkAnimationFrameData>();
-        const auto& Ref = Binding->SkeletalMesh->GetRefSkeleton();
-        if (!Static || !Animation || !Test->TestEqual(TEXT("full evaluated hierarchy"), Animation->Transforms.Num(), Ref.GetNum())) { return false; }
-        TArray<FMatrix> BindWorld, CurrentWorld, RefWorld, PublishedWorld;
-        for (int32 I = 0; I < Ref.GetNum(); ++I)
+        if (!Static || !Animation) { Test->AddError(TEXT("Streamed frame is incomplete")); return false; }
+        // The subject publishes the character's required bones: the positive
+        // skin influences of every enabled mesh plus their ancestors, not one
+        // mesh's complete exported hierarchy.
+        const FMtoUCharacterComposition Composition =
+            FMtoUCharacterComposition::Resolve(Binding.Get());
+        if (!Test->TestTrue(TEXT("character composition resolves for pose comparison"), Composition.IsUsable()))
         {
-            const int32 P = Ref.GetParentIndex(I);
-            RefWorld.Add(Ref.GetRefBonePose()[I].ToMatrixWithScale() * (P < 0 ? FMatrix::Identity : RefWorld[P]));
+            Test->AddError(Composition.Diagnostics);
+            return false;
+        }
+        const FReferenceSkeleton& Required = Composition.RequiredSkeleton;
+        if (!Test->TestEqual(TEXT("published required hierarchy"), Animation->Transforms.Num(), Required.GetNum())
+            || !Test->TestEqual(TEXT("published required names"), Static->BoneNames.Num(), Required.GetNum())
+            || !Test->TestEqual(TEXT("published required parents"), Static->BoneParents.Num(), Required.GetNum())) { return false; }
+        // The Maya peer reports its complete snapshot in Maya order, so each
+        // published bone is resolved to its Maya source by parent-scoped short
+        // name, exactly like the negotiation; the ready reply's remap list
+        // bridges an Unreal import rename.
+        const TArray<TSharedPtr<FJsonValue>>& MayaBones = Result->GetArrayField(TEXT("bones"));
+        const TArray<TSharedPtr<FJsonValue>>& MayaBind = Result->GetArrayField(TEXT("bind"));
+        const TArray<TSharedPtr<FJsonValue>>& MayaCurrent = Result->GetArrayField(TEXT("transforms"));
+        TArray<FString> MayaNames;
+        TArray<int32> MayaParents;
+        for (const TSharedPtr<FJsonValue>& Value : MayaBones)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Entry = Value->AsArray();
+            MayaNames.Add(Entry.Num() > 0 ? Entry[0]->AsString() : FString());
+            MayaParents.Add(Entry.Num() > 1 ? static_cast<int32>(Entry[1]->AsNumber()) : INDEX_NONE);
+        }
+        if (!Test->TestEqual(TEXT("Maya snapshot carries its hierarchy"), MayaNames.Num(), MayaParents.Num())
+            || !Test->TestEqual(TEXT("Maya snapshot carries every bind transform"), MayaBind.Num(), MayaNames.Num())
+            || !Test->TestEqual(TEXT("Maya snapshot carries every current transform"), MayaCurrent.Num(), MayaNames.Num()))
+        { return false; }
+        TMap<FString, TSet<FString>> RenamedFrom;
+        if (Result->HasField(TEXT("warning")))
+        {
+            for (const TSharedPtr<FJsonValue>& Value
+                : Result->GetObjectField(TEXT("warning"))->GetArrayField(TEXT("bone_name_remaps")))
+            {
+                FString MayaPath, UnrealName;
+                if (Value->AsString().Split(TEXT(" -> "), &MayaPath, &UnrealName))
+                {
+                    FString MayaParent, MayaName;
+                    if (MayaPath.Split(TEXT("/"), &MayaParent, &MayaName))
+                    {
+                        RenamedFrom.FindOrAdd(UnrealName).Add(MayaName);
+                    }
+                }
+            }
+        }
+        TArray<int32> PublishedToMaya;
+        PublishedToMaya.Init(INDEX_NONE, Static->BoneNames.Num());
+        TSet<int32> ClaimedMaya;
+        bool bResolved = true;
+        for (int32 I = 0; I < Static->BoneNames.Num() && bResolved; ++I)
+        {
+            const int32 PublishedParent = Static->BoneParents[I];
+            const int32 MayaParent = PublishedParent == INDEX_NONE ? INDEX_NONE : PublishedToMaya[PublishedParent];
+            const FString PublishedName = Static->BoneNames[I].ToString();
+            TArray<int32> Candidates;
+            for (int32 Maya = 0; Maya < MayaNames.Num(); ++Maya)
+            {
+                if (MayaParents[Maya] != MayaParent || ClaimedMaya.Contains(Maya)) { continue; }
+                const TSet<FString>* Sources = RenamedFrom.Find(PublishedName);
+                if (MayaNames[Maya] == PublishedName || (Sources && Sources->Contains(MayaNames[Maya])))
+                {
+                    Candidates.Add(Maya);
+                }
+            }
+            bResolved = Test->TestTrue(FString::Printf(TEXT("published bone %s resolves to one Maya source"),
+                *PublishedName), Candidates.Num() == 1)
+                && Test->TestTrue(TEXT("published hierarchy keeps the required order and parents"),
+                    Static->BoneNames[I] == Required.GetBoneName(I)
+                    && PublishedParent == Required.GetParentIndex(I));
+            if (bResolved)
+            {
+                PublishedToMaya[I] = Candidates[0];
+                ClaimedMaya.Add(Candidates[0]);
+            }
+        }
+        if (!bResolved) { return false; }
+        TArray<FMatrix> BindWorld, CurrentWorld, RequiredWorld, PublishedWorld;
+        BindWorld.SetNum(MayaNames.Num());
+        CurrentWorld.SetNum(MayaNames.Num());
+        for (int32 Maya = 0; Maya < MayaNames.Num(); ++Maya)
+        {
+            const int32 P = MayaParents[Maya];
+            if (P >= Maya || (P >= 0 && !BindWorld.IsValidIndex(P))) { Test->AddError(TEXT("Maya snapshot hierarchy is not parent-first")); return false; }
+            BindWorld[Maya] = CharacterTransform(MayaBind[Maya]).ToMatrixWithScale()
+                * (P < 0 ? FMatrix::Identity : BindWorld[P]);
+            CurrentWorld[Maya] = CharacterTransform(MayaCurrent[Maya]).ToMatrixWithScale()
+                * (P < 0 ? FMatrix::Identity : CurrentWorld[P]);
+        }
+        for (int32 I = 0; I < Required.GetNum(); ++I)
+        {
+            const int32 P = Required.GetParentIndex(I);
+            RequiredWorld.Add(Required.GetRefBonePose()[I].ToMatrixWithScale() * (P < 0 ? FMatrix::Identity : RequiredWorld[P]));
         }
         double MaxPositionError = 0;
         double MaxDisplayedError = 0;
@@ -304,17 +464,13 @@ private:
         for (int32 I = 0; I < Static->BoneNames.Num(); ++I)
         {
             const int32 P = Static->BoneParents[I];
-            const int32 Target = Ref.FindBoneIndex(Static->BoneNames[I]);
-            if (!Test->TestTrue(TEXT("published bone exists in actual Driver"), Target != INDEX_NONE)) { return false; }
-            BindWorld.Add(CharacterTransform(Result->GetArrayField(TEXT("bind"))[I]).ToMatrixWithScale()
-                * (P < 0 ? FMatrix::Identity : BindWorld[P]));
-            CurrentWorld.Add(CharacterTransform(Result->GetArrayField(TEXT("transforms"))[I]).ToMatrixWithScale()
-                * (P < 0 ? FMatrix::Identity : CurrentWorld[P]));
+            const FName BoneName = Static->BoneNames[I];
+            const int32 Maya = PublishedToMaya[I];
             PublishedWorld.Add(Animation->Transforms[I].ToMatrixWithScale()
                 * (P < 0 ? FMatrix::Identity : PublishedWorld[P]));
             FMatrix Inverse;
-            if (!VectorMatrixInverse(&Inverse, &BindWorld[I])) { Test->AddError(TEXT("Fixture bind inverse failed")); return false; }
-            const FMatrix Expected = RefWorld[Target] * Inverse * CurrentWorld[I];
+            if (!VectorMatrixInverse(&Inverse, &BindWorld[Maya])) { Test->AddError(TEXT("Fixture bind inverse failed")); return false; }
+            const FMatrix Expected = RequiredWorld[I] * Inverse * CurrentWorld[Maya];
             MaxPositionError = FMath::Max(MaxPositionError, FVector::Distance(Expected.GetOrigin(), PublishedWorld[I].GetOrigin()));
             for (EAxis::Type Axis : {EAxis::X, EAxis::Y, EAxis::Z})
             {
@@ -322,12 +478,28 @@ private:
                     Expected.GetScaledAxis(Axis).GetSafeNormal(0.0),
                     PublishedWorld[I].GetScaledAxis(Axis).GetSafeNormal(0.0)));
             }
-            const auto& Displayed = Actor->GetSkeletalMeshComponent()->GetComponentSpaceTransforms();
-            if (Displayed.IsValidIndex(Target))
+            // Verify every mesh that owns a shared bone, and the owning part
+            // for part-only bones. Checking only the Primary would miss a
+            // detached Head or Hair component in the real character.
+            TArray<const USkeletalMeshComponent*> Displays;
+            Displays.Add(Actor->GetSkeletalMeshComponent());
+            for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : Actor->GetCharacterPartComponents())
             {
+                if (Part) { Displays.Add(Part); }
+            }
+            bool bDisplayed = false;
+            for (const USkeletalMeshComponent* DisplayComponent : Displays)
+            {
+                if (!DisplayComponent) { continue; }
+                const int32 DisplayIndex = DisplayComponent->GetBoneIndex(BoneName);
+                if (DisplayIndex == INDEX_NONE) { continue; }
+                const TArray<FTransform>& Displayed = DisplayComponent->GetComponentSpaceTransforms();
+                if (!Displayed.IsValidIndex(DisplayIndex))
+                { Test->AddError(TEXT("Displayed skeleton is incomplete")); return false; }
+                bDisplayed = true;
                 MaxDisplayedError = FMath::Max(MaxDisplayedError,
-                    FVector::Distance(PublishedWorld[I].GetOrigin(), Displayed[Target].GetTranslation()));
-                const FMatrix DisplayedMatrix = Displayed[Target].ToMatrixWithScale();
+                    FVector::Distance(PublishedWorld[I].GetOrigin(), Displayed[DisplayIndex].GetTranslation()));
+                const FMatrix DisplayedMatrix = Displayed[DisplayIndex].ToMatrixWithScale();
                 for (EAxis::Type Axis : {EAxis::X, EAxis::Y, EAxis::Z})
                 {
                     MaxDisplayedAxisError = FMath::Max(MaxDisplayedAxisError, FVector::Distance(
@@ -335,7 +507,7 @@ private:
                         DisplayedMatrix.GetScaledAxis(Axis).GetSafeNormal(0.0)));
                 }
             }
-            else { Test->AddError(TEXT("Displayed skeleton is incomplete")); return false; }
+            if (!bDisplayed) { Test->AddError(TEXT("No displayed component owns a required bone")); return false; }
         }
         Test->AddInfo(FString::Printf(TEXT("%s pose %d: %d bones, maximum world position error %.9g cm"),
             *Workflow, Pose, Static->BoneNames.Num(), MaxPositionError));
@@ -367,13 +539,13 @@ private:
 };
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterAcceptanceTest,
-    "MtoULiveLink.Editor.Preview.CharacterAcceptance",
+    "MtoUOptIn.Editor.Preview.CharacterAcceptance",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMtoUCharacterAcceptanceTest::RunTest(const FString& Parameters)
 {
     FString Fixture, Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterFixture="), Fixture))
-    { AddInfo(TEXT("Character acceptance not requested; provide fixture, mayapy, peer and evidence paths.")); return true; }
+    { AddError(TEXT("Character acceptance requires -MtoUCharacterFixture=, -MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=.")); return false; }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPeer="), Peer)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence))

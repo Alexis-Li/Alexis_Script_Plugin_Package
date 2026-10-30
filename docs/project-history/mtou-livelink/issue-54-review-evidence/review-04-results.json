@@ -1,0 +1,805 @@
+{
+  "baseline": "b593dad42849705873c4d1b59f633992a966f4e3",
+  "date": "2026-10-13",
+  "provenance": "review-04 executed independently; runtime source unchanged",
+  "environment": {
+    "maya": "2024",
+    "unreal": "5.7.4",
+    "os": "Windows 11"
+  },
+  "python_tests": 23,
+  "maya_host_checks": 104,
+  "maya_host_failures": 0,
+  "repository_tests": {
+    "passed": 37,
+    "skipped": 0
+  },
+  "builds": [
+    "Backups disposable shell: Succeeded (up to date)",
+    "diagnostic host: Succeeded (up to date)"
+  ],
+  "diagnostic_source_match": {
+    "original_files_equal": 18,
+    "review_diagnostics_sha256": "463570df2563e25d7b7751b449807b3887801af1a8fa9cce6b34713a870e15b7"
+  },
+  "runs": {
+    "ue-suite": {
+      "succeeded": 17,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.BindFrameProjection",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "rotated-root projection delta: 0.000000030"
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.CharacterPropStream",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.CommandLineArguments",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.DriverExitOwnership",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.FixtureAndAnchorRules",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NecessaryScopeMapping",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "optional order 0: ''",
+            "optional order 1: ''",
+            "optional candidate beside a necessary assignment: "
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NegotiationRefusals",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.NonEssentialBindDifferences",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.OwnershipRenegotiation",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RealAssetPair",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Real-asset check not requested; supply MtoUMultiSubjectMayapy, MtoUMultiSubjectPeer, MtoUMultiSubjectMayaScene, the two mesh flags and MtoUMultiSubjectCharacterRoot."
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RealMayaPeer",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Maya peer: frames=4 max_latency_ms=16.00 log=<scratch>/mtou-issue54/review-20261013/ue-suite/maya-peer-character-prop/mtou-multi-subject-maya.log"
+          ]
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.RenameCandidateContracts",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.SequencerTakeover",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.SessionAndTimeIdentity",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WeightedBoneMotion",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WorldCleanup",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": []
+        },
+        {
+          "test": "MtoUMultiSubjectPrototype.WorldSpacePlacement",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "world placement character head (Head): scene V(X=178.34, Y=170.72, Z=66.64) -> anchor V(X=1269.09, Y=-162.99, Z=156.64), actual V(X=1269.09, Y=-162.99, Z=156.64) (0.000005 cm, 0.000000 deg)",
+            "world placement prop tip (PropTip_0123456789abcdef0123456789abcdef): scene V(X=104.44, Y=-1.81, Z=-54.45) -> anchor V(X=1291.36, Y=-349.35, Z=35.55), actual V(X=1291.36, Y=-349.35, Z=35.55) (0.000002 cm, 0.000002 deg)",
+            "pair separation: anchored scene V(X=22.27, Y=-186.36, Z=-121.10), world V(X=22.27, Y=-186.36, Z=-121.10), error 0.000005 cm"
+          ]
+        }
+      ],
+      "executed": 16,
+      "skipped_inside_success": [
+        "MtoUMultiSubjectPrototype.RealAssetPair (no asset arguments; executed separately)"
+      ]
+    },
+    "ue-arms": {
+      "succeeded": 1,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.RealMayaPeer",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "Maya peer: frames=4 max_latency_ms=0.00 log=<scratch>/mtou-issue54/review-20261013/ue-arms/maya-peer-character-arms/mtou-multi-subject-maya.log"
+          ]
+        }
+      ]
+    },
+    "diagnostics": {
+      "succeeded": 2,
+      "succeededWithWarnings": 0,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "Issue54Review.NonRequiredAmbiguity",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "order=0 optional_target=3 required=false result=",
+            "order=1 optional_target=3 required=false result=",
+            "same necessary declaration without optional branches: "
+          ]
+        },
+        {
+          "test": "Issue54Review.UniqueNameRename",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 0,
+          "observations": [
+            "unique Joint -> required Joint12: error='target bone 'Joint12' below 'Chest' deforms the mesh but the declaration drives no bone for it; declared 'Joint' (its short name occurs once in this declaration, so it is not an import rename) look like importer renames of it and were not applied', target=-1, rename_count=0"
+          ]
+        }
+      ]
+    },
+    "realpair": {
+      "succeeded": 0,
+      "succeededWithWarnings": 1,
+      "failed": 0,
+      "notRun": 0,
+      "tests": [
+        {
+          "test": "MtoUMultiSubjectPrototype.RealAssetPair",
+          "state": "Success",
+          "errors": 0,
+          "warnings": 174,
+          "observations": [
+            "world oracle landmarks for 'character': head, pelvis",
+            "world oracle landmarks for 'prop': pelvis",
+            "Maya pair placement: character root (V(0)), prop root (V(0)); 9 landmark samples",
+            "character: declared=1399 driven=1399 required=647 source_only=0 undriven=0",
+            "prop: declared=1502 driven=1502 required=187 source_only=0 undriven=0",
+            "real pair deltas: max_bone=0.001510 max_root_world=0.000523",
+            "per-frame pair relation: t=1.000 V(0); t=120.000 V(0); t=60.000 V(0); t=60.000 V(0)",
+            "Morph comparison: 428 curve values, max delta 0.000001236",
+            "world landmark 'character' head at t=120.000: Maya V(X=6.84, Y=3.66, Z=167.40) -> expected V(X=324.66, Y=-173.79, Z=207.40), actual V(X=324.66, Y=-173.79, Z=207.40), error 0.000004 cm",
+            "world landmark 'character' pelvis at t=120.000: Maya V(X=5.92, Y=6.12, Z=106.01) -> expected V(X=322.78, Y=-171.95, Z=146.01), actual V(X=322.78, Y=-171.95, Z=146.01), error 0.000002 cm",
+            "world landmark 'prop' pelvis at t=120.000: Maya V(Y=0.95, Z=106.69) -> expected V(X=319.60, Y=-179.14, Z=146.69), actual V(X=319.60, Y=-179.14, Z=146.69), error 0.000000 cm",
+            "world landmark 'character' head at t=1.000: Maya V(X=7.50, Y=5.81, Z=167.61) -> expected V(X=324.34, Y=-171.56, Z=207.61), actual V(X=324.34, Y=-171.56, Z=207.61), error 0.000006 cm",
+            "world landmark 'character' pelvis at t=1.000: Maya V(X=5.92, Y=5.25, Z=106.05) -> expected V(X=323.15, Y=-172.74, Z=146.05), actual V(X=323.15, Y=-172.74, Z=146.05), error 0.000001 cm",
+            "real lifecycle deltas: max=0.001459 character_pose_change=54.763369",
+            "real lifecycle evidence: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/lifecycle/mtou-multi-subject-c01-c02-renegotiation-unreal.json",
+            "BaseColor framing: center V(X=319.95, Y=-168.86, Z=134.44) radius 129.8 eye V(X=99.22, Y=-389.59, Z=244.80)",
+            "BaseColor screenshot requested: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/basecolor-c01-c02.png",
+            "BaseColor framing (separated pair): center V(X=319.95, Y=-39.58, Z=134.44) radius 202.4 eye V(X=-24.13, Y=-383.65, Z=306.47)",
+            "BaseColor screenshot requested: <scratch>/mtou-issue54/review-20261013/realpair/c01-c02/basecolor-c01-c02-separated.png",
+            "Suppressed expected ('Warning') level log message or higher matching 'AnimGraphNode_KawaiiPhysics' 100 times."
+          ]
+        }
+      ],
+      "warning_categories": {
+        "empty_engine_version": 171,
+        "missing_custom_version": 1,
+        "missing_KawaiiPhysics_script_packages": 2
+      },
+      "world_oracle": {
+        "probe_samples": 9,
+        "actual_comparisons": 5,
+        "compared_times": [
+          120,
+          1
+        ],
+        "max_error_cm": 6e-06
+      },
+      "metric_boundary": "bone/root/lifecycle deltas use max(translation component cm, rotation radians, dimensionless scale); they are not pure centimetres or a vertex-deformation measurement.",
+      "visual_boundary": "Common-anchor capture overlaps the pair and contains unresolved checker materials. Separated BaseColor capture shows both upright target meshes completely in frame; C02 is the supplied body/clothes mesh without a head. Separation moves the disposable prop anchor for visibility only; spatial acceptance uses the common-anchor numeric oracle."
+    }
+  },
+  "source_artifact_sha256": {
+    "ue-suite/report/index.json": "7cc1c11bdd799f1a8734e0b9dbdfc3adb453894e0e1bb4e30eb8e639d31b910e",
+    "ue-arms/report/index.json": "1b02cf9596972b8baf56e6377510464dffaa3b854a9c4c534909d04a6a8a70fa",
+    "diagnostics/report/index.json": "f558fd94b78a8c5a63e46015cabfedfdd31ca4c0efe5399761fceab90d37976a",
+    "realpair/report/index.json": "3b6c8a5f4a6d9966fe443ca26ad25f42c718da336a1ee345a23931dfb9e254e1",
+    "host.json": "0a73c15d563e0cd7d7cc677177235965054d02d08b1fe35c1d1563a4bed559d2",
+    "realpair/c01-c02/mtou-multi-subject-maya.json": "2a8d3cde91dd9536d671df01d6a1a36800ed5019c050d9b3b745df968bc12371",
+    "realpair/c01-c02/mtou-multi-subject-c01-c02-unreal.json": "6b7fc40a971b7be4ad3d4d71bea69c6ccca88adbb794cca336a37427a1c83f31",
+    "realpair/c01-c02/mtou-multi-subject-probe.json": "e169fcd5c9e348efe3423ddba4bc830d8dcea4963c9cd87f69b42c7b5b79ad62",
+    "basecolor-c01-c02.png": "055bd376d395082c572a911cccf7a54e5bfb4da9a2774df308df91930963a5be",
+    "basecolor-c01-c02-separated.png": "fb1f6267d9934178f7fbf1bc606e5cf785db420f78d40d88df8e6dc42d003807",
+    "ue-suite/maya-peer-character-prop/mtou-multi-subject-character-prop-unreal.json": "4a0bfead291ffa265acb0f4cdb053c28d9c0b78cbba5a0730da567f557b1a980",
+    "ue-arms/maya-peer-character-arms/mtou-multi-subject-character-arms-unreal.json": "ca9c82c9b8cac78d73e5a0857d2caab42a413607205d3f09d76788a750f861d0",
+    "realpair/c01-c02/lifecycle/mtou-multi-subject-c01-c02-renegotiation-unreal.json": "7d260ed5de598c0a94d4867dd47ee81823fca73c93f654724fb1f7b533dd0410"
+  },
+  "real_maya_checks": [
+    {
+      "check": "references present for character+prop",
+      "ok": true
+    },
+    {
+      "check": "frames applied for character+prop",
+      "ok": true
+    },
+    {
+      "check": "the planned reverse/re-edit source times were streamed",
+      "ok": true
+    },
+    {
+      "check": "generated rig files unchanged by the session",
+      "ok": true
+    },
+    {
+      "check": "supplied scene unchanged on disk",
+      "ok": true
+    }
+  ],
+  "maya_host_assertions": [
+    {
+      "check": "generated rigs are refused inside tracked source",
+      "ok": true
+    },
+    {
+      "check": "three rigs materialised",
+      "ok": true
+    },
+    {
+      "check": "rig arms file exists",
+      "ok": true
+    },
+    {
+      "check": "rig arms has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "rig character file exists",
+      "ok": true
+    },
+    {
+      "check": "rig character has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "rig prop file exists",
+      "ok": true
+    },
+    {
+      "check": "rig prop has a unique namespace",
+      "ok": true
+    },
+    {
+      "check": "two independent references",
+      "ok": true
+    },
+    {
+      "check": "references keep their namespaces",
+      "ok": true
+    },
+    {
+      "check": "scene frame rate is the negotiated one",
+      "ok": true
+    },
+    {
+      "check": "both subjects are joints with explicit long roots",
+      "ok": true
+    },
+    {
+      "check": "duplicate bone names across subjects are isolated",
+      "ok": true
+    },
+    {
+      "check": "Morph alias is shared across subjects",
+      "ok": true
+    },
+    {
+      "check": "each Morph plug belongs to its own namespace",
+      "ok": true
+    },
+    {
+      "check": "init declares exactly the permitted named ids",
+      "ok": true
+    },
+    {
+      "check": "init bind carries one 10-number row per bone",
+      "ok": true
+    },
+    {
+      "check": "character Maya bind equals authored joint-local translations",
+      "ok": true
+    },
+    {
+      "check": "prop Maya bind equals authored joint-local translations",
+      "ok": true
+    },
+    {
+      "check": "character root is the keyed linear pose at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "prop root is the keyed linear pose at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "character Morph at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "prop Morph at t=1.5",
+      "ok": true
+    },
+    {
+      "check": "the two subjects evaluate different Morph values",
+      "ok": true
+    },
+    {
+      "check": "roots move with Maya time",
+      "ok": true
+    },
+    {
+      "check": "non-root bones keep their parent-relative offset",
+      "ok": true
+    },
+    {
+      "check": "a non-root bone row is not the root world pose",
+      "ok": true
+    },
+    {
+      "check": "character pose is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "character Morph is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "prop pose is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "prop Morph is identical alone and in the pair",
+      "ok": true
+    },
+    {
+      "check": "missing root is refused",
+      "ok": true
+    },
+    {
+      "check": "ambiguous root pattern is refused",
+      "ok": true
+    },
+    {
+      "check": "non-joint root is refused",
+      "ok": true
+    },
+    {
+      "check": "one root for two subjects is refused",
+      "ok": true
+    },
+    {
+      "check": "swapped role is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong bone list is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong curve list is refused",
+      "ok": true
+    },
+    {
+      "check": "a static ancestor is reported but not animated",
+      "ok": true
+    },
+    {
+      "check": "the animated ancestor socket is reported",
+      "ok": true
+    },
+    {
+      "check": "strict ancestors refuse the animated socket",
+      "ok": true
+    },
+    {
+      "check": "an animated session parent can host the referenced prop root",
+      "ok": true
+    },
+    {
+      "check": "the animated session parent is reported as an ancestor",
+      "ok": true
+    },
+    {
+      "check": "strict ancestors refuse the animated session parent",
+      "ok": true
+    },
+    {
+      "check": "the parented prop root world pose moves with its parent",
+      "ok": true
+    },
+    {
+      "check": "sampled world pose equals the moved DAG matrix at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the parent motion is applied exactly once at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the referenced prop keeps its own local pose at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "the character subject is unaffected by the prop parent at frame 1.0",
+      "ok": true
+    },
+    {
+      "check": "sampled world pose equals the moved DAG matrix at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the parent motion is applied exactly once at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the referenced prop keeps its own local pose at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the character subject is unaffected by the prop parent at frame 3.0",
+      "ok": true
+    },
+    {
+      "check": "the stub session exits cleanly",
+      "ok": true
+    },
+    {
+      "check": "every frame was applied",
+      "ok": true
+    },
+    {
+      "check": "frame serials and times are strict",
+      "ok": true
+    },
+    {
+      "check": "both subjects were applied before the remove",
+      "ok": true
+    },
+    {
+      "check": "only the remaining subject streamed after the remove",
+      "ok": true
+    },
+    {
+      "check": "the remove event disabled one subject only",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the same number of frames",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the same serials and times",
+      "ok": true
+    },
+    {
+      "check": "the receiver's frames carry what Maya recorded",
+      "ok": true
+    },
+    {
+      "check": "the receiver verified the declared skeletons",
+      "ok": true
+    },
+    {
+      "check": "one init and one remove reached the receiver",
+      "ok": true
+    },
+    {
+      "check": "the remove names the disabled subject",
+      "ok": true
+    },
+    {
+      "check": "a reverse scrub and a same-frame re-edit are accepted",
+      "ok": true
+    },
+    {
+      "check": "every frame and remove names its negotiated session",
+      "ok": true
+    },
+    {
+      "check": "a frame from a previous session is refused",
+      "ok": true
+    },
+    {
+      "check": "fractional times reach the wire",
+      "ok": true
+    },
+    {
+      "check": "fractional Morph value is the linear sample",
+      "ok": true
+    },
+    {
+      "check": "the mismatched arms init was refused by the receiver",
+      "ok": true
+    },
+    {
+      "check": "the mismatched init declared the arms subject with the full-body skeleton and left the character correct",
+      "ok": true
+    },
+    {
+      "check": "the accepted init declares both real skeletons",
+      "ok": true
+    },
+    {
+      "check": "a fresh negotiation on the same connection succeeded",
+      "ok": true
+    },
+    {
+      "check": "frames applied after the renegotiation",
+      "ok": true
+    },
+    {
+      "check": "the receiver answered with two sessions' worth of state",
+      "ok": true
+    },
+    {
+      "check": "role replacement used two connections and two pairs",
+      "ok": true
+    },
+    {
+      "check": "the replacement pair negotiated again",
+      "ok": true
+    },
+    {
+      "check": "a spec builds its own rigs",
+      "ok": true
+    },
+    {
+      "check": "a spec-driven session applies frames",
+      "ok": true
+    },
+    {
+      "check": "a spec-driven frame keeps its sampled values",
+      "ok": true
+    },
+    {
+      "check": "a spec bone's resting rotation reaches the wire bind",
+      "ok": true
+    },
+    {
+      "check": "a Morph override is applied to the disposable scene and streamed",
+      "ok": true
+    },
+    {
+      "check": "a shared target root is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong session id is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong serial is refused",
+      "ok": true
+    },
+    {
+      "check": "wrong time is refused",
+      "ok": true
+    },
+    {
+      "check": "silent receiver is refused",
+      "ok": true
+    },
+    {
+      "check": "refused init is refused",
+      "ok": true
+    },
+    {
+      "check": "a receiver that closes mid-session is reported",
+      "ok": true
+    },
+    {
+      "check": "--drop-after closes the connection abruptly",
+      "ok": true
+    },
+    {
+      "check": "the receiver saw the abrupt disconnect",
+      "ok": true
+    },
+    {
+      "check": "the lifecycle probe receiver starts from zero sessions",
+      "ok": true
+    },
+    {
+      "check": "a second negotiation on the same connection gets a larger session id",
+      "ok": true
+    },
+    {
+      "check": "the re-negotiated pair streams both subjects again",
+      "ok": true
+    },
+    {
+      "check": "the disabled subject's rig is still referenced",
+      "ok": true
+    },
+    {
+      "check": "the session created no animation curves",
+      "ok": true
+    },
+    {
+      "check": "the session created no expressions",
+      "ok": true
+    },
+    {
+      "check": "no script job was left behind by the session",
+      "ok": true
+    },
+    {
+      "check": "the session scene was never saved to a file",
+      "ok": true
+    },
+    {
+      "check": "the session scene is dirty and was left unsaved",
+      "ok": true
+    },
+    {
+      "check": "the session scene closes cleanly",
+      "ok": true
+    },
+    {
+      "check": "a fresh scene has no references",
+      "ok": true
+    },
+    {
+      "check": "rig files are unchanged after the whole run",
+      "ok": true
+    }
+  ],
+  "peer_exit_states": {
+    "character-prop": {
+      "scenario": "character-prop",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 4,
+      "applied_frames": 4,
+      "last_applied_serial": 4,
+      "last_applied_time": 2,
+      "last_time_direction": "hold",
+      "last_error_code": "",
+      "last_error_details": "",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": true,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[MovieSceneSkeletalAnimationTrack_0 (saved_asset=false, muted_now=false)], exit=reference_pose",
+        "prop: component_driver=mode=AnimationSingleNode, anim_class=none, anim_to_play=MtoUPrototype_PropAnim, single_node_playing=true, paused=false, update_in_editor=false, post_process_disabled=false, suppressed_writers=[], restored_writers=[], exit=own_driver_restored"
+      ],
+      "errors": []
+    },
+    "character-arms": {
+      "scenario": "character-arms",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 4,
+      "applied_frames": 4,
+      "last_applied_serial": 4,
+      "last_applied_time": 2,
+      "last_time_direction": "hold",
+      "last_error_code": "skeleton_mismatch",
+      "last_error_details": "subject 'arms': declared root '|arms:Socket|arms:ArmsRoot' (ArmsRoot) is not the first, parentless bone 'Root' of the declaration",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": false,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[MovieSceneSkeletalAnimationTrack_0 (saved_asset=false, muted_now=false)], exit=reference_pose",
+        "arms: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose"
+      ],
+      "errors": [
+        {
+          "code": "skeleton_mismatch",
+          "details": "subject 'arms': declared root '|arms:Socket|arms:ArmsRoot' (ArmsRoot) is not the first, parentless bone 'Root' of the declaration",
+          "at_serial": 0
+        }
+      ]
+    },
+    "c01-c02-lifecycle": {
+      "scenario": "c01-c02-renegotiation",
+      "session_ready": false,
+      "session": 1,
+      "received_frames": 2,
+      "applied_frames": 2,
+      "last_applied_serial": 2,
+      "last_applied_time": 1,
+      "last_time_direction": "backward",
+      "last_error_code": "skeleton_mismatch",
+      "last_error_details": "subject 'prop': target bone 'lowerarm_correctiveRoot_r' below 'lowerarm_r' deforms the mesh but the declaration drives no bone for it",
+      "session_end_reason": "disconnect",
+      "client_connected": false,
+      "preview_active": false,
+      "preview_writers_suppressed": false,
+      "ok": false,
+      "drive_ownership": [
+        "character: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose",
+        "prop: component_driver=none (reference pose, no animation driver), suppressed_writers=[], restored_writers=[], exit=reference_pose"
+      ],
+      "errors": [
+        {
+          "code": "skeleton_mismatch",
+          "details": "subject 'prop': target bone 'lowerarm_correctiveRoot_r' below 'lowerarm_r' deforms the mesh but the declaration drives no bone for it",
+          "at_serial": 0
+        }
+      ]
+    }
+  },
+  "archive_note": "Closeout extracted existing host assertions and peer exit states; no host tests rerun. Original raw-output hashes retain provenance after disposable output cleanup."
+}

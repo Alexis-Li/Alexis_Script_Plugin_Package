@@ -1,10 +1,13 @@
 {
   "FileVersion": 3,
-  "Version": 4,
-  "VersionName": "0.5.0",
+  "Version": 9,
+  "VersionName": "0.10.0",
   "FriendlyName": "MtoU_LiveLink",
   "Description": "Streams evaluated Maya character animation into Unreal Live Link.",
   "Category": "Animation",
+  "CreatedBy": "Alexis-Li",
+  "CreatedByURL": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/tree/main/composite/MtoULiveLink",
+  "DocsURL": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/main/composite/MtoULiveLink/README.md",
   "CanContainContent": false,
   "Modules": [
     {
@@ -29,6 +32,10 @@
     },
     {
       "Name": "GeometryScripting",
+      "Enabled": true
+    },
+    {
+      "Name": "LevelSequenceEditor",
       "Enabled": true
     }
   ]

@@ -6,13 +6,23 @@ on:
 
 jobs:
   validate:
+    strategy:
+      matrix:
+        submodules: ['false', 'recursive']
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: false
+          submodules: ${{ matrix.submodules }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - run: python tools/validate_repository.py
       - run: python -m unittest discover -s tests -v
+      - name: Project system-Python tests
+        if: matrix.submodules == 'false'
+        run: |
+          python -m unittest discover -s composite/MtoULiveLink/maya/MtoULiveLink/tests -p "test_*.py"
+          python -m unittest discover -s maya/tools/FlattenMeshToUV/tests
+          python -m unittest discover -s maya/tools/NitroPoly/tests

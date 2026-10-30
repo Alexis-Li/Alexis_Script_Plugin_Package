@@ -4,25 +4,24 @@
 
 ## What This Repository Is
 
-This repository is a collection of independently usable Autodesk Maya scripts
-and tools for 3D art production. It also provides a workspace for standalone
-Unreal Engine plug-ins and composite products that cooperate across multiple
-host applications.
+This repository is a collection of independently usable scripts, tools, and
+plug-ins for 3D game-art production. It covers Autodesk Maya, Unreal Engine, and
+Adobe Substance 3D Painter, as well as composite products that cooperate across
+several of these applications.
 
-Maya projects favor one directly runnable Python file. A project only adds
-`scripts/`, `plug-ins/`, `icons/`, or other files when the feature requires
-them. Small and medium tools install by copying those files to Maya's matching
-directories and do not require a `.mod` file. Maya runtime code should support
-both Python 2 and Python 3 where practical; Python 3 takes priority when one
-implementation cannot support both.
+Choose a tool below and follow its manual for supported application versions,
+installation and usage. Each tool or host component can be installed separately.
+The collection contains directly owned projects and independent submodules;
+independent projects own their source, Issues and releases in their own repository.
 
 ## Tools
 
 | Tool | Purpose | Location |
 | --- | --- | --- |
 | Flatten Mesh To UV | Converts a mesh's UV layout into flat polygon geometry. | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
-| MtoU Live Link | Streams one evaluated Maya character to stock Unreal Live Link through independently installable Maya and Unreal components. | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
+| MtoU Live Link | Previews Maya character animation in Unreal Editor in real time or from a cache, with camera linkage, a second object and scene reference, through independently installable Maya and Unreal components. | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | Provides polygon selection, topology, pivot, connection, and edge-loop workflows. | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
+| StoUTextureSync | Painter-to-Unreal texture synchronization, in prototyping. | [Independent repository](https://github.com/Alexis-Li/StoUTextureSync) · submodule `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | Evenly distributes selected edge loops through an interactive drag operation. | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
 
 ## Tool Documentation
@@ -31,15 +30,25 @@ implementation cannot support both.
 - [MtoU Live Link](composite/MtoULiveLink/README.md)
 - [NitroPoly](maya/tools/NitroPoly/README.md)
 - [ZiSpread](maya/scripts/ZiSpread/README.md)
+- [Repository map and supported hosts](docs/workspace-spec.md)
 - [Maya project guide](docs/maya-development.md)
 - [Naming conventions](docs/naming-conventions.md)
 - [Release process](docs/release-process.md)
+- [Products in design](docs/proposals/README.md)
 - [Project development history](docs/project-history/README.md)
+
+## Get Independent Projects
+
+Clone with `git clone --recurse-submodules <repository-URL>`. In an existing
+checkout, preserve local child changes before running
+`git submodule update --init --recursive`. See the [submodule workflow](docs/submodules.md)
+for development, pin updates and migration.
 
 ## Start Developing
 
 1. Install Python 3.10 or newer for the repository maintenance commands.
-2. Read [`AGENTS.md`](AGENTS.md) and the platform-specific `AGENTS.md` before editing.
+2. Read [`AGENTS.md`](AGENTS.md) and the host rule file (`maya/`, `unreal/`, or
+   `substance-painter/AGENTS.md`) before editing.
 3. Preview a project from a template; add `--apply` only when the preview is correct:
 
    ```powershell
@@ -60,4 +69,6 @@ implementation cannot support both.
 
 See [development conventions](docs/development-conventions.md) for the shared
 workflow and the [Unreal plugin guide](docs/unreal-development.md) for project
-navigation.
+navigation. Use the [Issue/PR workflow](docs/agents/issue-tracker.md) to choose
+a delivery path and track review and integration. Consult the
+[history retention rules](docs/project-history/README.md) before adding records.

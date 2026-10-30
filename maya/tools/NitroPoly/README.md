@@ -13,13 +13,11 @@ Python 2 and Python 3. Tested by the author in Maya 2020, 2022, and 2024.
 
 ## Installation
 
-`NitroPoly.py` is the only runtime file. Copy it to Maya's user `scripts`
-directory. Do not copy or create a separate `NitroPolyStart.py` file.
+Copy `scripts/NitroPoly.py` to Maya's user `scripts` directory.
 
 ## Usage
 
-Save the following Python command directly in a Maya shelf button. This is
-button content, not another script file:
+Save the following Python command in a Maya shelf button:
 
 ```python
 try:
@@ -33,6 +31,4 @@ NitroPoly.main()
 ```
 
 For a temporary run without installation, open `NitroPoly.py` in a Python tab
-of Maya's Script Editor and execute the complete file. This is an alternative
-to copying the file and creating a shelf button; the two workflows are not
-cumulative.
+of Maya's Script Editor and execute the complete file.

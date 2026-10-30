@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0-prototype",
+	"FriendlyName": "MtoU Scene Reference Prototype",
+	"Description": "Bounded level-scope reference geometry transfer used by the Issue 53 verification. Editor-only, standalone from the MtoULiveLink product.",
+	"Category": "Other",
+	"CreatedBy": "Alexis Script Plugin Package",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "MtoUSceneRefPrototypeEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true
+		}
+	]
+}

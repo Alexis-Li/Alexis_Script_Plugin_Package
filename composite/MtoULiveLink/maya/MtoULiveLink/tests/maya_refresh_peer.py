@@ -1,4 +1,5 @@
-"""Real Maya peer for MtoULiveLink.Editor.Preview.MayaRefreshPeer.
+# ruff: noqa: E402
+"""Real Maya peer for MtoUOptIn.Editor.Preview.MayaRefreshPeer.
 
 Streams Animation through the real sender transport, observes the Unreal-side
 explicit-refresh disconnect, proves no automatic reconnect happens, then
@@ -17,9 +18,26 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import pathlib
+import sys
 import time
 import traceback
 from pathlib import Path
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
+from mtou_livelink import (
+    config as mtou_config,
+)
+from mtou_livelink import (
+    controller as mtou_controller,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
 
 
 def read_json(path):
@@ -61,7 +79,7 @@ def main():
         spec = importlib.util.spec_from_file_location("MtoURefreshHost", str(script))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.PORT = fixture["port"]
+        mtou_config.PORT = fixture["port"]
         result["maya_version"] = cmds.about(version=True)
         result["maya_api"] = cmds.about(apiVersion=True)
         result["runtime_sha256"] = hashlib.sha256(script.read_bytes()).hexdigest()
@@ -84,13 +102,13 @@ def main():
         cmds.playbackOptions(minTime=1, maxTime=3)
         cmds.currentTime(1)
 
-        class HeadlessController(module._Controller):
+        class HeadlessController(mtou_controller.Controller):
             # Presentation only: retain the real lifecycle and error transition.
             def _show_error(self, diagnostic):
                 result.setdefault("diagnostics", []).append(diagnostic)
 
         controller = HeadlessController()
-        controller._scene = module._CharacterScene.capture(joints[0], display, "clothes")
+        controller._scene = mtou_scene.CharacterScene.capture(joints[0], display, "clothes")
 
         def pump(timeout, label, predicate=None, sample=True):
             deadline = time.time() + timeout
@@ -100,6 +118,7 @@ def main():
                     session._sample_and_submit(force=True)
                 if predicate is not None and predicate():
                     return True
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.005)
             if predicate is not None:
                 raise AssertionError("Timed out: {0}; diagnostics={1}".format(
@@ -115,6 +134,7 @@ def main():
                 session = controller._session
                 if session is not None:
                     session._sample_and_submit(force=True)
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.01)
             raise AssertionError("Timed out waiting for command: {0}".format(action))
 
@@ -130,6 +150,7 @@ def main():
                 session = controller._session
                 if session is not None:
                     session._sample_and_submit(force=True)
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.01)
             raise AssertionError("Timed out waiting for stream command")
 
@@ -157,6 +178,7 @@ def main():
                 session._sample_and_submit(force=True)
             result["streaming_a"]["time"] = cmds.currentTime(query=True)
             write_json(args.result, result)
+            mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
             time.sleep(0.01)
 
         # The Unreal refresh closed the socket: the real sender must observe

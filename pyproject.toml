@@ -1,7 +1,7 @@
 [project]
 name = "alexis-script-plugin-package-tools"
 version = "0.1.0"
-description = "Repository tooling for the Alexis Maya and Unreal monorepo"
+description = "Repository tooling for the Alexis 3D art tools monorepo"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-only" }
 

@@ -122,6 +122,58 @@ bool GetNumber(const TSharedPtr<FJsonValue>& Value, double& OutValue)
     return Value.IsValid() && Value->Type == EJson::Number && Value->TryGetNumber(OutValue);
 }
 
+// v10 identity helpers. A linkage message that cannot name its identity is
+// structurally invalid, because no later message could be matched to it.
+bool GetIdentityInt(
+    const TSharedPtr<FJsonObject>& Object,
+    const TCHAR* Name,
+    int32& OutValue,
+    FString& OutError)
+{
+    TSharedPtr<FJsonValue> Value;
+    if (!GetTypedField(Object, Name, EJson::Number, Value, OutError)
+        || !GetExactInt(Value, OutValue))
+    {
+        OutError = FString::Printf(
+            TEXT("Field '%s' must be an integer JSON number."), Name);
+        return false;
+    }
+    return true;
+}
+
+bool GetOptionalIdentityInt(
+    const TSharedPtr<FJsonObject>& Object,
+    const TCHAR* Name,
+    int32& OutValue,
+    FString& OutError)
+{
+    if (!Object->HasField(Name))
+    {
+        return true;
+    }
+    return GetIdentityInt(Object, Name, OutValue, OutError);
+}
+
+bool GetOptionalObject(
+    const TSharedPtr<FJsonObject>& Object,
+    const TCHAR* Name,
+    TSharedPtr<FJsonObject>& OutValue,
+    FString& OutError)
+{
+    OutValue.Reset();
+    if (!Object->HasField(Name))
+    {
+        return true;
+    }
+    TSharedPtr<FJsonValue> Value;
+    if (!GetTypedField(Object, Name, EJson::Object, Value, OutError))
+    {
+        return false;
+    }
+    OutValue = Value->AsObject();
+    return OutValue.IsValid();
+}
+
 bool ValidateNameText(const FString& Name, const TCHAR* Kind, int32 Index, FString& OutError)
 {
     if (Name.IsEmpty())
@@ -184,6 +236,19 @@ bool ParseFrameBody(
     if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != ExpectedType)
     {
         OutError = FString::Printf(TEXT("Message type must be '%s'."), ExpectedType);
+        return false;
+    }
+
+    // The frozen contract refuses a message whose version differs before any
+    // state changes, for every message family and not only the greeting and
+    // the object description, so a mixed pair never half-streams.
+    double VersionValue = 0.0;
+    if (Object->TryGetNumberField(TEXT("version"), VersionValue)
+        && static_cast<int32>(VersionValue) != FMtoUProtocol::Version)
+    {
+        OutError = FString::Printf(
+            TEXT("Unsupported protocol version; expected %d."),
+            FMtoUProtocol::Version);
         return false;
     }
 
@@ -392,6 +457,105 @@ bool FMtoUProtocol::ParseInit(
     OutMessage.Workflow = Workflow;
     OutMessage.bBlendshapesEnabled = bBlendshapesEnabled;
 
+    // v10 identity: the explicitly paired object, its set revision and the
+    // common space both adapters agreed on. A message that cannot name them
+    // is structurally invalid, because a v10 group or mode message that later
+    // answers this negotiation could not be matched to it.
+    if (!GetStringField(Object, TEXT("object_id"), OutMessage.ObjectId, OutError)
+        || OutMessage.ObjectId.IsEmpty())
+    {
+        OutError = TEXT("Field 'object_id' must be a non-empty string.");
+        return false;
+    }
+    const auto RequirePositiveRevision = [&](const TCHAR* Name, int32& OutValue) -> bool
+    {
+        TSharedPtr<FJsonValue> Value;
+        int32 Parsed = 0;
+        if (!GetTypedField(Object, Name, EJson::Number, Value, OutError)
+            || !GetExactInt(Value, Parsed)
+            || Parsed < 1)
+        {
+            OutError = FString::Printf(
+                TEXT("Field '%s' must be a positive integer JSON number."), Name);
+            return false;
+        }
+        OutValue = Parsed;
+        return true;
+    };
+    if (!RequirePositiveRevision(TEXT("set_revision"), OutMessage.SetRevision)
+        || !RequirePositiveRevision(TEXT("space_revision"), OutMessage.SpaceRevision))
+    {
+        return false;
+    }
+
+    // v11 object set: the ordered ids the connection negotiates, primary
+    // first. Every init of the set names the same list and its own id in it.
+    const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+    if (!GetArrayField(Object, TEXT("set_objects"), SetValues, OutError) || SetValues->IsEmpty())
+    {
+        OutError = TEXT("Field 'set_objects' must be a non-empty array of object ids.");
+        return false;
+    }
+    for (int32 Index = 0; Index < SetValues->Num(); ++Index)
+    {
+        FString SetObject;
+        if (!(*SetValues)[Index].IsValid() || (*SetValues)[Index]->Type != EJson::String
+            || !(*SetValues)[Index]->TryGetString(SetObject) || SetObject.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' entry %d must be a non-empty string."), Index);
+            return false;
+        }
+        if (OutMessage.SetObjects.Contains(SetObject))
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' names the duplicate object id '%s'."), *SetObject);
+            return false;
+        }
+        OutMessage.SetObjects.Add(SetObject);
+    }
+    if (OutMessage.SetObjects.Num() > MaxSetObjects)
+    {
+        OutError = FString::Printf(
+            TEXT("The object set holds %d objects; max_set_objects is %d."),
+            OutMessage.SetObjects.Num(), MaxSetObjects);
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("OBJECT_SET_UNSUPPORTED");
+        }
+        return false;
+    }
+    if (OutMessage.SetObjects[0] != FMtoUObjectIds::Character)
+    {
+        OutError = FString::Printf(
+            TEXT("Field 'set_objects' must start with the '%s' object."), FMtoUObjectIds::Character);
+        return false;
+    }
+    for (const FString& SetObject : OutMessage.SetObjects)
+    {
+        if (SetObject != FMtoUObjectIds::Character && SetObject != FMtoUObjectIds::Secondary)
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'set_objects' names the unknown object id '%s'."), *SetObject);
+            return false;
+        }
+    }
+    if (!OutMessage.SetObjects.Contains(OutMessage.ObjectId))
+    {
+        OutError = FString::Printf(
+            TEXT("Object '%s' is not part of 'set_objects'."), *OutMessage.ObjectId);
+        return false;
+    }
+    if (Workflow != FMtoUWorkflows::Animation && OutMessage.SetObjects.Num() > 1)
+    {
+        OutError = TEXT("The Model workflow keeps the single-character object set.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("OBJECT_SET_UNSUPPORTED");
+        }
+        return false;
+    }
+
     const TArray<TSharedPtr<FJsonValue>>* BoneValues = nullptr;
     const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
     if (!GetArrayField(Object, TEXT("bones"), BoneValues, OutError)
@@ -524,8 +688,746 @@ bool FMtoUProtocol::ParseFrame(
     {
         return false;
     }
-    return ParseFrameBody(
-        Object, TEXT("frame"), INDEX_NONE, INDEX_NONE, OutMessage, OutError);
+    if (!ParseFrameBody(
+            Object, TEXT("frame"), INDEX_NONE, INDEX_NONE, OutMessage, OutError))
+    {
+        return false;
+    }
+    if (!Object->HasField(TEXT("objects")))
+    {
+        return true;
+    }
+    // v11: the other objects of a two-object set, sampled at the same Maya
+    // time as the primary. A row names one object beside the primary, once.
+    const TArray<TSharedPtr<FJsonValue>>* RowValues = nullptr;
+    if (!GetArrayField(Object, TEXT("objects"), RowValues, OutError))
+    {
+        return false;
+    }
+    for (int32 Index = 0; Index < RowValues->Num(); ++Index)
+    {
+        const TSharedPtr<FJsonObject> Row = (*RowValues)[Index].IsValid()
+            ? (*RowValues)[Index]->AsObject()
+            : nullptr;
+        if (!Row.IsValid())
+        {
+            OutError = FString::Printf(TEXT("Frame object %d must be an object."), Index);
+            return false;
+        }
+        FMtoUFrameObject Parsed;
+        if (!GetStringField(Row, TEXT("object_id"), Parsed.ObjectId, OutError)
+            || Parsed.ObjectId.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("Frame object %d requires a non-empty 'object_id'."), Index);
+            return false;
+        }
+        if (Parsed.ObjectId == FMtoUObjectIds::Character)
+        {
+            OutError = TEXT("A frame object row carries only an object beside the primary.");
+            return false;
+        }
+        for (const FMtoUFrameObject& Existing : OutMessage.Objects)
+        {
+            if (Existing.ObjectId == Parsed.ObjectId)
+            {
+                OutError = FString::Printf(
+                    TEXT("A frame names the duplicate object '%s'."), *Parsed.ObjectId);
+                return false;
+            }
+        }
+        // The row shares the frame body's value rules; its own type field is
+        // the frame's, so the body parser sees one.
+        Row->SetStringField(TEXT("type"), TEXT("frame"));
+        FMtoUFrameMessage Values;
+        if (!ParseFrameBody(Row, TEXT("frame"), INDEX_NONE, INDEX_NONE, Values, OutError))
+        {
+            OutError = FString::Printf(TEXT("Frame object '%s': %s"), *Parsed.ObjectId, *OutError);
+            return false;
+        }
+        Parsed.Transforms = MoveTemp(Values.Transforms);
+        Parsed.Curves = MoveTemp(Values.Curves);
+        OutMessage.Objects.Add(MoveTemp(Parsed));
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseHello(
+    const TArray<uint8>& Payload,
+    FMtoUHelloMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUHelloMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("hello"))
+    {
+        OutError = TEXT("Message type must be 'hello'.");
+        return false;
+    }
+
+    // The greeting is answered before anything else is discovered, so a peer
+    // with a different protocol version never borrows a camera, mutes a
+    // writer or reads a handoff directory.
+    if (!GetIdentityInt(Object, TEXT("version"), OutMessage.Version, OutError))
+    {
+        OutError = TEXT("Field 'version' must be an integer JSON number.");
+        return false;
+    }
+    if (OutMessage.Version != FMtoUProtocol::Version)
+    {
+        OutError = FString::Printf(
+            TEXT("Unsupported protocol version; expected %d."), FMtoUProtocol::Version);
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("PROTOCOL_VERSION_MISMATCH");
+        }
+        return false;
+    }
+
+    if (!GetStringField(Object, TEXT("host"), OutMessage.Host, OutError)
+        || !GetStringField(Object, TEXT("maya_version"), OutMessage.MayaVersion, OutError))
+    {
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> Scene;
+    if (!GetOptionalObject(Object, TEXT("scene"), Scene, OutError) || !Scene.IsValid())
+    {
+        OutError = TEXT("Field 'scene' must be an object.");
+        return false;
+    }
+    if (!GetStringField(Scene, TEXT("linear_unit"), OutMessage.LinearUnit, OutError))
+    {
+        return false;
+    }
+    TSharedPtr<FJsonValue> ScaleValue;
+    if (!GetTypedField(Scene, TEXT("unit_scale_cm"), EJson::Number, ScaleValue, OutError)
+        || !ScaleValue->TryGetNumber(OutMessage.UnitScaleCm)
+        || !FMath::IsFinite(OutMessage.UnitScaleCm)
+        || OutMessage.UnitScaleCm <= 0.0)
+    {
+        OutError = TEXT("Field 'scene.unit_scale_cm' must be a positive finite number.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> FpsValue;
+    if (!GetTypedField(Scene, TEXT("fps"), EJson::Number, FpsValue, OutError)
+        || !FpsValue->TryGetNumber(OutMessage.Fps)
+        || !FMath::IsFinite(OutMessage.Fps)
+        || OutMessage.Fps <= 0.0)
+    {
+        OutError = TEXT("Field 'scene.fps' must be a positive finite number.");
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> Capabilities;
+    if (!GetOptionalObject(Object, TEXT("capabilities"), Capabilities, OutError)
+        || !Capabilities.IsValid())
+    {
+        OutError = TEXT("Field 'capabilities' must be an object.");
+        return false;
+    }
+    const auto ReadCapability = [&](const TCHAR* Name, bool& bOutValue) -> bool
+    {
+        if (!Capabilities->HasField(Name))
+        {
+            return true;
+        }
+        TSharedPtr<FJsonValue> Value;
+        if (!GetTypedField(Capabilities, Name, EJson::Boolean, Value, OutError)
+            || !Value->TryGetBool(bOutValue))
+        {
+            OutError = FString::Printf(
+                TEXT("Field 'capabilities.%s' must be a JSON boolean."), Name);
+            return false;
+        }
+        return true;
+    };
+    if (!ReadCapability(TEXT("linkage"), OutMessage.bLinkage)
+        || !ReadCapability(TEXT("reference"), OutMessage.bReference)
+        || !ReadCapability(TEXT("cache"), OutMessage.bCache)
+        || !ReadCapability(TEXT("model"), OutMessage.bModel))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseMode(
+    const TArray<uint8>& Payload,
+    FMtoUModeMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUModeMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("mode"))
+    {
+        OutError = TEXT("Message type must be 'mode'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetIdentityInt(Object, TEXT("mode_revision"), OutMessage.ModeRevision, OutError)
+        || !GetStringField(Object, TEXT("mode"), OutMessage.Mode, OutError)
+        || !GetStringField(Object, TEXT("control"), OutMessage.Control, OutError)
+        || !GetStringField(Object, TEXT("transition"), OutMessage.Transition, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.ModeRevision < 1)
+    {
+        OutError = TEXT("Fields 'session_id' and 'mode_revision' must be positive integers.");
+        return false;
+    }
+    if (OutMessage.Mode != TEXT("realtime") && OutMessage.Mode != TEXT("cached")
+        && OutMessage.Mode != TEXT("linkage"))
+    {
+        OutError = TEXT("Field 'mode' must be 'realtime', 'cached' or 'linkage'.");
+        return false;
+    }
+    if (OutMessage.Control != TEXT("maya") && OutMessage.Control != TEXT("unreal"))
+    {
+        OutError = TEXT("Field 'control' must be 'maya' or 'unreal'.");
+        return false;
+    }
+    if (OutMessage.Transition != TEXT("ready") && OutMessage.Transition != TEXT("failed"))
+    {
+        OutError = TEXT("Field 'transition' must be 'ready' or 'failed'.");
+        return false;
+    }
+    // detail is diagnostic text; an absent one names no failure, but a
+    // transition that failed must name its reason.
+    if (Object->HasField(TEXT("detail")))
+    {
+        if (!GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+        {
+            return false;
+        }
+    }
+    if (OutMessage.Transition == TEXT("failed") && OutMessage.Detail.IsEmpty())
+    {
+        OutError = TEXT("Field 'detail' must name the reason a transition failed.");
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseLeaveLinkage(
+    const TArray<uint8>& Payload,
+    FMtoULeaveLinkageMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoULeaveLinkageMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("leave_linkage"))
+    {
+        OutError = TEXT("Message type must be 'leave_linkage'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetIdentityInt(Object, TEXT("mode_revision"), OutMessage.ModeRevision, OutError)
+        || !GetStringField(Object, TEXT("target"), OutMessage.Target, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.ModeRevision < 1)
+    {
+        OutError = TEXT("Fields 'session_id' and 'mode_revision' must be positive integers.");
+        return false;
+    }
+    if (OutMessage.Target != TEXT("realtime") && OutMessage.Target != TEXT("end"))
+    {
+        OutError = TEXT("Field 'target' must be 'realtime' or 'end'.");
+        return false;
+    }
+    if (Object->HasField(TEXT("detail"))
+        && !GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseGroup(
+    const TArray<uint8>& Payload,
+    int64 EncodedBytes,
+    FMtoUPoseGroupMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUPoseGroupMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    // The group budget meters the complete message, not one object at a time,
+    // and is checked before the group gains any staged ownership.
+    if (EncodedBytes > MaxLinkageGroupBytes)
+    {
+        OutError = FString::Printf(
+            TEXT("Linkage group of %lld bytes exceeds the frozen %lld byte budget."),
+            EncodedBytes,
+            MaxLinkageGroupBytes);
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("RESOURCE_LIMIT");
+        }
+        return false;
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("group"))
+    {
+        OutError = TEXT("Message type must be 'group'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetIdentityInt(Object, TEXT("set_revision"), OutMessage.SetRevision, OutError)
+        || !GetIdentityInt(Object, TEXT("mode_revision"), OutMessage.ModeRevision, OutError)
+        || !GetIdentityInt(Object, TEXT("space_revision"), OutMessage.SpaceRevision, OutError)
+        || !GetStringField(Object, TEXT("eval_id"), OutMessage.EvalId, OutError)
+        || !GetIdentityInt(Object, TEXT("transport_serial"), OutMessage.TransportSerial, OutError)
+        || !GetIdentityInt(Object, TEXT("sample_serial"), OutMessage.SampleSerial, OutError))
+    {
+        return false;
+    }
+    // The first revision of every identity is 1, so a value below it can never
+    // name the current session, set, space or mode. The refusal keeps the
+    // frozen code instead of collapsing into a shape error, because the shape
+    // is fine and only the named identity is stale.
+    if (OutMessage.SessionId < 1)
+    {
+        OutError = TEXT("A group must name a positive session id.");
+        return false;
+    }
+    if (OutMessage.SetRevision < 1)
+    {
+        OutError = TEXT("A group named an older object set: the set revision is below the first set.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("SET_REVISION_STALE");
+        }
+        return false;
+    }
+    if (OutMessage.SpaceRevision < 1)
+    {
+        OutError = TEXT("A group named an older common space: the space revision is below the first space.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("SPACE_REVISION_STALE");
+        }
+        return false;
+    }
+    if (OutMessage.ModeRevision < 1)
+    {
+        OutError = TEXT("A group named an older mode: the mode revision is below the first mode.");
+        if (OutErrorCode)
+        {
+            *OutErrorCode = TEXT("MODE_CONFLICT");
+        }
+        return false;
+    }
+    if (OutMessage.EvalId.IsEmpty() || OutMessage.TransportSerial < 0
+        || OutMessage.SampleSerial < 0)
+    {
+        OutError = TEXT("Field 'eval_id' must be non-empty and the serials must not be negative.");
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* ObjectValues = nullptr;
+    if (!GetArrayField(Object, TEXT("objects"), ObjectValues, OutError)
+        || ObjectValues->IsEmpty())
+    {
+        OutError = TEXT("Field 'objects' must be a non-empty array.");
+        return false;
+    }
+    OutMessage.Objects.Reserve(ObjectValues->Num());
+    for (int32 Index = 0; Index < ObjectValues->Num(); ++Index)
+    {
+        FMtoUPoseGroup Row;
+        const TSharedPtr<FJsonObject> RowObject = (*ObjectValues)[Index]->AsObject();
+        if (!RowObject.IsValid())
+        {
+            OutError = FString::Printf(TEXT("Group object %d must be an object."), Index);
+            return false;
+        }
+        if (!GetStringField(RowObject, TEXT("object_id"), Row.ObjectId, OutError)
+            || Row.ObjectId.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("Group object %d requires a non-empty 'object_id'."), Index);
+            return false;
+        }
+        const TArray<TSharedPtr<FJsonValue>>* TransformValues = nullptr;
+        const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
+        if (!GetArrayField(RowObject, TEXT("transforms"), TransformValues, OutError)
+            || !GetArrayField(RowObject, TEXT("curves"), CurveValues, OutError))
+        {
+            return false;
+        }
+        Row.Transforms.Reserve(TransformValues->Num());
+        for (int32 TransformIndex = 0; TransformIndex < TransformValues->Num(); ++TransformIndex)
+        {
+            const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+            if (!(*TransformValues)[TransformIndex].IsValid()
+                || (*TransformValues)[TransformIndex]->Type != EJson::Array
+                || !(*TransformValues)[TransformIndex]->TryGetArray(Values)
+                || Values->Num() != 10)
+            {
+                OutError = FString::Printf(
+                    TEXT("Group object %d transform %d must contain ten numbers."),
+                    Index,
+                    TransformIndex);
+                return false;
+            }
+            double Numbers[10];
+            for (int32 NumberIndex = 0; NumberIndex < 10; ++NumberIndex)
+            {
+                if (!GetNumber((*Values)[NumberIndex], Numbers[NumberIndex])
+                    || !FMath::IsFinite(Numbers[NumberIndex]))
+                {
+                    OutError = FString::Printf(
+                        TEXT("Group object %d transform %d value %d must be finite."),
+                        Index,
+                        TransformIndex,
+                        NumberIndex);
+                    return false;
+                }
+            }
+            const FQuat Rotation(Numbers[3], Numbers[4], Numbers[5], Numbers[6]);
+            if (!Rotation.IsNormalized())
+            {
+                OutError = FString::Printf(
+                    TEXT("Group object %d transform %d quaternion must be normalized."),
+                    Index,
+                    TransformIndex);
+                return false;
+            }
+            Row.Transforms.Add(FTransform(
+                Rotation,
+                FVector(Numbers[0], Numbers[1], Numbers[2]),
+                FVector(Numbers[7], Numbers[8], Numbers[9])));
+        }
+        Row.Curves.Reserve(CurveValues->Num());
+        for (int32 CurveIndex = 0; CurveIndex < CurveValues->Num(); ++CurveIndex)
+        {
+            double Number = 0.0;
+            if (!GetNumber((*CurveValues)[CurveIndex], Number) || !FMath::IsFinite(Number))
+            {
+                OutError = FString::Printf(
+                    TEXT("Group object %d curve %d must be a finite number."),
+                    Index,
+                    CurveIndex);
+                return false;
+            }
+            Row.Curves.Add(Number);
+        }
+        OutMessage.Objects.Add(MoveTemp(Row));
+    }
+
+    if (!GetOptionalObject(Object, TEXT("camera"), OutMessage.Camera, OutError)
+        || !OutMessage.Camera.IsValid())
+    {
+        OutError = TEXT("Field 'camera' must be an object.");
+        return false;
+    }
+    if (!GetOptionalObject(Object, TEXT("time"), OutMessage.Time, OutError)
+        || !OutMessage.Time.IsValid())
+    {
+        OutError = TEXT("Field 'time' must be an object.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> FrameValue;
+    if (!GetTypedField(OutMessage.Time, TEXT("ue_display_frame"), EJson::Number, FrameValue, OutError)
+        || !FrameValue->TryGetNumber(OutMessage.UeDisplayFrame)
+        || !FMath::IsFinite(OutMessage.UeDisplayFrame))
+    {
+        OutError = TEXT("Field 'time.ue_display_frame' must be a finite number.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> MayaFrameValue;
+    if (OutMessage.Time->HasField(TEXT("maya_frame")))
+    {
+        if (!GetTypedField(OutMessage.Time, TEXT("maya_frame"), EJson::Number, MayaFrameValue, OutError)
+            || !MayaFrameValue->TryGetNumber(OutMessage.MayaFrame)
+            || !FMath::IsFinite(OutMessage.MayaFrame))
+        {
+            OutError = TEXT("Field 'time.maya_frame' must be a finite number.");
+            return false;
+        }
+    }
+    else
+    {
+        OutMessage.MayaFrame = OutMessage.UeDisplayFrame;
+    }
+    // Every row of the group reports the same applied time, because the whole
+    // group answers one target.
+    for (FMtoUPoseGroup& Row : OutMessage.Objects)
+    {
+        Row.UeDisplayFrame = OutMessage.UeDisplayFrame;
+        Row.MayaFrame = OutMessage.MayaFrame;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseRemoveObject(
+    const TArray<uint8>& Payload,
+    FMtoURemoveObjectMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoURemoveObjectMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("remove_object"))
+    {
+        OutError = TEXT("Message type must be 'remove_object'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetStringField(Object, TEXT("object_id"), OutMessage.ObjectId, OutError)
+        || !GetIdentityInt(Object, TEXT("set_revision"), OutMessage.SetRevision, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.SetRevision < 1 || OutMessage.ObjectId.IsEmpty())
+    {
+        OutError = TEXT("Fields 'session_id' and 'set_revision' must be positive and 'object_id' non-empty.");
+        return false;
+    }
+    if (Object->HasField(TEXT("detail"))
+        && !GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseReferenceResult(
+    const TArray<uint8>& Payload,
+    FMtoUReferenceResultMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUReferenceResultMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError)
+        || Type != TEXT("reference_result"))
+    {
+        OutError = TEXT("Message type must be 'reference_result'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetStringField(Object, TEXT("transfer_id"), OutMessage.TransferId, OutError)
+        || !GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+    {
+        return false;
+    }
+    if (Object->HasField(TEXT("code"))
+        && !GetStringField(Object, TEXT("code"), OutMessage.Code, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.TransferId.IsEmpty())
+    {
+        OutError = TEXT("Fields 'session_id' must be positive and 'transfer_id' non-empty.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> AcceptedValue;
+    if (!GetTypedField(Object, TEXT("accepted"), EJson::Boolean, AcceptedValue, OutError)
+        || !AcceptedValue->TryGetBool(OutMessage.bAccepted))
+    {
+        OutError = TEXT("Field 'accepted' must be a JSON boolean.");
+        return false;
+    }
+    TSharedPtr<FJsonObject> Counts;
+    if (Object->HasField(TEXT("counts"))
+        && (!GetOptionalObject(Object, TEXT("counts"), Counts, OutError) || !Counts.IsValid()))
+    {
+        OutError = TEXT("Field 'counts' must be an object.");
+        return false;
+    }
+    if (Counts.IsValid())
+    {
+        const auto ReadCount = [&](const TCHAR* Name, int64& OutValue) -> bool
+        {
+            if (!Counts->HasField(Name))
+            {
+                return true;
+            }
+            TSharedPtr<FJsonValue> Value;
+            int64 Parsed = 0;
+            if (!GetTypedField(Counts, Name, EJson::Number, Value, OutError)
+                || !GetExactInt64(Value, Parsed)
+                || Parsed < 0)
+            {
+                OutError = FString::Printf(
+                    TEXT("Field 'counts.%s' must be a non-negative integer."), Name);
+                return false;
+            }
+            OutValue = Parsed;
+            return true;
+        };
+        if (!ReadCount(TEXT("objects"), OutMessage.ObjectCount)
+            || !ReadCount(TEXT("triangles"), OutMessage.TriangleCount)
+            || !ReadCount(TEXT("bytes"), OutMessage.ByteCount))
+        {
+            return false;
+        }
+    }
+    if (Object->HasField(TEXT("container"))
+        && !GetStringField(Object, TEXT("container"), OutMessage.Container, OutError))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseReferenceRemoved(
+    const TArray<uint8>& Payload,
+    FMtoUReferenceRemovedMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUReferenceRemovedMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError)
+        || Type != TEXT("reference_removed"))
+    {
+        OutError = TEXT("Message type must be 'reference_removed'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1)
+    {
+        OutError = TEXT("Field 'session_id' must be a positive integer.");
+        return false;
+    }
+    if (Object->HasField(TEXT("detail"))
+        && !GetStringField(Object, TEXT("detail"), OutMessage.Detail, OutError))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool FMtoUProtocol::ParseReferenceQuery(
+    const TArray<uint8>& Payload,
+    FMtoUReferenceQueryMessage& OutMessage,
+    FString& OutError,
+    FString* OutErrorCode)
+{
+    OutMessage = FMtoUReferenceQueryMessage();
+    OutError.Reset();
+    if (OutErrorCode)
+    {
+        *OutErrorCode = TEXT("INVALID_MESSAGE");
+    }
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError)
+        || Type != TEXT("reference_query"))
+    {
+        OutError = TEXT("Message type must be 'reference_query'.");
+        return false;
+    }
+    if (!GetIdentityInt(Object, TEXT("session_id"), OutMessage.SessionId, OutError)
+        || !GetStringField(Object, TEXT("transfer_id"), OutMessage.TransferId, OutError))
+    {
+        return false;
+    }
+    if (OutMessage.SessionId < 1 || OutMessage.TransferId.IsEmpty())
+    {
+        OutError = TEXT("Fields 'session_id' must be positive and 'transfer_id' non-empty.");
+        return false;
+    }
+    TSharedPtr<FJsonObject> Scope;
+    if (!GetOptionalObject(Object, TEXT("scope"), Scope, OutError) || !Scope.IsValid())
+    {
+        OutError = TEXT("Field 'scope' must be an object.");
+        return false;
+    }
+    FString Level;
+    if (!GetStringField(Scope, TEXT("level"), Level, OutError) || Level.IsEmpty())
+    {
+        OutError = TEXT("Field 'scope.level' must be a non-empty string.");
+        return false;
+    }
+    OutMessage.Scope = Scope;
+    return true;
 }
 
 bool FMtoUProtocol::PeekType(
@@ -616,6 +1518,17 @@ bool FMtoUProtocol::ParseCacheBegin(
     if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_begin"))
     {
         return Fail(TEXT("INVALID_MESSAGE"), TEXT("Message type must be 'cache_begin'."));
+    }
+
+    // A version that differs is refused with its own code before any upload
+    // state exists, so a mixed pair never starts a cache transfer.
+    double VersionValue = 0.0;
+    if (Object->TryGetNumberField(TEXT("version"), VersionValue)
+        && static_cast<int32>(VersionValue) != FMtoUProtocol::Version)
+    {
+        return Fail(TEXT("PROTOCOL_VERSION_MISMATCH"),
+                    FString::Printf(TEXT("Unsupported protocol version; expected %d."),
+                                    FMtoUProtocol::Version));
     }
 
     // Upload identity is message structure: a mistyped or missing field is
@@ -866,40 +1779,66 @@ bool FMtoUProtocol::ParseCacheStop(const TArray<uint8>& Payload, FString& OutErr
     return ParseCacheTypeOnly(Payload, TEXT("cache_stop"), OutError);
 }
 
-bool FMtoUProtocol::ParseCacheClear(const TArray<uint8>& Payload, FString& OutError)
+bool FMtoUProtocol::ParseCacheClear(
+    const TArray<uint8>& Payload, int32& OutClearId, FString& OutError)
 {
-    return ParseCacheTypeOnly(Payload, TEXT("cache_clear"), OutError);
+    OutClearId = INDEX_NONE;
+    OutError.Reset();
+    TSharedPtr<FJsonObject> Object;
+    if (!ParseObject(Payload, Object, OutError))
+    {
+        return false;
+    }
+    FString Type;
+    if (!GetStringField(Object, TEXT("type"), Type, OutError) || Type != TEXT("cache_clear"))
+    {
+        OutError = TEXT("Message type must be 'cache_clear'.");
+        return false;
+    }
+    TSharedPtr<FJsonValue> ClearIdValue;
+    if (!GetTypedField(Object, TEXT("clear_id"), EJson::Number, ClearIdValue, OutError)
+        || !GetExactInt(ClearIdValue, OutClearId) || OutClearId < 1)
+    {
+        OutError = TEXT("Field 'clear_id' must be a positive int32 JSON number.");
+        return false;
+    }
+    return true;
 }
 
-bool FMtoUProtocol::ValidateFrame(
-    const FMtoUFrameMessage& Frame,
+namespace
+{
+bool ValidateFrameValues(
+    const TArray<FMtoUTransform>& Transforms,
+    const TArray<double>& Curves,
     int32 ExpectedTransformCount,
     int32 ExpectedCurveCount,
+    const FString& Label,
     FString& OutError,
     bool& bOutStructuralError)
 {
-    OutError.Reset();
     bOutStructuralError = true;
-    if (Frame.Transforms.Num() != ExpectedTransformCount)
+    if (Transforms.Num() != ExpectedTransformCount)
     {
         OutError = FString::Printf(
-            TEXT("Transform count mismatch: expected %d, got %d."),
+            TEXT("%sTransform count mismatch: expected %d, got %d."),
+            *Label,
             ExpectedTransformCount,
-            Frame.Transforms.Num());
+            Transforms.Num());
         return false;
     }
-    if (Frame.Curves.Num() != ExpectedCurveCount)
+    if (Curves.Num() != ExpectedCurveCount)
     {
         OutError = FString::Printf(
-            TEXT("Curve count mismatch: expected %d, got %d."),
+            TEXT("%sCurve count mismatch: expected %d, got %d."),
+            *Label,
             ExpectedCurveCount,
-            Frame.Curves.Num());
+            Curves.Num());
         return false;
     }
 
-    for (int32 Index = 0; Index < Frame.Transforms.Num(); ++Index)
+    for (int32 Index = 0; Index < Transforms.Num(); ++Index)
     {
-        const FMtoUTransform& Transform = Frame.Transforms[Index];
+        const FMtoUTransform& Transform = Transforms[Index];
         const double Values[] = {
             Transform.Translation.X, Transform.Translation.Y, Transform.Translation.Z,
             Transform.Rotation.X, Transform.Rotation.Y, Transform.Rotation.Z, Transform.Rotation.W,
@@ -911,30 +1850,82 @@ bool FMtoUProtocol::ValidateFrame(
             {
                 bOutStructuralError = false;
                 OutError = FString::Printf(
-                    TEXT("Non-finite bone %d transform value %d."), Index, ValueIndex);
+                    TEXT("%sNon-finite bone %d transform value %d."), *Label, Index, ValueIndex);
                 return false;
             }
         }
         if (!Transform.Rotation.IsNormalized())
         {
-            OutError = FString::Printf(TEXT("Bone %d quaternion must be normalized and non-zero."), Index);
+            OutError = FString::Printf(
+                TEXT("%sBone %d quaternion must be normalized and non-zero."), *Label, Index);
             return false;
         }
     }
 
-    for (int32 Index = 0; Index < Frame.Curves.Num(); ++Index)
+    for (int32 Index = 0; Index < Curves.Num(); ++Index)
     {
-        if (!FMath::IsFinite(Frame.Curves[Index]))
+        if (!FMath::IsFinite(Curves[Index]))
         {
             bOutStructuralError = false;
-            OutError = FString::Printf(TEXT("Non-finite curve %d."), Index);
+            OutError = FString::Printf(TEXT("%sNon-finite curve %d."), *Label, Index);
             return false;
         }
-        if (FMath::Abs(Frame.Curves[Index]) > TNumericLimits<float>::Max())
+        if (FMath::Abs(Curves[Index]) > TNumericLimits<float>::Max())
         {
             bOutStructuralError = false;
             OutError = FString::Printf(
-                TEXT("Curve %d cannot be represented as a finite Live Link float."), Index);
+                TEXT("%sCurve %d cannot be represented as a finite Live Link float."), *Label, Index);
+            return false;
+        }
+    }
+    bOutStructuralError = false;
+    return true;
+}
+}
+
+bool FMtoUProtocol::ValidateFrame(
+    const FMtoUFrameMessage& Frame,
+    int32 ExpectedTransformCount,
+    int32 ExpectedCurveCount,
+    FString& OutError,
+    bool& bOutStructuralError,
+    const TMap<FString, FIntPoint>* ExpectedObjects)
+{
+    OutError.Reset();
+    if (!ValidateFrameValues(Frame.Transforms, Frame.Curves, ExpectedTransformCount,
+            ExpectedCurveCount, FString(), OutError, bOutStructuralError))
+    {
+        return false;
+    }
+    // A frame of another set is dropped, not a broken stream: Maya sends the
+    // set it had, and a removal in flight changes the set under it.
+    static const TMap<FString, FIntPoint> NoObjects;
+    const TMap<FString, FIntPoint>& Expected = ExpectedObjects ? *ExpectedObjects : NoObjects;
+    for (const FMtoUFrameObject& Row : Frame.Objects)
+    {
+        if (!Expected.Contains(Row.ObjectId))
+        {
+            bOutStructuralError = false;
+            OutError = FString::Printf(
+                TEXT("The frame names object '%s', which is not part of the current set."),
+                *Row.ObjectId);
+            return false;
+        }
+    }
+    for (const TPair<FString, FIntPoint>& Object : Expected)
+    {
+        const FMtoUFrameObject* Row = Frame.Objects.FindByPredicate(
+            [&Object](const FMtoUFrameObject& Candidate) { return Candidate.ObjectId == Object.Key; });
+        if (!Row)
+        {
+            bOutStructuralError = false;
+            OutError = FString::Printf(
+                TEXT("The frame lacks object '%s' of the current set."), *Object.Key);
+            return false;
+        }
+        if (!ValidateFrameValues(Row->Transforms, Row->Curves, Object.Value.X, Object.Value.Y,
+                FString::Printf(TEXT("Object '%s': "), *Row->ObjectId), OutError, bOutStructuralError))
+        {
             return false;
         }
     }
@@ -949,7 +1940,11 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     const FString& Workflow,
     int32 TargetMorphCount,
     int32 AcceptedMorphCount,
-    int32 NegotiatedRevision)
+    int32 NegotiatedRevision,
+    int32 SessionId,
+    const FString& ObjectId,
+    int32 SetRevision,
+    int32 SpaceRevision)
 {
     auto EncodeNames = [](const TArray<FName>& Names)
     {
@@ -964,6 +1959,24 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("ready"));
     Object->SetNumberField(TEXT("revision"), NegotiatedRevision);
+    // v10 echoes the negotiated identity so a peer can refuse a reply that
+    // belongs to another session, object set or common space.
+    if (SessionId != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("session_id"), SessionId);
+    }
+    if (!ObjectId.IsEmpty())
+    {
+        Object->SetStringField(TEXT("object_id"), ObjectId);
+    }
+    if (SetRevision != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("set_revision"), SetRevision);
+    }
+    if (SpaceRevision != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("space_revision"), SpaceRevision);
+    }
     Object->SetArrayField(TEXT("missing_in_unreal"), EncodeNames(MissingInUnreal));
     Object->SetArrayField(TEXT("missing_in_maya"), EncodeNames(MissingInMaya));
     TArray<TSharedPtr<FJsonValue>> RemapValues;
@@ -979,6 +1992,228 @@ TArray<uint8> FMtoUProtocol::EncodeReady(
     return EncodeObject(Object);
 }
 
+TArray<uint8> FMtoUProtocol::EncodeHelloAck(
+    int32 SessionId,
+    bool bLinkage,
+    bool bReference,
+    bool bCache,
+    bool bModel,
+    const TArray<FMtoUHelloTarget>& Targets,
+    int32 SpaceRevision,
+    const TSharedPtr<FJsonObject>& Anchor)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("hello_ack"));
+    Object->SetNumberField(TEXT("version"), FMtoUProtocol::Version);
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+
+    const TSharedRef<FJsonObject> Capabilities = MakeShared<FJsonObject>();
+    Capabilities->SetBoolField(TEXT("linkage"), bLinkage);
+    Capabilities->SetBoolField(TEXT("reference"), bReference);
+    Capabilities->SetBoolField(TEXT("cache"), bCache);
+    Capabilities->SetBoolField(TEXT("model"), bModel);
+    Object->SetObjectField(TEXT("capabilities"), Capabilities);
+
+    // The targets are the explicitly paired targets, primary first; the list
+    // stays empty until the user pairs one, so nothing names a takeover early.
+    TArray<TSharedPtr<FJsonValue>> TargetValues;
+    for (const FMtoUHelloTarget& Target : Targets)
+    {
+        const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+        Row->SetStringField(TEXT("object_id"), Target.ObjectId);
+        Row->SetStringField(TEXT("kind"), Target.Kind);
+        Row->SetStringField(TEXT("binding_path"), Target.BindingPath);
+        Row->SetStringField(TEXT("generation"), Target.Generation);
+        TargetValues.Add(MakeShared<FJsonValueObject>(Row));
+    }
+    Object->SetArrayField(TEXT("targets"), TargetValues);
+
+    const TSharedRef<FJsonObject> Space = MakeShared<FJsonObject>();
+    Space->SetNumberField(TEXT("space_revision"), SpaceRevision);
+    Space->SetObjectField(TEXT("anchor"), Anchor.IsValid()
+        ? Anchor.ToSharedRef()
+        : MakeShared<FJsonObject>());
+    Object->SetObjectField(TEXT("space"), Space);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeObjectRemoved(
+    int32 SessionId,
+    const FString& ObjectId,
+    int32 SetRevision,
+    bool bRestored,
+    const FString& Detail)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("object_removed"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetStringField(TEXT("object_id"), ObjectId);
+    Object->SetNumberField(TEXT("set_revision"), SetRevision);
+    Object->SetBoolField(TEXT("restored"), bRestored);
+    Object->SetStringField(TEXT("detail"), Detail);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeModeState(
+    int32 SessionId,
+    int32 ModeRevision,
+    const FString& Mode,
+    const FString& Control,
+    const FString& Detail,
+    const TSharedPtr<FJsonObject>& Anchor)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("mode_state"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetNumberField(TEXT("mode_revision"), ModeRevision);
+    Object->SetStringField(TEXT("mode"), Mode);
+    Object->SetStringField(TEXT("control"), Control);
+    Object->SetStringField(TEXT("detail"), Detail);
+    if (Anchor.IsValid())
+    {
+        Object->SetObjectField(TEXT("anchor"), Anchor);
+    }
+    return EncodeObject(Object);
+}
+
+TSharedRef<FJsonObject> FMtoUProtocol::MakeAnchorObject(const FTransform& Placement)
+{
+    const FTransform Rigid(Placement.GetRotation(), Placement.GetLocation());
+    const FRotator Rotation = Rigid.Rotator();
+    const TSharedRef<FJsonObject> Anchor = MakeShared<FJsonObject>();
+    Anchor->SetArrayField(TEXT("location_cm"), {
+        MakeShared<FJsonValueNumber>(Rigid.GetLocation().X),
+        MakeShared<FJsonValueNumber>(Rigid.GetLocation().Y),
+        MakeShared<FJsonValueNumber>(Rigid.GetLocation().Z)});
+    const TSharedRef<FJsonObject> Degrees = MakeShared<FJsonObject>();
+    Degrees->SetNumberField(TEXT("roll"), Rotation.Roll);
+    Degrees->SetNumberField(TEXT("pitch"), Rotation.Pitch);
+    Degrees->SetNumberField(TEXT("yaw"), Rotation.Yaw);
+    Anchor->SetObjectField(TEXT("rotation_deg"), Degrees);
+    return Anchor;
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCameraTime(
+    int32 SessionId,
+    int32 SetRevision,
+    int32 ModeRevision,
+    int32 SpaceRevision,
+    const FMtoUCameraTimeTarget& Target)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("camera_time"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetNumberField(TEXT("set_revision"), SetRevision);
+    Object->SetNumberField(TEXT("mode_revision"), ModeRevision);
+    Object->SetNumberField(TEXT("space_revision"), SpaceRevision);
+    Object->SetStringField(TEXT("eval_id"), Target.EvalId);
+    Object->SetNumberField(TEXT("eval_serial"), Target.EvalSerial);
+    Object->SetNumberField(TEXT("transport_serial"), Target.TransportSerial);
+    Object->SetNumberField(TEXT("frame_serial"), Target.FrameSerial);
+
+    const TSharedRef<FJsonObject> Time = MakeShared<FJsonObject>();
+    Time->SetNumberField(TEXT("display_frame"), Target.DisplayFrame);
+    Time->SetNumberField(TEXT("source_frame"), Target.DisplayFrame);
+    Time->SetNumberField(TEXT("seconds"), Target.Seconds);
+    Time->SetNumberField(TEXT("tick"), Target.DisplayFrame);
+    {
+        const TSharedRef<FJsonObject> DisplayRate = MakeShared<FJsonObject>();
+        DisplayRate->SetNumberField(TEXT("numerator"), Target.DisplayRateNumerator);
+        DisplayRate->SetNumberField(TEXT("denominator"), Target.DisplayRateDenominator);
+        Time->SetObjectField(TEXT("display_rate"), DisplayRate);
+        const TSharedRef<FJsonObject> TickResolution = MakeShared<FJsonObject>();
+        TickResolution->SetNumberField(TEXT("numerator"), Target.TickNumerator);
+        TickResolution->SetNumberField(TEXT("denominator"), Target.TickDenominator);
+        Time->SetObjectField(TEXT("tick_resolution"), TickResolution);
+        const TSharedRef<FJsonObject> PlaybackRange = MakeShared<FJsonObject>();
+        PlaybackRange->SetNumberField(TEXT("start"), Target.PlaybackRangeStart);
+        PlaybackRange->SetNumberField(TEXT("end"), Target.PlaybackRangeEnd);
+        Time->SetObjectField(TEXT("playback_range"), PlaybackRange);
+    }
+    Object->SetObjectField(TEXT("time"), Time);
+    Object->SetObjectField(TEXT("camera"), Target.Camera.IsValid()
+        ? Target.Camera.ToSharedRef()
+        : MakeShared<FJsonObject>());
+    Object->SetObjectField(TEXT("gate"), Target.Gate.IsValid()
+        ? Target.Gate.ToSharedRef()
+        : MakeShared<FJsonObject>());
+    if (!Target.CutStage.IsEmpty() || !Target.CutName.IsEmpty())
+    {
+        const TSharedRef<FJsonObject> Cut = MakeShared<FJsonObject>();
+        Cut->SetStringField(TEXT("stage"), Target.CutStage);
+        Cut->SetStringField(TEXT("name"), Target.CutName);
+        Object->SetObjectField(TEXT("cut"), Cut);
+    }
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeApplied(
+    int32 SessionId,
+    int32 ModeRevision,
+    const FString& EvalId,
+    int32 SampleSerial,
+    bool bApplied,
+    double AppliedDisplayFrame,
+    double LagSeconds,
+    const TArray<FMtoUAppliedComponent>& Components,
+    const FString& Reason)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("applied"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetNumberField(TEXT("mode_revision"), ModeRevision);
+    Object->SetStringField(TEXT("eval_id"), EvalId);
+    Object->SetNumberField(TEXT("sample_serial"), SampleSerial);
+    Object->SetBoolField(TEXT("applied"), bApplied);
+    Object->SetNumberField(TEXT("applied_display_frame"), AppliedDisplayFrame);
+    Object->SetNumberField(TEXT("lag_seconds"), LagSeconds);
+    TArray<TSharedPtr<FJsonValue>> ComponentValues;
+    ComponentValues.Reserve(Components.Num());
+    for (const FMtoUAppliedComponent& Component : Components)
+    {
+        const TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+        Row->SetStringField(TEXT("object_id"), Component.ObjectId);
+        Row->SetNumberField(TEXT("bones"), Component.BoneCount);
+        Row->SetNumberField(TEXT("morphs"), Component.MorphCount);
+        Row->SetNumberField(TEXT("parts"), Component.PartCount);
+        ComponentValues.Add(MakeShared<FJsonValueObject>(Row));
+    }
+    Object->SetArrayField(TEXT("components"), ComponentValues);
+    // A failed application must name its reason; an applied one reports none.
+    Object->SetStringField(TEXT("reason"), Reason);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeReferenceOffer(
+    int32 SessionId,
+    const FString& TransferId,
+    const FString& Directory,
+    const FString& ManifestDigest,
+    const TSharedPtr<FJsonObject>& Scope,
+    int32 SpaceRevision,
+    int64 ByteCount,
+    int32 ObjectCount,
+    int32 TriangleCount)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("reference_offer"));
+    Object->SetNumberField(TEXT("session_id"), SessionId);
+    Object->SetStringField(TEXT("transfer_id"), TransferId);
+    Object->SetStringField(TEXT("directory"), Directory);
+    Object->SetStringField(TEXT("manifest_digest"), ManifestDigest);
+    Object->SetObjectField(TEXT("scope"), Scope.IsValid()
+        ? Scope.ToSharedRef()
+        : MakeShared<FJsonObject>());
+    Object->SetNumberField(TEXT("space_revision"), SpaceRevision);
+
+    const TSharedRef<FJsonObject> Counts = MakeShared<FJsonObject>();
+    Counts->SetNumberField(TEXT("objects"), ObjectCount);
+    Counts->SetNumberField(TEXT("triangles"), TriangleCount);
+    Counts->SetNumberField(TEXT("bytes"), ByteCount);
+    Object->SetObjectField(TEXT("counts"), Counts);
+    return EncodeObject(Object);
+}
+
 TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 UploadId, int32 NegotiatedRevision, int32 FrameCount)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -986,6 +2221,16 @@ TArray<uint8> FMtoUProtocol::EncodeCacheReady(int32 UploadId, int32 NegotiatedRe
     Object->SetNumberField(TEXT("upload_id"), UploadId);
     Object->SetNumberField(TEXT("revision"), NegotiatedRevision);
     Object->SetNumberField(TEXT("frame_count"), FrameCount);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCachePlaying(int32 UploadId, int32 PlayId, bool bLoopEnabled)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_playing"));
+    Object->SetNumberField(TEXT("upload_id"), UploadId);
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetBoolField(TEXT("loop"), bLoopEnabled);
     return EncodeObject(Object);
 }
 
@@ -998,14 +2243,81 @@ TArray<uint8> FMtoUProtocol::EncodeCacheProgress(int32 PlayId, int32 AppliedFram
     return EncodeObject(Object);
 }
 
+TArray<uint8> FMtoUProtocol::EncodeCachePaused(
+    int32 PlayId, int32 AppliedFrames, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_paused"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    if (SourceFrame != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    }
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheResumed(
+    int32 PlayId, int32 AppliedFrames, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_resumed"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    if (SourceFrame != INDEX_NONE)
+    {
+        Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    }
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheSeeked(
+    int32 PlayId, int32 SourceFrame, int32 AppliedFrames)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_seeked"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    Object->SetNumberField(TEXT("applied_frames"), AppliedFrames);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheLooped(int32 PlayId, int32 Round, int32 SourceFrame)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_looped"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("round"), Round);
+    Object->SetNumberField(TEXT("source_frame"), SourceFrame);
+    return EncodeObject(Object);
+}
+
+TArray<uint8> FMtoUProtocol::EncodeCacheLoopChanged(int32 PlayId, bool bLoopEnabled)
+{
+    const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+    Object->SetStringField(TEXT("type"), TEXT("cache_loop_changed"));
+    Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetBoolField(TEXT("loop"), bLoopEnabled);
+    return EncodeObject(Object);
+}
+
 TArray<uint8> FMtoUProtocol::EncodeCacheComplete(
-    int32 PlayId, int32 AppliedFrameCount, double ElapsedSeconds)
+    int32 PlayId,
+    int32 AppliedFrameCount,
+    double ElapsedSeconds,
+    bool bWholeCacheScope,
+    int32 StartFrame,
+    int32 EndFrame)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_complete"));
     Object->SetNumberField(TEXT("play_id"), PlayId);
     Object->SetNumberField(TEXT("applied_frame_count"), AppliedFrameCount);
     Object->SetNumberField(TEXT("elapsed_seconds"), ElapsedSeconds);
+    Object->SetStringField(
+        TEXT("scope"), bWholeCacheScope ? TEXT("cache") : TEXT("segment"));
+    Object->SetNumberField(TEXT("start_frame"), StartFrame);
+    Object->SetNumberField(TEXT("end_frame"), EndFrame);
     return EncodeObject(Object);
 }
 
@@ -1017,12 +2329,13 @@ TArray<uint8> FMtoUProtocol::EncodeCacheStopped(int32 PlayId)
     return EncodeObject(Object);
 }
 
-TArray<uint8> FMtoUProtocol::EncodeCacheCleared(int32 UploadId, int32 PlayId)
+TArray<uint8> FMtoUProtocol::EncodeCacheCleared(int32 UploadId, int32 PlayId, int32 ClearId)
 {
     const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
     Object->SetStringField(TEXT("type"), TEXT("cache_cleared"));
     Object->SetNumberField(TEXT("upload_id"), UploadId);
     Object->SetNumberField(TEXT("play_id"), PlayId);
+    Object->SetNumberField(TEXT("clear_id"), ClearId);
     return EncodeObject(Object);
 }
 

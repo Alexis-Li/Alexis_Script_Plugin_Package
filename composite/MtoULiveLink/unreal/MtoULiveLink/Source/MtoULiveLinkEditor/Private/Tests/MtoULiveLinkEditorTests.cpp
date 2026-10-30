@@ -7,8 +7,11 @@
 
 #include "MtoULiveLinkActor.h"
 #include "MtoULiveLinkBinding.h"
+#include "MtoULinkage.h"
 
+#include "Animation/AnimCurveMetadata.h"
 #include "Animation/MorphTarget.h"
+#include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/PoseableMeshComponent.h"
@@ -29,7 +32,9 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/SecureHash.h"
 #include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/GarbageCollection.h"
@@ -46,6 +51,7 @@
 #include "UDynamicMesh.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 // Editor-private bridge for the Refresh-during-session integration test
@@ -59,6 +65,7 @@
 #include "HAL/PlatformProcess.h"
 #include "ILiveLinkClient.h"
 #include "IPAddress.h"
+#include "LevelEditorViewport.h"
 #include "LiveLinkInstance.h"
 #include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
@@ -68,6 +75,7 @@
 #include "Input/Reply.h"
 #include "Misc/ScopeExit.h"
 #include "MtoULiveLinkActorDetails.h"
+#include "MtoUSceneRefExport.h"
 
 #include <limits>
 
@@ -450,36 +458,614 @@ USkeletalMesh* MakeMorphDriver(UObject& Outer, bool bSplitMissingSurface = false
 }
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSectionTest,
-    "MtoULiveLink.Editor.Details",
+// Issue #48 redesign: the Details panel presents one unified status through
+// the actor's public state and its existing Refresh/Delete/Display actions.
+// The status vocabulary is asserted through that readout instead of through
+// control text snapshots.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsNegativeSourceFrameTest,
+    "MtoULiveLink.Editor.DetailsNegativeSourceFrame",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FMtoUDetailsSectionTest::RunTest(const FString& Parameters)
+bool FMtoUDetailsNegativeSourceFrameTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    FPropertyEditorModule& PropertyEditor =
-        FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-    for (const FName Category : { FName("MtoU_LiveLink"), FName("MtoU Preview") })
+    FMtoUCachePlaybackView View;
+    View.bConnected = true;
+    View.State = EMtoUCacheState::Ready;
+    View.StartFrame = -1;
+    View.EndFrame = -1;
+    View.FrameCount = 1;
+    View.Fps = 24.0;
+    TestTrue(TEXT("unplayed single frame shows no applied frame"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 —")));
+    View.State = EMtoUCacheState::Completed;
+    View.bHasAppliedSourceFrame = true;
+    View.CurrentSourceFrame = -1;
+    View.AppliedFrames = 1;
+    TestTrue(TEXT("completed -1 source frame is displayed"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -1")));
+
+    View.StartFrame = -2;
+    View.EndFrame = 0;
+    View.FrameCount = 3;
+    View.State = EMtoUCacheState::Stopped;
+    View.CurrentSourceFrame = -2;
+    TestTrue(TEXT("stopped negative source frame is displayed"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("源帧 -2–0 · 24 fps · 当前已应用帧 -2")));
+    View.State = EMtoUCacheState::Playing;
+    View.AppliedFrames = 0;
+    TestTrue(TEXT("replay before a new tick still shows held pose"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -2")));
+    View.CurrentSourceFrame = -1;
+    View.AppliedFrames = 2;
+    TestTrue(TEXT("negative source frame -1 is displayed mid-range"),
+        FMtoULiveLinkActorDetails::FormatCacheSummary(View).ToString()
+            .Contains(TEXT("当前已应用帧 -1")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsInteractiveStateTextTest,
+    "MtoULiveLink.Editor.DetailsInteractiveStateText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsInteractiveStateTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUCachePlaybackView View;
+    View.bConnected = true;
+    View.StartFrame = 1;
+    View.EndFrame = 24;
+    View.FrameCount = 24;
+    View.Fps = 30.0;
+
+    View.State = EMtoUCacheState::Playing;
+    View.CurrentSourceFrame = 7;
+    View.bHasAppliedSourceFrame = true;
+    View.AppliedFrames = 7;
+    TestTrue(TEXT("playing names its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("正在播放")));
+
+    View.bLoopEnabled = true;
+    View.LoopRound = 1;
+    TestTrue(TEXT("a looping attempt names its round"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("正在循环播放（第 2 轮）")));
+    View.bLoopEnabled = false;
+    View.LoopRound = 0;
+
+    View.State = EMtoUCacheState::Paused;
+    TestTrue(TEXT("pause names the held source frame"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已暂停于源帧 7，姿势保留")));
+    View.bPositionedBySeek = true;
+    View.CurrentSourceFrame = 12;
+    TestTrue(TEXT("a seek names its target and stays paused"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已定位到源帧 12，已暂停")));
+    View.bPositionedBySeek = false;
+    View.bHasAppliedSourceFrame = false;
+    TestTrue(TEXT("a pause before its first pose still reads as paused"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已暂停，姿势保留")));
+    View.bHasAppliedSourceFrame = true;
+
+    View.State = EMtoUCacheState::Stopped;
+    TestTrue(TEXT("stop keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已停止，缓存保留")));
+    View.State = EMtoUCacheState::Completed;
+    TestTrue(TEXT("completion keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已结束，停在最后一帧")));
+    View.State = EMtoUCacheState::Ready;
+    TestTrue(TEXT("ready keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("已就绪，等待播放")));
+    View.State = EMtoUCacheState::Failed;
+    TestTrue(TEXT("a failed attempt keeps its own state"),
+        FMtoULiveLinkActorDetails::FormatCacheState(View).ToString()
+            .Contains(TEXT("播放失败，缓存保留")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSeekInputTest,
+    "MtoULiveLink.Editor.DetailsSeekInput",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsSeekInputTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const TCHAR* InvalidInputs[] = {
+        TEXT("5.5"), TEXT("5abc"), TEXT(""), TEXT("  "), TEXT("+"), TEXT("-"),
+        TEXT("2147483648"), TEXT("-2147483649"), TEXT("0x5")
+    };
+    for (const TCHAR* Input : InvalidInputs)
     {
-        const TArray<TSharedPtr<FPropertySection>> Sections =
-            PropertyEditor.FindSectionsForCategory(AMtoULiveLinkActor::StaticClass(), Category);
-        TestTrue(FString::Printf(TEXT("%s belongs to the MtoU details section"), *Category.ToString()),
-            Sections.ContainsByPredicate([](const TSharedPtr<FPropertySection>& Section)
-            {
-                return Section.IsValid() && Section->GetName() == "MtoU"
-                    && Section->GetOrder() == 1000;
-            }));
+        int32 Frame = 123;
+        TestFalse(*FString::Printf(TEXT("reject invalid seek input '%s'"), Input),
+            FMtoULiveLinkActorDetails::ParseSeekSourceFrame(Input, Frame));
+        TestEqual(TEXT("rejected input leaves the frame untouched"), Frame, 123);
     }
 
-    for (const FName PropertyName : {
-            FName("PreviewState"), FName("PreviewBuildStage"), FName("DisplayTarget"),
-            FName("PreviewDiagnostics"), FName("ModelDiagnostics"), FName("ModelDiagnosticLevel"),
-            FName("DriverMeshComponent") })
+    struct FValidInput { const TCHAR* Text; int32 Frame; };
+    const FValidInput ValidInputs[] = {
+        {TEXT("  +5 \t"), 5}, {TEXT("-1"), -1}, {TEXT("0"), 0},
+        {TEXT("2147483647"), MAX_int32}, {TEXT("-2147483648"), MIN_int32}
+    };
+    for (const FValidInput& Input : ValidInputs)
     {
-        const FProperty* Property = FindFProperty<FProperty>(
-            AMtoULiveLinkActor::StaticClass(), PropertyName);
-        TestTrue(FString::Printf(TEXT("%s stays out of the default property rows"), *PropertyName.ToString()),
-            Property && !Property->HasAnyPropertyFlags(CPF_Edit));
+        int32 Frame = 123;
+        TestTrue(*FString::Printf(TEXT("accept integer seek input '%s'"), Input.Text),
+            FMtoULiveLinkActorDetails::ParseSeekSourceFrame(Input.Text, Frame));
+        TestEqual(TEXT("accepted input preserves its exact frame"), Frame, Input.Frame);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsLinkageCompactTextTest,
+    "MtoULiveLink.Editor.DetailsLinkageCompactText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsLinkageCompactTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // A production eval_id: sequence time, the camera path, then the whole
+    // camera description without a space or '/'.
+    FString Description;
+    for (int32 Index = 0; Index < 60; ++Index)
+    {
+        Description += FString::Printf(TEXT("field_%d=%d.000000;"), Index, Index);
+    }
+    const FString EvalId = TEXT("Main@1392000+000//Game/Level/Story/D003/Level_D003CP6_Act01.Level_D003CP6_Act01:")
+        TEXT("PersistentLevel.CineCameraActor_4.CameraComponent#") + Description + TEXT("~e3");
+    const FString Shown = FMtoULiveLinkActorDetails::CompactLinkageText(
+        FText::FromString(TEXT("最新完整应用时间：") + EvalId + TEXT(" · 帧 1,740"))).ToString();
+
+    // Slate wraps only at spaces, so every run between spaces must fit; a
+    // '/' inside an object path is no break opportunity.
+    TArray<FString> Runs;
+    Shown.ParseIntoArray(Runs, TEXT(" "));
+    for (const FString& Run : Runs)
+    {
+        {
+            TestTrue(*FString::Printf(TEXT("run '%s' fits one line"), *Run.Left(60)), Run.Len() <= 52);
+        }
+    }
+    TestTrue(TEXT("the sequence time stays readable"), Shown.StartsWith(TEXT("最新完整应用时间：Main@1392000+000//Game/")));
+    TestTrue(TEXT("the elided run keeps its end"), Shown.Contains(TEXT("…")) && Shown.Contains(TEXT(";~e3")));
+    TestTrue(TEXT("text after the run is unchanged"), Shown.EndsWith(TEXT(" · 帧 1,740")));
+    TestTrue(TEXT("a short text is unchanged"), FMtoULiveLinkActorDetails::CompactLinkageText(
+        FText::FromString(TEXT("恢复结果：无待处理恢复"))).ToString() == TEXT("恢复结果：无待处理恢复"));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsLinkageStatusTextTest,
+    "MtoULiveLink.Editor.DetailsLinkageStatusText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsLinkageStatusTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString EvalId = TEXT("Main@1392000+000//Game/Level/Cam.CameraComponent#field_0=0.000000;~e3");
+    auto Status = [](const FMtoULinkageView& View)
+    {
+        return FMtoULiveLinkActorDetails::FormatLinkageStatus(View).ToString();
+    };
+
+    // Not in linkage: one line, nothing to report.
+    FMtoULinkageView Idle;
+    TestEqual(TEXT("realtime reads as not linked"), Status(Idle), FString(TEXT("未进入联动")));
+    TestTrue(TEXT("no lag row while not linked"), FMtoULiveLinkActorDetails::FormatLinkageLag(Idle).IsEmpty());
+    TestTrue(TEXT("no restore row without a residual"),
+        FMtoULiveLinkActorDetails::FormatLinkageRecovery(Idle).IsEmpty());
+    TestTrue(TEXT("an untouched linkage adds no diagnostics"),
+        FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Idle).IsEmpty());
+
+    FMtoULinkageView Cached;
+    Cached.Mode = TEXT("cached");
+    Cached.Control = TEXT("cache");
+    TestEqual(TEXT("cached playback names itself"), Status(Cached), FString(TEXT("未进入联动 · 缓存播放中")));
+
+    FMtoULinkageView Held;
+    Held.bTakeoverHeld = true;
+    TestTrue(TEXT("a held takeover says how to hand it back"), Status(Held).Contains(TEXT("结束预览")));
+
+    // In linkage and keeping up: control and mode in one line, no read-back.
+    FMtoULinkageView Synced;
+    Synced.Mode = TEXT("linkage");
+    Synced.Control = TEXT("unreal");
+    Synced.bPaired = true;
+    Synced.PairedObjectId = TEXT("character");
+    Synced.Identity.ModeRevision = 7;
+    Synced.TargetEvalId = EvalId;
+    Synced.TargetDisplayFrame = 1740.0;
+    Synced.AppliedEvalId = EvalId;
+    Synced.AppliedDisplayFrame = 1739.0;
+    Synced.AppliedSampleSerial = 412;
+    Synced.AppliedLagSeconds = 0.13;
+    TestEqual(TEXT("linkage that keeps up"), Status(Synced),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · 同步正常")));
+    TestTrue(TEXT("a small lag is not reported"), FMtoULiveLinkActorDetails::FormatLinkageLag(Synced).IsEmpty());
+    for (const TCHAR* Internal : {TEXT("Main@"), TEXT("revision"), TEXT("样本"), TEXT("eval")})
+    {
+        TestFalse(*FString::Printf(TEXT("the status line hides '%s'"), Internal), Status(Synced).Contains(Internal));
+    }
+
+    FMtoULinkageView Syncing = Synced;
+    Syncing.AppliedEvalId.Reset();
+    TestEqual(TEXT("before the first complete application"), Status(Syncing),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · 正在同步")));
+
+    FMtoULinkageView Transitioning = Synced;
+    Transitioning.bTransitioning = true;
+    TestTrue(TEXT("a transition says to wait"), Status(Transitioning).Contains(TEXT("请稍候")));
+
+    // Lagging: the status says so and the lag row gives the number and what to do.
+    FMtoULinkageView Lagging = Synced;
+    Lagging.AppliedLagSeconds = 0.8;
+    TestEqual(TEXT("a lagging linkage"), Status(Lagging),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · Maya 跟不上")));
+    const FString Lag = FMtoULiveLinkActorDetails::FormatLinkageLag(Lagging).ToString();
+    TestTrue(TEXT("the lag row names the lag"), Lag.StartsWith(TEXT("Maya 跟不上，滞后 0.8 秒")));
+    TestTrue(TEXT("the lag row says what to do"), Lag.Contains(TEXT("暂停 Sequencer")));
+
+    // An overdue target is reported from the view's own field, whatever the
+    // runtime detail currently says.
+    FMtoULinkageView Overdue = Synced;
+    Overdue.AppliedLagSeconds = 0.1;
+    Overdue.TargetOverdueSeconds = 2.4;
+    Overdue.Detail = TEXT("Offered reference handoff tx-1.");
+    TestEqual(TEXT("an overdue target makes the status lag"), Status(Overdue),
+        FString(TEXT("镜头联动中 · Unreal 控制时间 · Maya 跟不上")));
+    TestTrue(TEXT("an overdue target reports its wait"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(Overdue).ToString().StartsWith(TEXT("Maya 跟不上，滞后 2.4 秒")));
+    FMtoULinkageView WordedOverdue = Synced;
+    WordedOverdue.Detail = TEXT("Not converged: target x waiting 2.40 s.");
+    TestTrue(TEXT("the detail wording alone does not decide the lag row"),
+        FMtoULiveLinkActorDetails::FormatLinkageLag(WordedOverdue).IsEmpty());
+
+    // A failed restore is shown with what to do; the residual stays in the tooltip and diagnostics.
+    FMtoULinkageView Residual = Held;
+    Residual.RecoveryResidual = TEXT("BP_SequencePlayer transform track: still muted");
+    const FString Recovery = FMtoULiveLinkActorDetails::FormatLinkageRecovery(Residual).ToString();
+    TestTrue(TEXT("the restore row names the failure"), Recovery.StartsWith(TEXT("恢复未完成")));
+    TestTrue(TEXT("the restore row says where to look"), Recovery.Contains(TEXT("高级设置与诊断")));
+
+    // Everything the group leaves out is in the diagnostics.
+    const FString Diagnostics = FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Synced).ToString();
+    for (const FString& Expected : {FString(TEXT("mode_revision 7")), EvalId, FString(TEXT("样本 412")),
+             FString(TEXT("帧 1740")), FString(TEXT("character"))})
+    {
+        TestTrue(*FString::Printf(TEXT("diagnostics keep '%s'"), *Expected.Left(40)), Diagnostics.Contains(Expected));
+    }
+    TestTrue(TEXT("diagnostics keep the restore residual"),
+        FMtoULiveLinkActorDetails::FormatLinkageDiagnostics(Residual).ToString().Contains(Residual.RecoveryResidual));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsSceneReferenceTextTest,
+    "MtoULiveLink.Editor.DetailsSceneReferenceText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsSceneReferenceTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUSceneRefExportResult Result;
+    TestEqual(TEXT("nothing exported yet"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString(),
+        FString(TEXT("场景参考：尚未导出。")));
+    TestTrue(TEXT("no diagnostics before an export"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceDiagnostics(Result).IsEmpty());
+
+    Result.bSucceeded = true;
+    Result.Directory = TEXT("Saved/MtoU/Handoff/tx-1");
+    Result.TransferId = TEXT("tx-20261022-0153-8f2c");
+    Result.ManifestDigest = TEXT("sha256:abcd");
+    Result.ExportedObjectCount = 152;
+    Result.TriangleCount = 1203344;
+    Result.GeometryBytes = 48000000;
+    Result.ManifestBytes = 213004;
+    const FString Line = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestEqual(TEXT("an export in the user's terms"), Line, FString(TEXT("已导出 152 个对象，可在 Maya 导入。")));
+    for (const TCHAR* Internal : {TEXT("tx-"), TEXT("字节"), TEXT("三角形"), TEXT("交付"), TEXT("sha256")})
+    {
+        TestFalse(*FString::Printf(TEXT("the result line hides '%s'"), Internal), Line.Contains(Internal));
+    }
+    const FString Diagnostics = FMtoULiveLinkActorDetails::FormatSceneReferenceDiagnostics(Result).ToString();
+    for (const TCHAR* Expected : {TEXT("tx-20261022-0153-8f2c"), TEXT("sha256:abcd"), TEXT("三角形 1203344"),
+             TEXT("字节 48213004")})
+    {
+        TestTrue(*FString::Printf(TEXT("diagnostics keep '%s'"), Expected), Diagnostics.Contains(Expected));
+    }
+
+    // A partial scope names its own reason.
+    Result.bScopeComplete = false;
+    Result.UnloadedSublevels = {TEXT("Level_D003CP6_Act01_FX")};
+    TestTrue(TEXT("an unloaded requested sublevel is named"),
+        FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString().Contains(TEXT("1 个子关卡未加载")));
+    Result.UnloadedSublevels.Reset();
+    Result.ExcludedSublevels = {TEXT("Level_D003CP6_Act01_Light"), TEXT("Level_D003CP6_Act01_Prop")};
+    const FString Excluded = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("selected sublevels the world does not stream are named"),
+        Excluded.Contains(TEXT("勾选的 2 个子关卡不在当前世界中")));
+    TestTrue(TEXT("the remedy names the level streaming"), Excluded.Contains(TEXT("流式设置")));
+    TestFalse(TEXT("sublevels missing from the world are not called unloaded"), Excluded.Contains(TEXT("未加载，")));
+    Result.ExcludedSublevels.Reset();
+    const FString Partitioned = FMtoULiveLinkActorDetails::FormatSceneReferenceResult(Result).ToString();
+    TestTrue(TEXT("a World Partition scope says it holds loaded content only"),
+        Partitioned.Contains(TEXT("World Partition")));
+    TestFalse(TEXT("a World Partition scope mentions no sublevel"), Partitioned.Contains(TEXT("子关卡")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUDetailsStatusTest,
+    "MtoULiveLink.Editor.DetailsStatus",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUDetailsStatusTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* ReadoutWorld = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+    AMtoULiveLinkActor* ReadoutActor = ReadoutWorld
+        ? ReadoutWorld->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    TestNotNull(TEXT("Details status actor is created"), ReadoutActor);
+    if (!ReadoutActor)
+    {
+        if (ReadoutWorld)
+        {
+            ReadoutWorld->DestroyWorld(false);
+        }
+        return false;
+    }
+
+    // Every connection status the source publishes must reach the same single
+    // readout with a state and a next step, and the raw message must stay
+    // visible whenever it says more than the state already does.
+    struct FCase
+    {
+        const TCHAR* Status;
+        FMtoULiveLinkActorDetails::ESeverity Severity;
+        bool bShowsDetail;
+    };
+    const FCase Cases[] = {
+        { TEXT(""), FMtoULiveLinkActorDetails::ESeverity::Neutral, false },
+        { TEXT("Disconnected"), FMtoULiveLinkActorDetails::ESeverity::Neutral, false },
+        { TEXT("Validating"), FMtoULiveLinkActorDetails::ESeverity::Info, false },
+        { TEXT("Connected"), FMtoULiveLinkActorDetails::ESeverity::Success, false },
+        { TEXT("Connected: partial Morph coverage"),
+            FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Connected: bone-only diagnostic; not valid for model acceptance"),
+            FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Preview not ready"), FMtoULiveLinkActorDetails::ESeverity::Warning, true },
+        { TEXT("Preview morph mismatch"), FMtoULiveLinkActorDetails::ESeverity::Error, true },
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            FMtoULiveLinkActorDetails::ESeverity::Error, true },
+    };
+    for (const FCase& Case : Cases)
+    {
+        ReadoutActor->SetConnectionStatus(Case.Status);
+        const FMtoULiveLinkActorDetails::FStatusView View =
+            FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor);
+        TestFalse(FString::Printf(TEXT("status '%s' names the state"), Case.Status),
+            View.State.ToString().TrimStartAndEnd().IsEmpty());
+        TestFalse(FString::Printf(TEXT("status '%s' names the next step"), Case.Status),
+            View.NextStep.ToString().TrimStartAndEnd().IsEmpty());
+        TestFalse(FString::Printf(TEXT("status '%s' names the display source"), Case.Status),
+            View.Display.ToString().TrimStartAndEnd().IsEmpty());
+        TestTrue(FString::Printf(TEXT("status '%s' reports its own severity"), Case.Status),
+            View.Severity == Case.Severity);
+        // The raw message reaches the copyable diagnostics whenever it says
+        // more than the headline already does, and stays out of it when the
+        // headline already carries the whole status.
+        if (Case.Status[0] != 0)
+        {
+            TestEqual(
+                FString::Printf(TEXT("status '%s' keeps the raw message in the diagnostics"),
+                    Case.Status),
+                View.RawDiagnostics.ToString().Contains(Case.Status), Case.bShowsDetail);
+        }
+    }
+
+    // A blocking error keeps its own text instead of a generic headline.
+    ReadoutActor->SetConnectionStatus(TEXT("Error: the Maya and Unreal skeletons do not match."));
+    TestTrue(TEXT("a connection error keeps its own message"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).RawDiagnostics.ToString()
+            .Contains(TEXT("skeletons do not match")));
+
+    // Distinct states cannot read as the same status.
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    const FString ConnectedState =
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString();
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    TestTrue(TEXT("a disconnect reads differently from a connection"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString() != ConnectedState);
+
+    // The readout follows the public display selection.
+    ReadoutActor->ShowDriverMesh();
+    TestEqual(TEXT("the status readout follows the Driver display selection in the user's terms"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Display.ToString(),
+        FString(TEXT("当前显示：原始角色")));
+
+    // The panel shares one presenter: it starts from the actor's current state
+    // and still matches the actor after that state moves.
+    FMtoULiveLinkActorDetails::FStatusPresenter Presenter(ReadoutActor);
+    TestEqual(TEXT("the presenter starts from the actor's current state"),
+        Presenter.Get().State.ToString(),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString());
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    TestEqual(TEXT("the presenter follows a connection change"),
+        Presenter.Get().State.ToString(),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).State.ToString());
+
+    // The Delete action is offered only while it can change something.
+    TestFalse(TEXT("Delete Preview stays unavailable without a usable Generated Preview"),
+        FMtoULiveLinkActorDetails::CanDeletePreview(ReadoutActor));
+
+    // The real garment resolver emits these values in its raw error. The UI
+    // parses candidates from that message without assuming the screenshot's
+    // section IDs, triangle counts, or threshold are constants.
+    FMtoUPreviewReadiness Ambiguous;
+    Ambiguous.State = EMtoUPreviewState::Error;
+    Ambiguous.Diagnostics = TEXT(
+        "Automatic garment resolution found two indistinguishable source regions "
+        "[86 tris in section 1] and [38 tris in section 4]. Their surfaces "
+        "coincide within 0.0200 of the Preview scale, so the choice is ambiguous. "
+        "Remove one duplicate or pin the intended imported slots with Driver Garment Slot Override.");
+    Ambiguous.Summary = Ambiguous.Diagnostics;
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    const FMtoULiveLinkActorDetails::FStatusView AmbiguousView =
+        FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(ReadoutActor, Ambiguous);
+    TestEqual(TEXT("failed Preview has its own status"), AmbiguousView.Preview.ToString(),
+        FString(TEXT("预览生成失败")));
+    TestEqual(TEXT("disconnected link stays independent"), AmbiguousView.Connection.ToString(),
+        FString(TEXT("未连接")));
+    TestTrue(TEXT("ambiguity receives a Chinese summary"),
+        AmbiguousView.Summary.ToString().Contains(TEXT("服装区域匹配冲突")));
+    TestTrue(TEXT("first candidate comes from the raw error"),
+        AmbiguousView.Candidates.ToString().Contains(TEXT("区段 1：86 个三角面")));
+    TestTrue(TEXT("second candidate comes from the raw error"),
+        AmbiguousView.Candidates.ToString().Contains(TEXT("区段 4：38 个三角面")));
+    TestTrue(TEXT("the original Preview error starts the single raw log"),
+        AmbiguousView.RawDiagnostics.ToString().StartsWith(Ambiguous.Diagnostics));
+    TestEqual(TEXT("a duplicated Preview Summary is collected only once"),
+        AmbiguousView.RawDiagnostics.ToString().Find(Ambiguous.Diagnostics, ESearchCase::CaseSensitive,
+            ESearchDir::FromEnd), 0);
+    TestTrue(TEXT("raw threshold stays available for copy"),
+        AmbiguousView.RawDiagnostics.ToString().Contains(TEXT("0.0200")));
+
+    FMtoUPreviewReadiness UnknownFailure;
+    UnknownFailure.State = EMtoUPreviewState::Error;
+    UnknownFailure.Diagnostics = TEXT("Unexpected native failure 12345");
+    const auto UnknownView = FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+        ReadoutActor, UnknownFailure);
+    TestTrue(TEXT("unknown errors use a Chinese fallback"),
+        UnknownView.Summary.ToString().Contains(TEXT("请查看错误详情")));
+    TestTrue(TEXT("unknown raw error is preserved"),
+        UnknownView.RawDiagnostics.ToString().StartsWith(UnknownFailure.Diagnostics));
+
+    FMtoUPreviewReadiness Building;
+    Building.State = EMtoUPreviewState::Building;
+    Building.Stage = EMtoUPreviewBuildStage::WeightTransfer;
+    const auto BuildingView = FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+        ReadoutActor, Building);
+    TestTrue(TEXT("building state is shown in Chinese"),
+        BuildingView.Preview.ToString().Contains(TEXT("正在生成")));
+    TestFalse(TEXT("a new build does not retain the previous Preview error"),
+        BuildingView.RawDiagnostics.ToString().Contains(Ambiguous.Diagnostics));
+
+    // A session that ends and a session that never started publish the same
+    // "Disconnected" string; the actor's session lifecycle separates them. The
+    // transitions below are the ones MtoULiveLinkSource itself performs.
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    TestEqual(TEXT("a link that never streamed reads as not connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("未连接")));
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    ReadoutActor->NoteSessionStreaming();
+    TestEqual(TEXT("a negotiated session reads as connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("已连接")));
+
+    // The cached presenter is built while streaming, so it has to follow the
+    // same actor through the interruption instead of serving the old headline.
+    FMtoULiveLinkActorDetails::FStatusPresenter InterruptPresenter(ReadoutActor);
+    TestEqual(TEXT("the cached presenter starts on the connected headline"),
+        InterruptPresenter.Get().Connection.ToString(), FString(TEXT("已连接")));
+    ReadoutActor->SetConnectionStatus(TEXT("Disconnected"));
+    ReadoutActor->NoteSessionEnded();
+    const FMtoULiveLinkActorDetails::FStatusView InterruptedView =
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor);
+    TestEqual(TEXT("an ended session reads as interrupted"),
+        InterruptedView.Connection.ToString(), FString(TEXT("连接已中断")));
+    TestFalse(TEXT("an interrupted link never reads as a link that was never used"),
+        InterruptedView.State.ToString().Contains(TEXT("未连接")));
+    TestTrue(TEXT("an interruption is not a failure, so the row stays neutral"),
+        InterruptedView.Severity == FMtoULiveLinkActorDetails::ESeverity::Neutral
+            && InterruptedView.ConnectionSeverity == FMtoULiveLinkActorDetails::ESeverity::Neutral);
+    TestTrue(TEXT("the cached presenter follows the session ending"),
+        InterruptPresenter.Get().Connection.ToString() == FString(TEXT("连接已中断"))
+            && InterruptPresenter.Get().State.ToString() == InterruptedView.State.ToString());
+
+    // Reconnecting the same actor reports a live session again.
+    ReadoutActor->SetConnectionStatus(TEXT("Connected"));
+    ReadoutActor->NoteSessionStreaming();
+    TestEqual(TEXT("a reconnected session reads as connected again"),
+        FMtoULiveLinkActorDetails::MakeStatusView(ReadoutActor).Connection.ToString(),
+        FString(TEXT("已连接")));
+
+    // A session that ends before it ever streamed is not an interruption.
+    AMtoULiveLinkActor* NeverStreamedActor = ReadoutWorld
+        ? ReadoutWorld->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    TestNotNull(TEXT("a second status actor is created"), NeverStreamedActor);
+    if (NeverStreamedActor)
+    {
+        NeverStreamedActor->SetConnectionStatus(TEXT("Disconnected"));
+        NeverStreamedActor->NoteSessionEnded();
+        TestEqual(TEXT("a session that never streamed leaves the actor idle"),
+            FMtoULiveLinkActorDetails::MakeStatusView(NeverStreamedActor).Connection.ToString(),
+            FString(TEXT("未连接")));
+    }
+
+    // A usable Preview with quality warnings and a blocking connection failure
+    // can both be true at once. The first line and the detailed group must name
+    // the same problem, so the blocking one wins in the summary and the step.
+    FMtoUPreviewReadiness QualityWarning;
+    QualityWarning.State = EMtoUPreviewState::Warning;
+    struct FLadderCase
+    {
+        const TCHAR* Status;
+        EMtoUPreviewState Preview;
+        const TCHAR* NextStep;
+        const TCHAR* Summary;
+    };
+    const FLadderCase LadderCases[] = {
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            EMtoUPreviewState::Warning, TEXT("检查连接诊断，然后在 Maya 中重新连接。"),
+            TEXT("连接出错") },
+        { TEXT("Preview morph mismatch"), EMtoUPreviewState::Warning,
+            TEXT("检查连接诊断，然后在 Maya 中重新连接。"), TEXT("连接出错") },
+        { TEXT("Connected"), EMtoUPreviewState::Warning,
+            TEXT("预览可用；请先检查高级诊断中的质量警告。"), TEXT("质量警告") },
+        { TEXT("Validating"), EMtoUPreviewState::Warning,
+            TEXT("预览可用；请先检查高级诊断中的质量警告。"), TEXT("质量警告") },
+        { TEXT("Error: the Maya and Unreal skeletons do not match."),
+            EMtoUPreviewState::Error, TEXT("查看错误详情，修正输入后重新刷新预览。"),
+            TEXT("预览生成失败") },
+    };
+    for (const FLadderCase& Case : LadderCases)
+    {
+        ReadoutActor->SetConnectionStatus(Case.Status);
+        FMtoUPreviewReadiness LadderReadiness = QualityWarning;
+        LadderReadiness.State = Case.Preview;
+        const FMtoULiveLinkActorDetails::FStatusView LadderView =
+            FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(
+                ReadoutActor, LadderReadiness);
+        TestEqual(
+            FString::Printf(TEXT("'%s' names the blocking problem in the next step"), Case.Status),
+            LadderView.NextStep.ToString(), FString(Case.NextStep));
+        TestTrue(FString::Printf(TEXT("'%s' names the same problem in the summary"), Case.Status),
+            LadderView.Summary.ToString().Contains(Case.Summary));
+    }
+
+    // Both axes stay visible under one blocking problem, and the row takes its
+    // severity from the blocker rather than from the quality warning.
+    ReadoutActor->SetConnectionStatus(TEXT("Error: the Maya and Unreal skeletons do not match."));
+    const FMtoULiveLinkActorDetails::FStatusView WarningErrorView =
+        FMtoULiveLinkActorDetails::MakeStatusViewForReadiness(ReadoutActor, QualityWarning);
+    TestTrue(TEXT("the Preview warning and the connection failure stay independent"),
+        WarningErrorView.State.ToString().Contains(TEXT("预览已就绪（有警告）"))
+            && WarningErrorView.State.ToString().Contains(TEXT("连接出错")));
+    TestTrue(TEXT("the blocking problem sets the row severity"),
+        WarningErrorView.Severity == FMtoULiveLinkActorDetails::ESeverity::Error);
+
+    if (ReadoutWorld)
+    {
+        ReadoutWorld->DestroyWorld(false);
     }
     return true;
 }
@@ -599,6 +1185,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewLifecycleTest,
 bool FMtoUPreviewLifecycleTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUPreviewLifecycleWorld"));
@@ -1135,6 +1724,303 @@ bool FMtoUPreviewMissingMorphSurfaceTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// Issue #91: repeated failed refreshes of one actor must return to the same
+// object baseline. A refresh copies the Driver and Preview into transient
+// Dynamic Meshes and may build an actor-owned Generated Preview before it
+// fails; none of these may survive a forced GC, and their geometry must
+// already be released when the refresh returns instead of waiting for GC.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewFailedRefreshReleaseTest,
+    "MtoULiveLink.Editor.Preview.FailedRefreshRelease",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewFailedRefreshReleaseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
+    // Ignored: the failed refresh shows the source-only malformed Driver.
+    AddExpectedMessagePlain(TEXT("has no render data"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
+    UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUFailedRefreshReleaseWorld"));
+    USkeletalMesh* Driver = MakeMorphDriver(*WorldPackage);
+    UStaticMesh* Preview = Driver ? MakePreview(*Driver, *WorldPackage) : nullptr;
+    UStaticMesh* MisalignedPreview = Driver
+        ? MakePreview(*Driver, *WorldPackage, false, false, false, true)
+        : nullptr;
+    UStaticMesh* SourcelessPreview = NewObject<UStaticMesh>(WorldPackage);
+    USkeletalMesh* MalformedDriver = Driver
+        ? NewObject<USkeletalMesh>(WorldPackage, NAME_None, RF_Transient)
+        : nullptr;
+    if (MalformedDriver)
+    {
+        MalformedDriver->SetSkeleton(Driver->GetSkeleton());
+        MalformedDriver->SetRefSkeleton(Driver->GetRefSkeleton());
+        FMeshDescription IndependentDescription;
+        if (Driver->CloneMeshDescription(0, IndependentDescription))
+        {
+            MalformedDriver->SetNumSourceModels(1);
+            MalformedDriver->CreateMeshDescription(0, MoveTemp(IndependentDescription));
+        }
+    }
+    FMeshDescription* MalformedDescription = MalformedDriver
+        ? MalformedDriver->GetMeshDescription(0)
+        : nullptr;
+    if (MalformedDescription)
+    {
+        FSkeletalMeshAttributes(*MalformedDescription).GetBoneNames().Set(
+            0, FName(TEXT("MissingInfluenceBone")));
+    }
+    USkeletalMesh* BrokenMorphDriver = Driver
+        ? DuplicateObject<USkeletalMesh>(Driver, WorldPackage)
+        : nullptr;
+    if (BrokenMorphDriver)
+    {
+        BrokenMorphDriver->GetMorphTargets().Add(NewObject<UMorphTarget>(
+            BrokenMorphDriver, FName(TEXT("BrokenRequired")), RF_Transient));
+    }
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::EditorPreview, false, TEXT("MtoUFailedRefreshReleaseWorld"), WorldPackage, true);
+    AMtoULiveLinkActor* Actor = World ? World->SpawnActor<AMtoULiveLinkActor>() : nullptr;
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+    // The census forces GC, which would otherwise collect the fixtures that
+    // the Binding does not reference at that moment.
+    TArray<TStrongObjectPtr<UObject>> FixtureGuards;
+    for (UObject* Fixture : TArray<UObject*>{Binding, Driver, Preview, MisalignedPreview,
+        SourcelessPreview, MalformedDriver, BrokenMorphDriver})
+    {
+        FixtureGuards.Emplace(Fixture);
+    }
+    if (!Actor || !Driver || !Preview || !MisalignedPreview || !MalformedDescription
+        || !BrokenMorphDriver)
+    {
+        AddError(TEXT("failed-refresh fixtures were not created"));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    Actor->SetBinding(Binding);
+
+    // The census counts every refresh-created object that still exists,
+    // including garbage-marked ones, and the data each one still holds, so
+    // data left in an object that is only waiting for GC is detected.
+    struct FCensus
+    {
+        int32 Meshes = 0;
+        int64 MeshVertices = 0;
+        int32 Generated = 0;
+        /** Vertices and Morph deltas held by actor-owned meshes other than the current preview. */
+        int64 GeneratedData = 0;
+    };
+    const auto Census = [Actor]()
+    {
+        FCensus Result;
+        for (TObjectIterator<UDynamicMesh> It; It; ++It)
+        {
+            if (It->GetOuter() == GetTransientPackage())
+            {
+                ++Result.Meshes;
+                Result.MeshVertices += It->GetMeshRef().VertexCount();
+            }
+        }
+        const USkeletalMesh* Current = Actor->GetPreviewReadiness().GeneratedPreview;
+        for (TObjectIterator<USkeletalMesh> It; It; ++It)
+        {
+            if (It->GetOuter() != Actor)
+            {
+                continue;
+            }
+            ++Result.Generated;
+            if (*It == Current)
+            {
+                continue;
+            }
+            if (const FSkeletalMeshModel* Model = It->GetImportedModel())
+            {
+                for (const FSkeletalMeshLODModel& LOD : Model->LODModels)
+                {
+                    Result.GeneratedData += LOD.NumVertices;
+                }
+            }
+            for (int32 LODIndex = 0; LODIndex < It->GetNumSourceModels(); ++LODIndex)
+            {
+                if (It->HasMeshDescription(LODIndex))
+                {
+                    Result.GeneratedData += It->GetMeshDescription(LODIndex)->Vertices().Num();
+                }
+            }
+            if (const FSkeletalMeshRenderData* RenderData = It->GetResourceForRendering())
+            {
+                for (const FSkeletalMeshLODRenderData& LOD : RenderData->LODRenderData)
+                {
+                    Result.GeneratedData += LOD.GetNumVertices();
+                }
+            }
+        }
+        for (TObjectIterator<UMorphTarget> It; It; ++It)
+        {
+            if (It->GetOuter() && It->GetOuter()->GetOuter() == Actor && It->GetOuter() != Current)
+            {
+                for (const FMorphTargetLODModel& LOD : It->GetMorphLODModels())
+                {
+                    Result.GeneratedData += LOD.Vertices.Num();
+                }
+            }
+        }
+        return Result;
+    };
+    const auto Describe = [](const FCensus& Value)
+    {
+        return FString::Printf(
+            TEXT("%d meshes (%lld vertices), %d generated (%lld held vertices and deltas)"),
+            Value.Meshes, Value.MeshVertices, Value.Generated, Value.GeneratedData);
+    };
+    const auto UsedPhysicalMiB = []()
+    {
+        return static_cast<double>(FPlatformMemory::GetStats().UsedPhysical) / (1024.0 * 1024.0);
+    };
+
+    constexpr int32 Repeats = 5;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus Baseline = Census();
+    AddInfo(TEXT("baseline: ") + Describe(Baseline));
+
+    // Control: data in garbage-marked objects counts until GC destroys them.
+    UDynamicMesh* ControlMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+    ControlMesh->ResetToCube();
+    ControlMesh->MarkAsGarbage();
+    USkeletalMesh* ControlGenerated = DuplicateObject<USkeletalMesh>(Driver, Actor);
+    ControlGenerated->MarkAsGarbage();
+    const FCensus Control = Census();
+    AddInfo(TEXT("garbage-marked control: ") + Describe(Control));
+    TestTrue(TEXT("the census counts data held by garbage-marked objects"),
+        Control.MeshVertices > Baseline.MeshVertices
+        && Control.GeneratedData > Baseline.GeneratedData);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus ControlCollected = Census();
+    TestTrue(TEXT("GC removes the garbage-marked control"),
+        ControlCollected.Meshes == Baseline.Meshes
+        && ControlCollected.Generated == Baseline.Generated);
+
+    struct FFailureCase
+    {
+        const TCHAR* Name;
+        USkeletalMesh* Driver;
+        UStaticMesh* Preview;
+        TArray<FName> SlotOverride;
+        EMtoUPreviewBuildStage Stage;
+    };
+    const FFailureCase Cases[] = {
+        { TEXT("missing Preview source data"), Driver, SourcelessPreview, {},
+            EMtoUPreviewBuildStage::Preflight },
+        { TEXT("source influence absent from the skeleton"), MalformedDriver, Preview, {},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("unknown garment slot"), Driver, Preview, {FName(TEXT("M_NoSuchSlot"))},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("misaligned Preview"), Driver, MisalignedPreview, {},
+            EMtoUPreviewBuildStage::GeometryConversion },
+        { TEXT("invalid required Morph"), BrokenMorphDriver, Preview, {},
+            EMtoUPreviewBuildStage::SkeletalMeshBuild },
+    };
+    for (const FFailureCase& Case : Cases)
+    {
+        Binding->SkeletalMesh = Case.Driver;
+        Binding->PreviewStaticMesh = Case.Preview;
+        Binding->DriverGarmentSlotOverride = Case.SlotOverride;
+        const double MemoryBefore = UsedPhysicalMiB();
+        FMtoUPreviewReadiness Failed;
+        bool bConsistent = true;
+        for (int32 Attempt = 0; Attempt < Repeats; ++Attempt)
+        {
+            Failed = FMtoUPreviewPreparation::RefreshActor(*Actor);
+            bConsistent &= Failed.State == EMtoUPreviewState::Error
+                && Failed.Stage == Case.Stage
+                && Failed.GeneratedPreview == nullptr
+                && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+                && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Case.Driver;
+        }
+        AddInfo(FString::Printf(TEXT("%s: %s"), Case.Name, *Failed.Diagnostics.Left(200)));
+        TestTrue(FString::Printf(
+            TEXT("%s fails at its stage every time and shows the original garment"), Case.Name),
+            bConsistent);
+        const FCensus Returned = Census();
+        const double MemoryReturned = UsedPhysicalMiB();
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        const FCensus Collected = Census();
+        AddInfo(FString::Printf(
+            TEXT("%s x%d: on return %s; after GC %s; used physical %.1f -> %.1f -> %.1f MiB"),
+            Case.Name, Repeats, *Describe(Returned), *Describe(Collected),
+            MemoryBefore, MemoryReturned, UsedPhysicalMiB()));
+        TestTrue(FString::Printf(TEXT("%s holds no mesh data after it returns"), Case.Name),
+            Returned.MeshVertices == Baseline.MeshVertices
+            && Returned.GeneratedData == Baseline.GeneratedData);
+        TestTrue(FString::Printf(TEXT("%s leaves no object after GC"), Case.Name),
+            Collected.Meshes == Baseline.Meshes
+            && Collected.Generated == Baseline.Generated);
+    }
+
+    // A Validation failure is a quality verdict that the default thresholds
+    // cannot reach with these inputs; the preparation seam takes stricter
+    // thresholds and discards a fully built Generated Preview.
+    Binding->SkeletalMesh = Driver;
+    Binding->PreviewStaticMesh = Preview;
+    Binding->DriverGarmentSlotOverride.Reset();
+    FMtoUPreviewQualityThresholds UnsafeThresholds;
+    UnsafeThresholds.MaxWarningInpaintRatio = -1.0;
+    const FMtoUPreviewPreparationResult Unsafe =
+        MtoUPreparePreview(*Actor, *Binding, {}, UnsafeThresholds);
+    const FCensus UnsafeReturned = Census();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus UnsafeCollected = Census();
+    AddInfo(TEXT("validation failure: on return ") + Describe(UnsafeReturned)
+        + TEXT("; after GC ") + Describe(UnsafeCollected));
+    TestTrue(TEXT("a Validation failure releases the built Generated Preview"),
+        !Unsafe.bSucceeded
+        && Unsafe.FailureStage == EMtoUPreviewBuildStage::Validation
+        && UnsafeReturned.MeshVertices == Baseline.MeshVertices
+        && UnsafeReturned.GeneratedData == Baseline.GeneratedData
+        && UnsafeCollected.Meshes == Baseline.Meshes
+        && UnsafeCollected.Generated == Baseline.Generated);
+
+    // Success then success keeps only the latest Generated Preview.
+    const FMtoUPreviewReadiness First = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const FMtoUPreviewReadiness Second = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    const FCensus SuccessReturned = Census();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus SuccessCollected = Census();
+    AddInfo(TEXT("success twice: on return ") + Describe(SuccessReturned)
+        + TEXT("; after GC ") + Describe(SuccessCollected));
+    TestTrue(TEXT("two successful refreshes keep only the latest Generated Preview"),
+        First.IsUsable() && Second.IsUsable()
+        && First.GeneratedPreview != Second.GeneratedPreview
+        && Actor->GetPreviewReadiness().GeneratedPreview == Second.GeneratedPreview
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+        && SuccessReturned.MeshVertices == Baseline.MeshVertices
+        && SuccessCollected.Meshes == Baseline.Meshes
+        && SuccessCollected.Generated == Baseline.Generated + 1
+        && SuccessCollected.GeneratedData == Baseline.GeneratedData);
+
+    // Success then failure releases the committed preview and shows the Driver.
+    Binding->DriverGarmentSlotOverride = {FName(TEXT("M_NoSuchSlot"))};
+    const FMtoUPreviewReadiness AfterSuccess = FMtoUPreviewPreparation::RefreshActor(*Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const FCensus AfterSuccessCollected = Census();
+    AddInfo(TEXT("failure after success, after GC: ") + Describe(AfterSuccessCollected));
+    TestTrue(TEXT("a failure after success releases the Generated Preview and shows the Driver"),
+        AfterSuccess.State == EMtoUPreviewState::Error
+        && AfterSuccess.GeneratedPreview == nullptr
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver
+        && AfterSuccessCollected.Meshes == Baseline.Meshes
+        && AfterSuccessCollected.Generated == Baseline.Generated);
+
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewMeshDataTest,
     "MtoULiveLink.Editor.Preview.MeshData",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1654,6 +2540,47 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
             DriverDisplay && DriverDisplay->IsMaterialSectionShown(HiddenSlot, 0));
     }
 
+    const FTransform ComparisonTransform = Actor->GetActorTransform();
+    TestTrue(TEXT("ready Generated Preview enables garment comparison"),
+        Actor->CanCompareGarments());
+    for (int32 Switch = 0; Switch < 3; ++Switch)
+    {
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details switches to the original garment without replacing the Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == RefreshResult.GeneratedPreview
+            && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver
+            && Actor->GetPreviewReadiness().GeneratedPreview == RefreshResult.GeneratedPreview
+            && Actor->GetPreviewReadiness().State == RefreshResult.State
+            && Actor->GetActorTransform().Equals(ComparisonTransform));
+        for (int32 Slot = 0; Slot < GeneratedMaterials.Num(); ++Slot)
+        {
+            TestFalse(TEXT("Generated garment is hidden during original comparison"),
+                Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(Slot, 0));
+        }
+        for (const int32 Slot : {0, 1, 2, 3, 4, 5, 6})
+        {
+            TestTrue(TEXT("original garment and body remain visible"),
+                DriverDisplay && DriverDisplay->IsMaterialSectionShown(Slot, 0));
+        }
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details restores the same Generated Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetPreviewReadiness().GeneratedPreview == RefreshResult.GeneratedPreview);
+        for (int32 Slot = 0; Slot < GeneratedMaterials.Num(); ++Slot)
+        {
+            TestTrue(TEXT("Generated garment is visible again"),
+                Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(Slot, 0));
+        }
+        for (const int32 Slot : {3, 4, 5})
+        {
+            TestFalse(TEXT("only resolved original garment slots hide again"),
+                DriverDisplay && DriverDisplay->IsMaterialSectionShown(Slot, 0));
+        }
+    }
+
+    TestTrue(TEXT("original garment can be selected before an input invalidation"),
+        Actor->ShowOriginalGarment());
     // Reimport invalidates and requires explicit Refresh again.
     if (GEditor)
     {
@@ -1664,6 +2591,19 @@ bool FMtoUPreviewFullCharacterTest::RunTest(const FString& Parameters)
         && !Actor->GetPreviewReadiness().IsUsable()
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
         && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == nullptr);
+    TestFalse(TEXT("dirty Preview cannot compare or restore stale geometry"),
+        Actor->CanCompareGarments() || Actor->ShowOriginalGarment()
+        || Actor->RestoreGeneratedGarment());
+    TestTrue(TEXT("Refresh restores comparison after input invalidation"),
+        FMtoUPreviewPreparation::RefreshActor(*Actor).IsUsable()
+        && Actor->ShowOriginalGarment());
+    Actor->NotifyGeneratedPreviewDeleted();
+    TestTrue(TEXT("deleting Preview during original comparison clears both displays"),
+        Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
+        && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Fixtures.FullDriver
+        && DriverDisplay && DriverDisplay->GetSkeletalMeshAsset() == nullptr
+        && !Actor->CanCompareGarments());
     TestFalse(TEXT("normal Refresh creates no .uasset on the filesystem"),
         IFileManager::Get().FileExists(*PackageFilename));
 
@@ -2552,7 +3492,7 @@ bool FMtoUPreviewInvalidGeometryTest::RunTest(const FString& Parameters)
     return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewRefreshBenchmarkTest,
-    "MtoULiveLink.Editor.Preview.RefreshBenchmark",
+    "MtoUOptIn.Editor.Preview.RefreshBenchmark",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUPreviewRefreshBenchmarkTest::RunTest(const FString& Parameters)
@@ -3154,6 +4094,17 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
         return false;
     }
     Actor->SetBinding(Binding);
+    // v10 negotiation names one explicitly paired object; the runtime refuses an
+    // init for an object the user has not paired.
+    {
+        FString PairError;
+        TestTrue(TEXT("the character target is paired"),
+            MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+        if (!PairError.IsEmpty())
+        {
+            AddError(PairError);
+        }
+    }
     const FReferenceSkeleton* TestSkeleton = &Driver->GetRefSkeleton();
     const FString BonesJson = BonesJsonFor(*TestSkeleton);
     const FMtoUPreviewReadiness DisconnectedFirst = FMtoUPreviewPreparation::RefreshActor(*Actor);
@@ -3332,7 +4283,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -3491,7 +4442,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
     FSocket* ModelClient = ConnectClient();
     TestNotNull(TEXT("model client connects"), ModelClient);
     const TArray<uint8> ModelInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Corrective\"]}"),
         *BonesJson));
     TestTrue(TEXT("model init is sent"), ModelClient && SendBytes(*ModelClient, ModelInit.GetData(), ModelInit.Num()));
     Payload.Reset();
@@ -3517,6 +4468,54 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
             LiveLinkClient.ForceTick();
             return EvaluateRoot(ModelRoot) && ModelRoot.Equals(FVector(41.0, 42.0, 43.0));
         }));
+    TArray<USkeletalMeshComponent*> ModelDisplayMeshes;
+    Actor->GetComponents(ModelDisplayMeshes);
+    USkeletalMeshComponent** ModelDriverEntry = ModelDisplayMeshes.FindByPredicate(
+        [Actor](const USkeletalMeshComponent* Component)
+        {
+            return Component != Actor->GetSkeletalMeshComponent();
+        });
+    USkeletalMeshComponent* ModelDriverDisplay = ModelDriverEntry ? *ModelDriverEntry : nullptr;
+    const uint64 ComparisonSession = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+    UAnimInstance* ComparisonAnimInstance = Actor->GetSkeletalMeshComponent()->GetAnimInstance();
+    TestTrue(TEXT("accepted nonzero Morph reaches the original Driver follower"),
+        ModelDriverDisplay
+        && FMath::IsNearlyEqual(ModelDriverDisplay->GetMorphTarget(FName(TEXT("Corrective"))), 0.5f));
+    for (int32 Switch = 0; Switch < 2; ++Switch)
+    {
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details comparison preserves the Model session and animation instance"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession
+            && Actor->GetSkeletalMeshComponent()->GetAnimInstance() == ComparisonAnimInstance
+            && Actor->GetPreviewReadiness().GeneratedPreview == AnimRefreshedMesh
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        TestTrue(TEXT("Details restores Generated Preview in the same session"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession);
+    }
+    FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+    const TArray<uint8> ComparedFrame = PacketFor(FrameJsonFor(
+        *TestSkeleton, FVector(44.0, 45.0, 46.0), TEXT("[0.75]")));
+    TestTrue(TEXT("model frame is sent while the original garment is displayed"),
+        ModelClient && SendBytes(*ModelClient, ComparedFrame.GetData(), ComparedFrame.Num()));
+    FVector ComparedRoot = FVector::ZeroVector;
+    TestTrue(TEXT("original comparison still receives pose and nonzero Morph"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return EvaluateRoot(ComparedRoot)
+                && ComparedRoot.Equals(FVector(44.0, 45.0, 46.0))
+                && ModelDriverDisplay
+                && FMath::IsNearlyEqual(ModelDriverDisplay->GetMorphTarget(
+                    FName(TEXT("Corrective"))), 0.75f);
+        }));
+    TestTrue(TEXT("new frame did not replace the comparison session or Preview revision"),
+        FMtoURefreshEndsSessionTestAccess::Session(*Source) == ComparisonSession
+        && Actor->GetPreviewReadiness().GeneratedPreview == AnimRefreshedMesh);
+    FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
     // Critical window W2: an in-flight cached playback must freeze at the
     // refresh boundary. Drive a real upload to Ready, then to Playing, while
     // the session is still live.
@@ -3772,7 +4771,7 @@ bool FMtoURefreshEndsSessionTest::RunTest(const FString& Parameters)
 // dual-host half of Issue #39 is observed from Maya itself: transport loss,
 // no automatic reconnect, and streaming resumed only by an explicit connect.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaRefreshPeerTest,
-    "MtoULiveLink.Editor.Preview.MayaRefreshPeer",
+    "MtoUOptIn.Editor.Preview.MayaRefreshPeer",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
@@ -3781,8 +4780,8 @@ bool FMtoUMayaRefreshPeerTest::RunTest(const FString& Parameters)
     FString Mayapy;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
     {
-        AddInfo(TEXT("Real Maya peer not requested; supply MtoUMayapy, MtoURefreshPeer and MtoUEvidence."));
-        return true;
+        AddError(TEXT("Real Maya peer check requires -MtoUMayapy=, -MtoURefreshPeer= and -MtoUEvidence=."));
+        return false;
     }
     FString Peer;
     FString Evidence;
@@ -4270,6 +5269,22 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         return false;
     }
     Actor->SetBinding(Binding);
+    // v10 negotiation names one explicitly paired object; the runtime refuses an
+    // init for an object the user has not paired.
+    {
+        FString PairError;
+        TestTrue(TEXT("the character target is paired"),
+            MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+        if (!PairError.IsEmpty())
+        {
+            AddError(PairError);
+        }
+    }
+    // Nothing has streamed to this actor yet, so it reads as not connected
+    // rather than as a link that was lost.
+    TestEqual(TEXT("a fresh actor reads as not connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("未连接")));
     const FReferenceSkeleton* TestSkeleton = &Driver->GetRefSkeleton();
     const FString BonesJson = BonesJsonFor(*TestSkeleton);
     auto Loopback = [&](uint16 Port)
@@ -4401,7 +5416,7 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     FSocket* AnimClient = ConnectClient();
     TestNotNull(TEXT("animation client connects"), AnimClient);
     const TArray<uint8> AnimInit = PacketFor(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *BonesJson));
     TestTrue(TEXT("animation init is sent"), AnimClient && SendBytes(*AnimClient, AnimInit.GetData(), AnimInit.Num()));
     TArray<uint8> Payload;
@@ -4410,6 +5425,9 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
             && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+    TestEqual(TEXT("a negotiated session reads as connected"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("已连接")));
     const TArray<uint8> AnimFrame = PacketFor(FrameJsonFor(*TestSkeleton, FVector(11.0, 12.0, 13.0)));
     TestTrue(TEXT("animation frame is sent"), AnimClient && SendBytes(*AnimClient, AnimFrame.GetData(), AnimFrame.Num()));
     TestTrue(TEXT("animation frame reaches Live Link"),
@@ -4425,6 +5443,10 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Details keeps the MtoU Preview customization registered for the Binding actor"),
         PropertyEditor.GetClassNameToDetailLayoutNameMap().Contains(
             AMtoULiveLinkActor::StaticClass()->GetFName()));
+    // The Details status cache exists before the refresh, so the same instance
+    // has to follow the readiness and display flip the click causes.
+    FMtoULiveLinkActorDetails::FStatusPresenter StatusPresenter(Actor);
+    const FString StatusBeforeRefresh = StatusPresenter.Get().State.ToString();
     // Execute the exact code the Details button invokes, including the
     // FScopedSlowTask/stage-callback path a direct RefreshActor call skips.
     FMtoULiveLinkActorDetails::HandleRefreshPreviewClicked(Actor);
@@ -4445,6 +5467,16 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
                 && Actor->GetPreviewReadiness().GeneratedPreview != nullptr
                 && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Actor->GetPreviewReadiness().GeneratedPreview;
         }));
+    // The session that just ended is the real Source termination path, so the
+    // panel reports an interruption instead of a link that never connected.
+    TestEqual(TEXT("the terminated session reads as interrupted"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("连接已中断")));
+    TestTrue(TEXT("the cached Details status follows the refreshed actor"),
+        StatusPresenter.Get().State.ToString() != StatusBeforeRefresh
+            && StatusPresenter.Get().State.ToString()
+                == FMtoULiveLinkActorDetails::MakeStatusView(Actor).State.ToString()
+            && StatusPresenter.Get().Display.ToString().Contains(TEXT("生成的预览网格")));
     FSocket* ReconnectClient = ConnectClient();
     TestNotNull(TEXT("animation reconnects explicitly after the Details click"), ReconnectClient);
     TestTrue(TEXT("reconnect init is sent"),
@@ -4455,7 +5487,21 @@ bool FMtoUDetailsRefreshClickTest::RunTest(const FString& Parameters)
         FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\""))
             && Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
             && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Driver);
+    TestEqual(TEXT("the reconnected session reads as connected again"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("已连接")));
+    // A peer that simply closes the socket is the same interruption, produced
+    // by the worker's own disconnect detection.
     DestroySocket(ReconnectClient);
+    TestTrue(TEXT("a peer disconnect ends the session"),
+        PollUntil([&]()
+        {
+            Source->Update();
+            return Actor->GetConnectionStatus().Contains(TEXT("Disconnected"));
+        }));
+    TestEqual(TEXT("a peer disconnect reads as interrupted"),
+        FMtoULiveLinkActorDetails::MakeStatusView(Actor).Connection.ToString(),
+        FString(TEXT("连接已中断")));
     return true;
 }
 
@@ -4554,6 +5600,14 @@ bool FMtoUCharacterPartsPreviewTest::RunTest(const FString& Parameters)
         && PartComponents[0]->GetSkeletalMeshAsset() == Head
         && PartComponents[0]->GetSkeletalMeshAsset()->GetSkeleton()
             == Fixtures.FullDriver->GetSkeleton());
+    TestTrue(TEXT("original comparison keeps the separated part displayed"),
+        Actor->ShowOriginalGarment()
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head);
+    TestTrue(TEXT("Generated comparison restores without changing the part"),
+        Actor->RestoreGeneratedGarment()
+        && Actor->GetPreviewReadiness().GeneratedPreview == Generated
+        && PartComponents[0]->GetSkeletalMeshAsset() == Head);
 
     // A composition change is not a Preview revision change: the generated
     // garment survives while the character composition resynchronizes.
@@ -4600,6 +5654,2006 @@ bool FMtoUCharacterPartsPreviewTest::RunTest(const FString& Parameters)
         && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr);
 
     World->DestroyWorld(false);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #51 natural-tick comparison regression.
+//
+// The earlier comparison tests drive the actor, its animation, and a transient
+// world directly. This one proves the same comparison through the editor's own
+// loop: the Binding actor lives in the real editor world, the Details control
+// performs every switch, and each displayed-bone and evaluated-Morph
+// observation below reads the components after the editor advanced them. No
+// command here calls Actor::Tick, TickAnimation, RefreshBoneTransforms, or
+// World::Tick; between a socket send and its observation only the editor main
+// loop (the Live Link client tick that updates the source, plus the natural
+// component and actor tick behind the plugin's realtime override) may advance
+// the display. Control-plane steps (negotiation, Details clicks, invalidation)
+// still pump Source->Update for determinism and draw no display conclusion.
+// ---------------------------------------------------------------------------
+namespace
+{
+const TCHAR* const ComparisonGarmentMorph = TEXT("GarmentFlare");
+const TCHAR* const ComparisonDriverOnlyMorph = TEXT("FaceBlink");
+const TCHAR* const ComparisonPartOnlyMorph = TEXT("HeadSway");
+
+FString ComparisonTransformJson(const FTransform& Transform)
+{
+    const FVector Translation = Transform.GetTranslation();
+    const FQuat Rotation = Transform.GetRotation();
+    const FVector Scale = Transform.GetScale3D();
+    return FString::Printf(
+        TEXT("[%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g]"),
+        Translation.X, Translation.Y, Translation.Z,
+        Rotation.X, Rotation.Y, Rotation.Z, Rotation.W,
+        Scale.X, Scale.Y, Scale.Z);
+}
+
+/** One Model frame in manifest order: garment, Driver-only, and part-only values. */
+FString ComparisonFrameJson(const FReferenceSkeleton& Skeleton,
+    const FVector& RootTranslation, const float GarmentFlare, const float FaceBlink,
+    const float HeadSway)
+{
+    FString Transforms;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index > 0)
+        {
+            Transforms += TEXT(",");
+        }
+        FTransform Pose = Skeleton.GetRefBonePose()[Index];
+        if (Index == 0)
+        {
+            Pose.SetTranslation(RootTranslation);
+        }
+        Transforms += ComparisonTransformJson(Pose);
+    }
+    return FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[%.17g,%.17g,%.17g]}"),
+        *Transforms, GarmentFlare, FaceBlink, HeadSway);
+}
+
+/**
+ * Final evaluated Morph weight of the component's own mesh: the weight the
+ * current animation evaluation left for skinning, not a value the test set.
+ * False when the displayed mesh does not own the name at all.
+ */
+bool ComparisonEvaluatedMorphWeight(const USkeletalMeshComponent* Component,
+    const TCHAR* Name, float& OutWeight)
+{
+    const USkeletalMesh* Mesh = Component ? Component->GetSkeletalMeshAsset() : nullptr;
+    const UMorphTarget* Morph = Mesh ? Mesh->FindMorphTarget(FName(Name)) : nullptr;
+    if (!Morph)
+    {
+        return false;
+    }
+    const int32* WeightIndex = Component->ActiveMorphTargets.Find(Morph);
+    if (!WeightIndex || !Component->MorphTargetWeights.IsValidIndex(*WeightIndex))
+    {
+        return false;
+    }
+    OutWeight = Component->MorphTargetWeights[*WeightIndex];
+    return true;
+}
+
+bool ComparisonPollUntil(TFunctionRef<bool()> Predicate, const double Timeout = 2.0)
+{
+    const double Deadline = FPlatformTime::Seconds() + Timeout;
+    do
+    {
+        if (Predicate())
+        {
+            return true;
+        }
+        FPlatformProcess::Sleep(0.005f);
+    }
+    while (FPlatformTime::Seconds() < Deadline);
+    return Predicate();
+}
+
+TArray<uint8> ComparisonPacket(const FString& Text)
+{
+    FTCHARToUTF8 Converted(*Text);
+    TArray<uint8> Payload;
+    Payload.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
+    TArray<uint8> Bytes;
+    Bytes.SetNumUninitialized(8);
+    const uint64 Length = static_cast<uint64>(Payload.Num());
+    for (int32 Index = 0; Index < 8; ++Index)
+    {
+        Bytes[Index] = static_cast<uint8>(Length >> ((7 - Index) * 8));
+    }
+    Bytes.Append(Payload);
+    return Bytes;
+}
+
+FString ComparisonFromUtf8(const TArray<uint8>& Bytes)
+{
+    FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+    return FString::ConstructFromPtrSize(Converted.Get(), Converted.Length());
+}
+
+bool ComparisonSend(FSocket& Socket, const uint8* Data, const int32 Num)
+{
+    int32 Offset = 0;
+    const double Deadline = FPlatformTime::Seconds() + 2.0;
+    while (Offset < Num && FPlatformTime::Seconds() < Deadline)
+    {
+        int32 Sent = 0;
+        if (Socket.Send(Data + Offset, Num - Offset, Sent) && Sent > 0)
+        {
+            Offset += Sent;
+        }
+        else
+        {
+            Socket.Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(5));
+        }
+    }
+    return Offset == Num;
+}
+
+bool ComparisonReceive(FSocket& Socket, TArray<uint8>& OutPayload,
+    TFunctionRef<void()> Pump, const double Timeout = 2.0)
+{
+    TArray<uint8> Pending;
+    return ComparisonPollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+        {
+            Pending.Append(Buffer, Read);
+        }
+        if (Pending.Num() < 8)
+        {
+            return false;
+        }
+        uint64 Length = 0;
+        for (int32 Index = 0; Index < 8; ++Index)
+        {
+            Length = (Length << 8) | Pending[Index];
+        }
+        if (static_cast<uint64>(Pending.Num()) < 8 + Length)
+        {
+            return false;
+        }
+        OutPayload.SetNumUninitialized(static_cast<int32>(Length));
+        if (Length > 0)
+        {
+            FMemory::Memcpy(OutPayload.GetData(), Pending.GetData() + 8,
+                static_cast<int32>(Length));
+        }
+        return true;
+    }, Timeout);
+}
+
+FSocket* ComparisonConnect(ISocketSubsystem& SocketSubsystem, const uint16 Port)
+{
+    TSharedRef<FInternetAddr> Address = SocketSubsystem.CreateInternetAddr();
+    bool bValid = false;
+    Address->SetIp(TEXT("127.0.0.1"), bValid);
+    Address->SetPort(Port);
+    FSocket* Socket = SocketSubsystem.CreateSocket(
+        NAME_Stream, TEXT("MtoUComparisonNaturalTick client"));
+    if (!Socket || !Socket->Connect(*Address))
+    {
+        if (Socket)
+        {
+            SocketSubsystem.DestroySocket(Socket);
+        }
+        return nullptr;
+    }
+    Socket->SetNonBlocking(true);
+    return Socket;
+}
+
+bool ComparisonHasOverride(const FText& OverrideName)
+{
+    int32 Count = 0;
+    if (!GEditor)
+    {
+        return false;
+    }
+    for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+    {
+        if (!ViewportClient)
+        {
+            continue;
+        }
+        ++Count;
+        if (!ViewportClient->HasRealtimeOverride(OverrideName) || !ViewportClient->IsRealtime())
+        {
+            return false;
+        }
+    }
+    return Count > 0;
+}
+
+struct FMtoUComparisonExpectation
+{
+    FVector Pose = FVector::ZeroVector;
+    float GarmentFlare = 0.0f;
+    float FaceBlink = 0.0f;
+    float HeadSway = 0.0f;
+};
+
+struct FMtoUComparisonNaturalTickState
+{
+    ISocketSubsystem* SocketSubsystem = nullptr;
+    FSocket* Client = nullptr;
+    TSharedPtr<FMtoULiveLinkSource> Source;
+    UWorld* EditorWorld = nullptr;
+    AMtoULiveLinkActor* Actor = nullptr;
+    TStrongObjectPtr<UMtoULiveLinkBinding> BindingGuard;
+    USkeletalMeshComponent* DriverDisplay = nullptr;
+    UMtoUCharacterPartComponent* PartComponent = nullptr;
+    UStaticMesh* PreviewInput = nullptr;
+    const FReferenceSkeleton* Skeleton = nullptr;
+    USkeletalMesh* PreviewMesh = nullptr;
+    EMtoUPreviewState ReadinessState = EMtoUPreviewState::None;
+    FName RootBoneId = NAME_None;
+    uint64 Session = 0;
+    FTransform ActorTransform = FTransform::Identity;
+    TArray<TPair<FLevelEditorViewportClient*, bool>> SavedRealtime;
+    bool bSetupFailed = false;
+};
+
+/** The visible character state the editor loop must reach on its own. */
+bool ComparisonDisplayMatches(const FMtoUComparisonNaturalTickState& State,
+    const FMtoUComparisonExpectation& Expected)
+{
+    USkeletalMeshComponent* Leader =
+        State.Actor ? State.Actor->GetSkeletalMeshComponent() : nullptr;
+    USkeletalMeshComponent* Driver = State.DriverDisplay;
+    UMtoUCharacterPartComponent* Part = State.PartComponent;
+    if (!Leader || !Driver || !Part
+        || !Leader->IsRegistered() || !Driver->IsRegistered() || !Part->IsRegistered())
+    {
+        return false;
+    }
+    float Garment = 0.0f;
+    float LeaderGarment = 0.0f;
+    float DriverOnly = 0.0f;
+    float PartOnly = 0.0f;
+    return Leader->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && Driver->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && Part->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation()
+            .Equals(Expected.Pose, 1.0f)
+        && ComparisonEvaluatedMorphWeight(Leader, ComparisonGarmentMorph, LeaderGarment)
+        && FMath::IsNearlyEqual(LeaderGarment, Expected.GarmentFlare, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Driver, ComparisonGarmentMorph, Garment)
+        && FMath::IsNearlyEqual(Garment, Expected.GarmentFlare, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Driver, ComparisonDriverOnlyMorph, DriverOnly)
+        && FMath::IsNearlyEqual(DriverOnly, Expected.FaceBlink, 1.e-3f)
+        && ComparisonEvaluatedMorphWeight(Part, ComparisonPartOnlyMorph, PartOnly)
+        && FMath::IsNearlyEqual(PartOnly, Expected.HeadSway, 1.e-3f);
+}
+
+/** Every value the predicate above observes, for a failed wait. */
+FString ComparisonDisplayReport(const FMtoUComparisonNaturalTickState& State,
+    const FMtoUComparisonExpectation& Expected)
+{
+    USkeletalMeshComponent* Leader =
+        State.Actor ? State.Actor->GetSkeletalMeshComponent() : nullptr;
+    USkeletalMeshComponent* Driver = State.DriverDisplay;
+    UMtoUCharacterPartComponent* Part = State.PartComponent;
+    const auto BoneText = [&](const USkeletalMeshComponent* Component)
+    {
+        return Component && Component->IsRegistered() && !State.RootBoneId.IsNone()
+            ? Component->GetBoneTransform(State.RootBoneId, RTS_World).GetTranslation().ToString()
+            : FString(TEXT("<not displayed>"));
+    };
+    const auto WeightText = [](const USkeletalMeshComponent* Component, const TCHAR* Name)
+    {
+        if (!Component)
+        {
+            return FString(TEXT("<no component>"));
+        }
+        const USkeletalMesh* Mesh = Component->GetSkeletalMeshAsset();
+        const UMorphTarget* Morph = Mesh ? Mesh->FindMorphTarget(FName(Name)) : nullptr;
+        const int32* WeightIndex = Morph ? Component->ActiveMorphTargets.Find(Morph) : nullptr;
+        const FString Weight = WeightIndex && Component->MorphTargetWeights.IsValidIndex(*WeightIndex)
+            ? FString::Printf(TEXT("%.4f"), Component->MorphTargetWeights[*WeightIndex])
+            : FString(TEXT("<none>"));
+        float CurveValue = 0.0f;
+        const bool bCurveValue = Component->GetCurveValue(FName(Name), 0.0f, CurveValue);
+        const FString Curve = bCurveValue
+            ? FString::Printf(TEXT("%.4f"), CurveValue)
+            : FString(TEXT("<none>"));
+        return FString::Printf(TEXT("weight %s (mesh %s, owns Morph %s, active %s, curve %s)"),
+            *Weight,
+            Mesh ? *Mesh->GetName() : TEXT("<null>"),
+            Morph ? TEXT("yes") : TEXT("no"),
+            WeightIndex ? TEXT("yes") : TEXT("no"),
+            *Curve);
+    };
+    return FString::Printf(
+        TEXT("expected pose %s with garment %.4f, Driver-only %.4f, part-only %.4f; saw Generated %s, Driver %s, part %s; evaluated weights: Generated garment %s, Driver garment %s, Driver-only %s, part-only %s"),
+        *Expected.Pose.ToString(), Expected.GarmentFlare, Expected.FaceBlink, Expected.HeadSway,
+        *BoneText(Leader), *BoneText(Driver), *BoneText(Part),
+        *WeightText(Leader, ComparisonGarmentMorph),
+        *WeightText(Driver, ComparisonGarmentMorph),
+        *WeightText(Driver, ComparisonDriverOnlyMorph),
+        *WeightText(Part, ComparisonPartOnlyMorph));
+}
+
+/** Session, Preview revision, readiness, and actor transform survive every switch. */
+void CheckComparisonInvariants(FAutomationTestBase& Test,
+    const FMtoUComparisonNaturalTickState& State, const TCHAR* Stage)
+{
+    const AMtoULiveLinkActor* Actor = State.Actor;
+    Test.TestTrue(FString::Printf(
+            TEXT("%s: the switch changed neither the session, the Preview revision, nor readiness"),
+            Stage),
+        Actor
+        && Actor->GetPreviewReadiness().GeneratedPreview == State.PreviewMesh
+        && Actor->GetPreviewReadiness().State == State.ReadinessState
+        && State.Source.IsValid()
+        && FMtoURefreshEndsSessionTestAccess::Session(*State.Source) == State.Session
+        && Actor->GetActorTransform().Equals(State.ActorTransform));
+}
+
+/** Records the reached display state as report evidence for this observation. */
+void AddComparisonObservation(FAutomationTestBase& Test,
+    const FMtoUComparisonNaturalTickState& State, const TCHAR* Stage,
+    const FMtoUComparisonExpectation& Expected)
+{
+    Test.AddInfo(FString::Printf(TEXT("%s: %s"), Stage, *ComparisonDisplayReport(State, Expected)));
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewComparisonNaturalTickTest,
+    "MtoULiveLink.Editor.Preview.ComparisonNaturalTick",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUPreviewComparisonNaturalTickTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+#if !WITH_EDITOR
+    AddError(TEXT("the comparison natural-tick regression requires an editor build."));
+    return false;
+#else
+    if (!GEditor)
+    {
+        AddError(TEXT("the comparison natural-tick regression requires GEditor."));
+        return false;
+    }
+    FMtoUPreviewComparisonNaturalTickTest* Self = this;
+    TSharedRef<FMtoUComparisonNaturalTickState> State =
+        MakeShared<FMtoUComparisonNaturalTickState>();
+    const FText OverrideName = FText::FromString(TEXT("MtoU Live Link"));
+
+    const FMtoUComparisonExpectation GeneratedPose{
+        FVector(21.0, 22.0, 23.0), 0.35f, 0.45f, 0.55f};
+    const FMtoUComparisonExpectation OriginalPose{
+        FVector(31.0, 32.0, 33.0), 0.40f, 0.50f, 0.60f};
+    const FMtoUComparisonExpectation OriginalPoseAgain{
+        FVector(41.0, 42.0, 43.0), 0.45f, 0.55f, 0.65f};
+    const FMtoUComparisonExpectation RestoredPose{
+        FVector(51.0, 52.0, 53.0), 0.50f, 0.60f, 0.70f};
+
+    // Setup: negotiate the Model workflow with the Generated, Driver-only, and
+    // part-only Morph manifest in the real editor world. This control plane
+    // pumps Source->Update for determinism; no display conclusion is drawn here.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName]()
+    {
+        ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+        Self->TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+        IModularFeatures& Features = IModularFeatures::Get();
+        const bool bLiveLinkClient =
+            Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName);
+        Self->TestTrue(TEXT("Live Link client feature is available"), bLiveLinkClient);
+        UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        Self->TestNotNull(TEXT("real editor world is available"), EditorWorld);
+        Self->TestTrue(TEXT("real editor world is an editor world"),
+            EditorWorld && EditorWorld->WorldType == EWorldType::Editor);
+        int32 ViewportCount = 0;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient)
+                {
+                    ++ViewportCount;
+                }
+            }
+        }
+        Self->TestTrue(TEXT("at least one real level viewport drives the editor tick"),
+            ViewportCount > 0);
+        int32 ExistingPlaced = 0;
+        if (EditorWorld)
+        {
+            for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+            {
+                if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It)
+                    && It->GetWorld() == EditorWorld)
+                {
+                    ++ExistingPlaced;
+                }
+            }
+        }
+        Self->TestEqual(TEXT("editor world starts without a stale binding actor"), ExistingPlaced, 0);
+        // A world an earlier test destroyed is only collected on the next GC,
+        // while the plugin requires exactly one placed editor-world binding
+        // actor for a Model connection. Collecting here keeps this regression
+        // independent of test order instead of inheriting that pending world.
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        int32 ExistingPlacedElsewhere = 0;
+        for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+        {
+            if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It) && It->GetWorld()
+                && It->GetWorld() != EditorWorld
+                && It->GetWorld()->WorldType == EWorldType::Editor)
+            {
+                ++ExistingPlacedElsewhere;
+            }
+        }
+        Self->TestEqual(TEXT("no other placed editor-world binding actor survives collection"),
+            ExistingPlacedElsewhere, 0);
+        if (!SocketSubsystem || !bLiveLinkClient || !EditorWorld
+            || EditorWorld->WorldType != EWorldType::Editor || ViewportCount == 0
+            || ExistingPlaced != 0 || ExistingPlacedElsewhere != 0)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->SocketSubsystem = SocketSubsystem;
+        State->EditorWorld = EditorWorld;
+        for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+        {
+            if (ViewportClient)
+            {
+                State->SavedRealtime.Add(TPair<FLevelEditorViewportClient*, bool>(
+                    ViewportClient, ViewportClient->IsRealtime()));
+            }
+        }
+        ILiveLinkClient& LiveLinkClient =
+            Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+        UPackage* WorldPackage = CreatePackage(TEXT("/Temp/MtoUComparisonNaturalTickWorld"));
+        FMtoUFullCharacterFixtures Fixtures;
+        const bool bFixtures = MakeFullCharacterFixtures(*WorldPackage, *Self, Fixtures);
+        // An FBX-imported character carries Morph Target curve metadata, so its
+        // streamed Morph values reach the evaluated Morph weights. The
+        // transient fixtures get the same metadata on their own Skeleton
+        // duplicate, which keeps the shared engine asset untouched and is
+        // inherited by the Generated Preview the driver builds.
+        USkeleton* FixtureSkeleton = bFixtures
+            ? DuplicateObject<USkeleton>(Fixtures.FullDriver->GetSkeleton(), WorldPackage)
+            : nullptr;
+        if (FixtureSkeleton)
+        {
+            Fixtures.FullDriver->SetSkeleton(FixtureSkeleton);
+            for (const TCHAR* Morph : {ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
+                     TEXT("ArmRaise"), TEXT("HairSway"), ComparisonPartOnlyMorph})
+            {
+                FixtureSkeleton->AddCurveMetaData(FName(Morph), false);
+                if (FCurveMetaData* MetaData = FixtureSkeleton->GetCurveMetaData(FName(Morph)))
+                {
+                    MetaData->Type.bMorphtarget = true;
+                }
+            }
+        }
+        const FCurveMetaData* FixtureMorphMetaData = FixtureSkeleton
+            ? FixtureSkeleton->GetCurveMetaData(FName(ComparisonGarmentMorph))
+            : nullptr;
+        Self->TestTrue(TEXT("the fixture Skeleton carries imported Morph curve metadata"),
+            FixtureMorphMetaData && FixtureMorphMetaData->Type.bMorphtarget);
+        USkeletalMesh* PartMesh = bFixtures
+            ? DuplicateObject<USkeletalMesh>(Fixtures.FullDriver, WorldPackage)
+            : nullptr;
+        if (PartMesh)
+        {
+            PartMesh->ClearFlags(RF_Public | RF_Standalone);
+            PartMesh->SetSkeleton(FixtureSkeleton);
+            PartMesh->SetRefSkeleton(Fixtures.FullDriver->GetRefSkeleton());
+        }
+        const bool bPartMorph = PartMesh && AddUniformMorph(
+            *PartMesh, FName(ComparisonPartOnlyMorph), FVector3f(0.0f, 0.0f, 1.5f));
+        Self->TestTrue(TEXT("full-character fixtures and a part-only Morph are created"),
+            bFixtures && Fixtures.IsValid() && bPartMorph);
+        if (!bFixtures || !Fixtures.IsValid() || !bPartMorph)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        // RegisterMorphTarget(..., bInvalidateRenderData=false) leaves the morph
+        // name lookup unbuilt. A loaded character has it, and the engine
+        // resolves streamed Morph values through it, so the fixtures build it
+        // exactly as loading would.
+        Fixtures.FullDriver->InitMorphTargets();
+        PartMesh->InitMorphTargets();
+        Self->TestTrue(TEXT("the fixture meshes resolve their Morph names"),
+            Fixtures.FullDriver->FindMorphTarget(FName(ComparisonGarmentMorph)) != nullptr
+            && Fixtures.FullDriver->FindMorphTarget(FName(ComparisonDriverOnlyMorph)) != nullptr
+            && PartMesh->FindMorphTarget(FName(ComparisonPartOnlyMorph)) != nullptr);
+
+        AMtoULiveLinkActor* Actor = EditorWorld->SpawnActor<AMtoULiveLinkActor>();
+        UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(WorldPackage);
+        State->BindingGuard.Reset(Binding);
+        Binding->SkeletalMesh = Fixtures.FullDriver;
+        Binding->PreviewStaticMesh = Fixtures.Preview;
+        FMtoUCharacterPart& HeadPart = Binding->AdditionalParts.AddDefaulted_GetRef();
+        HeadPart.PartId = FGuid::NewGuid();
+        HeadPart.PartName = TEXT("Head");
+        HeadPart.SkeletalMesh = PartMesh;
+        HeadPart.bEnabled = true;
+        Self->TestNotNull(TEXT("binding actor is placed in the real editor world"), Actor);
+        if (!Actor)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Actor = Actor;
+        State->PreviewInput = Fixtures.Preview;
+        Actor->SetBinding(Binding);
+        // v10 negotiation names one explicitly paired object; the runtime refuses an
+        // init for an object the user has not paired.
+        {
+            FString PairError;
+            Self->TestTrue(TEXT("the character target is paired"),
+                MtoUPairLinkageTarget(*Actor, TEXT("character"), PairError));
+            if (!PairError.IsEmpty())
+            {
+                Self->AddError(PairError);
+            }
+        }
+        Actor->PostRegisterAllComponents();
+        State->PartComponent = Actor->GetCharacterPartComponents().IsEmpty()
+            ? nullptr
+            : Actor->GetCharacterPartComponents()[0].Get();
+        TArray<USkeletalMeshComponent*> DisplayMeshes;
+        Actor->GetComponents(DisplayMeshes);
+        USkeletalMeshComponent** DriverEntry = DisplayMeshes.FindByPredicate(
+            [Actor](const USkeletalMeshComponent* Component)
+            {
+                return Component != Actor->GetSkeletalMeshComponent()
+                    && !Component->IsA<UMtoUCharacterPartComponent>();
+            });
+        State->DriverDisplay = DriverEntry ? *DriverEntry : nullptr;
+        Self->TestTrue(TEXT("the enabled part joins the character display"),
+            State->PartComponent
+            && State->PartComponent->GetSkeletalMeshAsset() == PartMesh
+            && PartMesh->GetSkeleton() == FixtureSkeleton);
+
+        // The fixture meshes build their render data asynchronously; a build
+        // that completes after the Refresh would invalidate the Preview through
+        // its own source-rebuild rule, so the test settles it first.
+        FAssetCompilingManager::Get().FinishAllCompilation();
+        const FMtoUPreviewReadiness Refresh = FMtoUPreviewPreparation::RefreshActor(*Actor);
+        Self->TestTrue(TEXT("the comparison fixture reaches a Ready Generated Preview"),
+            Refresh.IsUsable() && Refresh.GeneratedPreview
+            && Refresh.GeneratedPreview->GetSkeleton() == FixtureSkeleton
+            && Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == Refresh.GeneratedPreview);
+        Self->TestTrue(TEXT("the original Driver follower shows the same character"),
+            State->DriverDisplay
+            && State->DriverDisplay->GetSkeletalMeshAsset() == Fixtures.FullDriver);
+        Self->TestTrue(TEXT("a Ready Generated Preview enables garment comparison"),
+            Actor->CanCompareGarments());
+        if (!Refresh.IsUsable() || !Actor->CanCompareGarments()
+            || !State->DriverDisplay || !State->PartComponent)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        Self->TestTrue(TEXT("the editor world drives this actor's component animation"),
+            Actor->GetSkeletalMeshComponent()->IsRegistered()
+            && Actor->GetSkeletalMeshComponent()->IsComponentTickEnabled()
+            && Actor->GetSkeletalMeshComponent()->GetUpdateAnimationInEditor()
+            && State->PartComponent->GetUpdateAnimationInEditor());
+        State->PreviewMesh = Refresh.GeneratedPreview;
+        State->ReadinessState = Refresh.State;
+        State->Skeleton = &Refresh.GeneratedPreview->GetRefSkeleton();
+        State->RootBoneId = State->Skeleton->GetBoneName(0);
+        State->ActorTransform = Actor->GetActorTransform();
+
+        FSocket* Reservation = SocketSubsystem->CreateSocket(
+            NAME_Stream, TEXT("MtoUComparisonNaturalTick reservation"));
+        Self->TestNotNull(TEXT("test port can be reserved"), Reservation);
+        if (!Reservation)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        TSharedRef<FInternetAddr> ReservationAddress = SocketSubsystem->CreateInternetAddr();
+        bool bValidAddress = false;
+        ReservationAddress->SetIp(TEXT("127.0.0.1"), bValidAddress);
+        ReservationAddress->SetPort(0);
+        Reservation->Bind(*ReservationAddress);
+        Reservation->Listen(1);
+        TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+        Reservation->GetAddress(*ReservedAddress);
+        const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+        Reservation->Close();
+        SocketSubsystem->DestroySocket(Reservation);
+
+        TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+        State->Source = Source;
+        const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+        Self->TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+        Self->TestTrue(TEXT("source reaches listening state"), ComparisonPollUntil(
+            [Source]() { return Source->GetSourceStatus().ToString().Contains(TEXT("Listening on")); }));
+
+        FSocket* Client = ComparisonConnect(*SocketSubsystem, Port);
+        Self->TestNotNull(TEXT("Maya Model client connects"), Client);
+        if (!Client)
+        {
+            State->bSetupFailed = true;
+            return true;
+        }
+        State->Client = Client;
+        FString BonesJson;
+        for (int32 Index = 0; Index < State->Skeleton->GetNum(); ++Index)
+        {
+            if (Index > 0)
+            {
+                BonesJson += TEXT(",");
+            }
+            BonesJson += FString::Printf(TEXT("[\"%s\",%d,%s]"),
+                *State->Skeleton->GetBoneName(Index).ToString(),
+                State->Skeleton->GetParentIndex(Index),
+                *ComparisonTransformJson(State->Skeleton->GetRefBonePose()[Index]));
+        }
+        const FString Init = FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":12,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"%s\",\"%s\",\"%s\"]}"),
+            *BonesJson, ComparisonGarmentMorph, ComparisonDriverOnlyMorph,
+            ComparisonPartOnlyMorph);
+        const TArray<uint8> InitBytes = ComparisonPacket(Init);
+        Self->TestTrue(TEXT("Model init is sent"),
+            ComparisonSend(*Client, InitBytes.GetData(), InitBytes.Num()));
+        TArray<uint8> Payload;
+        Self->TestTrue(TEXT("Model negotiation reaches ready"),
+            ComparisonReceive(*Client, Payload, [&Source]() { Source->Update(); }));
+        const FString Reply = ComparisonFromUtf8(Payload);
+        Self->TestTrue(TEXT("the Preview is still ready when the Model session negotiates"),
+            Actor->GetPreviewReadiness().IsUsable());
+        Self->TestTrue(FString::Printf(
+                TEXT("the accepted Preview Morph set is the Generated, Driver, and part union (reply %s, status %s)"),
+                *Reply.Left(512), *Actor->GetConnectionStatus()),
+            Reply.Contains(TEXT("\"type\":\"ready\""))
+            && Reply.Contains(TEXT("\"target_morph_count\":5"))
+            && Reply.Contains(TEXT("\"accepted_morph_count\":3")));
+        Self->TestTrue(TEXT("Model readiness keeps the Generated display and the same Preview revision"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetPreviewReadiness().GeneratedPreview == State->PreviewMesh
+            && Actor->GetPreviewReadiness().State == State->ReadinessState);
+        State->Session = FMtoURefreshEndsSessionTestAccess::Session(*Source);
+        Self->TestTrue(TEXT("the negotiated session is streaming"), State->Session != 0);
+        Self->TestTrue(TEXT("the connected stream forces editor viewport realtime"),
+            ComparisonHasOverride(OverrideName));
+        return true;
+    }));
+
+    // Natural observation 1: the Generated display reaches the first pose.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, GeneratedPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, GeneratedPose.Pose, GeneratedPose.GarmentFlare,
+            GeneratedPose.FaceBlink, GeneratedPose.HeadSway));
+        Self->TestTrue(TEXT("the first Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, GeneratedPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, GeneratedPose);
+        },
+        [Self, State, GeneratedPose]() -> bool
+        {
+            Self->AddError(FString::Printf(TEXT("Generated display did not reach the first pose: %s"),
+                *ComparisonDisplayReport(*State, GeneratedPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, GeneratedPose]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State, TEXT("Generated display, first pose"), GeneratedPose);
+            CheckComparisonInvariants(*Self, *State, TEXT("Generated display, first pose"));
+        }
+        return true;
+    }));
+
+    // Details switch to the original garment. The switch itself is a control
+    // action; the display it leaves behind is observed naturally below.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the Details control shows the original garment without replacing the Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == State->PreviewMesh
+            && Actor->GetConnectionStatus().Contains(TEXT("Connected")));
+        Self->TestTrue(TEXT("the Generated garment is hidden and the whole original character is displayed"),
+            !Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(0, 0)
+            && !Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(3, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(4, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(5, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(6, 0)
+            && State->PartComponent
+            && State->PartComponent->IsMaterialSectionShown(0, 0));
+        Self->TestTrue(TEXT("the actor asks the editor viewport to tick while the original garment is displayed"),
+            Actor->ShouldTickIfViewportsOnly());
+        CheckComparisonInvariants(*Self, *State, TEXT("Details switch to the original garment"));
+        return true;
+    }));
+
+    // Natural observation 2: the visible original garment and the part reach a
+    // new pose and new Morph values through the editor loop alone.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, OriginalPose.Pose, OriginalPose.GarmentFlare,
+            OriginalPose.FaceBlink, OriginalPose.HeadSway));
+        Self->TestTrue(TEXT("the first original-garment Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, OriginalPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, OriginalPose);
+        },
+        [Self, State, OriginalPose]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("original-garment display did not reach the first pose: %s"),
+                *ComparisonDisplayReport(*State, OriginalPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPose]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State,
+                TEXT("original garment, first pose"), OriginalPose);
+            CheckComparisonInvariants(*Self, *State, TEXT("first original-garment pose"));
+        }
+        return true;
+    }));
+
+    // Natural observation 3: a second, distinct pose proves the comparison
+    // keeps refreshing instead of holding the pose it was switched with.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPoseAgain]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, OriginalPoseAgain.Pose, OriginalPoseAgain.GarmentFlare,
+            OriginalPoseAgain.FaceBlink, OriginalPoseAgain.HeadSway));
+        Self->TestTrue(TEXT("the second original-garment Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, OriginalPoseAgain]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, OriginalPoseAgain);
+        },
+        [Self, State, OriginalPoseAgain]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("original-garment display did not reach the second pose: %s"),
+                *ComparisonDisplayReport(*State, OriginalPoseAgain)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OriginalPoseAgain]()
+    {
+        if (!State->bSetupFailed)
+        {
+            AddComparisonObservation(*Self, *State,
+                TEXT("original garment, second pose"), OriginalPoseAgain);
+            CheckComparisonInvariants(*Self, *State, TEXT("second original-garment pose"));
+        }
+        return true;
+    }));
+
+    // Details switch back: the Generated display returns with the same session
+    // and Preview, and only the resolved original garment slots hide again.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the Details control restores the same Generated Preview"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == State->PreviewMesh
+            && Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(0, 0)
+            && Actor->GetSkeletalMeshComponent()->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay
+            && !State->DriverDisplay->IsMaterialSectionShown(3, 0)
+            && !State->DriverDisplay->IsMaterialSectionShown(4, 0)
+            && !State->DriverDisplay->IsMaterialSectionShown(5, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->PartComponent
+            && State->PartComponent->GetSkeletalMeshAsset() != nullptr);
+        CheckComparisonInvariants(*Self, *State, TEXT("Details switch back to the Generated Preview"));
+        return true;
+    }));
+
+    // Natural observation 4: the restored Generated display reaches the last pose.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, RestoredPose]()
+    {
+        if (State->bSetupFailed || !State->Client || !State->Skeleton)
+        {
+            return true;
+        }
+        const TArray<uint8> Bytes = ComparisonPacket(ComparisonFrameJson(
+            *State->Skeleton, RestoredPose.Pose, RestoredPose.GarmentFlare,
+            RestoredPose.FaceBlink, RestoredPose.HeadSway));
+        Self->TestTrue(TEXT("the restored Model frame is sent"),
+            ComparisonSend(*State->Client, Bytes.GetData(), Bytes.Num()));
+        return true;
+    }));
+    ADD_LATENT_AUTOMATION_COMMAND(FUntilCommand(
+        [State, RestoredPose]() -> bool
+        {
+            return State->bSetupFailed || ComparisonDisplayMatches(*State, RestoredPose);
+        },
+        [Self, State, RestoredPose]() -> bool
+        {
+            Self->AddError(FString::Printf(
+                TEXT("restored Generated display did not reach the last pose: %s"),
+                *ComparisonDisplayReport(*State, RestoredPose)));
+            return true;
+        },
+        5.0f));
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, RestoredPose]()
+    {
+        if (State->bSetupFailed || !State->Actor)
+        {
+            return true;
+        }
+        USkeletalMeshComponent* Leader = State->Actor->GetSkeletalMeshComponent();
+        float Unused = 0.0f;
+        Self->TestFalse(TEXT("the Driver-only Morph is not a Generated Preview Morph"),
+            ComparisonEvaluatedMorphWeight(Leader, ComparisonDriverOnlyMorph, Unused));
+        Self->TestFalse(TEXT("the part-only Morph is not a Generated Preview Morph"),
+            ComparisonEvaluatedMorphWeight(Leader, ComparisonPartOnlyMorph, Unused));
+        Self->TestTrue(TEXT("the body and attachment material slots stay displayed on the original character"),
+            State->DriverDisplay
+            && State->DriverDisplay->IsMaterialSectionShown(0, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(1, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(2, 0)
+            && State->DriverDisplay->IsMaterialSectionShown(6, 0));
+        CheckComparisonInvariants(*Self, *State, TEXT("restored Generated pose"));
+        AddComparisonObservation(*Self, *State, TEXT("restored Generated display"), RestoredPose);
+        return true;
+    }));
+
+    // The input change that invalidates the Preview keeps its existing rule: no
+    // comparison and no stale generated geometry survive it.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State]()
+    {
+        if (State->bSetupFailed || !State->Actor || !State->PreviewInput)
+        {
+            return true;
+        }
+        AMtoULiveLinkActor* Actor = State->Actor;
+        FMtoULiveLinkActorDetails::HandleGarmentComparisonClicked(Actor);
+        Self->TestTrue(TEXT("the original garment is displayed before the Preview input changes"),
+            Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment);
+        GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetReimport(State->PreviewInput);
+        Self->TestTrue(TEXT("a changed Preview input invalidates comparison and clears both displays"),
+            Actor->GetPreviewReadiness().State == EMtoUPreviewState::Dirty
+            && !Actor->GetPreviewReadiness().IsUsable()
+            && !Actor->CanCompareGarments()
+            && Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset() == nullptr
+            && State->DriverDisplay && State->DriverDisplay->GetSkeletalMeshAsset() == nullptr
+            && !Actor->ShouldTickIfViewportsOnly());
+        return true;
+    }));
+
+    // Cleanup always runs: the actor, source, socket, and viewport override
+    // leave no trace in the real editor world.
+    ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([Self, State, OverrideName]()
+    {
+        if (State->Source.IsValid())
+        {
+            State->Source->StopListener();
+            if (IModularFeatures::Get().IsModularFeatureAvailable(
+                    ILiveLinkClient::ModularFeatureName))
+            {
+                IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+                    ILiveLinkClient::ModularFeatureName).RemoveSource(State->Source.ToSharedRef());
+            }
+        }
+        State->Source.Reset();
+        if (State->Actor && State->EditorWorld)
+        {
+            State->EditorWorld->DestroyActor(State->Actor);
+        }
+        State->Actor = nullptr;
+        State->DriverDisplay = nullptr;
+        State->PartComponent = nullptr;
+        if (State->SocketSubsystem && State->Client)
+        {
+            FSocket* Client = State->Client;
+            State->Client = nullptr;
+            Client->Close();
+            State->SocketSubsystem->DestroySocket(Client);
+        }
+        if (GEditor)
+        {
+            for (const TPair<FLevelEditorViewportClient*, bool>& Saved : State->SavedRealtime)
+            {
+                if (Saved.Key)
+                {
+                    Saved.Key->SetRealtime(Saved.Value);
+                    Saved.Key->RemoveRealtimeOverride(OverrideName, false);
+                }
+            }
+        }
+        bool bNoOverride = true;
+        if (GEditor)
+        {
+            for (FLevelEditorViewportClient* ViewportClient : GEditor->GetLevelViewportClients())
+            {
+                if (ViewportClient && ViewportClient->HasRealtimeOverride(OverrideName))
+                {
+                    bNoOverride = false;
+                }
+            }
+        }
+        int32 RemainingPlaced = 0;
+        if (State->EditorWorld)
+        {
+            for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
+            {
+                if (!It->HasAnyFlags(RF_ClassDefaultObject) && IsValid(*It)
+                    && It->GetWorld() == State->EditorWorld)
+                {
+                    ++RemainingPlaced;
+                }
+            }
+        }
+        Self->TestTrue(TEXT("cleanup leaves no plugin viewport override"), bNoOverride);
+        Self->TestEqual(TEXT("cleanup leaves no binding actor in the editor world"),
+            RemainingPlaced, 0);
+        return true;
+    }));
+    return true;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Protocol v10 linkage: the editor half of the boundary (writer takeover,
+// camera/time evaluation) and the scene-reference handoff.
+// ---------------------------------------------------------------------------
+
+#include "MtoULinkageEditor.h"
+#include "MtoUSceneRefExport.h"
+
+#include "Camera/CameraComponent.h"
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "LevelSequence.h"
+#include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
+#include "MovieScene.h"
+#include "MovieSceneBinding.h"
+#include "MovieSceneSection.h"
+#include "MovieSceneTrack.h"
+#include "Sections/MovieSceneCameraCutSection.h"
+#include "Tracks/MovieScene3DTransformTrack.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+
+namespace
+{
+/** One disposable editor world, created and destroyed inside one test. */
+UWorld* CreateLinkageWorld(const TCHAR* Name)
+{
+    UPackage* WorldPackage = CreatePackage(*FString::Printf(TEXT("/Temp/MtoULinkage/%s"), Name));
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false,
+        FName(Name), WorldPackage, true);
+    if (World)
+    {
+        World->InitializeActorsForPlay(FURL());
+    }
+    return World;
+}
+
+/** A plain actor anchor with a root component, the way the product hangs its target. */
+AActor* SpawnLinkageAnchor(UWorld& World, const TCHAR* Label)
+{
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    AActor* Anchor = World.SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+    if (!Anchor)
+    {
+        return nullptr;
+    }
+    USceneComponent* Root = NewObject<USceneComponent>(Anchor, TEXT("AnchorRoot"));
+    Anchor->SetRootComponent(Root);
+    Root->RegisterComponent();
+    Anchor->SetActorLabel(Label);
+    return Anchor;
+}
+
+USkeletalMeshComponent* AttachTargetMesh(AActor* Anchor, USkeletalMesh& Mesh,
+    FName SocketName = NAME_None)
+{
+    USkeletalMeshComponent* Component =
+        NewObject<USkeletalMeshComponent>(Anchor, TEXT("SkeletalMeshComponent"));
+    Component->SetupAttachment(Anchor->GetRootComponent(), SocketName);
+    Component->SetSkeletalMeshAsset(&Mesh);
+    Component->RegisterComponent();
+    return Component;
+}
+
+UMovieScene3DTransformTrack* AddTransformTrack(UMovieScene& MovieScene, const FGuid& Binding,
+    int32 StartTick, int32 EndTick)
+{
+    UMovieScene3DTransformTrack* Track = MovieScene.AddTrack<UMovieScene3DTransformTrack>(Binding);
+    if (!Track)
+    {
+        return nullptr;
+    }
+    UMovieSceneSection* Section = Track->CreateNewSection();
+    if (!Section)
+    {
+        return nullptr;
+    }
+    Section->SetRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(EndTick))));
+    Track->AddSection(*Section);
+    return Track;
+}
+
+FGuid PossessAndBind(UMovieScene& MovieScene, ULevelSequence& Sequence, UWorld& World,
+    UObject& Object, const TCHAR* Name)
+{
+    const FGuid Binding = MovieScene.AddPossessable(FString(Name), Object.GetClass());
+    Sequence.BindPossessableObject(Binding, Object, &World);
+    return Binding;
+}
+
+UMovieSceneCameraCutTrack* EnsureCameraCutTrack(UMovieScene& MovieScene)
+{
+    UMovieSceneTrack* Track = MovieScene.GetCameraCutTrack();
+    if (!Track)
+    {
+        Track = MovieScene.AddCameraCutTrack(UMovieSceneCameraCutTrack::StaticClass());
+    }
+    return Cast<UMovieSceneCameraCutTrack>(Track);
+}
+
+void AddCameraCut(ULevelSequence& Sequence, const FGuid& CameraBinding,
+    int32 StartTick, int32 EndTick)
+{
+    UMovieScene* MovieScene = Sequence.GetMovieScene();
+    UMovieSceneCameraCutTrack* Track = EnsureCameraCutTrack(*MovieScene);
+    if (!Track)
+    {
+        return;
+    }
+    UMovieSceneCameraCutSection* Section =
+        Cast<UMovieSceneCameraCutSection>(Track->CreateNewSection());
+    if (!Section)
+    {
+        return;
+    }
+    Section->SetRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Exclusive(FFrameNumber(EndTick))));
+    Section->SetCameraGuid(CameraBinding);
+    Track->AddSection(*Section);
+}
+
+ACineCameraActor* SpawnCineCamera(UWorld& World, const FVector& Location,
+    const FRotator& Rotation, float FocalLengthMm, float Aperture)
+{
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    ACineCameraActor* Camera = World.SpawnActor<ACineCameraActor>(Location, Rotation, Params);
+    if (!Camera)
+    {
+        return nullptr;
+    }
+    UCineCameraComponent* Component = Camera->GetCineCameraComponent();
+    Component->SetCurrentFocalLength(FocalLengthMm);
+    Component->SetCurrentAperture(Aperture);
+    Component->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+    Component->FocusSettings.ManualFocusDistance = 400.0f;
+    return Camera;
+}
+
+ULevelSequence* MakeLinkageSequence(int32 StartTick, int32 EndTick)
+{
+    ULevelSequence* Sequence =
+        NewObject<ULevelSequence>(GetTransientPackage(), NAME_None, RF_Transient);
+    Sequence->Initialize();
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    MovieScene->SetDisplayRate(FFrameRate(30, 1));
+    MovieScene->SetTickResolutionDirectly(FFrameRate(30000, 1));
+    MovieScene->SetPlaybackRange(TRange<FFrameNumber>(
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(StartTick)),
+        TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(EndTick))));
+    return Sequence;
+}
+
+ULevelSequencePlayer* StartLinkagePlayer(UWorld& World, ULevelSequence& Sequence,
+    double DisplayFrame)
+{
+    FMovieSceneSequencePlaybackSettings Settings;
+    Settings.bAutoPlay = false;
+    Settings.bDisableCameraCuts = false;
+    Settings.bPauseAtEnd = true;
+    ALevelSequenceActor* SpawnedActor = nullptr;
+    ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(
+        &World, &Sequence, Settings, SpawnedActor);
+    if (!Player)
+    {
+        return nullptr;
+    }
+    if (SpawnedActor)
+    {
+        SpawnedActor->SetFlags(RF_Transient);
+    }
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(DisplayFrame), EUpdatePositionMethod::Jump));
+    return Player;
+}
+}
+
+// The writer inventory, the takeover and the restore of one fixture sequence.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageWriterTakeoverTest,
+    "MtoULiveLinkEditor.LinkageWriterTakeover",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageWriterTakeoverTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageTakeover"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+
+    AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("Character"));
+    USkeletalMeshComponent* TargetMesh = AttachTargetMesh(Anchor, *Mesh);
+    if (!TestTrue(TEXT("target mesh attached"), TargetMesh != nullptr))
+    {
+        return false;
+    }
+    // A writer outside the target: the takeover must never mute it.
+    ACineCameraActor* Camera = SpawnCineCamera(*World,
+        FVector(100.0, 0.0, 200.0), FRotator::ZeroRotator, 35.0f, 2.8f);
+    if (!TestNotNull(TEXT("camera actor"), Camera))
+    {
+        return false;
+    }
+
+    ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid AnchorBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Anchor, TEXT("CharacterActor"));
+    const FGuid MeshBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *TargetMesh, TEXT("CharacterMesh"));
+    const FGuid CameraBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Camera, TEXT("SequenceCamera"));
+    UMovieScene3DTransformTrack* AnchorTrack =
+        AddTransformTrack(*MovieScene, AnchorBinding, 0, 100 * 30000 / 30);
+    UMovieScene3DTransformTrack* MeshTrack =
+        AddTransformTrack(*MovieScene, MeshBinding, 0, 100 * 30000 / 30);
+    UMovieScene3DTransformTrack* CameraTrack =
+        AddTransformTrack(*MovieScene, CameraBinding, 0, 100 * 30000 / 30);
+    if (!TestTrue(TEXT("fixture tracks built"), AnchorTrack && MeshTrack && CameraTrack))
+    {
+        return false;
+    }
+
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+    if (!TestNotNull(TEXT("fixture player"), Source.Player))
+    {
+        return false;
+    }
+
+    FString InventoryError;
+    const TArray<FMtoULinkageEditor::FWriterRecord> Writers =
+        FMtoULinkageEditor::CollectTargetWriters(
+            Source, { TargetMesh }, Anchor, InventoryError);
+    TestTrue(TEXT("the inventory refuses nothing"), InventoryError.IsEmpty());
+    TestEqual(TEXT("the inventory holds the two target writers"), Writers.Num(), 2);
+    bool bHasAnchorWriter = false;
+    bool bHasMeshWriter = false;
+    for (const FMtoULinkageEditor::FWriterRecord& Writer : Writers)
+    {
+        TestEqual(TEXT("a transform writer kind"), Writer.Kind, FString(TEXT("transform")));
+        if (Writer.Track == AnchorTrack)
+        {
+            bHasAnchorWriter = true;
+        }
+        if (Writer.Track == MeshTrack)
+        {
+            bHasMeshWriter = true;
+        }
+        if (Writer.Track == CameraTrack)
+        {
+            AddError(TEXT("a writer of the camera was collected as a target writer"));
+        }
+    }
+    TestTrue(TEXT("the anchor drive is a target writer"), bHasAnchorWriter);
+    TestTrue(TEXT("the mesh writer is a target writer"), bHasMeshWriter);
+
+    FString TakeOverError;
+    FString TakeOverCode;
+    const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+        Source, { TargetMesh }, Anchor, TakeOverError, TakeOverCode);
+    if (!TestTrue(TEXT("the takeover succeeds"), bTakenOver))
+    {
+        AddError(TakeOverError);
+        return false;
+    }
+    TestTrue(TEXT("the anchor drive is editor-locally muted"),
+        AnchorTrack->IsLocalEvalDisabled());
+    TestTrue(TEXT("the mesh writer is editor-locally muted"), MeshTrack->IsLocalEvalDisabled());
+    TestFalse(TEXT("the camera writer keeps driving"), CameraTrack->IsLocalEvalDisabled());
+
+    FString RestoreError;
+    FString RestoreCode;
+    const bool bRestored = FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    if (!TestTrue(TEXT("the restore succeeds"), bRestored))
+    {
+        AddError(RestoreError);
+    }
+    TestFalse(TEXT("the anchor drive is unmuted again"), AnchorTrack->IsLocalEvalDisabled());
+    TestFalse(TEXT("the mesh writer is unmuted again"), MeshTrack->IsLocalEvalDisabled());
+    const bool bSecondRestore =
+        FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    TestTrue(TEXT("a second restore is idempotent"), bSecondRestore);
+
+    // A repeated takeover records the prior state once, so the restore returns
+    // the sequence to exactly the state it had before the first takeover.
+    const bool bTakeOverAgain = FMtoULinkageEditor::TakeOverTarget(
+        Source, { TargetMesh }, Anchor, TakeOverError, TakeOverCode);
+    TestTrue(TEXT("a repeated takeover succeeds"), bTakeOverAgain);
+    TestTrue(TEXT("the repeated takeover keeps the writer muted"),
+        MeshTrack->IsLocalEvalDisabled());
+    FMtoULinkageEditor::RestoreTarget(RestoreError, RestoreCode);
+    TestFalse(TEXT("the writer returns after the repeated takeover"),
+        MeshTrack->IsLocalEvalDisabled());
+
+    FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
+    return true;
+}
+
+// The two refusals of the writer boundary.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageWriterRefusalTest,
+    "MtoULiveLinkEditor.LinkageWriterRefusal",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageWriterRefusalTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+
+    // A writer that drives the target and another object of the same anchor.
+    {
+        UWorld* World = CreateLinkageWorld(TEXT("LinkageShared"));
+        if (!TestNotNull(TEXT("editor world"), World))
+        {
+            return false;
+        }
+        AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("SharedAnchor"));
+        USkeletalMeshComponent* TargetMesh = AttachTargetMesh(Anchor, *Mesh);
+        USceneComponent* Prop = NewObject<USceneComponent>(Anchor, TEXT("PropRoot"));
+        Prop->SetupAttachment(Anchor->GetRootComponent());
+        Prop->RegisterComponent();
+
+        ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        const FGuid RootBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+            *Anchor->GetRootComponent(), TEXT("SharedRoot"));
+        UMovieScene3DTransformTrack* RootTrack =
+            AddTransformTrack(*MovieScene, RootBinding, 0, 100 * 30000 / 30);
+        if (!TestTrue(TEXT("shared fixture track built"), RootTrack != nullptr))
+        {
+            return false;
+        }
+
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = Sequence;
+        Source.World = World;
+        Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+        FString Error;
+        FString Code;
+        const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+            Source, { TargetMesh }, Anchor, Error, Code);
+        TestFalse(TEXT("a shared writer refuses the takeover"), bTakenOver);
+        TestEqual(TEXT("the refusal names SHARED_WRITER"), Code, FString(TEXT("SHARED_WRITER")));
+        TestFalse(TEXT("nothing was muted"), RootTrack->IsLocalEvalDisabled());
+    }
+
+    // A target that hangs from a moving socket.
+    {
+        UWorld* World = CreateLinkageWorld(TEXT("LinkageSocket"));
+        if (!TestNotNull(TEXT("editor world"), World))
+        {
+            return false;
+        }
+        AActor* Anchor = SpawnLinkageAnchor(*World, TEXT("SocketAnchor"));
+        USkeletalMeshComponent* TargetMesh =
+            AttachTargetMesh(Anchor, *Mesh, FName(TEXT("attach_socket")));
+        if (!TestTrue(TEXT("socket target attached"), TargetMesh != nullptr))
+        {
+            return false;
+        }
+
+        ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        const FGuid MeshBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+            *TargetMesh, TEXT("SocketMesh"));
+        UMovieScene3DTransformTrack* MeshTrack =
+            AddTransformTrack(*MovieScene, MeshBinding, 0, 100 * 30000 / 30);
+        if (!TestTrue(TEXT("socket fixture track built"), MeshTrack != nullptr))
+        {
+            return false;
+        }
+
+        FMtoULinkageEditor::FEvaluationSource Source;
+        Source.Sequence = Sequence;
+        Source.World = World;
+        Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+        FString Error;
+        FString Code;
+        const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(
+            Source, { TargetMesh }, Anchor, Error, Code);
+        TestFalse(TEXT("a socket target refuses the takeover"), bTakenOver);
+        TestEqual(TEXT("the refusal names MOVING_SOCKET"), Code, FString(TEXT("MOVING_SOCKET")));
+        TestFalse(TEXT("nothing was muted"), MeshTrack->IsLocalEvalDisabled());
+    }
+    return true;
+}
+
+// A sequence binding that drives the Binding Actor itself, as in a production
+// shot whose character binding possesses the actor: every display it owns,
+// the Model follower included, belongs to the paired character.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageBindingActorTakeoverTest,
+    "MtoULiveLinkEditor.LinkageBindingActorTakeover",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageBindingActorTakeoverTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageBindingActor"));
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("editor world"), World) || !TestNotNull(TEXT("fixture SkeletalCube"), Mesh))
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Mesh;
+    FActorSpawnParameters Params;
+    Params.ObjectFlags |= RF_Transient;
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>(
+        FVector(60.0, 40.0, 0.0), FRotator(-4.0, 37.0, 3.0), Params);
+    if (!TestNotNull(TEXT("Binding Actor"), Actor))
+    {
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    TestNotNull(TEXT("the Binding Actor owns a Model follower"), Actor->GetModelFollowerComponent());
+
+    ULevelSequence* Sequence = MakeLinkageSequence(0, 100 * 30000 / 30);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid ActorBinding = PossessAndBind(*MovieScene, *Sequence, *World,
+        *Actor, TEXT("CharacterBinding"));
+    UMovieScene3DTransformTrack* ActorTrack =
+        AddTransformTrack(*MovieScene, ActorBinding, 0, 100 * 30000 / 30);
+    if (!TestNotNull(TEXT("fixture track built"), ActorTrack))
+    {
+        return false;
+    }
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+
+    const TArray<UObject*> Targets = FMtoULinkageEditor::ResolveTargetComponents(Actor);
+    TestTrue(TEXT("the paired target includes the Model follower"),
+        Targets.Contains(Actor->GetModelFollowerComponent()));
+    FString InventoryError;
+    const TArray<FMtoULinkageEditor::FWriterRecord> Writers =
+        FMtoULinkageEditor::CollectTargetWriters(Source, Targets, Actor, InventoryError);
+    TestTrue(TEXT("the character's own binding is not a shared writer"), InventoryError.IsEmpty());
+    TestEqual(TEXT("the inventory holds the binding's writer"), Writers.Num(), 1);
+
+    FString Error;
+    FString Code;
+    const bool bTakenOver = FMtoULinkageEditor::TakeOverTarget(Source, Targets, Actor, Error, Code);
+    if (!TestTrue(TEXT("the takeover of the Binding Actor's binding succeeds"), bTakenOver))
+    {
+        AddError(Error + TEXT(" ") + Code);
+        return false;
+    }
+    TestTrue(TEXT("the binding's writer is muted"), ActorTrack->IsLocalEvalDisabled());
+    TestTrue(TEXT("the restore succeeds"), FMtoULinkageEditor::RestoreTarget(Error, Code));
+    TestFalse(TEXT("the binding's writer drives again"), ActorTrack->IsLocalEvalDisabled());
+    return true;
+}
+
+// The camera/time target of one fixture sequence, across a cut.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoULinkageCameraTimeTest,
+    "MtoULiveLinkEditor.LinkageCameraTime",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageCameraTimeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    UWorld* World = CreateLinkageWorld(TEXT("LinkageCameraTime"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    ACineCameraActor* CameraA = SpawnCineCamera(*World,
+        FVector(0.0, 0.0, 100.0), FRotator::ZeroRotator, 50.0f, 2.0f);
+    ACineCameraActor* CameraB = SpawnCineCamera(*World,
+        FVector(300.0, 200.0, 150.0), FRotator(0.0, -10.0, 20.0), 85.0f, 4.0f);
+    if (!TestTrue(TEXT("fixture cameras"), CameraA && CameraB))
+    {
+        return false;
+    }
+    // The panel and the target name the camera by its actor label.
+    CameraA->SetActorLabel(TEXT("CamA"));
+    CameraB->SetActorLabel(TEXT("CamB"));
+    CameraA->GetCineCameraComponent()->Filmback.SensorWidth = 36.0f;
+    CameraA->GetCineCameraComponent()->Filmback.SensorHeight = 24.0f;
+
+    const int32 StartTick = 0;
+    // Display rate 30 with tick resolution 30000 is 1000 ticks per display frame,
+    // so the two cuts cover display frames 0-50 and 50-100.
+    const int32 EndTick = 100 * 1000;
+    ULevelSequence* Sequence = MakeLinkageSequence(StartTick, EndTick);
+    UMovieScene* MovieScene = Sequence->GetMovieScene();
+    const FGuid BindingA = PossessAndBind(*MovieScene, *Sequence, *World, *CameraA, TEXT("CamA"));
+    const FGuid BindingB = PossessAndBind(*MovieScene, *Sequence, *World, *CameraB, TEXT("CamB"));
+    AddCameraCut(*Sequence, BindingA, StartTick, 50 * 1000);
+    AddCameraCut(*Sequence, BindingB, 50 * 1000, EndTick);
+
+    ULevelSequencePlayer* Player = StartLinkagePlayer(*World, *Sequence, 10.0);
+    if (!TestNotNull(TEXT("fixture player"), Player))
+    {
+        return false;
+    }
+    FMtoULinkageEditor::FEvaluationSource Source;
+    Source.Sequence = Sequence;
+    Source.World = World;
+    Source.Player = Player;
+
+    FMtoUCameraTimeTarget Target;
+    FString Error;
+    if (!TestTrue(TEXT("the target evaluates inside the first cut"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Target, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestNearlyEqual(TEXT("the display frame is the sampled one"), Target.DisplayFrame, 10.0, 1e-4);
+    TestNearlyEqual(TEXT("seconds start at the range start"), Target.Seconds, 10.0 / 30.0, 1e-4);
+    TestEqual(TEXT("the playback range start"), Target.PlaybackRangeStart, 0);
+    // The range lives in ticks; the target reports it in display frames.
+    TestEqual(TEXT("the playback range end"), Target.PlaybackRangeEnd, 100);
+    TestEqual(TEXT("the display rate numerator"), Target.DisplayRateNumerator, 30);
+    TestEqual(TEXT("the display rate denominator"), Target.DisplayRateDenominator, 1);
+    TestEqual(TEXT("the tick resolution numerator"), Target.TickNumerator, 30000);
+    TestEqual(TEXT("the tick resolution denominator"), Target.TickDenominator, 1);
+    TestEqual(TEXT("the cut stage is the root sequence"), Target.CutStage, FString(TEXT("root")));
+    TestEqual(TEXT("the cut names the evaluated camera"), Target.CutName, FString(TEXT("CamA")));
+    if (TestTrue(TEXT("the camera payload exists"), Target.Camera.IsValid()))
+    {
+        double FocalLength = 0.0;
+        TestTrue(TEXT("the camera payload carries the focal length"),
+            Target.Camera->TryGetNumberField(TEXT("focal_length_mm"), FocalLength));
+        TestNearlyEqual(TEXT("the first camera focal length"), FocalLength, 50.0, 1e-3);
+        double SensorWidth = 0.0;
+        TestTrue(TEXT("the camera payload carries the filmback"),
+            Target.Camera->TryGetNumberField(TEXT("sensor_width_mm"), SensorWidth));
+        TestNearlyEqual(TEXT("the first camera sensor width"), SensorWidth, 36.0, 1e-3);
+        double NearClip = 0.0;
+        TestTrue(TEXT("the camera payload carries the near clip"),
+            Target.Camera->TryGetNumberField(TEXT("near_clip_cm"), NearClip));
+        TestTrue(TEXT("the near clip is positive"), NearClip > 0.0);
+        double FocusDistance = 0.0;
+        TestTrue(TEXT("the camera payload carries the focus distance"),
+            Target.Camera->TryGetNumberField(TEXT("focus_distance_cm"), FocusDistance));
+        TestNearlyEqual(TEXT("the first camera focus distance"), FocusDistance, 400.0, 1e-3);
+    }
+    if (TestTrue(TEXT("the gate payload exists"), Target.Gate.IsValid()))
+    {
+        const TSharedPtr<FJsonObject>* Output = nullptr;
+        TestTrue(TEXT("the gate carries the output resolution"),
+            Target.Gate->TryGetObjectField(TEXT("output_resolution"), Output));
+        if (Output && Output->IsValid())
+        {
+            double Width = 0.0;
+            double Height = 0.0;
+            TestTrue(TEXT("the gate output resolution is positive"),
+                (*Output)->TryGetNumberField(TEXT("x"), Width)
+                && (*Output)->TryGetNumberField(TEXT("y"), Height)
+                && Width > 0.0 && Height > 0.0);
+        }
+        double GateWidth = 0.0;
+        TestTrue(TEXT("the gate carries the flat width spelling"),
+            Target.Gate->TryGetNumberField(TEXT("width"), GateWidth));
+        TestTrue(TEXT("the flat gate width is positive"), GateWidth > 0.0);
+        double PixelAspect = 0.0;
+        TestTrue(TEXT("the gate declares its pixel aspect"),
+            Target.Gate->TryGetNumberField(TEXT("pixel_aspect_ratio"), PixelAspect));
+        TestNearlyEqual(TEXT("Unreal pixels are square"), PixelAspect, 1.0, 1e-9);
+    }
+
+    const FString FirstIdentity = Target.EvalId;
+    const int32 FirstSerial = Target.EvalSerial;
+    FMtoUCameraTimeTarget Heartbeat;
+    if (!TestTrue(TEXT("the target repeats at the same time"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Heartbeat, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestEqual(TEXT("an unchanged target keeps its identity"),
+        Heartbeat.EvalId, FirstIdentity);
+    TestEqual(TEXT("an unchanged target keeps its serial"), Heartbeat.EvalSerial, FirstSerial);
+
+    // A cut changes the evaluated camera, so the identity moves with it.
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(60.0), EUpdatePositionMethod::Jump));
+    FMtoUCameraTimeTarget Second;
+    if (!TestTrue(TEXT("the target evaluates inside the second cut"),
+            FMtoULinkageEditor::EvaluateCameraTime(Source, Second, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+    TestNotEqual(TEXT("a cut is a new evaluation identity"), Second.EvalId, FirstIdentity);
+    TestTrue(TEXT("the identity change raises the serial"), Second.EvalSerial > FirstSerial);
+    TestEqual(TEXT("the second cut names the second camera"),
+        Second.CutName, FString(TEXT("CamB")));
+    TestNearlyEqual(TEXT("the display frame follows the playhead"),
+        Second.DisplayFrame, 60.0, 1e-4);
+    double SecondFocal = 0.0;
+    if (TestTrue(TEXT("the second camera payload exists"), Second.Camera.IsValid())
+        && Second.Camera->TryGetNumberField(TEXT("focal_length_mm"), SecondFocal))
+    {
+        TestNearlyEqual(TEXT("the second camera focal length"), SecondFocal, 85.0, 1e-3);
+    }
+
+    // ---- the editor names discrete events itself -------------------------
+    const auto Evaluate = [&](const TCHAR* What, FMtoUCameraTimeTarget& Out)
+    {
+        const bool bEvaluated = FMtoULinkageEditor::EvaluateCameraTime(Source, Out, Error);
+        TestTrue(What, bEvaluated);
+        return bEvaluated;
+    };
+    TestTrue(TEXT("a jump while paused is a discrete event"), Second.bDiscontinuous);
+    FMtoUCameraTimeTarget PausedHeartbeat;
+    if (Evaluate(TEXT("a paused heartbeat evaluates"), PausedHeartbeat))
+    {
+        TestFalse(TEXT("a paused heartbeat is not an event"), PausedHeartbeat.bDiscontinuous);
+    }
+    Player->Play();
+    FMtoUCameraTimeTarget PlayStart;
+    if (Evaluate(TEXT("playback start evaluates"), PlayStart))
+    {
+        TestFalse(TEXT("starting playback where it paused is continuous"),
+            PlayStart.bDiscontinuous);
+    }
+    // A step the elapsed playback time cannot explain is a jump, also within
+    // one shot.
+    Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(
+        FFrameTime::FromDecimal(70.0), EUpdatePositionMethod::Jump));
+    FMtoUCameraTimeTarget PlayingJump;
+    if (Evaluate(TEXT("a jump during playback evaluates"), PlayingJump))
+    {
+        TestTrue(TEXT("a jump during playback is a discrete event"),
+            PlayingJump.bDiscontinuous);
+    }
+    // An edit of the evaluated camera during playback is one too, even
+    // though the time did not move.
+    if (!Player->IsPlaying())
+    {
+        Player->Play();
+        FMtoUCameraTimeTarget Resumed;
+        Evaluate(TEXT("playback resumes"), Resumed);
+    }
+    UCineCameraComponent* EditedCamera = CameraB->GetCineCameraComponent();
+    EditedCamera->CurrentFocalLength = 70.0f;
+    EditedCamera->PostEditChange();
+    FMtoUCameraTimeTarget Edited;
+    if (Evaluate(TEXT("a camera edit evaluates"), Edited))
+    {
+        TestTrue(TEXT("a camera edit during playback is a discrete event"),
+            Edited.bDiscontinuous);
+    }
+    // A pause cancels the work in flight even without a new time.
+    Player->Pause();
+    FMtoUCameraTimeTarget Paused;
+    if (Evaluate(TEXT("the pause evaluates"), Paused))
+    {
+        TestTrue(TEXT("a pause is a discrete event"), Paused.bDiscontinuous);
+        // The pause stops on the time already in flight, yet it names new
+        // work, so the runtime cannot take it for a heartbeat of that target.
+        TestNearlyEqual(TEXT("the pause keeps the time"),
+            Paused.DisplayFrame, Edited.DisplayFrame, 1e-4);
+        TestNotEqual(TEXT("a pause on the target in flight is a new evaluation identity"),
+            Paused.EvalId, Edited.EvalId);
+        FMtoUCameraTimeTarget PausedAgain;
+        if (Evaluate(TEXT("a heartbeat after the pause evaluates"), PausedAgain))
+        {
+            TestEqual(TEXT("a heartbeat after the pause keeps its identity"),
+                PausedAgain.EvalId, Paused.EvalId);
+            TestFalse(TEXT("a heartbeat after the pause is not an event"),
+                PausedAgain.bDiscontinuous);
+        }
+        // The camera travels relative to the paired actor's placement: with a
+        // rotated, offset anchor Maya receives the anchor-local camera.
+        FMtoUCameraTimeTarget WorldSpace;
+        FMtoULinkageEditor::FEvaluationSource Anchored = Source;
+        Anchored.Anchor = FTransform(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+        FMtoUCameraTimeTarget Local;
+        if (Evaluate(TEXT("the world-space camera evaluates"), WorldSpace)
+            && TestTrue(TEXT("the anchored camera evaluates"),
+                FMtoULinkageEditor::EvaluateCameraTime(Anchored, Local, Error)))
+        {
+            const auto Vec = [](const TSharedPtr<FJsonObject>& Camera, const TCHAR* Field)
+            {
+                const TSharedPtr<FJsonObject> V = Camera->GetObjectField(Field);
+                return FVector(V->GetNumberField(TEXT("x")), V->GetNumberField(TEXT("y")),
+                    V->GetNumberField(TEXT("z")));
+            };
+            const FTransform& A = Anchored.Anchor;
+            TestTrue(TEXT("the camera location is anchor-local"),
+                Vec(Local.Camera, TEXT("location")).Equals(
+                    A.InverseTransformPosition(Vec(WorldSpace.Camera, TEXT("location"))), 1.e-3));
+            TestTrue(TEXT("the camera forward is anchor-local"),
+                Vec(Local.Camera, TEXT("forward")).Equals(
+                    A.InverseTransformVectorNoScale(Vec(WorldSpace.Camera, TEXT("forward"))), 1.e-5));
+            TestTrue(TEXT("the camera up is anchor-local"),
+                Vec(Local.Camera, TEXT("up")).Equals(
+                    A.InverseTransformVectorNoScale(Vec(WorldSpace.Camera, TEXT("up"))), 1.e-5));
+        }
+    }
+    Player->Stop();
+    return true;
+}
+
+// The scene-reference handoff: its scope, its manifest and its image-data check.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FMtoUSceneRefExportTest,
+    "MtoULiveLinkEditor.SceneReferenceExport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // A produced file that carries embedded media is image data.
+    const FString EmbeddedPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(), TEXT("MtoUSceneRefTest"), TEXT("embedded_media.fbx"));
+    {
+        FString Content;
+        Content += TEXT("Texture: \"T_Rock\"\n");
+        Content += TEXT("{\n");
+        Content += TEXT("    Type: \"TextureVideoClip\"\n");
+        Content += TEXT("    FileName: \"t_rock.png\"\n");
+        Content += TEXT("    Content: ,\n");
+        Content += TEXT("     \"iVBORw0KGgoAAAANSUhEUg\"\n");
+        Content += TEXT("}\n");
+        if (!TestTrue(TEXT("the synthetic media fixture is written"),
+                FFileHelper::SaveStringToFile(Content, *EmbeddedPath)))
+        {
+            return false;
+        }
+        FMtoUTextureScan Scan;
+        FMtoUSceneRefExport::ScanFbxTextureReferences(EmbeddedPath, Scan);
+        TestEqual(TEXT("the fixture records one texture"), Scan.TextureRecords, 1);
+        TestEqual(TEXT("the fixture records embedded media"), Scan.EmbeddedMediaRecords, 1);
+        FMtoUSceneRefExportResult MediaResult;
+        MediaResult.TextureScan = Scan;
+        TestTrue(TEXT("embedded media is image data"),
+            FMtoUSceneRefExport::HasImageData(MediaResult));
+    }
+
+    UWorld* World = CreateLinkageWorld(TEXT("SceneReferenceWorld"));
+    if (!TestNotNull(TEXT("editor world"), World))
+    {
+        return false;
+    }
+    UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    if (!TestNotNull(TEXT("fixture Cube"), Cube))
+    {
+        return false;
+    }
+    // A non-ANSI label: the manifest still reaches Maya as UTF-8.
+    const FString ReferenceLabel = TEXT("测试石块");
+    AActor* Reference = SpawnLinkageAnchor(*World, *ReferenceLabel);
+    UStaticMeshComponent* Mesh =
+        NewObject<UStaticMeshComponent>(Reference, TEXT("ReferenceMesh"));
+    Mesh->SetupAttachment(Reference->GetRootComponent());
+    Mesh->SetStaticMesh(Cube);
+    Mesh->RegisterComponent();
+    // A non-geometry component the export must suppress for its own duration.
+    UPointLightComponent* Light = NewObject<UPointLightComponent>(Reference, TEXT("ReferenceLight"));
+    Light->SetupAttachment(Reference->GetRootComponent());
+    Light->RegisterComponent();
+
+    FMtoUSceneRefExportResult Result;
+    const bool bExported = FMtoUSceneRefExport::Run(*World, {}, Result);
+    if (!TestTrue(TEXT("the reference export succeeds"), bExported))
+    {
+        AddError(Result.Error);
+        return false;
+    }
+    TestTrue(TEXT("the scope is the loaded persistent level"),
+        Result.LevelPackage.Contains(TEXT("SceneReferenceWorld")));
+    TestEqual(TEXT("the persistent level is complete"), Result.bScopeComplete, true);
+    TestTrue(TEXT("the scope exports the static mesh"), Result.ExportedObjectCount >= 1);
+    TestTrue(TEXT("the scope counts render triangles"), Result.TriangleCount > 0);
+    TestTrue(TEXT("the light is suppressed"), Result.SuppressedComponentCount >= 1);
+    TestTrue(TEXT("the geometry file is named after the scope"),
+        Result.GeometryFile.EndsWith(TEXT(".fbx")));
+    TestTrue(TEXT("the manifest is named after the scope"),
+        Result.ManifestFile.EndsWith(TEXT(".manifest.json")));
+    TestTrue(TEXT("the handoff carries no image data"), !Result.bImageDataDetected);
+    TestEqual(TEXT("the texture scan finds no embedded media"),
+        Result.TextureScan.EmbeddedMediaRecords, 0);
+    TestTrue(TEXT("the manifest digest is computed"), Result.ManifestDigest.Len() > 0);
+    TestTrue(TEXT("the handoff identity is computed"),
+        Result.TransferId.StartsWith(TEXT("mtou-scene-ref-")));
+
+    // The frozen importer refuses a manifest without an objects list, and each
+    // entry is what the Maya side compares against the imported file.
+    const FString ManifestPath = FPaths::Combine(Result.Directory, *Result.ManifestFile);
+    TArray<uint8> ManifestFileBytes;
+    if (!TestTrue(TEXT("the manifest is read back"),
+            FFileHelper::LoadFileToArray(ManifestFileBytes, *ManifestPath)
+            && ManifestFileBytes.Num() > 0))
+    {
+        return false;
+    }
+    // Maya reads the file as UTF-8 with no BOM and hashes its bytes.
+    TestEqual(TEXT("the manifest starts with its JSON object, not a BOM"),
+        ManifestFileBytes[0], static_cast<uint8>('{'));
+    const FUTF8ToTCHAR ManifestDecoded(
+        reinterpret_cast<const UTF8CHAR*>(ManifestFileBytes.GetData()), ManifestFileBytes.Num());
+    const FString ManifestText(ManifestDecoded.Length(), ManifestDecoded.Get());
+    TestTrue(TEXT("the UTF-8 manifest carries the non-ANSI label"),
+        ManifestText.Contains(ReferenceLabel));
+    {
+        TArray<uint8> DigestInput = ManifestFileBytes;
+        TArray<uint8> GeometryFileBytes;
+        FFileHelper::LoadFileToArray(GeometryFileBytes,
+            *FPaths::Combine(Result.Directory, *Result.GeometryFile));
+        DigestInput.Append(GeometryFileBytes);
+        TestEqual(TEXT("the digest covers the manifest bytes on disk and the geometry"),
+            Result.ManifestDigest, FMD5::HashBytes(DigestInput.GetData(), DigestInput.Num()));
+    }
+    TSharedPtr<FJsonObject> ManifestJson;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ManifestText);
+    if (!TestTrue(TEXT("the manifest is JSON"), FJsonSerializer::Deserialize(Reader, ManifestJson)
+            && ManifestJson.IsValid()))
+    {
+        return false;
+    }
+    const TSharedPtr<FJsonObject>* Identity = nullptr;
+    FString ManifestTransferId;
+    TestTrue(TEXT("the manifest carries the export's own transfer id"),
+        ManifestJson->TryGetObjectField(TEXT("identity"), Identity) && Identity != nullptr
+        && (*Identity)->TryGetStringField(TEXT("transfer_id"), ManifestTransferId)
+        && ManifestTransferId == Result.TransferId);
+    const TArray<TSharedPtr<FJsonValue>>* ManifestObjects = nullptr;
+    if (!TestTrue(TEXT("the manifest carries an objects list"),
+            ManifestJson->TryGetArrayField(TEXT("objects"), ManifestObjects)
+            && ManifestObjects != nullptr))
+    {
+        return false;
+    }
+    TestEqual(TEXT("the manifest records one entry per exported object"),
+        ManifestObjects->Num(), Result.ExportedObjectCount);
+    bool bSawMatrix = false;
+    bool bSawCentroid = false;
+    for (const TSharedPtr<FJsonValue>& Entry : *ManifestObjects)
+    {
+        const TSharedPtr<FJsonObject>* Object = nullptr;
+        if (!TestTrue(TEXT("one manifest object is an object"), Entry.IsValid()
+                && Entry->TryGetObject(Object) && Object != nullptr && (*Object).IsValid()))
+        {
+            return false;
+        }
+        FString NodeName;
+        TestTrue(TEXT("the manifest object names its node"),
+            (*Object)->TryGetStringField(TEXT("node_name"), NodeName) && !NodeName.IsEmpty());
+        bool bManifestExported = false;
+        TestTrue(TEXT("the manifest object claims the export"),
+            (*Object)->TryGetBoolField(TEXT("exported"), bManifestExported) && bManifestExported);
+        const TArray<TSharedPtr<FJsonValue>>* Matrix = nullptr;
+        if (!TestTrue(TEXT("the manifest object carries a world matrix"),
+                (*Object)->TryGetArrayField(TEXT("world_matrix"), Matrix)
+                && Matrix != nullptr && Matrix->Num() == 16))
+        {
+            return false;
+        }
+        bool bMatrixNumeric = true;
+        for (const TSharedPtr<FJsonValue>& Value : *Matrix)
+        {
+            double Ignored = 0.0;
+            if (!Value.IsValid() || !Value->TryGetNumber(Ignored))
+            {
+                bMatrixNumeric = false;
+            }
+        }
+        TestTrue(TEXT("the world matrix is 16 numbers"), bMatrixNumeric);
+        bSawMatrix = true;
+        const TSharedPtr<FJsonObject>* Bounds = nullptr;
+        if (TestTrue(TEXT("the manifest object carries world bounds"),
+                (*Object)->TryGetObjectField(TEXT("world_bounds_cm"), Bounds)
+                && Bounds != nullptr && (*Bounds).IsValid()))
+        {
+            const TSharedPtr<FJsonObject>* Size = nullptr;
+            if (TestTrue(TEXT("the world bounds carry a size"),
+                    (*Bounds)->TryGetObjectField(TEXT("size"), Size)
+                    && Size != nullptr && (*Size).IsValid()))
+            {
+                double SizeX = 0.0;
+                double SizeY = 0.0;
+                double SizeZ = 0.0;
+                TestTrue(TEXT("the size is three numbers"),
+                    (*Size)->TryGetNumberField(TEXT("x"), SizeX)
+                    && (*Size)->TryGetNumberField(TEXT("y"), SizeY)
+                    && (*Size)->TryGetNumberField(TEXT("z"), SizeZ));
+                TestTrue(TEXT("the size is positive for the fixture cube"),
+                    SizeX > 0.0 && SizeY > 0.0 && SizeZ > 0.0);
+            }
+        }
+        if (const TSharedPtr<FJsonObject>* Centroid = nullptr;
+            (*Object)->TryGetObjectField(TEXT("world_surface_centroid_cm"), Centroid)
+            && Centroid != nullptr && (*Centroid).IsValid())
+        {
+            double CentroidX = 0.0;
+            TestTrue(TEXT("the centroid is a number triple"),
+                (*Centroid)->TryGetNumberField(TEXT("x"), CentroidX));
+            bSawCentroid = true;
+        }
+    }
+    TestTrue(TEXT("at least one manifest object carried a matrix"), bSawMatrix);
+    TestTrue(TEXT("the manifest object carries the surface centroid"), bSawCentroid);
+
+    TestTrue(TEXT("the directory holds the produced files"),
+        IFileManager::Get().FileExists(*FPaths::Combine(
+            Result.Directory, *Result.GeometryFile)));
+
+    // An explicitly requested sublevel the world does not stream is reported.
+    FMtoUSceneRefExportResult Excluded;
+    const bool bExcludedRun = FMtoUSceneRefExport::Run(
+        *World, { FString(TEXT("NotStreamedAnywhere")) }, Excluded);
+    TestTrue(TEXT("the run still succeeds"), bExcludedRun);
+    TestEqual(TEXT("the unstreamed sublevel is excluded"),
+        Excluded.ExcludedSublevels.Num(), 1);
+    TestEqual(TEXT("an excluded sublevel makes the scope incomplete"),
+        Excluded.bScopeComplete, false);
+    TestTrue(TEXT("the exclusion is reported"), Excluded.Warnings.Num() > 0);
+
+    // The manifest names the anchor it was exported against: identity while
+    // nothing is paired, the paired target's placement once one is.
+    const auto ReadAnchor = [this](const FMtoUSceneRefExportResult& Run, FVector& OutLocation, FRotator& OutRotation)
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Json;
+        const TSharedPtr<FJsonObject>* WorldObject = nullptr;
+        const TSharedPtr<FJsonObject>* AnchorObject = nullptr;
+        const TSharedPtr<FJsonObject>* RotationObject = nullptr;
+        const TArray<TSharedPtr<FJsonValue>>* Location = nullptr;
+        if (!TestTrue(TEXT("the manifest is read back for the anchor"),
+                FFileHelper::LoadFileToString(Text, *FPaths::Combine(Run.Directory, *Run.ManifestFile))
+                && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Json) && Json.IsValid()
+                && Json->TryGetObjectField(TEXT("world"), WorldObject)
+                && (*WorldObject)->TryGetObjectField(TEXT("anchor"), AnchorObject)
+                && (*AnchorObject)->TryGetArrayField(TEXT("location_cm"), Location) && Location->Num() == 3
+                && (*AnchorObject)->TryGetObjectField(TEXT("rotation_deg"), RotationObject)))
+        {
+            return false;
+        }
+        OutLocation = FVector((*Location)[0]->AsNumber(), (*Location)[1]->AsNumber(), (*Location)[2]->AsNumber());
+        OutRotation = FRotator(
+            (*RotationObject)->GetNumberField(TEXT("pitch")),
+            (*RotationObject)->GetNumberField(TEXT("yaw")),
+            (*RotationObject)->GetNumberField(TEXT("roll")));
+        return true;
+    };
+    FVector UnpairedLocation;
+    FRotator UnpairedRotation;
+    if (ReadAnchor(Result, UnpairedLocation, UnpairedRotation))
+    {
+        TestTrue(TEXT("an unpaired export names the identity anchor"),
+            UnpairedLocation.IsNearlyZero(1e-6) && UnpairedRotation.IsNearlyZero(1e-6));
+    }
+
+    const FTransform PairedPlacement(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+    AMtoULiveLinkActor* Paired = World->SpawnActor<AMtoULiveLinkActor>(
+        PairedPlacement.GetLocation(), PairedPlacement.Rotator());
+    UMtoULiveLinkBinding* PairedBinding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    TStrongObjectPtr<UMtoULiveLinkBinding> PairedBindingGuard(PairedBinding);
+    if (TestNotNull(TEXT("the paired target is created"), Paired))
+    {
+        Paired->SetBinding(PairedBinding);
+        FString PairError;
+        TestTrue(TEXT("the target is paired"), MtoUPairLinkageTarget(*Paired, TEXT("character"), PairError));
+        FMtoULinkageEditor::SetObservedLinkageActor(Paired);
+        FMtoUSceneRefExportResult PairedRun;
+        if (TestTrue(TEXT("the paired export succeeds"), FMtoUSceneRefExport::Run(*World, {}, PairedRun)))
+        {
+            FVector Location;
+            FRotator Rotation;
+            if (ReadAnchor(PairedRun, Location, Rotation))
+            {
+                TestTrue(TEXT("the anchor is the target's location"),
+                    Location.Equals(PairedPlacement.GetLocation(), 1e-3));
+                TestTrue(TEXT("the anchor is the target's rotation"),
+                    FMath::Abs(FRotator::NormalizeAxis(Rotation.Roll - 3.0)) < 1e-3
+                    && FMath::Abs(FRotator::NormalizeAxis(Rotation.Pitch + 4.0)) < 1e-3
+                    && FMath::Abs(FRotator::NormalizeAxis(Rotation.Yaw - 37.0)) < 1e-3);
+            }
+        }
+        MtoUClearLinkageTarget(*Paired);
+        FMtoULinkageEditor::SetObservedLinkageActor(nullptr);
+    }
     return true;
 }
 

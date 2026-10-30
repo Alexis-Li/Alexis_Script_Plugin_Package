@@ -6,6 +6,20 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Generalize repository rules from Maya and Unreal to a registry of host
+  applications, add Adobe Substance 3D Painter as a host with its own rule file
+  and standalone plug-in location, and document how to add further hosts.
+- Count only registered host directories toward a composite product's two-host
+  requirement and validate Substance 3D Painter projects and components.
+- Add `docs/proposals/` for requirement baselines of products still in design,
+  starting with the SPtoU Texture Sync proposal.
+- Use `feature/` and `fix/` branches for PR work, with small documentation and
+  rule edits on the current branch and a published review of the latest head
+  before every merge. Consolidate issue comments on request or closure with
+  `issue_report.py template --issue <number>` and `check`; repository validation
+  owns existing historical archives and their portable-path checks. Every new
+  issue comment ends with a `当前状态` footer for the whole issue, so the newest
+  comment is the current state between tidies.
 - Simplify agent rules around outcomes and scoped verification; allow local
   composite component instructions and shelf-script regression test directories
   while preserving product metadata and runtime layout boundaries.

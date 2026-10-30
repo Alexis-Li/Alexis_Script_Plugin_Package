@@ -1,0 +1,24 @@
+{
+  "name": "mtou-issue54-real-c02",
+  "revision": 1,
+  "fps": 30.0,
+  "range": [
+    1.0,
+    4.0
+  ],
+  "directory": "<writable-scratch>/c02-manifest",
+  "rigs": {
+    "prop": {
+      "file": "<MtoU_tmp>/ceshi/C02/SK_C02_05MH.ma",
+      "namespace": "prop",
+      "root": "|prop:Group|prop:root",
+      "bones": [],
+      "parents": [],
+      "curves": [],
+      "mesh": "",
+      "ancestors": [],
+      "ancestor_animation": {}
+    }
+  },
+  "fingerprints": {}
+}

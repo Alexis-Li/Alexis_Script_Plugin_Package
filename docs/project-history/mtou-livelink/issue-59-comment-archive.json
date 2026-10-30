@@ -1,0 +1,105 @@
+{
+  "schema": "github-issue-comment-archive/1",
+  "issue": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59",
+  "archived_on": "2026-10-29",
+  "purpose": "Preserve the issue's original agent comments before its closing consolidation: the I-3 design and gap check (design-01, 2026-10-28), the PR #85 integration, the response to the independent review R-002–R-004 and the PR #87 integration, the R-005 and R-008 diagnoses with their PR #88 and PR #89 integrations, the R-008 reproduction attempts, and the R-010 fix with the PR #90 integration (2026-10-29). Original wording and provenance are retained; the current state lives in the single status comment, not in these historical claims.",
+  "current_status_comment": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6492891726",
+  "comments": [
+    {
+      "id": 6461394113,
+      "created_at": "2026-10-28T05:24:40Z",
+      "updated_at": "2026-10-28T05:24:40Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6461394113",
+      "body": "## I-3 实施设计与缺口核对（design-01）\n\n基线：`codex/mtou-preview-workflow` = `8101ca0f171d59a4f736884f8c9893a59a81a353`（#58 集成 `31fa0f9` 之后只有文档提交）。开发分支 `feature/mtou-daily-recovery`，PR 以 `codex/mtou-preview-workflow` 为目标。起点 Maya 纯 Python 591 OK。\n\n### 现状与缺口\n\n| AC | 已有 | 缺口与本片做法 |\n| --- | --- | --- |\n| I3-AC01 / INT-07 | Maya 导入器的陈旧／超限／摘要失配写前拒绝、暂存替换、读回失败回滚、半接管续做、外来节点拒绝、删除拒绝均有纯 Python（假 `cmds`）测试 | 缺真实 Maya 证据。在 Maya 2024 宿主套件加故障矩阵：真实 FBX 交接的重复更新、中断接管续做、损坏 FBX 导入失败保留旧参考、深层外来节点拒绝替换／删除、删除失败的残留报告，并核对用户节点和旧参考不变。 |\n| I3-AC01 / INT-08 | 锚点移动结束联动（`ANCHOR_MISMATCH`）；锁定／被驱动相机与门写前拒绝、视图／门／undo／时间恢复有纯 Python 测试 | **产品缺陷**：参考容器不记录导入时的锚点，目标移动后旧参考仍可直接进入镜头联动，与“相机、对象和参考版本不一致时不得进入镜头联动”不符；`hello_ack.space.anchor` 目前恒为空。做法：容器记录导入锚点；UE 在 `mode_state`（linkage）带当前锚点 `space{space_revision, anchor}`；Maya 发现已导入参考的锚点与当前锚点不一致时拒绝进入联动（保留旧参考，提示重新导出或移除旧参考），没有参考时不受影响。v11 尚未发布，按 v11 原位补字段并重新生成 corpus，混版本仍按协商拒绝。另在 Maya 宿主套件补锁定／被驱动门和相机、恢复残留的真实证据。 |\n| I3-AC02 / INT-09 | `maya_gui_window_check.py` 覆盖窗口 20 次关闭重开与退出；mayapy 宿主测试覆盖回调清理 | 缺“真实交互 Maya + 真实 UE”的会话启停计数。新增 UE opt-in `MtoUOptIn.Editor.Linkage.Lifecycle`，经同一 Maya GUI 驱动做 20 次连接→镜头联动→结束／断开，加关面板、换场景、UE 关序列／关世界、断流、恢复失败；Maya 每轮回报 scriptJob、API 回调、Python 线程、socket、`MtoU_*` 临时节点，UE 回报会话／接管／writer 状态，预热后基线必须回落。 |\n| I3-AC03 / INT-10 | `ProductionSequence` 只有短时连续播放（最大滞后与单调性） | 新增 UE 端调度计量（每次 issued 的发出／完整 applied／取消／超时、合并数、staged 与控制队列峰值，单一单调时钟）和 opt-in `MtoUOptIn.Editor.Linkage.SustainedPlayback`。延迟注入位置：UE 整组完成屏障前（现有自动化 apply probe 的 `Published` 阶段），每组自 Maya 回传到达起保持 N ms。 |\n| I3-AC04 / INT-11/13 | `GuiRegression`、`ProductionSequence`（单／双对象）、窗口检查、Details 宽度检查 | 在本片最终 head 重跑；补 0.9.0 单文件与当前版本的同状态 Maya 面板截图对照和主／子界面操作记录（I-1 的旧截图只在已清理的本地 scratch）。 |\n| I3-AC05 / INT-12/14 | `maya_gui_install_check.py`；协议 corpus 混版本拒绝 | 在 Maya 2024 与 2022.4 跑安装检查；UE 插件独立部署到含空格／中文路径的干净工程并加载；旧 0.9.0 Maya 对新 UE 的真实混版本拒绝；旧 Binding 加载（`MtoUOptIn.Actor.CharacterPartsAsset`）。 |\n| I3-AC06 | — | `docs/project-history/mtou-livelink/` 新增 #56 整体验收记录：INT-01–14 → 交付／审核基线、场景、环境、结果；受本片改动影响的 I-1／I-2 证据在最终 head 重跑。 |\n\n### 测试前冻结的 INT-10 口径\n\n- 输入：#58 的真实双对象生产输入（C04＋C00 动画，Backups 一次性生产关卡与 Level Sequence 副本），非原点旋转 Anchor；Maya 2024 GUI 用 `minimal` 插件偏好模板。\n- 档位：自然延迟、注入 50／100／250 ms，各连续播放 300 s（Sequence 循环播放）。\n- 阈值（不在测后放宽）：无 cut／循环回绕的连续播放区间内相邻完整 applied 间隔 ≤ 2 s；暂停／跳转／cut 后从最后 desired 固定起 ≤ 2 s 收敛；任何时刻 issued ≤ 1、pending ≤ 1，控制队列 ≤ 16（`config.MAX_CONTROL_QUEUE`）。\n- 只报告不设阈值：issued→完整 applied 的 p50／p95／p99（只取实际完成的组，同时报告取消、超时、被合并数）、应用组数／秒、实际应用率、两端进程内存峰值。\n\n### 本片不改\n\n产品版本号（仍为 0.10.0 待发布）、首版对象／缓存范围、原型。Topia 构建由用户自行执行，本片只在兼容矩阵中写明其证据边界。\n\n**当前状态**：进行中。设计已发布，开始实施 AC01（含 INT-08 旧参考失效修复）；下一步由实施者继续 AC03／AC02 计量与宿主运行。\n"
+    },
+    {
+      "id": 6486319044,
+      "created_at": "2026-10-29T02:35:23Z",
+      "updated_at": "2026-10-29T07:16:35Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6486319044",
+      "body": "## 集成：PR #85\n\n| 项 | 值 |\n| --- | --- |\n| 评审范围 | `8101ca0f171d59a4f736884f8c9893a59a81a353..0f9fa23f6ea0080657c1079b220d9c42ab9dacf5` |\n| 评审 | [PR #85 评审](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/85#issuecomment-6486299526)，结论为通过 |\n| 合并方式 | merge commit，`--match-head-commit` 守卫 |\n| 集成 SHA | `e0f29de60f17cf8878773fc55e978b8be9eb8157`（`codex/mtou-preview-workflow`） |\n\n合并时目标分支没有漂移，GitHub CI `validate` 全部通过。\n\n### 验收项覆盖\n\n| 验收项 | 结果 |\n| --- | --- |\n| I3-AC01 | INT-07/08 故障矩阵在真实 Maya 2024 上通过 |\n| I3-AC02 | INT-09：20 次启停后回调、作业、线程和 socket 均回到基线；窗口检查 8/8 ×2 |\n| I3-AC03 | INT-10：0/50/100/250 ms 四档各 300 s 全部达标，p95 ≤ 0.462 s |\n| I3-AC04 | INT-11/13：双对象全量回归、`GuiRegression` 和 Details 渲染均通过 |\n| I3-AC05 | INT-12/14：协议 corpus、混合版本拒绝、旧 Binding、打包插件放在中文空格路径下加载，以及 Maya 2024/2022.4 安装检查均通过 |\n| I3-AC06 | INT-01–14 映射见 `docs/project-history/mtou-livelink/preview-workflow-integration-acceptance.md` |\n\n验收中发现并修复了 6 个缺陷，见 CHANGELOG `Unreleased > Fixed` 和 PR 描述。\n\n### 遗留\n\n- **R-001（后续候选）**：失败的“刷新预览”是否泄漏内存。\n- **证据限制**：\n  - Topia 构建由用户执行；\n  - 源码在中文路径下编译受 MSVC 限制（C1083）；\n  - Maya 2022.4 只有安装与编译证据。\n\n**当前状态**：I-3 已集成到 `codex/mtou-preview-workflow`（`e0f29de`），I3-AC01–AC06 均已取得证据。下一步是用户验收；验收后整理成状态评论并关闭 #59。\n"
+    },
+    {
+      "id": 6487704044,
+      "created_at": "2026-10-29T04:12:01Z",
+      "updated_at": "2026-10-29T07:16:48Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6487704044",
+      "body": "## 独立评审意见处理：R-002–R-004（PR #87）\n\n依据：[#86 独立评审](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/86#issuecomment-6486900191)。修复在 [PR #87](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/87)：\n\n- 修复范围：`e0f29de60f17cf8878773fc55e978b8be9eb8157..b28d936`\n- I-3 整体复验范围：`8101ca0f171d59a4f736884f8c9893a59a81a353..b28d936`\n\n| ID | 状态 | 处理与证据 |\n| --- | --- | --- |\n| R-002 | 已修复，待复验 | 每帧恢复 Live Link 求值只在仍持有接管时执行。`Linkage.Session`／`ModeTransitions` 新增三项断言：结束预览后归还的动画在连续更新中保持；接管丢失后同样保持；返回实时保留接管时仍恢复求值。去掉修复后两项新断言失败（模式 1 被改回 0），加上后通过；UE 默认套件 91/91 |\n| R-003 | 已修复，待复验 | 导入时在容器组记录所创建节点的 UUID（`mtouSceneRefNodes`）。清单外的节点会使更新、移除与过期暂存清理被拒绝（`CONTAINER_NOT_OWNED`），并列出且保留这些节点，包括同命名空间、子命名空间和 DG 节点。真实 Maya 2024 故障矩阵覆盖这三类（40/40）；纯 Python 612 OK，新测试在旧代码上失败 |\n| R-004 | 已补验收，待复验 | lifecycle 新增联动中直接关闭主面板、直接新建场景各一轮，均等到目标已应用、工具相机已建后执行，且不先返回实时。见下方说明 |\n\nR-004 的结果：\n\n- **联动中**：时间 120、门 567×319，四个视图均看穿 `MtoU_LinkCamera`。\n- **关闭面板后**：时间、范围、门、视图相机与 undo 都回到捕获值。\n- **新建场景后**：没有工具相机，undo 保持开启。\n- 两轮中 UE 的 5 个 writer 都已归还，Maya 无残留；重开后资源计数回到基线。整次运行 Success，0 错误、0 警告。\n\n新增 **R-005（待验证风险）**：同一次长运行里包含全部场景时，中途整组重新连接后的一步会超时，共出现三次，第一次出现在 #85 代码上。按 `arms`／`rest` 分开运行均通过。目前尚未区分这是测试顺序问题还是产品缺陷，已加一次性诊断日志。\n\n集成条件：#87 基于已集成的 #85，#86 回退 PR 仍未合并。\n\n- 若 #86 不合并而关闭，#87 可直接合并。\n- 若先合并 #86，#87 需要先把 #85 的内容重新带回，再合并。\n\n**当前状态**：R-002/R-003 已修复，R-004 已补真实交互验收，均待在 #87 最新 head 上独立复验；R-005 为新增待验证风险。\n需要先决定 #86 的处理，复验通过后再按 head 守卫合并；#59 暂不关闭。\n"
+    },
+    {
+      "id": 6488191329,
+      "created_at": "2026-10-29T04:45:59Z",
+      "updated_at": "2026-10-29T07:17:47Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6488191329",
+      "body": "## 集成：PR #87（独立评审意见修复）\n\n- 复验：[首轮](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/87#issuecomment-6488110495)结论为需修改，指出 R-003 剩余路径；[增量复验](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/87#issuecomment-6488169777)在 `71f17f4763f2f300644597b5fd55904f16bbd44f` 上结论为通过。两轮均由独立会话完成。\n- 合并：merge commit，以 `--match-head-commit 71f17f4…` 守卫；合并时目标分支没有漂移（仍为 `e0f29de`），CI 全部通过。\n- 集成 SHA：`afaca90878f8bfa78e8aaeeff331b6c352b0064e`（`codex/mtou-preview-workflow`）。I-3 已复验范围：`8101ca0f171d59a4f736884f8c9893a59a81a353..71f17f4763f2f300644597b5fd55904f16bbd44f`。\n- 回退 PR #86：按用户决定关闭，不合并。\n\n| ID | 状态 |\n| --- | --- |\n| R-002 | 已复验关闭 |\n| R-003 | 已复验关闭（含过期暂存路径） |\n| R-004 | 已复验关闭 |\n| R-005 | 待验证风险：全场景长运行在中途重新连接后超时。按约定在两个 PR 处理完成后再定位 |\n| R-001 | 后续候选：失败的刷新预览可能导致内存增长 |\n\n**当前状态**：I-3 修复已集成（`afaca90`），R-002–R-004 已关闭；下一步处理 R-005，之后再做用户验收与 #59 关闭整理。"
+    },
+    {
+      "id": 6488487563,
+      "created_at": "2026-10-29T05:07:08Z",
+      "updated_at": "2026-10-29T05:37:12Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6488487563",
+      "body": "## R-005：根因与修复（PR #88）\r\n\r\n- **根因：** Maya 发送线程先进入 `ready`，面板主线程随后才处理 ready 事件并安装回复监听。这段间隙里到达的 `mode_state`、参考提供或移除通知只被记为 `_last_control_reply`，没有任何代码再读取它。整组重新连接后，Unreal 会立即发起联动；长运行后期 Maya 主线程较慢，这条消息每次都丢失，Unreal 一直等不到确认，最终超时。超时时 Maya 侧没有任何联动（修订号 0，无会话）。\r\n- **修复：** 发送线程在没有监听时，按到达顺序暂存这些状态语句（上限 `MAX_CONTROL_QUEUE`）；监听安装后，先把它们交付给监听，再处理之后读到的消息。`camera_time`／`applied` 只在联动中有意义，不暂存。\r\n- **证据：**\r\n  - 新增的竞态测试在修复前失败、修复后通过；纯 Python 614 OK，Maya 2024 宿主 40/40，Maya 2022.4 编译通过。\r\n  - 全场景同一次 `ProductionSequence` 长运行：修复前有 2 次在 `[arms]` 进入联动时出现本症状；修复后 5 次中 4 次 Success（0 错误、0 警告），余下 1 次属于 R-008。\r\n\r\n**当前状态**：R-005 已修复，[PR #88](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/88) 待独立评审；R-001 为后续候选。\r\n评审通过并合并后，可进行 I-3 用户验收与 #59 关闭整理。\r\n"
+    },
+    {
+      "id": 6488924342,
+      "created_at": "2026-10-29T05:37:13Z",
+      "updated_at": "2026-10-29T05:37:13Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6488924342",
+      "body": "## 新增 R-008：生产测试重新连接等待偶发超时（待验证风险）\n\n- **现象：** 全场景 `ProductionSequence` 长运行中，偶尔有一步整组重新连接的等待一直不结束，最终超时。超时时 UE 显示两个对象已连接，Maya 最终也已连接并带副对象。\n- **出现记录：** 修复 R-005 之前 2 次（`[arms]`、`[reference]` 重新连接）；修复之后 1 次（`[swap]` 恢复后重新连接）；同期另有 4 次全场景运行通过。\n- **诊断：** PR #88 的 `e013c42` 只改了生产测试：等待超过 60 s 时记录阶段、未完成的命令、Maya 回执、会话与连接状态，以及两端 UE 状态。下次出现时可以据此判断是测试等待条件的问题，还是产品连接状态的问题。\n- **处理：** 独立复审同意不放在 #88 范围内，留待 #88 合并后单独处理。\n\n**当前状态**：R-005 修复在 PR #88 待增量复审（head `86611f5`）；R-008 为新增待验证风险，在 #88 合并后处理；R-001 为后续候选。"
+    },
+    {
+      "id": 6490258925,
+      "created_at": "2026-10-29T07:04:11Z",
+      "updated_at": "2026-10-29T07:04:11Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6490258925",
+      "body": "## 集成：PR #88（R-005）\n\n- 复验经过：第一轮需修改（R-006 交付顺序、R-007 注释）；第二轮需修改（R-009 文档证据）；[第三轮](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/88#issuecomment-6488936785)在 `86611f5fa3cbd4c36f44b9263378f407717baa73` 上结论为通过。三轮均由独立会话完成。\n- 合并：merge commit，以 `--match-head-commit 86611f5…` 守卫；合并时目标分支仍为 `afaca90`，没有漂移。\n- 集成 SHA：`a5165f3e14b4ef8f0a5e9b9102886ba40f142f4b`（`codex/mtou-preview-workflow`）。\n\n| ID | 状态 |\n| --- | --- |\n| R-005 | 已复验关闭 |\n| R-006、R-007、R-009 | 已复验关闭 |\n| R-008 | 待验证风险：生产测试重新连接等待偶发超时，诊断日志已就位 |\n| R-001 | 后续候选：失败的刷新预览可能导致内存增长 |\n\n**当前状态**：R-005 修复已集成（`a5165f3`）；下一步处理 R-008，之后进行 I-3 用户验收与 #59 关闭整理。"
+    },
+    {
+      "id": 6490668697,
+      "created_at": "2026-10-29T07:26:47Z",
+      "updated_at": "2026-10-29T07:26:47Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6490668697",
+      "body": "## R-008：复现尝试\n\n- 在集成 head `a5165f3` 上，带重新连接等待诊断的全场景 `ProductionSequence` 连续跑了 4 次，均为 Success（0 错误），诊断日志一次也没有触发。\n- 自 R-005 修复以来，全场景长运行累计 7 次，其中 1 次重新连接超时，出现在 `98d6967`；那次运行的构建还没有加宽后的诊断日志。之后连续 6 次均通过。\n- 代码核对：Maya 没有自动重新连接的路径，所有连接都由显式的 连接 命令发起。仅凭那一次失败留下的记录，无法确定等待卡在哪个条件上。\n\n**当前状态**：R-008 尚未复现，诊断日志已就位；它仍是待验证风险，下次出现时按诊断日志定位。下一步由用户决定继续批量复现，还是先进行 I-3 验收。"
+    },
+    {
+      "id": 6491243573,
+      "created_at": "2026-10-29T07:59:35Z",
+      "updated_at": "2026-10-29T07:59:35Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6491243573",
+      "body": "## R-008：根因与修复（PR #89）\n\n- **复现：** 写了一个重连密集的夹具，把整体服装替换重复 12 次，每次运行有 25 次重新连接。在集成 head `a5165f3` 上，第一次运行的第 21 次重新连接就卡住了。诊断日志：`phase 0, once 28, Maya ack 28, session open 1, connected 1, second 1, UE 'Connected' / 'Connected as the second object'`。\n- **根因：** 这是生产测试 `ReconnectSet` 自身的竞态，不是产品缺陷。第 0 阶段每个 tick 都会先判断“旧会话还没关”，这个判断在点击“连接”之后仍然生效。如果 Maya 在测试读到点击的回执之前就建立了新会话，这个判断就把新会话当成旧会话一直提前返回，测试再也读不到回执，最终超时，而此时两端其实已经正确连接。之前三次 R-008（`[arms]`、`[reference]`、`[swap]`）都符合这一状态。\n- **修复：** 只在点击之前等待旧会话关闭。改动只涉及测试代码。\n- **证据：** 修复后重连密集夹具 4/4 Success，共 100 次重新连接，没有一次等待超过 60 s；全场景长运行 Success。\n\n**当前状态**：R-008 已定位并修复，[PR #89](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/89) 待独立评审；R-001 为后续候选。#89 合并后可进行 I-3 用户验收与 #59 关闭整理。"
+    },
+    {
+      "id": 6491441234,
+      "created_at": "2026-10-29T08:10:09Z",
+      "updated_at": "2026-10-29T08:10:09Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6491441234",
+      "body": "## 集成：PR #89（R-008）\n\n- 评审：[独立评审](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/89#issuecomment-6491389006)在 `c1a84a2e51695bc1dcf186f88bdcdfd30d5e2b11` 上结论为通过。\n- 合并：merge commit。GitHub GraphQL 当时持续超时，改用 REST 合并接口，并带 `sha=c1a84a2…` 作 head 守卫；合并时目标分支仍为 `a5165f3`，没有漂移；4 项 CI 全部 success。\n- 集成 SHA：`ffc01ed01e8af9e28163a7a68f31da0d8b3cb882`（`codex/mtou-preview-workflow`）。\n\n| ID | 状态 |\n| --- | --- |\n| R-008 | 已复验关闭（生产测试竞态，不是产品缺陷） |\n| R-010 | 后续候选（评审新提出，不阻塞）：生产测试中其他几个等待步骤也存在类似的潜在竞态，目前没有出现记录。(a) lifecycle 最后一步可能把 disconnect 的回执当成 resources 的回执；(b) 若干步骤用 `connected` 而不是 `session_open` 判断能否点击“连接”，且没有空闲重试 |\n| R-001 | 后续候选：失败的刷新预览可能导致内存增长 |\n\n**当前状态**：R-002–R-009 已全部关闭，I-3 已集成（`ffc01ed`），只剩后续候选 R-001、R-010。下一步是用户对 I-3 验收，之后整理并关闭 #59。"
+    },
+    {
+      "id": 6492171289,
+      "created_at": "2026-10-29T08:48:21Z",
+      "updated_at": "2026-10-29T08:48:21Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6492171289",
+      "body": "## R-010：修复（PR #90）\n\n- **(a)：** lifecycle 最后一步在统计之前先消费 disconnect 的回执，不会再把 disconnect 的回执当成 resources 的回执、拿旧的计数去比较。\n- **(b)：** 正确骨架重连、副对象重新加入、删除目标后的恢复，这三处都改为经 `ReconnectSet` 重新连接。`ReconnectSet` 会等旧会话关闭后再点击“连接”；点击后只等回执；Maya 空闲 10 s 会再点一次；如果整组在点击前已经自行重新连接，直接视为成功。第一版没有这条“已连接即成功”的判断，在拒绝错误骨架之后会卡住，本轮验证发现后已修正。\n- **证据：** 全场景长运行、lifecycle、12 次替换的重连密集夹具均 Success（0 错误、0 警告），共 38 次重新连接，没有一次等待超过 60 s。\n- 只改测试代码。\n\n**当前状态**：R-010 已修复，[PR #90](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/90) 待独立评审；R-001 为后续候选。"
+    },
+    {
+      "id": 6492648017,
+      "created_at": "2026-10-29T09:11:46Z",
+      "updated_at": "2026-10-29T09:11:46Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/59#issuecomment-6492648017",
+      "body": "## 集成：PR #90（R-010）\n\n- 评审：首轮结论为需修改（R-011：正确骨架一步的交接分支会清掉 `ReconnectSet` 的阶段；R-012：注释不准确）；[增量复审](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/90#issuecomment-6492621968)在 `27da41c8247a3abb92ce66c8d4e6af3221cd4513` 上结论为通过。\n- 合并：merge commit，经 REST 接口带 `sha=27da41c…` 作 head 守卫；合并时目标分支仍为 `ffc01ed`，没有漂移；4 项 CI 全部 success。\n- 集成 SHA：`7f6318298c3833acf44e9343feb45e17da32ce6a`（`codex/mtou-preview-workflow`）。\n- 证据限制：正确骨架这一步在点击前已自行连上，点击路径没有运行证据，结论来自代码推理。交接之后，这一步与 `[swap]`、`[arms]` 走的是同一段 `ReconnectSet` 代码。\n\n| ID | 状态 |\n| --- | --- |\n| R-002–R-012 | 全部已复验关闭 |\n| R-001 | 后续候选：失败的刷新预览可能导致内存增长 |\n\n**当前状态**：I-3 的全部确认缺陷与测试竞态已关闭，集成于 `7f63182`；只剩后续候选 R-001。下一步是用户对 I-3 验收，之后整理并关闭 #59。"
+    }
+  ]
+}

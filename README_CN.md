@@ -4,22 +4,22 @@
 
 ## 这个仓库是什么
 
-这是一个面向 3D 美术生产的 Autodesk Maya 脚本与工具合集，每个项目都可以
-独立使用；仓库同时提供独立 Unreal Engine 插件，以及跨多个宿主软件协作的复合
-产品开发工作区。
+这是一个面向 3D 游戏美术生产的脚本、工具与插件合集，每个项目都可以独立使用。
+仓库覆盖 Autodesk Maya、Unreal Engine 和 Adobe Substance 3D Painter，也包括在
+这些软件之间协作的复合产品。
 
-Maya 项目优先提供可直接运行的单个 Python 文件。只有功能确实需要时，才增加
-`scripts/`、`plug-ins/`、`icons/` 或其他文件。中小型工具通过将这些文件复制到
-Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应尽量同时兼容 Python
-2 和 Python 3；无法兼容时优先支持 Python 3。
+从下表选择工具，按对应手册确认支持的软件版本、安装方式和使用步骤。
+各工具及宿主组件均可独立安装。
+合集同时管理本仓库项目和独立子模块；独立项目的源码、工单与发布由其自己的仓库管理。
 
 ## 包含的工具
 
 | 工具 | 用途 | 位置 |
 | --- | --- | --- |
 | Flatten Mesh To UV | 将模型的 UV 展开结果转换为平面多边形。 | [`maya/tools/FlattenMeshToUV`](maya/tools/FlattenMeshToUV/) |
-| MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，将一名已求值 Maya 角色流式发送到官方版 Unreal Live Link。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
+| MtoU Live Link | 通过可独立安装的 Maya 和 Unreal 组件，在 Unreal Editor 中实时或按缓存预览 Maya 角色动画，支持镜头联动、副对象和场景参考。 | [`composite/MtoULiveLink`](composite/MtoULiveLink/) |
 | NitroPoly | 提供选择、拓扑、轴心、连接和循环边等多边形建模功能。 | [`maya/tools/NitroPoly`](maya/tools/NitroPoly/) |
+| StoUTextureSync | Painter 到 Unreal 的贴图同步项目，处于原型阶段。 | [独立仓库](https://github.com/Alexis-Li/StoUTextureSync) · 子模块 `substance-painter/plugins/StoUTextureSync` |
 | ZiSpread | 通过交互拖动均匀分布所选环线。 | [`maya/scripts/ZiSpread`](maya/scripts/ZiSpread/) |
 
 ## 工具文档
@@ -28,15 +28,24 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
 - [MtoU Live Link](composite/MtoULiveLink/README_CN.md)
 - [NitroPoly](maya/tools/NitroPoly/README_CN.md)
 - [ZiSpread](maya/scripts/ZiSpread/README_CN.md)
+- [仓库地图与支持的宿主软件](docs/workspace-spec.md)
 - [Maya 项目指南](docs/maya-development.md)
 - [命名规范](docs/naming-conventions.md)
 - [发布流程](docs/release-process.md)
+- [设计中的产品](docs/proposals/README.md)
 - [项目开发历史](docs/project-history/README.md)
+
+## 获取独立项目
+
+首次克隆使用 `git clone --recurse-submodules <仓库地址>`；已有工作区在确认子模块
+没有待保存修改后，运行 `git submodule update --init --recursive`。开发、更新版本引用
+及迁移步骤见[子模块工作流](docs/submodules.md)。
 
 ## 开始开发
 
 1. 安装 Python 3.10 或更高版本，用于运行仓库维护命令。
-2. 修改前先阅读 [`AGENTS.md`](AGENTS.md) 和对应平台目录内的 `AGENTS.md`。
+2. 修改前先阅读 [`AGENTS.md`](AGENTS.md) 和对应宿主的规则文件（`maya/`、
+   `unreal/` 或 `substance-painter/AGENTS.md`）。
 3. 先预览项目模板，确认无误后再加 `--apply` 创建文件：
 
    ```powershell
@@ -55,4 +64,6 @@ Maya 对应目录安装，不要求提供 `.mod` 文件。Maya 运行代码应�
    修改单个项目时，只运行该项目自身的测试、静态检查、构建和打包检查。
 
 通用流程见[开发约定](docs/development-conventions.md)，Unreal 项目导航见
-[Unreal 插件指南](docs/unreal-development.md)。
+[Unreal 插件指南](docs/unreal-development.md)。按
+[Issue／PR 工作流](docs/agents/issue-tracker.md)选择交付方式、跟踪审核与集成；
+新增记录前查阅[历史保留规则](docs/project-history/README.md)。

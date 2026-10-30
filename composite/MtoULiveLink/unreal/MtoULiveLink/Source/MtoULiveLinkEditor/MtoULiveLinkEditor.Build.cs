@@ -5,12 +5,13 @@ public class MtoULiveLinkEditor : ModuleRules
     public MtoULiveLinkEditor(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "MtoULiveLink" });
+        PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Json", "MtoULiveLink" });
         PrivateDependencyModuleNames.AddRange(new[]
         {
-            "AssetRegistry", "DynamicMesh", "EditorFramework", "Engine", "GeometryCore", "GeometryFramework",
-            "GeometryScriptingCore", "Json", "LiveLinkAnimationCore", "LiveLinkInterface", "MeshDescription", "PropertyEditor",
-            "SkeletalMeshDescription", "Slate", "SlateCore", "Sockets", "StaticMeshDescription", "UnrealEd"
+            "ApplicationCore", "AssetRegistry", "CinematicCamera", "DynamicMesh", "EditorFramework", "Engine", "GeometryCore", "GeometryFramework",
+            "GeometryScriptingCore", "ImageCore", "Json", "LevelSequence", "LevelSequenceEditor", "LiveLinkAnimationCore", "LiveLinkInterface", "MeshDescription",
+            "MovieScene", "MovieSceneTracks", "PropertyEditor", "RenderCore", "Sequencer", "SkeletalMeshDescription", "Slate", "SlateCore", "Sockets",
+            "StaticMeshDescription", "UMG", "UnrealEd"
         });
         // Editor-private bridge for the Refresh-during-session integration
         // test: the Runtime source lives in its Private dir, so only this

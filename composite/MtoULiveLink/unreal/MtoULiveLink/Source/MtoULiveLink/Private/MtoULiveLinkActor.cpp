@@ -12,6 +12,7 @@
 
 AMtoULiveLinkActor::AMtoULiveLinkActor()
 {
+    PrimaryActorTick.bCanEverTick = true;
     SkeletalMeshComponent = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SkeletalMeshComponent"));
     SetRootComponent(SkeletalMeshComponent);
     SkeletalMeshComponent->SetDisablePostProcessBlueprint(true);
@@ -21,6 +22,55 @@ AMtoULiveLinkActor::AMtoULiveLinkActor()
     DriverMeshComponent->SetDisablePostProcessBlueprint(true);
     DriverMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     DriverMeshComponent->SetGenerateOverlapEvents(false);
+}
+
+void AMtoULiveLinkActor::Tick(float DeltaSeconds)
+{
+    Super::Tick(DeltaSeconds);
+    if (DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
+    {
+        RefreshComparisonPose();
+    }
+}
+
+bool AMtoULiveLinkActor::ShouldTickIfViewportsOnly() const
+{
+    return DisplayTarget == EMtoUDisplayTarget::OriginalGarment;
+}
+
+FMtoUCachePlaybackView AMtoULiveLinkActor::GetCachePlaybackView() const
+{
+    return MtoUGetActorCachePlaybackView(*this);
+}
+
+bool AMtoULiveLinkActor::StartCachedPlayback()
+{
+    return MtoUStartActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::StopCachedPlayback()
+{
+    return MtoUStopActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::PauseCachedPlayback()
+{
+    return MtoUPauseActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::ResumeCachedPlayback()
+{
+    return MtoUResumeActorCachedPlayback(*this);
+}
+
+bool AMtoULiveLinkActor::SeekCachedPlayback(int32 SourceFrame)
+{
+    return MtoUSeekActorCachedPlayback(*this, SourceFrame);
+}
+
+bool AMtoULiveLinkActor::SetCachedLoopEnabled(bool bEnabled)
+{
+    return MtoUSetActorCachedLoop(*this, bEnabled);
 }
 
 void AMtoULiveLinkActor::OnConstruction(const FTransform& Transform)
@@ -96,6 +146,21 @@ void AMtoULiveLinkActor::SetBinding(UMtoULiveLinkBinding* InBinding)
 void AMtoULiveLinkActor::SetConnectionStatus(const FString& InStatus)
 {
     ConnectionStatus = InStatus;
+}
+
+void AMtoULiveLinkActor::NoteSessionStreaming()
+{
+    LinkSessionState = EMtoULinkSessionState::Streaming;
+}
+
+void AMtoULiveLinkActor::NoteSessionEnded()
+{
+    // A session that never reached streaming leaves the actor idle: it was
+    // never connected, so it cannot be reported as interrupted.
+    if (LinkSessionState == EMtoULinkSessionState::Streaming)
+    {
+        LinkSessionState = EMtoULinkSessionState::Ended;
+    }
 }
 
 FMtoUPreviewReadiness AMtoULiveLinkActor::GetPreviewReadiness() const
@@ -265,7 +330,8 @@ void AMtoULiveLinkActor::ReleaseGeneratedPreview()
     }
     GeneratedPreviewMesh = nullptr;
     DriverGarmentMaterialSlots.Reset();
-    if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
+    if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview
+        || DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
     {
         HideDisplay();
     }
@@ -292,6 +358,42 @@ void AMtoULiveLinkActor::ShowGeneratedPreview(bool bBoneOnlyDiagnostic)
     }
 }
 
+bool AMtoULiveLinkActor::CanCompareGarments() const
+{
+    return GetPreviewReadiness().IsUsable()
+        && (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview
+            || DisplayTarget == EMtoUDisplayTarget::OriginalGarment)
+        && Binding && Binding->SkeletalMesh
+        && SkeletalMeshComponent && DriverMeshComponent
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreviewMesh
+        && DriverMeshComponent->GetSkeletalMeshAsset() == Binding->SkeletalMesh
+        && !DriverGarmentMaterialSlots.IsEmpty();
+}
+
+bool AMtoULiveLinkActor::ShowOriginalGarment()
+{
+    if (!CanCompareGarments())
+    {
+        return false;
+    }
+    DisplayTarget = EMtoUDisplayTarget::OriginalGarment;
+    ApplyGarmentVisibility();
+    RefreshComparisonPose();
+    return true;
+}
+
+bool AMtoULiveLinkActor::RestoreGeneratedGarment()
+{
+    if (!CanCompareGarments())
+    {
+        return false;
+    }
+    RefreshComparisonPose();
+    DisplayTarget = EMtoUDisplayTarget::GeneratedPreview;
+    ApplyGarmentVisibility();
+    return true;
+}
+
 void AMtoULiveLinkActor::SetModelDiagnostics(
     const FString& Diagnostics,
     EMtoUModelDiagnosticLevel Level)
@@ -304,9 +406,8 @@ void AMtoULiveLinkActor::SetModelDiagnostics(
 
 void AMtoULiveLinkActor::NotifyBindingInputsChanged()
 {
-    // Primary Driver and Preview inputs are the Preview revision, but they are
-    // also the composition baseline every Additional Part is validated
-    // against, so the resolved composition is republished here too.
+    // Primary Driver and Preview inputs are the Preview revision, but they also
+    // change which parts resolve, so the composition is republished here too.
     SyncCharacterComposition();
     MtoURequestStreamingSessionEnd();
     RebindInputNotifications();
@@ -377,6 +478,7 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
     DriverMeshComponent->SetForcedLOD(0);
     DriverMeshComponent->ShowAllMaterialSections(0);
     DriverMeshComponent->SetSkeletalMeshAsset(nullptr);
+    DriverMeshComponent->ClearMorphTargets();
     InheritPrimaryDisplaySettings(*DriverMeshComponent);
 
     switch (DisplayTarget)
@@ -385,17 +487,13 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         SkeletalMeshComponent->SetSkeletalMeshAsset(Binding ? Binding->SkeletalMesh : nullptr);
         break;
     case EMtoUDisplayTarget::GeneratedPreview:
+    case EMtoUDisplayTarget::OriginalGarment:
         SkeletalMeshComponent->SetSkeletalMeshAsset(GeneratedPreviewMesh);
         if (Binding && Binding->SkeletalMesh && !DriverGarmentMaterialSlots.IsEmpty())
         {
             DriverMeshComponent->SetSkeletalMeshAsset(Binding->SkeletalMesh);
             DriverMeshComponent->SetForcedLOD(1);
             DriverMeshComponent->SetLeaderPoseComponent(SkeletalMeshComponent);
-            for (const int32 MaterialSlot : DriverGarmentMaterialSlots)
-            {
-                DriverMeshComponent->ShowMaterialSection(
-                    MaterialSlot, INDEX_NONE, false, 0);
-            }
         }
         break;
     case EMtoUDisplayTarget::Hidden:
@@ -404,7 +502,51 @@ void AMtoULiveLinkActor::ReapplyDisplayTarget()
         break;
     }
     ConfigureLiveLinkInstance(*SkeletalMeshComponent);
+    ApplyGarmentVisibility();
     ApplyCharacterPartDisplay();
+}
+
+void AMtoULiveLinkActor::ApplyGarmentVisibility()
+{
+    // Hide only the generated material sections, not its component: the
+    // original Driver and enabled parts stay attached and visible.
+    SkeletalMeshComponent->ShowAllMaterialSections(0);
+    DriverMeshComponent->ShowAllMaterialSections(0);
+    if (DisplayTarget == EMtoUDisplayTarget::OriginalGarment && GeneratedPreviewMesh)
+    {
+        for (int32 Slot = 0; Slot < GeneratedPreviewMesh->GetMaterials().Num(); ++Slot)
+        {
+            SkeletalMeshComponent->ShowMaterialSection(Slot, INDEX_NONE, false, 0);
+        }
+    }
+    else if (DisplayTarget == EMtoUDisplayTarget::GeneratedPreview)
+    {
+        for (const int32 Slot : DriverGarmentMaterialSlots)
+        {
+            DriverMeshComponent->ShowMaterialSection(Slot, INDEX_NONE, false, 0);
+        }
+    }
+}
+
+void AMtoULiveLinkActor::RefreshComparisonPose()
+{
+    if (!SkeletalMeshComponent || !GeneratedPreviewMesh)
+    {
+        return;
+    }
+    // A mesh with every render section hidden can be skipped by the editor's
+    // normal animation evaluation. Keep the pose driver current while the
+    // original garment is shown; the Driver follower shares these bones.
+    SkeletalMeshComponent->TickAnimation(0.0f, false);
+    SkeletalMeshComponent->RefreshBoneTransforms();
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        if (Part && Part->GetSkeletalMeshAsset())
+        {
+            Part->TickAnimation(0.0f, false);
+            Part->RefreshBoneTransforms();
+        }
+    }
 }
 
 void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Component)
@@ -413,13 +555,82 @@ void AMtoULiveLinkActor::ConfigureLiveLinkInstance(USkeletalMeshComponent& Compo
     Component.SetUpdateAnimationInEditor(true);
     Component.SetAnimationMode(EAnimationMode::AnimationBlueprint);
     Component.SetAnimInstanceClass(ULiveLinkInstance::StaticClass());
-    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component.GetAnimInstance()))
+    ApplyLiveLinkSubject(&Component);
+}
+
+void AMtoULiveLinkActor::ApplyLiveLinkSubject(USkeletalMeshComponent* Component) const
+{
+    if (!Component)
     {
-        // Every part evaluates the one character subject, so the whole composed
-        // character poses from the single streaming session.
-        Instance->SetSubject(
-            FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
-        Instance->EnableLiveLinkEvaluation(true);
+        return;
+    }
+    if (ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance()))
+    {
+        // Every part evaluates this actor's one object subject, so the whole
+        // composed character poses from the same session and the second object
+        // of a set never reads the primary's values. An actor outside the
+        // negotiated set evaluates nothing, so it never shows another
+        // actor's object.
+        Instance->SetSubject(FLiveLinkSubjectName(LiveLinkSubjectName));
+        Instance->EnableLiveLinkEvaluation(bInLiveLinkSet);
+    }
+}
+
+void AMtoULiveLinkActor::SetLiveLinkSubject(FName Subject)
+{
+    if (Subject.IsNone())
+    {
+        return;
+    }
+    LiveLinkSubjectName = Subject;
+    bInLiveLinkSet = true;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        ApplyLiveLinkSubject(Part.Get());
+    }
+}
+
+int32 AMtoULiveLinkActor::RestoreLiveLinkEvaluation()
+{
+    if (!bInLiveLinkSet)
+    {
+        return 0;
+    }
+    int32 Restored = 0;
+    const auto Restore = [this, &Restored](USkeletalMeshComponent* Component)
+    {
+        if (!Component || !Component->GetSkeletalMeshAsset())
+        {
+            return;
+        }
+        ULiveLinkInstance* Instance = Cast<ULiveLinkInstance>(Component->GetAnimInstance());
+        if (!Instance)
+        {
+            ConfigureLiveLinkInstance(*Component);
+            ++Restored;
+        }
+        else if (!Instance->GetEnableLiveLinkEvaluation())
+        {
+            ApplyLiveLinkSubject(Component);
+            ++Restored;
+        }
+    };
+    Restore(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        Restore(Part.Get());
+    }
+    return Restored;
+}
+
+void AMtoULiveLinkActor::ReleaseLiveLinkSubject()
+{
+    bInLiveLinkSet = false;
+    ApplyLiveLinkSubject(SkeletalMeshComponent);
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Part : CharacterPartComponents)
+    {
+        ApplyLiveLinkSubject(Part.Get());
     }
 }
 
@@ -571,7 +782,8 @@ void AMtoULiveLinkActor::ApplyModelMorphCurves(
     USkeletalMesh* DriverMesh = DriverMeshComponent
         ? DriverMeshComponent->GetSkeletalMeshAsset()
         : nullptr;
-    if (DisplayTarget != EMtoUDisplayTarget::GeneratedPreview || !DriverMesh)
+    if ((DisplayTarget != EMtoUDisplayTarget::GeneratedPreview
+            && DisplayTarget != EMtoUDisplayTarget::OriginalGarment) || !DriverMesh)
     {
         return;
     }

@@ -38,8 +38,12 @@ The complete result of connection negotiation: whether streaming may begin, the 
 _Avoid_: Ready reply, validation result
 
 **Bone-name mapping**:
-The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch.
+The unique correspondence from a duplicated Maya short bone name to the name the Unreal import generated for that same bone: either a numeric suffix or the complete short name followed by `_` and exactly 32 hexadecimal digits. It is valid only within an already matched parent branch, after all exact-name sources in that branch have reserved their required targets, and only when the remaining rename candidates resolve to one assignment of sources to required targets. Same-parent, same-name Maya sources cannot be assigned separately to an exact and an available suffixed target.
 _Avoid_: Bone rename, fuzzy match
+
+**Competing source**:
+A second Maya bone with equal authority for one required Unreal bone. Two sources publishing the same short name below one matched parent are indistinguishable even if a suffixed target is also free; reject the connection and name the exact target, parent, and both Maya paths. Exact names take priority over importer-generated suffix candidates, which may only drive still-unclaimed targets when the whole parent scope has exactly one assignment of sources to required targets.
+_Avoid_: Duplicate bone, ambiguous rename
 
 **Unreached bone**:
 An Unreal bone below an unmatched ancestor, which negotiation never examined because its parent could not be mapped. It is reported separately from a confirmed extra bone and never claims that Maya lacks that bone.
@@ -62,9 +66,8 @@ The formally bound Skeletal Mesh that supplies its reference skeleton, source
 skin weights, and Morph Target library. It is either the production
 full-character mesh containing body, face, hair, and exactly one current
 outfit, or a garment-only mesh; it never aggregates several outfit variants.
-Every Driver retains the same complete deformation hierarchy. Within a
-character composition it is the Primary Driver: the single skeleton baseline
-and the only source of garment Preview data.
+Within a character composition it is the Primary Driver and the only source
+of garment Preview data. It need not contain another part's secondary bones.
 _Avoid_: Source mesh, final mesh, binding mesh
 
 **Character composition**:
@@ -77,13 +80,14 @@ _Avoid_: Multi-character setup, mesh list, attachment list
 **Additional Part**:
 One Skeletal Mesh of the character composition beside the Primary Driver, with
 a display name, a Skeletal Mesh, and an enabled state. An enabled part shares
-the Primary Driver's Skeleton asset, maps every bone it contains onto the
-Primary by name and parent path, and matches the Primary's reference pose for
-the bones in its skinning palettes across all LODs and their ancestors; it may
-use fewer bones and different geometry, and a bone the
-Primary does not have is a blocking incompatibility. A disabled part takes part
-in neither negotiation nor display, and parts never contribute to garment
-resolution, weight transfer, or Preview Morph transfer.
+the Primary Driver's Skeleton asset. Positive skin influences across every LOD
+and their complete ancestor chains define its required bones. The composition
+merges these requirements deterministically; shared names must have compatible
+parent paths and component-space reference poses. Unique required branches
+receive the same session's Maya motion independently on each part. An unused
+branch imposes no dependency and may not claim a required bone. A disabled part
+participates in neither negotiation nor display. Parts never contribute to
+garment resolution, weight transfer, or Preview Morph transfer.
 _Avoid_: Sub-mesh, attachment, extra mesh, garment part
 
 **Driver garment surface**:
@@ -131,9 +135,11 @@ context and displays its modified surface through a Generated Preview Skeletal
 Mesh under the current pose. With a full-character Driver, the original Driver
 also remains visible behind it with the resolved garment material slots hidden,
 preserving body, face, hair, and other non-garment parts without extra inputs;
-enabled Additional Parts stay displayed beside them. Matching live curves drive
-Morph Targets on the Generated Preview, the hidden Driver, and every part that
-owns the name.
+enabled Additional Parts stay displayed beside them. Garment comparison can
+instead display the original outfit while hiding the Generated Preview, keeping
+the same Streaming session and Preview readiness. Matching live curves drive
+Morph Targets on the Generated Preview, the Primary Driver, and every part that
+owns the name in either display selection.
 _Avoid_: Model mode, Preview mode, static mode
 
 **Preview revision**:
@@ -204,3 +210,53 @@ _Avoid_: Protocol fixtures, golden files
 **Conformance case**:
 One input and its expected protocol outcome, including successful messages and rejected messages with their stable category and connection-closing semantics.
 _Avoid_: Test vector, sample payload
+
+**Preview linkage**:
+The third time-control state, beside realtime preview and Cached Playback, in
+which Unreal owns the Level Sequence time and the evaluated camera and Maya
+follows: Maya sets its time, applies the camera, samples the complete object set
+and answers with one pose group per target. It is not a fourth preview workflow
+and it does not replace the realtime pose stream.
+_Avoid_: Camera mode, Sequencer streaming, timeline sync
+
+**Time control authority**:
+The one host that currently drives time. Realtime preview and Cached Playback
+name Maya and the Unreal cache clock; linkage names Unreal. The authority is
+stated by both adapters and refuses work that contradicts it.
+_Avoid_: Time owner, clock owner, master
+
+**Camera/time target**:
+One evaluated request from Unreal: the sequence time, the cut, the evaluated
+camera and the output gate, identified by an evaluation identity that changes
+with time, cut or camera content. Heartbeats repeat an unchanged target.
+_Avoid_: Camera frame, sync packet, keyframe
+
+**Pose group**:
+The complete pose answer to one camera/time target: every object of the current
+set with its full bone and Morph values plus the actual camera and time Maya
+read back. A partial group is never sent.
+_Avoid_: Frame bundle, batch, multi-frame
+
+**Applied evidence**:
+The report that the target's actual components finished displaying a group,
+read back on the Unreal game thread. Publishing several Live Link frames or
+calling the game thread once is not evidence.
+_Avoid_: Acknowledgement, receipt, publish confirmation
+
+**Convergence**:
+The state in which nothing is in flight, no newer target waits, and the last
+group was applied. Lagging but complete groups are shown as lagging and are not
+convergence.
+_Avoid_: Sync, lock, in-step
+
+**Scene reference handoff**:
+One finished Unreal export of an explicitly selected level scope, delivered as
+files beside a manifest with a transfer identity, a content digest and the space
+revision it belongs to. Maya imports it only after validating it.
+_Avoid_: Reference download, level copy, geometry stream
+
+**Reference container**:
+The single tool-owned Maya transform and namespace that holds the imported scene
+reference, marked with its ownership value so an update can replace, roll back
+or remove only what the tool created.
+_Avoid_: Reference group, import root, staging scene

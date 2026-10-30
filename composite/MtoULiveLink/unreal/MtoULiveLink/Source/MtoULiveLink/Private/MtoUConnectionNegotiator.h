@@ -19,6 +19,18 @@ struct FMtoUTargetDescription
 {
     TArray<FMtoUDescriptionBone> Bones;
     TArray<FName> MorphTargetNames;
+    /**
+     * Composition targets require every target bone, but allow unused Maya
+     * branches. Exact-name sources in a mapped parent scope reserve their
+     * targets before importer renames. The remaining rename candidates are
+     * resolved as one relation over the complete scope, and the required
+     * targets are accepted only when exactly one assignment of sources to
+     * targets covers them; several possible assignments, indistinguishable
+     * same-parent siblings, and a target no source can drive are refused
+     * rather than settled by traversal order.
+     */
+    bool bAllowUnusedSourceBones = false;
+    TArray<FString> BoneOwners;
 };
 
 /**
@@ -46,7 +58,7 @@ struct FMtoUNegotiationFailure
 struct FMtoUNegotiationOutcome
 {
     bool bUsable = false;
-    TArray<FName> PublishBoneNames;
+    /** Target bone each published Maya bone maps to, by complete Maya snapshot index. */
     TArray<int32> TargetBoneIndices;
     TArray<FString> BoneNameMappings;
     TArray<int32> AcceptedCurveIndices;

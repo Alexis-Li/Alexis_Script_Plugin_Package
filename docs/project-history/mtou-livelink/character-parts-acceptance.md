@@ -17,9 +17,11 @@ and [ADR 0002](../../../composite/MtoULiveLink/docs/adr/0002-end-streaming-when-
 The acceptance fixes establish three durable boundaries:
 
 - Reference-pose checks use every LOD's skinning palettes and ancestor chains.
-  Unrelated unweighted branches do not reject Head/Hair; names, parent paths,
-  shared Skeleton, and the prohibition on extra bones remain strict. Missing
-  usable skinning evidence falls back to checking the complete reference pose.
+  This historical #45 gate retained strict names/parents, shared Skeleton and
+  rejected extra bones, with a full-pose fallback for missing evidence. Issue
+  #55 reopens that rule: current composition uses positive influences and
+  ancestors, supports required part-only branches and refuses unreadable skin
+  data. The #45 measurements below do not certify the expanded #55 behavior.
 - Saved-level PostLoad restores intent only. Component registration, mesh
   assignment, and animation initialization resume afterwards. Disabling Post
   Process evaluation alone cannot prevent Blueprint initialization during load.
@@ -34,7 +36,7 @@ The acceptance fixes establish three durable boundaries:
 | Boundary | Accepted evidence |
 | --- | --- |
 | Build and owning Automation | Stock UE 5.7.4 affected modules compiled. Final `full_v4/index.json`: 62 Success + 9 Success with warnings, 0 failed, 0 not run (71 total). Earlier failed runs are superseded. |
-| Composition, Morphs, and cache | `Workflow.CharacterParts`, `Negotiation.CharacterPartCompatibility`, `Actor.CharacterPartLifecycle`, and `Editor.Preview.CharacterParts` cover compatibility, shared and part-only Morphs, component lifecycle, and Primary-only garment preparation. |
+| Composition, Morphs, and cache | `Workflow.CharacterParts`, `Negotiation.CharacterPartCompatibility`, `Actor.CharacterPartLifecycle`, and `Editor.Preview.CharacterParts` cover compatibility, shared and part-only Morphs, component lifecycle, and Primary-only garment preparation. `Negotiation.RequiredBoneSources` and `Workflow.CharacterPartSourceMapping` add one-source-per-required-bone coverage: duplicate short names under one mapped parent, exact-name priority over an import rename in either capture order, and the same resolved source in live and Cached Playback. |
 | Real C02 composition | Primary Body/Clothes plus Head and Hair resolve and create registered visible components. The real Binding and saved-map checks were run separately with external asset parameters; default optional-test Success does not replace those runs. |
 | Saved-level loading | The original PostLoad assertion was reproduced on the existing saved map before the fix. Afterward the map loads, with native Live Link instances and disabled Post Process evaluation; `PostProcessIsolation` also exercises the actual routing flag. |
 | Part transactions | Real editor transactions cover add/remove/disable, name/order, and Primary restoration. `CharacterPartTransactions` detects the original failure on an actor that construction reruns cannot repair; the loaded-map transaction run also passed. |

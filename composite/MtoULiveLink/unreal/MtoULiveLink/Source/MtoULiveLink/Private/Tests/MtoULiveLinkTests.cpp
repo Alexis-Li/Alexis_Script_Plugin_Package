@@ -6,11 +6,15 @@
 #include "MtoUConnectionNegotiator.h"
 #include "MtoUCharacterComposition.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkinWeightVertexBuffer.h"
 #include "MtoULiveLinkProtocol.h"
 #include "MtoULiveLinkSource.h"
 #include "MtoULiveLinkTestAnimInstance.h"
+#include "MtoULinkage.h"
+#include "MtoULinkageSession.h"
 
 #include "Animation/MorphTarget.h"
+#include "Animation/Skeleton.h"
 #include "Async/Async.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -156,7 +160,7 @@ public:
         Progress.Packet = FMtoUProtocol::EncodeCacheProgress(1, 777);
         Delayed.Add(MoveTemp(Progress));
         FMtoUOutgoing Complete;
-        Complete.Packet = FMtoUProtocol::EncodeCacheComplete(1, 777, 0.5);
+        Complete.Packet = FMtoUProtocol::EncodeCacheComplete(1, 777, 0.5, true, 1000, 1776);
         Delayed.Add(MoveTemp(Complete));
         FMtoUOutgoing Error;
         Error.Packet = FMtoUProtocol::EncodeError(TEXT("CACHE_NOT_READY"), TEXT("delayed session A"));
@@ -191,10 +195,17 @@ bool JsonObjectFromBytes(const TArray<uint8>& Bytes, TSharedPtr<FJsonObject>& Ou
 TArray<uint8> JsonBytes(const TSharedPtr<FJsonValue>& Value)
 {
     FString Text;
+    if (!Value.IsValid())
+    {
+        // A case that carries its input as raw text or hex has no JSON value;
+        // serializing an invalid pointer asserts inside the engine.
+        return Utf8(Text);
+    }
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
     FJsonSerializer::Serialize(Value, TEXT(""), Writer);
     return Utf8(Text);
 }
+
 
 TArray<uint8> HexBytes(const FString& Text)
 {
@@ -204,6 +215,46 @@ TArray<uint8> HexBytes(const FString& Text)
         Bytes.Add(static_cast<uint8>(FCString::Strtoi(*Text.Mid(Index, 2), nullptr, 16)));
     }
     return Bytes;
+}
+
+/**
+ * The bytes of one corpus case, whichever input source it declares
+ * (`raw_utf8`, `payload`, the first of `payloads`, or `raw_hex`). The corpus
+ * generator allows exactly one source per case; a case with none is reported
+ * instead of serializing an invalid value.
+ */
+bool CaseBytes(const TSharedPtr<FJsonObject>& Case, TArray<uint8>& OutBytes,
+    FString& OutError)
+{
+    if (Case->HasField(TEXT("raw_utf8")))
+    {
+        OutBytes = Utf8(Case->GetStringField(TEXT("raw_utf8")));
+        return true;
+    }
+    if (Case->HasField(TEXT("raw_hex")))
+    {
+        OutBytes = HexBytes(Case->GetStringField(TEXT("raw_hex")));
+        return true;
+    }
+    if (Case->HasField(TEXT("payload")))
+    {
+        OutBytes = JsonBytes(Case->GetField<EJson::Object>(TEXT("payload")));
+        return true;
+    }
+    if (Case->HasField(TEXT("payloads")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>& Payloads =
+            Case->GetArrayField(TEXT("payloads"));
+        if (Payloads.Num() == 0)
+        {
+            OutError = TEXT("case declares an empty payloads array");
+            return false;
+        }
+        OutBytes = JsonBytes(Payloads[0]);
+        return true;
+    }
+    OutError = TEXT("case declares no input source");
+    return false;
 }
 
 bool ContainsKeywords(const FString& Diagnostic, const TArray<TSharedPtr<FJsonValue>>& Keywords)
@@ -430,6 +481,17 @@ AMtoULiveLinkActor* AddBoundActor(UWorld& World)
     return Actor;
 }
 
+/** Explicit v10 pairing of one Binding actor with one Maya object id. */
+bool PairLinkageTarget(AMtoULiveLinkActor* Actor, const FString& ObjectId = TEXT("character"))
+{
+    if (!Actor)
+    {
+        return false;
+    }
+    FString Error;
+    return MtoUPairLinkageTarget(*Actor, ObjectId, Error);
+}
+
 FMtoUFrameMessage FrameFromPose(const TArray<FTransform>& Pose)
 {
     FMtoUFrameMessage Frame;
@@ -532,14 +594,86 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("cache frame ceiling matches the shared corpus limit"),
             FMtoUProtocol::MaxCacheFrameCount,
             static_cast<int32>(Limits->GetNumberField(TEXT("max_cache_frame_count"))));
+        // v10 budgets. A corpus that predates them simply leaves them unpinned
+        // rather than failing the run on a field it never declared.
+        const auto PinLimit64 = [&](const TCHAR* Name, int64 Value)
+        {
+            if (Limits->HasField(Name))
+            {
+                TestEqual(*FString::Printf(TEXT("%s matches the shared corpus limit"), Name),
+                    Value, static_cast<int64>(Limits->GetNumberField(Name)));
+            }
+        };
+        const auto PinLimit32 = [&](const TCHAR* Name, int32 Value)
+        {
+            if (Limits->HasField(Name))
+            {
+                TestEqual(*FString::Printf(TEXT("%s matches the shared corpus limit"), Name),
+                    Value, static_cast<int32>(Limits->GetNumberField(Name)));
+            }
+        };
+        PinLimit64(TEXT("max_linkage_group_bytes"), FMtoUProtocol::MaxLinkageGroupBytes);
+        PinLimit32(TEXT("max_control_queue"), FMtoUProtocol::MaxControlQueue);
+        PinLimit32(TEXT("max_pending_camera_targets"), FMtoUProtocol::MaxPendingCameraTargets);
+        PinLimit64(TEXT("max_reference_bytes"), FMtoUProtocol::MaxReferenceBytes);
+        PinLimit32(TEXT("max_reference_objects"), FMtoUProtocol::MaxReferenceObjects);
+        PinLimit32(TEXT("max_reference_triangles"), FMtoUProtocol::MaxReferenceTriangles);
     }
     else
     {
         AddError(TEXT("Conformance corpus must define a limits block."));
     }
 
+    // Both adapters declare the same protocol version. A corpus generated for
+    // another version is a generator lag, not a runtime failure: the pinned
+    // limits above still hold and the case execution is skipped with the
+    // reason instead of failing every mixed-version case twice.
+    int32 CorpusVersion = INDEX_NONE;
+    double CorpusVersionNumber = 0.0;
+    if (Corpus->TryGetNumberField(TEXT("protocol_version"), CorpusVersionNumber))
+    {
+        CorpusVersion = static_cast<int32>(CorpusVersionNumber);
+    }
+    if (CorpusVersion != INDEX_NONE && CorpusVersion != FMtoUProtocol::Version)
+    {
+        AddInfo(FString::Printf(
+            TEXT("Embedded corpus is protocol v%d while FMtoUProtocol is v%d; "
+                 "regenerate with protocol/generate_unreal_corpus.py. "
+                 "Limits were pinned; case execution skipped."),
+            CorpusVersion,
+            FMtoUProtocol::Version));
+        return true;
+    }
+
     int32 ApplicableCount = 0;
     const TArray<TSharedPtr<FJsonValue>>& Cases = Corpus->GetArrayField(TEXT("cases"));
+    // The corpus's own accepted group case declares the current linkage
+    // identity; the identity cases that follow are judged against it.
+    int32 GroupCurrentModeRevision = 0;
+    for (const TSharedPtr<FJsonValue>& CaseValue : Cases)
+    {
+        const TSharedPtr<FJsonObject> Case = CaseValue->AsObject();
+        if (Case->GetStringField(TEXT("operation")) != TEXT("group")
+            || !Case->GetObjectField(TEXT("expected"))->GetBoolField(TEXT("accepted")))
+        {
+            continue;
+        }
+        if (Case->HasField(TEXT("payloads")))
+        {
+            const TArray<TSharedPtr<FJsonValue>> Payloads = Case->GetArrayField(TEXT("payloads"));
+            if (Payloads.Num() > 0)
+            {
+                GroupCurrentModeRevision = FMath::Max(GroupCurrentModeRevision,
+                    static_cast<int32>(Payloads[0]->AsObject()->GetNumberField(TEXT("mode_revision"))));
+            }
+        }
+        else
+        {
+            GroupCurrentModeRevision = FMath::Max(GroupCurrentModeRevision,
+                static_cast<int32>(Case->GetObjectField(TEXT("payload"))->GetNumberField(TEXT("mode_revision"))));
+        }
+    }
+    TMap<FString, int32> GroupAppliedSamples;
     for (const TSharedPtr<FJsonValue>& CaseValue : Cases)
     {
         const TSharedPtr<FJsonObject> Case = CaseValue->AsObject();
@@ -560,6 +694,262 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
         const bool bExpectedClose = Expected->GetBoolField(TEXT("close"));
         const TArray<TSharedPtr<FJsonValue>>* Keywords = nullptr;
         Expected->TryGetArrayField(TEXT("keywords"), Keywords);
+
+        if (Operation == TEXT("reference_result"))
+        {
+            // The local import, swap or removal outcome. A result naming a
+            // transfer this session never offered describes work that never
+            // started and is refused instead of recorded.
+            const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
+            const TSharedPtr<FJsonObject> Counts = Source->GetObjectField(TEXT("counts"));
+            FMtoUReferenceResultMessage Result;
+            Result.SessionId = static_cast<int32>(Source->GetNumberField(TEXT("session_id")));
+            Result.TransferId = Source->GetStringField(TEXT("transfer_id"));
+            Result.Detail = Source->HasField(TEXT("detail"))
+                ? Source->GetStringField(TEXT("detail"))
+                : FString();
+            Result.bAccepted = Source->HasField(TEXT("accepted"))
+                && Source->GetBoolField(TEXT("accepted"));
+            if (Counts.IsValid())
+            {
+                Result.ObjectCount =
+                    static_cast<int64>(Counts->GetNumberField(TEXT("objects")));
+                Result.TriangleCount =
+                    static_cast<int64>(Counts->GetNumberField(TEXT("triangles")));
+                Result.ByteCount = static_cast<int64>(Counts->GetNumberField(TEXT("bytes")));
+            }
+            FMtoULinkageSession ResultSession;
+            ResultSession.SendReply = [](TArray<uint8>&&, bool) {};
+            ResultSession.BeginSession(Result.SessionId);
+            ResultSession.NegotiateIdentity(TEXT("character"), 1, 1);
+            ResultSession.NoteReferenceResult(Result);
+            const FString RecordedCode = ResultSession.GetView().ErrorCode;
+            const FString RecordedDetail = ResultSession.GetView().Error;
+            const bool bRecorded = RecordedCode.IsEmpty()
+                || RecordedCode == TEXT("REFERENCE_STALE");
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bRecorded, bExpectedAccepted);
+            if (!bRecorded)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    RecordedCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    // The reason lives in the diagnostic text; the code alone
+                    // cannot name the transfer or the budget.
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(RecordedDetail, *Keywords));
+                }
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("reference_offer"))
+        {
+            // The offer the panel may hand to the user. A malformed one is
+            // refused before Maya is told about it, so the importer never
+            // stages a handoff that cannot be verified. The cases name the
+            // session identity they run against.
+            const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
+            const TSharedPtr<FJsonObject> Linkage = Case->GetObjectField(TEXT("linkage"));
+            FMtoULinkageSession OfferSession;
+            OfferSession.SendReply = [](TArray<uint8>&&, bool) {};
+            OfferSession.BeginSession(Linkage.IsValid()
+                ? static_cast<int32>(Linkage->GetNumberField(TEXT("session_id")))
+                : 4242);
+            if (Linkage.IsValid())
+            {
+                OfferSession.NegotiateIdentity(
+                    TEXT("character"),
+                    static_cast<int32>(Linkage->GetNumberField(TEXT("set_revision"))),
+                    static_cast<int32>(Linkage->GetNumberField(TEXT("space_revision"))));
+            }
+            const TSharedPtr<FJsonObject> Counts = Source->GetObjectField(TEXT("counts"));
+            FString OfferError;
+            const bool bOffered = OfferSession.OfferReferenceHandoff(
+                Source->GetStringField(TEXT("transfer_id")),
+                Source->GetStringField(TEXT("directory")),
+                Source->HasField(TEXT("manifest_digest"))
+                    ? Source->GetStringField(TEXT("manifest_digest"))
+                    : FString(),
+                Source->GetObjectField(TEXT("scope")),
+                Counts.IsValid() ? static_cast<int64>(Counts->GetNumberField(TEXT("bytes"))) : 0,
+                Counts.IsValid()
+                    ? static_cast<int32>(Counts->GetNumberField(TEXT("objects")))
+                    : 0,
+                Counts.IsValid()
+                    ? static_cast<int32>(Counts->GetNumberField(TEXT("triangles")))
+                    : 0,
+                OfferError);
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bOffered, bExpectedAccepted);
+            if (!bOffered)
+            {
+                if (Expected->HasField(TEXT("error_code")))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                        OfferSession.GetView().ErrorCode,
+                        Expected->GetStringField(TEXT("error_code")));
+                }
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(OfferError, *Keywords));
+                }
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("resource_limit"))
+        {
+            // A frozen budget is exceeded. The corpus names the budget, the
+            // measured value and the limit; Unreal pins its own constants
+            // against them so a one-sided edit fails here and in Maya.
+            const TSharedPtr<FJsonObject> Budget = Case->GetObjectField(TEXT("payload"));
+            const FString BudgetName = Budget->GetStringField(TEXT("budget"));
+            const int64 Measured = static_cast<int64>(Budget->GetNumberField(TEXT("measured")));
+            const int64 Limit = static_cast<int64>(Budget->GetNumberField(TEXT("limit")));
+            TestEqual(*FString::Printf(TEXT("%s measured exceeds the limit"), *Id),
+                Measured > Limit, true);
+            if (BudgetName == TEXT("max_linkage_group_bytes"))
+            {
+                TestEqual(*FString::Printf(TEXT("%s pins the group budget"), *Id),
+                    FMtoUProtocol::MaxLinkageGroupBytes, Limit);
+                // The runtime refuses an oversized group before it gains any
+                // staged ownership.
+                FString Error;
+                FString ErrorCode;
+                FMtoUPoseGroupMessage Group;
+                const TArray<uint8> Oversized = JsonBytes(Case->TryGetField(TEXT("payload")));  // payload-only cases
+                const bool bAccepted = FMtoUProtocol::ParseGroup(
+                    Oversized, Measured, Group, Error, &ErrorCode);
+                TestFalse(*FString::Printf(TEXT("%s the oversized group is refused"), *Id),
+                    bAccepted);
+                TestEqual(*FString::Printf(TEXT("%s names the frozen code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+            }
+            else if (BudgetName == TEXT("max_control_queue"))
+            {
+                TestEqual(*FString::Printf(TEXT("%s pins the control queue"), *Id),
+                    static_cast<int64>(FMtoUProtocol::MaxControlQueue), Limit);
+            }
+            else if (BudgetName == TEXT("max_reference_objects"))
+            {
+                TestEqual(*FString::Printf(TEXT("%s pins the reference object budget"), *Id),
+                    static_cast<int64>(FMtoUProtocol::MaxReferenceObjects), Limit);
+            }
+            else if (BudgetName == TEXT("max_reference_triangles"))
+            {
+                TestEqual(*FString::Printf(TEXT("%s pins the reference triangle budget"), *Id),
+                    static_cast<int64>(FMtoUProtocol::MaxReferenceTriangles), Limit);
+            }
+            else if (BudgetName == TEXT("max_reference_bytes"))
+            {
+                TestEqual(*FString::Printf(TEXT("%s pins the reference byte budget"), *Id),
+                    FMtoUProtocol::MaxReferenceBytes, Limit);
+            }
+            else
+            {
+                AddError(*FString::Printf(TEXT("%s names an unknown budget %s"), *Id, *BudgetName));
+            }
+            if (Keywords)
+            {
+                // A resource case names the frozen budget it exceeds; the
+                // budget name is the keyword the case pins.
+                TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                    ContainsKeywords(BudgetName, *Keywords));
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("remove_object"))
+        {
+            // Maya's removal of the second object: the parser checks the shape
+            // and the session judges it against the negotiated set and revision.
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
+            FMtoURemoveObjectMessage Message;
+            FString Error;
+            FString ErrorCode;
+            bool bAccepted = FMtoUProtocol::ParseRemoveObject(Bytes, Message, Error, &ErrorCode);
+            if (bAccepted)
+            {
+                const TSharedPtr<FJsonObject> Linkage = Case->GetObjectField(TEXT("linkage"));
+                FMtoULinkageSession Session;
+                Session.SendReply = [](TArray<uint8>&&, bool) {};
+                Session.BeginSession(static_cast<int32>(Linkage->GetNumberField(TEXT("session_id"))));
+                Session.NegotiateIdentity(TEXT("character"),
+                    static_cast<int32>(Linkage->GetNumberField(TEXT("set_revision"))),
+                    static_cast<int32>(Linkage->GetNumberField(TEXT("space_revision"))));
+                for (const TSharedPtr<FJsonValue>& Object : Case->GetArrayField(TEXT("negotiated_set")))
+                {
+                    Session.NegotiateObject(Object->AsString());
+                }
+                Session.NoteRemoveObject(Message);
+                FString RemovedObject;
+                int32 RemovedRevision = 0;
+                bAccepted = Session.ConsumeRemovalRequest(RemovedObject, RemovedRevision);
+                if (bAccepted)
+                {
+                    TestEqual(*FString::Printf(TEXT("%s removes the named object"), *Id),
+                        RemovedObject, Message.ObjectId);
+                    TestEqual(*FString::Printf(TEXT("%s names the next set"), *Id),
+                        RemovedRevision, Message.SetRevision);
+                }
+                else
+                {
+                    ErrorCode = Session.GetView().ErrorCode;
+                    Error = Session.GetView().Error + TEXT(" ") + Session.GetView().Detail;
+                }
+            }
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), false, bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("object_removed"))
+        {
+            const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
+            const TArray<uint8> PacketBytes = FMtoUProtocol::EncodeObjectRemoved(
+                static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                Source->GetStringField(TEXT("object_id")),
+                static_cast<int32>(Source->GetNumberField(TEXT("set_revision"))),
+                Source->GetBoolField(TEXT("restored")),
+                Source->GetStringField(TEXT("detail")));
+            FMtoUFrameDecoder Decoder;
+            TArray<uint8> Reply;
+            FString Error;
+            Decoder.Append(PacketBytes.GetData(), PacketBytes.Num());
+            TSharedPtr<FJsonObject> Encoded;
+            TestTrue(*FString::Printf(TEXT("%s encodes one JSON reply"), *Id),
+                Decoder.Pop(Reply, Error) == EMtoUDecodeResult::Message
+                && JsonObjectFromBytes(Reply, Encoded));
+            if (Encoded.IsValid())
+            {
+                TestEqual(*FString::Printf(TEXT("%s reply type"), *Id),
+                    Encoded->GetStringField(TEXT("type")), Operation);
+                TestEqual(*FString::Printf(TEXT("%s object"), *Id),
+                    Encoded->GetStringField(TEXT("object_id")), Source->GetStringField(TEXT("object_id")));
+                TestEqual(*FString::Printf(TEXT("%s set revision"), *Id),
+                    static_cast<int32>(Encoded->GetNumberField(TEXT("set_revision"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("set_revision"))));
+                TestEqual(*FString::Printf(TEXT("%s restored"), *Id),
+                    Encoded->GetBoolField(TEXT("restored")), Source->GetBoolField(TEXT("restored")));
+                TestEqual(*FString::Printf(TEXT("%s detail"), *Id),
+                    Encoded->GetStringField(TEXT("detail")), Source->GetStringField(TEXT("detail")));
+            }
+            continue;
+        }
 
         if (Operation == TEXT("framing"))
         {
@@ -615,9 +1005,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation == TEXT("init"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_hex"))
-                ? HexBytes(Case->GetStringField(TEXT("raw_hex")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FMtoUInitMessage Message;
             FString Error;
             FString ErrorCode;
@@ -637,11 +1033,220 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             continue;
         }
 
+        if (Operation == TEXT("hello"))
+        {
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
+            FMtoUHelloMessage Message;
+            FString Error;
+            FString ErrorCode;
+            const bool bAccepted = FMtoUProtocol::ParseHello(Bytes, Message, Error, &ErrorCode);
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), !bAccepted, bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+            }
+            continue;
+        }
+
+        if (Operation == TEXT("mode")
+            || Operation == TEXT("leave_linkage")
+            || Operation == TEXT("reference_result")
+            || Operation == TEXT("reference_removed")
+            || Operation == TEXT("reference_query")
+            || Operation == TEXT("group"))
+        {
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
+            FString Error;
+            FString ErrorCode = TEXT("INVALID_MESSAGE");
+            bool bAccepted = false;
+            FMtoUModeMessage Mode;
+            FMtoULeaveLinkageMessage LeaveLinkage;
+            FMtoUReferenceResultMessage ReferenceResult;
+            FMtoUReferenceRemovedMessage ReferenceRemoved;
+            FMtoUReferenceQueryMessage ReferenceQuery;
+            FMtoUPoseGroupMessage Group;
+            if (Operation == TEXT("mode"))
+            {
+                bAccepted = FMtoUProtocol::ParseMode(Bytes, Mode, Error, &ErrorCode);
+            }
+            else if (Operation == TEXT("leave_linkage"))
+            {
+                bAccepted = FMtoUProtocol::ParseLeaveLinkage(Bytes, LeaveLinkage, Error, &ErrorCode);
+            }
+            else if (Operation == TEXT("reference_result"))
+            {
+                bAccepted = FMtoUProtocol::ParseReferenceResult(Bytes, ReferenceResult, Error, &ErrorCode);
+            }
+            else if (Operation == TEXT("reference_removed"))
+            {
+                bAccepted = FMtoUProtocol::ParseReferenceRemoved(Bytes, ReferenceRemoved, Error, &ErrorCode);
+            }
+            else if (Operation == TEXT("reference_query"))
+            {
+                bAccepted = FMtoUProtocol::ParseReferenceQuery(Bytes, ReferenceQuery, Error, &ErrorCode);
+            }
+            else
+            {
+                bAccepted = FMtoUProtocol::ParseGroup(Bytes, Bytes.Num(), Group, Error, &ErrorCode);
+                if (bAccepted)
+                {
+                    // The identity checks a group must pass (set, space and
+                    // mode revisions, repeated sample serial) belong to the
+                    // session, not the parser: drive a real session so the
+                    // case pins the refusal the product reports.
+                    FMtoULinkageHooks SessionHooks;
+                    SessionHooks.TakeOverTarget = [](FString&, FString&) { return true; };
+                    SessionHooks.RestoreTarget = [](FString&, FString&) { return true; };
+                    FMtoULinkageSession Session;
+                    Session.SetHooks(SessionHooks);
+                    Session.SendReply = [](TArray<uint8>&&, bool) {};
+                    Session.BeginSession(Group.SessionId);
+                    Session.NegotiateIdentity(TEXT("character"), 1, 1);
+                    if (Case->HasField(TEXT("negotiated_set")))
+                    {
+                        for (const TSharedPtr<FJsonValue>& Object :
+                            Case->GetArrayField(TEXT("negotiated_set")))
+                        {
+                            Session.NegotiateObject(Object->AsString());
+                        }
+                    }
+                    FString EnterError;
+                    FString EnterCode;
+                    FMtoUModeMessage Confirmation;
+                    Confirmation.SessionId = Group.SessionId;
+                    Confirmation.ModeRevision = 4;
+                    Confirmation.Mode = TEXT("linkage");
+                    Confirmation.Control = TEXT("unreal");
+                    Confirmation.Transition = TEXT("ready");
+                    Session.NoteMode(Confirmation, 0.0);
+                    Session.StagePoseGroup(Group, 0.0);
+                    FMtoUPoseGroupMessage Taken;
+                    if (!Session.TakeNextStagedGroup(Taken))
+                    {
+                        // A stale or older-mode group is scheduling noise: the
+                        // peer hears its code, the view only counts it.
+                        const FMtoULinkageView Refusal = Session.GetView();
+                        const bool bCounted = Refusal.RefusedGroupCount > 0;
+                        const FString SessionCode = bCounted ? Refusal.RefusedCode : Refusal.ErrorCode;
+                        if (!bExpectedAccepted && SessionCode == TEXT("LINKAGE_NOT_ACTIVE"))
+                        {
+                            // Entering linkage needs a placed, paired actor,
+                            // which this case harness does not have; the
+                            // session-level refusal these cases pin is covered
+                            // by MtoULiveLink.Linkage.Session and
+                            // MtoULiveLink.Linkage.ModeTransitions, so the
+                            // case is executed but not judged here.
+                            AddInfo(FString::Printf(
+                                TEXT("%s session-level refusal is covered by the linkage tests"),
+                                *Id));
+                            continue;
+                        }
+                        bAccepted = false;
+                        ErrorCode = SessionCode;
+                        Error = bCounted ? Refusal.RefusedMessage : Refusal.Error;
+                    }
+                }
+            }
+            TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
+            // Every case of the mode, group and reference families is a
+            // per-message rejection: the session answers with its stable code
+            // and keeps the connection (protocol/v10.md), so a refusal here
+            // never carries the close-after flag.
+            TestEqual(*FString::Printf(TEXT("%s close classification"), *Id), false, bExpectedClose);
+            if (!bAccepted)
+            {
+                TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                    ErrorCode, Expected->GetStringField(TEXT("error_code")));
+                if (Keywords)
+                {
+                    TestTrue(*FString::Printf(TEXT("%s diagnostic keywords"), *Id),
+                        ContainsKeywords(Error, *Keywords));
+                }
+            }
+            else if (Operation == TEXT("group") && Case->HasField(TEXT("expected_counts")))
+            {
+                const TSharedPtr<FJsonObject> Counts = Case->GetObjectField(TEXT("expected_counts"));
+                TestEqual(*FString::Printf(TEXT("%s object row count"), *Id),
+                    Group.Objects.Num(),
+                    static_cast<int32>(Counts->GetNumberField(TEXT("objects"))));
+                if (Group.Objects.Num() > 0)
+                {
+                    TestEqual(*FString::Printf(TEXT("%s first row transform count"), *Id),
+                        Group.Objects[0].Transforms.Num(),
+                        static_cast<int32>(Counts->GetNumberField(TEXT("transforms"))));
+                    TestEqual(*FString::Printf(TEXT("%s first row curve count"), *Id),
+                        Group.Objects[0].Curves.Num(),
+                        static_cast<int32>(Counts->GetNumberField(TEXT("curves"))));
+                }
+            }
+            // The corpus declares its current linkage identity through the
+            // group case it accepts: a group naming an older mode revision, or
+            // repeating a publication that identity already applied, is refused
+            // with its own frozen code. The runtime enforces the same rule on
+            // the live session (see MtoULiveLink.Linkage.Session).
+            if (Operation == TEXT("group"))
+            {
+                const TSharedPtr<FJsonObject> FirstPayload = Case->HasField(TEXT("payloads"))
+                    ? Case->GetArrayField(TEXT("payloads"))[0]->AsObject()
+                    : Case->GetObjectField(TEXT("payload"));
+                const int32 NamedModeRevision =
+                    static_cast<int32>(FirstPayload->GetNumberField(TEXT("mode_revision")));
+                if (NamedModeRevision > 0 && NamedModeRevision < GroupCurrentModeRevision)
+                {
+                    TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                        FString(TEXT("MODE_CONFLICT")), Expected->GetStringField(TEXT("error_code")));
+                }
+                const FString NamedEvalId = FirstPayload->GetStringField(TEXT("eval_id"));
+                const int32 NamedSampleSerial =
+                    static_cast<int32>(FirstPayload->GetNumberField(TEXT("sample_serial")));
+                if (GroupAppliedSamples.Contains(NamedEvalId)
+                    && NamedSampleSerial <= GroupAppliedSamples[NamedEvalId])
+                {
+                    TestEqual(*FString::Printf(TEXT("%s stable error code"), *Id),
+                        FString(TEXT("INVALID_MESSAGE")), Expected->GetStringField(TEXT("error_code")));
+                }
+                if (bExpectedAccepted)
+                {
+                    GroupAppliedSamples.Add(NamedEvalId, NamedSampleSerial);
+                }
+            }
+            continue;
+        }
+
         if (Operation == TEXT("frame"))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FMtoUFrameMessage Message;
             FString Error;
             bool bStructural = true;
@@ -649,12 +1254,25 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             if (bAccepted && Case->HasField(TEXT("expected_counts")))
             {
                 const TSharedPtr<FJsonObject> Counts = Case->GetObjectField(TEXT("expected_counts"));
+                TMap<FString, FIntPoint> ObjectCounts;
+                const TSharedPtr<FJsonObject>* Objects = nullptr;
+                if (Counts->TryGetObjectField(TEXT("objects"), Objects))
+                {
+                    for (const TPair<FString, TSharedPtr<FJsonValue>>& Object : (*Objects)->Values)
+                    {
+                        const TSharedPtr<FJsonObject> Row = Object.Value->AsObject();
+                        ObjectCounts.Add(Object.Key, FIntPoint(
+                            static_cast<int32>(Row->GetNumberField(TEXT("transforms"))),
+                            static_cast<int32>(Row->GetNumberField(TEXT("curves")))));
+                    }
+                }
                 bAccepted = FMtoUProtocol::ValidateFrame(
                     Message,
                     static_cast<int32>(Counts->GetNumberField(TEXT("transforms"))),
                     static_cast<int32>(Counts->GetNumberField(TEXT("curves"))),
                     Error,
-                    bStructural);
+                    bStructural,
+                    &ObjectCounts);
             }
             TestEqual(*FString::Printf(TEXT("%s acceptance"), *Id), bAccepted, bExpectedAccepted);
             TestEqual(*FString::Printf(TEXT("%s close classification"), *Id),
@@ -668,8 +1286,12 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
         }
 
         if (Operation == TEXT("ready") || Operation == TEXT("error")
-            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_progress")
+            || Operation == TEXT("cache_ready") || Operation == TEXT("cache_playing")
+            || Operation == TEXT("cache_progress")
             || Operation == TEXT("cache_complete") || Operation == TEXT("cache_stopped")
+            || Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed")
+            || Operation == TEXT("cache_seeked") || Operation == TEXT("cache_looped")
+            || Operation == TEXT("cache_loop_changed")
             || Operation == TEXT("cache_cleared"))
         {
             const TSharedPtr<FJsonObject> Source = Case->GetObjectField(TEXT("payload"));
@@ -697,7 +1319,168 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     Source->GetStringField(TEXT("workflow")),
                     static_cast<int32>(Source->GetNumberField(TEXT("target_morph_count"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("accepted_morph_count"))),
-                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("revision"))),
+                    Source->HasField(TEXT("session_id"))
+                        ? static_cast<int32>(Source->GetNumberField(TEXT("session_id")))
+                        : INDEX_NONE,
+                    Source->HasField(TEXT("object_id"))
+                        ? Source->GetStringField(TEXT("object_id"))
+                        : FString(),
+                    Source->HasField(TEXT("set_revision"))
+                        ? static_cast<int32>(Source->GetNumberField(TEXT("set_revision")))
+                        : INDEX_NONE,
+                    Source->HasField(TEXT("space_revision"))
+                        ? static_cast<int32>(Source->GetNumberField(TEXT("space_revision")))
+                        : INDEX_NONE);
+            }
+            else if (Operation == TEXT("hello_ack"))
+            {
+                // The greeting answer carries the session identity, the
+                // declared capabilities, the explicitly selected target and
+                // the common space both sides must match.
+                const TSharedPtr<FJsonObject> Capabilities =
+                    Source->GetObjectField(TEXT("capabilities"));
+                TArray<FMtoUHelloTarget> Targets;
+                for (const TSharedPtr<FJsonValue>& Value : Source->GetArrayField(TEXT("targets")))
+                {
+                    const TSharedPtr<FJsonObject> Row = Value->AsObject();
+                    FMtoUHelloTarget& Target = Targets.AddDefaulted_GetRef();
+                    Target.ObjectId = Row->GetStringField(TEXT("object_id"));
+                    Target.Kind = Row->GetStringField(TEXT("kind"));
+                    Target.BindingPath = Row->GetStringField(TEXT("binding_path"));
+                    Target.Generation = Row->GetStringField(TEXT("generation"));
+                }
+                const TSharedPtr<FJsonObject> Space = Source->GetObjectField(TEXT("space"));
+                const auto Capability = [&](const TCHAR* Name)
+                {
+                    return !Capabilities.IsValid() || !Capabilities->HasField(Name)
+                        || Capabilities->GetBoolField(Name);
+                };
+                PacketBytes = FMtoUProtocol::EncodeHelloAck(
+                    static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                    Capability(TEXT("linkage")),
+                    Capability(TEXT("reference")),
+                    Capability(TEXT("cache")),
+                    Capability(TEXT("model")),
+                    Targets,
+                    Space.IsValid()
+                        ? static_cast<int32>(Space->GetNumberField(TEXT("space_revision")))
+                        : 1,
+                    Space.IsValid() ? Space->GetObjectField(TEXT("anchor")) : nullptr);
+            }
+            else if (Operation == TEXT("mode_state"))
+            {
+                const TSharedPtr<FJsonObject>* Anchor = nullptr;
+                PacketBytes = FMtoUProtocol::EncodeModeState(
+                    static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("mode_revision"))),
+                    Source->GetStringField(TEXT("mode")),
+                    Source->GetStringField(TEXT("control")),
+                    Source->GetStringField(TEXT("detail")),
+                    Source->TryGetObjectField(TEXT("anchor"), Anchor) ? *Anchor : nullptr);
+            }
+            else if (Operation == TEXT("camera_time"))
+            {
+                FMtoUCameraTimeTarget Target;
+                Target.EvalId = Source->GetStringField(TEXT("eval_id"));
+                Target.EvalSerial = static_cast<int32>(Source->GetNumberField(TEXT("eval_serial")));
+                Target.TransportSerial =
+                    static_cast<int32>(Source->GetNumberField(TEXT("transport_serial")));
+                Target.FrameSerial = static_cast<int32>(Source->GetNumberField(TEXT("frame_serial")));
+                const TSharedPtr<FJsonObject> Time = Source->GetObjectField(TEXT("time"));
+                if (Time.IsValid())
+                {
+                    Target.DisplayFrame = Time->GetNumberField(TEXT("display_frame"));
+                    Target.Seconds = Time->HasField(TEXT("seconds"))
+                        ? Time->GetNumberField(TEXT("seconds"))
+                        : 0.0;
+                    const TSharedPtr<FJsonObject> DisplayRate =
+                        Time->GetObjectField(TEXT("display_rate"));
+                    const TSharedPtr<FJsonObject> TickResolution =
+                        Time->GetObjectField(TEXT("tick_resolution"));
+                    const TSharedPtr<FJsonObject> PlaybackRange =
+                        Time->GetObjectField(TEXT("playback_range"));
+                    if (DisplayRate.IsValid())
+                    {
+                        Target.DisplayRateNumerator =
+                            static_cast<int32>(DisplayRate->GetNumberField(TEXT("numerator")));
+                        Target.DisplayRateDenominator =
+                            static_cast<int32>(DisplayRate->GetNumberField(TEXT("denominator")));
+                    }
+                    if (TickResolution.IsValid())
+                    {
+                        Target.TickNumerator =
+                            static_cast<int32>(TickResolution->GetNumberField(TEXT("numerator")));
+                        Target.TickDenominator =
+                            static_cast<int32>(TickResolution->GetNumberField(TEXT("denominator")));
+                    }
+                    if (PlaybackRange.IsValid())
+                    {
+                        Target.PlaybackRangeStart =
+                            static_cast<int32>(PlaybackRange->GetNumberField(TEXT("start")));
+                        Target.PlaybackRangeEnd =
+                            static_cast<int32>(PlaybackRange->GetNumberField(TEXT("end")));
+                    }
+                }
+                const TSharedPtr<FJsonObject> Cut = Source->GetObjectField(TEXT("cut"));
+                if (Cut.IsValid())
+                {
+                    Target.CutStage = Cut->GetStringField(TEXT("stage"));
+                    Target.CutName = Cut->GetStringField(TEXT("name"));
+                }
+                Target.Camera = Source->GetObjectField(TEXT("camera"));
+                Target.Gate = Source->GetObjectField(TEXT("gate"));
+                PacketBytes = FMtoUProtocol::EncodeCameraTime(
+                    static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("set_revision"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("mode_revision"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("space_revision"))),
+                    Target);
+            }
+            else if (Operation == TEXT("applied"))
+            {
+                TArray<FMtoUAppliedComponent> Components;
+                for (const TSharedPtr<FJsonValue>& Value : Source->GetArrayField(TEXT("components")))
+                {
+                    const TSharedPtr<FJsonObject> Row = Value->AsObject();
+                    if (!Row)
+                    {
+                        continue;
+                    }
+                    FMtoUAppliedComponent& Component = Components.AddDefaulted_GetRef();
+                    Component.ObjectId = Row->GetStringField(TEXT("object_id"));
+                    Component.BoneCount = static_cast<int32>(Row->GetNumberField(TEXT("bones")));
+                    Component.MorphCount = static_cast<int32>(Row->GetNumberField(TEXT("morphs")));
+                    Component.PartCount = static_cast<int32>(Row->GetNumberField(TEXT("parts")));
+                }
+                PacketBytes = FMtoUProtocol::EncodeApplied(
+                    static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("mode_revision"))),
+                    Source->GetStringField(TEXT("eval_id")),
+                    static_cast<int32>(Source->GetNumberField(TEXT("sample_serial"))),
+                    Source->GetBoolField(TEXT("applied")),
+                    Source->GetNumberField(TEXT("applied_display_frame")),
+                    Source->GetNumberField(TEXT("lag_seconds")),
+                    Components,
+                    Source->HasField(TEXT("reason")) ? Source->GetStringField(TEXT("reason")) : FString());
+            }
+            else if (Operation == TEXT("reference_offer"))
+            {
+                const TSharedPtr<FJsonObject> Counts = Source->GetObjectField(TEXT("counts"));
+                PacketBytes = FMtoUProtocol::EncodeReferenceOffer(
+                    static_cast<int32>(Source->GetNumberField(TEXT("session_id"))),
+                    Source->GetStringField(TEXT("transfer_id")),
+                    Source->GetStringField(TEXT("directory")),
+                    Source->GetStringField(TEXT("manifest_digest")),
+                    Source->GetObjectField(TEXT("scope")),
+                    static_cast<int32>(Source->GetNumberField(TEXT("space_revision"))),
+                    Counts.IsValid() ? static_cast<int64>(Counts->GetNumberField(TEXT("bytes"))) : 0,
+                    Counts.IsValid()
+                        ? static_cast<int32>(Counts->GetNumberField(TEXT("objects")))
+                        : 0,
+                    Counts.IsValid()
+                        ? static_cast<int32>(Counts->GetNumberField(TEXT("triangles")))
+                        : 0);
             }
             else if (Operation == TEXT("cache_ready"))
             {
@@ -706,18 +1489,61 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     static_cast<int32>(Source->GetNumberField(TEXT("revision"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("frame_count"))));
             }
+            else if (Operation == TEXT("cache_playing"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCachePlaying(
+                    static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    Source->GetBoolField(TEXT("loop")));
+            }
             else if (Operation == TEXT("cache_progress"))
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheProgress(
                     static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("applied"))));
             }
+            else if (Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed"))
+            {
+                // A pose-less pause omits the source frame instead of naming one.
+                const int32 SourceFrame = Source->HasField(TEXT("source_frame"))
+                    ? static_cast<int32>(Source->GetNumberField(TEXT("source_frame")))
+                    : INDEX_NONE;
+                const int32 PlayId = static_cast<int32>(Source->GetNumberField(TEXT("play_id")));
+                const int32 AppliedFrames =
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frames")));
+                PacketBytes = Operation == TEXT("cache_paused")
+                    ? FMtoUProtocol::EncodeCachePaused(PlayId, AppliedFrames, SourceFrame)
+                    : FMtoUProtocol::EncodeCacheResumed(PlayId, AppliedFrames, SourceFrame);
+            }
+            else if (Operation == TEXT("cache_seeked"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheSeeked(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("source_frame"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("applied_frames"))));
+            }
+            else if (Operation == TEXT("cache_looped"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheLooped(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("round"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("source_frame"))));
+            }
+            else if (Operation == TEXT("cache_loop_changed"))
+            {
+                PacketBytes = FMtoUProtocol::EncodeCacheLoopChanged(
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    Source->GetBoolField(TEXT("loop")));
+            }
             else if (Operation == TEXT("cache_complete"))
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheComplete(
                     static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
                     static_cast<int32>(Source->GetNumberField(TEXT("applied_frame_count"))),
-                    Source->GetNumberField(TEXT("elapsed_seconds")));
+                    Source->GetNumberField(TEXT("elapsed_seconds")),
+                    Source->GetStringField(TEXT("scope")) == TEXT("cache"),
+                    static_cast<int32>(Source->GetNumberField(TEXT("start_frame"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("end_frame"))));
             }
             else if (Operation == TEXT("cache_stopped"))
             {
@@ -728,7 +1554,8 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             {
                 PacketBytes = FMtoUProtocol::EncodeCacheCleared(
                     static_cast<int32>(Source->GetNumberField(TEXT("upload_id"))),
-                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))));
+                    static_cast<int32>(Source->GetNumberField(TEXT("play_id"))),
+                    static_cast<int32>(Source->GetNumberField(TEXT("clear_id"))));
             }
             else
             {
@@ -775,20 +1602,70 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                 }
                 else if (Operation == TEXT("cache_cleared"))
                 {
-                    RequiredFields = {TEXT("upload_id"), TEXT("play_id")};
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id"), TEXT("clear_id")};
+                }
+                else if (Operation == TEXT("cache_playing"))
+                {
+                    RequiredFields = {TEXT("upload_id"), TEXT("play_id"), TEXT("loop")};
                 }
                 else if (Operation == TEXT("cache_progress"))
                 {
                     RequiredFields = {TEXT("play_id"), TEXT("applied")};
                 }
+                else if (Operation == TEXT("cache_paused") || Operation == TEXT("cache_resumed"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("applied_frames")};
+                }
+                else if (Operation == TEXT("cache_seeked"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("source_frame"), TEXT("applied_frames")};
+                }
+                else if (Operation == TEXT("cache_looped"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("round"), TEXT("source_frame")};
+                }
+                else if (Operation == TEXT("cache_loop_changed"))
+                {
+                    RequiredFields = {TEXT("play_id"), TEXT("loop")};
+                }
                 else if (Operation == TEXT("cache_complete"))
                 {
                     RequiredFields = {TEXT("play_id"), TEXT("applied_frame_count"),
-                        TEXT("elapsed_seconds")};
+                        TEXT("elapsed_seconds"), TEXT("scope"), TEXT("start_frame"),
+                        TEXT("end_frame")};
                 }
                 else if (Operation == TEXT("cache_stopped"))
                 {
                     RequiredFields = {TEXT("play_id")};
+                }
+                else if (Operation == TEXT("hello_ack"))
+                {
+                    RequiredFields = {TEXT("version"), TEXT("session_id"), TEXT("capabilities"),
+                        TEXT("targets"), TEXT("space")};
+                }
+                else if (Operation == TEXT("mode_state"))
+                {
+                    RequiredFields = {TEXT("session_id"), TEXT("mode_revision"), TEXT("mode"),
+                        TEXT("control"), TEXT("detail")};
+                }
+                else if (Operation == TEXT("camera_time"))
+                {
+                    RequiredFields = {TEXT("session_id"), TEXT("set_revision"),
+                        TEXT("mode_revision"), TEXT("space_revision"), TEXT("eval_id"),
+                        TEXT("eval_serial"), TEXT("transport_serial"), TEXT("frame_serial"),
+                        TEXT("time"), TEXT("camera"), TEXT("gate")};
+                }
+                else if (Operation == TEXT("applied"))
+                {
+                    RequiredFields = {TEXT("session_id"), TEXT("mode_revision"), TEXT("eval_id"),
+                        TEXT("sample_serial"), TEXT("applied"), TEXT("applied_display_frame"),
+                        TEXT("lag_seconds"), TEXT("components"), TEXT("reason")};
+                }
+                else if (Operation == TEXT("reference_offer"))
+                {
+                    RequiredFields = {TEXT("session_id"), TEXT("transfer_id"), TEXT("directory"),
+                        TEXT("manifest_digest"), TEXT("scope"), TEXT("space_revision"),
+                        TEXT("counts")};
                 }
                 else
                 {
@@ -805,6 +1682,134 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
                     TestEqual(*FString::Printf(TEXT("%s echoes the negotiated revision"), *Id),
                         static_cast<int32>(Encoded->GetNumberField(TEXT("revision"))),
                         static_cast<int32>(Source->GetNumberField(TEXT("revision"))));
+                }
+                if (Operation == TEXT("ready"))
+                {
+                    // v10 echoes the negotiated identity so a peer can refuse
+                    // a reply that belongs to another session or object set.
+                    for (const TCHAR* IdentityField : {TEXT("session_id"), TEXT("set_revision"),
+                            TEXT("space_revision")})
+                    {
+                        if (Source->HasField(IdentityField))
+                        {
+                            TestEqual(
+                                *FString::Printf(TEXT("%s echoes %s"), *Id, IdentityField),
+                                static_cast<int32>(Encoded->GetNumberField(IdentityField)),
+                                static_cast<int32>(Source->GetNumberField(IdentityField)));
+                        }
+                    }
+                    if (Source->HasField(TEXT("object_id")))
+                    {
+                        TestEqual(*FString::Printf(TEXT("%s echoes object_id"), *Id),
+                            Encoded->GetStringField(TEXT("object_id")),
+                            Source->GetStringField(TEXT("object_id")));
+                    }
+                }
+                if (Operation == TEXT("hello_ack"))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s declares the adapter version"), *Id),
+                        static_cast<int32>(Encoded->GetNumberField(TEXT("version"))),
+                        FMtoUProtocol::Version);
+                    const TArray<TSharedPtr<FJsonValue>>& Targets =
+                        Encoded->GetArrayField(TEXT("targets"));
+                    const TArray<TSharedPtr<FJsonValue>>& SourceTargets =
+                        Source->GetArrayField(TEXT("targets"));
+                    TestEqual(*FString::Printf(TEXT("%s target count"), *Id),
+                        Targets.Num(), SourceTargets.Num());
+                    for (int32 Index = 0; Index < FMath::Min(Targets.Num(), SourceTargets.Num()); ++Index)
+                    {
+                        for (const TCHAR* Field : {TEXT("object_id"), TEXT("kind"),
+                                TEXT("binding_path"), TEXT("generation")})
+                        {
+                            TestEqual(*FString::Printf(TEXT("%s echoes target %d %s"), *Id, Index, Field),
+                                Targets[Index]->AsObject()->GetStringField(Field),
+                                SourceTargets[Index]->AsObject()->GetStringField(Field));
+                        }
+                    }
+                    TestEqual(*FString::Printf(TEXT("%s echoes the space revision"), *Id),
+                        static_cast<int32>(
+                            Encoded->GetObjectField(TEXT("space"))->GetNumberField(TEXT("space_revision"))),
+                        static_cast<int32>(
+                            Source->GetObjectField(TEXT("space"))->GetNumberField(TEXT("space_revision"))));
+                }
+                if (Operation == TEXT("mode_state") && Source->HasField(TEXT("anchor")))
+                {
+                    const TArray<TSharedPtr<FJsonValue>>& Location =
+                        Encoded->GetObjectField(TEXT("anchor"))->GetArrayField(TEXT("location_cm"));
+                    const TArray<TSharedPtr<FJsonValue>>& SourceLocation =
+                        Source->GetObjectField(TEXT("anchor"))->GetArrayField(TEXT("location_cm"));
+                    TestEqual(*FString::Printf(TEXT("%s names the anchor location"), *Id),
+                        Location.Num(), SourceLocation.Num());
+                    for (int32 Index = 0; Index < FMath::Min(Location.Num(), SourceLocation.Num()); ++Index)
+                    {
+                        TestEqual(*FString::Printf(TEXT("%s anchor location %d"), *Id, Index),
+                            Location[Index]->AsNumber(), SourceLocation[Index]->AsNumber());
+                    }
+                    const TSharedPtr<FJsonObject> Rotation =
+                        Encoded->GetObjectField(TEXT("anchor"))->GetObjectField(TEXT("rotation_deg"));
+                    const TSharedPtr<FJsonObject> SourceRotation =
+                        Source->GetObjectField(TEXT("anchor"))->GetObjectField(TEXT("rotation_deg"));
+                    for (const TCHAR* Field : {TEXT("roll"), TEXT("pitch"), TEXT("yaw")})
+                    {
+                        TestEqual(*FString::Printf(TEXT("%s anchor %s"), *Id, Field),
+                            Rotation->GetNumberField(Field), SourceRotation->GetNumberField(Field));
+                    }
+                }
+                if (Operation == TEXT("camera_time"))
+                {
+                    const TSharedPtr<FJsonObject> Time = Encoded->GetObjectField(TEXT("time"));
+                    const TSharedPtr<FJsonObject> SourceTime =
+                        Source->GetObjectField(TEXT("time"));
+                    TestEqual(*FString::Printf(TEXT("%s carries the display frame"), *Id),
+                        Time->GetNumberField(TEXT("display_frame")),
+                        SourceTime->GetNumberField(TEXT("display_frame")));
+                    TestEqual(*FString::Printf(TEXT("%s carries the playback range start"), *Id),
+                        static_cast<int32>(
+                            Time->GetObjectField(TEXT("playback_range"))->GetNumberField(TEXT("start"))),
+                        static_cast<int32>(
+                            SourceTime->GetObjectField(TEXT("playback_range"))->GetNumberField(TEXT("start"))));
+                    TestEqual(*FString::Printf(TEXT("%s echoes the evaluation identity"), *Id),
+                        Encoded->GetStringField(TEXT("eval_id")),
+                        Source->GetStringField(TEXT("eval_id")));
+                }
+                if (Operation == TEXT("applied"))
+                {
+                    TestEqual(*FString::Printf(TEXT("%s echoes the evaluation identity"), *Id),
+                        Encoded->GetStringField(TEXT("eval_id")),
+                        Source->GetStringField(TEXT("eval_id")));
+                    TestEqual(*FString::Printf(TEXT("%s reports the applied flag"), *Id),
+                        Encoded->GetBoolField(TEXT("applied")),
+                        Source->GetBoolField(TEXT("applied")));
+                    const TArray<TSharedPtr<FJsonValue>>& Components =
+                        Encoded->GetArrayField(TEXT("components"));
+                    const TArray<TSharedPtr<FJsonValue>>& SourceComponents =
+                        Source->GetArrayField(TEXT("components"));
+                    TestEqual(*FString::Printf(TEXT("%s component row count"), *Id),
+                        Components.Num(), SourceComponents.Num());
+                    if (Components.Num() > 0 && SourceComponents.Num() > 0)
+                    {
+                        const TSharedPtr<FJsonObject> Row = Components[0]->AsObject();
+                        const TSharedPtr<FJsonObject> SourceRow = SourceComponents[0]->AsObject();
+                        // A component row mixes string and numeric fields.
+                        const auto RowText = [](const TSharedPtr<FJsonObject>& Object,
+                            const TCHAR* Field)
+                        {
+                            const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+                            if (!Value.IsValid())
+                            {
+                                return FString(TEXT("<missing>"));
+                            }
+                            return Value->Type == EJson::String
+                                ? Value->AsString()
+                                : FString::Printf(TEXT("%.0f"), Value->AsNumber());
+                        };
+                        for (const TCHAR* Field : {TEXT("object_id"), TEXT("bones"),
+                                TEXT("morphs"), TEXT("parts")})
+                        {
+                            TestEqual(*FString::Printf(TEXT("%s first row %s"), *Id, Field),
+                                RowText(Row, Field), RowText(SourceRow, Field));
+                        }
+                    }
                 }
                 if (Operation == TEXT("error"))
                 {
@@ -825,9 +1830,15 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
 
         if (Operation.StartsWith(TEXT("cache_")))
         {
-            const TArray<uint8> Bytes = Case->HasField(TEXT("raw_utf8"))
-                ? Utf8(Case->GetStringField(TEXT("raw_utf8")))
-                : JsonBytes(Case->TryGetField(TEXT("payload")));
+            TArray<uint8> Bytes;
+            {
+                FString CaseError;
+                if (!CaseBytes(Case, Bytes, CaseError))
+                {
+                    AddError(FString::Printf(TEXT("%s %s"), *Id, *CaseError));
+                    continue;
+                }
+            }
             FString Error;
             FString ErrorCode = TEXT("INVALID_MESSAGE");
             bool bAccepted = false;
@@ -874,7 +1885,7 @@ bool FMtoUConformanceCorpusTest::RunTest(const FString& Parameters)
             else if (Operation == TEXT("cache_clear"))
             {
                 Command.Kind = FMtoUCacheCommand::EKind::Clear;
-                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Error);
+                bAccepted = FMtoUProtocol::ParseCacheClear(Bytes, Command.ClearId, Error);
             }
             else
             {
@@ -976,6 +1987,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionTest,
 bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
+    // Expected: the missed-window cases log the stop they cause.
+    AddExpectedMessagePlain(TEXT("Cached playback stopped without dropping frames"),
+        ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     auto MakeSession = [](double& Clock, TArray<float>& Applied, TArray<int32>& ProgressPlays)
     {
         TSharedRef<FMtoUCacheSession> Session = MakeShared<FMtoUCacheSession>();
@@ -1169,6 +2187,26 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
         !ProgressPlays.Contains(100001) && ProgressPlays.Contains(900001)
         && ProgressPlays.Contains(900002) && ProgressPlays.Contains(900003));
 
+    FMtoUCachePlaybackView View = Session->GetView();
+    View.bConnected = true;
+    TestTrue(TEXT("complete cache can be played again from Unreal"), View.CanPlay());
+    TestEqual(TEXT("view uses the source frame number"), View.CurrentSourceFrame, 1003);
+    TestEqual(TEXT("view preserves the source range start"), View.StartFrame, 1001);
+    TestEqual(TEXT("view preserves the source range end"), View.EndFrame, 1003);
+    TestTrue(TEXT("Unreal action starts a new attempt"),
+        (Result = Session->StartLocalPlayback()).bAccepted);
+    TestEqual(TEXT("Unreal action allocates the next session play identity"), Result.PlayId, 10);
+    TestEqual(TEXT("starting again applies no pose synchronously"),
+        Session->GetAppliedFrameCount(), 0);
+    TestTrue(TEXT("Unreal action stops and retains the cache"),
+        (Result = Session->StopLocalPlayback()).bAccepted);
+    View = Session->GetView();
+    View.bConnected = true;
+    TestEqual(TEXT("stopped action retains the last applied source frame"),
+        View.CurrentSourceFrame, 1003);
+    TestTrue(TEXT("stopped cache can be played again"), View.CanPlay());
+    TestFalse(TEXT("stopped cache cannot be stopped again"), View.CanStop());
+
     // Publication refusal must not advance applied evidence or complete.
     TSharedRef<FMtoUCacheSession> RefusingSession =
         MakeSession(Clock, Applied, ProgressPlays);
@@ -1192,6 +2230,337 @@ bool FMtoUCacheSessionTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("sustained refusal ends as a performance failure"),
         RefusingSession->GetState(), EMtoUCacheState::Failed);
 
+    double SingleClock = 25.0;
+    TArray<float> SingleApplied;
+    TArray<int32> SingleProgress;
+    TSharedRef<FMtoUCacheSession> SingleSession =
+        MakeSession(SingleClock, SingleApplied, SingleProgress);
+    TestTrue(TEXT("one-frame upload reaches Ready"),
+        UploadFrames(*SingleSession, 7, 1, {75.0f}, Result));
+    TestTrue(TEXT("one-frame play starts from the actor action"),
+        SingleSession->StartLocalPlayback().bAccepted);
+    const FMtoUCacheTransition SingleCompletion = SingleSession->Tick();
+    TestEqual(TEXT("one-frame play completes on its first update"),
+        SingleCompletion.Kind, FMtoUCacheTransition::EKind::Completed);
+    TestEqual(TEXT("one-frame play may report zero elapsed seconds"),
+        SingleCompletion.ElapsedSeconds, 0.0);
+    TestEqual(TEXT("one-frame play applies its only pose"), SingleApplied.Num(), 1);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSegmentTest,
+    "MtoULiveLink.CachedPlayback.Segments",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheSegmentTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const double Interval = 1.0 / 30.0;
+    // Every scheduled pose is applied half an interval after its due time:
+    // inside the one-interval window with room for floating-point noise.
+    const double SlotMargin = Interval / 2.0;
+
+    // One session per scenario: each keeps its own deterministic clock, pose
+    // journal, and progress journal so a scenario can never inherit another's
+    // attempt, segment, or loop state.
+    struct FScenario
+    {
+        double Clock = 10.0;
+        TArray<float> Applied;
+        TArray<int32> Progress;
+        FMtoUCacheSession Session;
+
+        void Setup(int32 FrameCount, int32 UploadId = 1)
+        {
+            Session.SetClock([this]() { return Clock; });
+            Session.BeginSession({1, 0, 7});
+            Session.SetPublish([this](const FMtoUFrameMessage& Frame) -> bool
+            {
+                Applied.Add(static_cast<float>(Frame.Transforms[0].Translation.X));
+                return true;
+            });
+            Session.SetProgressSink([this](int32 PlayId, int32 AppliedFrames)
+            {
+                Progress.Add(PlayId * 100000 + AppliedFrames);
+            });
+            FMtoUCacheCommand Begin = MakeCacheBeginCommand(7, FrameCount, 30.0, UploadId);
+            Begin.Begin.StartFrame = 100;
+            Begin.Begin.EndFrame = 100 + FrameCount - 1;
+            check(Session.HandleCommand(Begin).bAccepted);
+            for (int32 Index = 0; Index < FrameCount; ++Index)
+            {
+                check(Session.HandleCommand(
+                    MakeCachedFrameCommand(Index, static_cast<float>(Index))).bAccepted);
+            }
+            check(Session.HandleCommand(
+                MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End)).bAccepted);
+        }
+
+        // Applies the pose scheduled by the given slot of a schedule whose
+        // slot zero is at Baseline.
+        FMtoUCacheTransition ApplySlot(double Baseline, int32 Slot)
+        {
+            Clock = Baseline + static_cast<double>(Slot) * Interval + SlotMargin;
+            return Session.Tick();
+        }
+
+        FString AppliedSequence() const
+        {
+            return FString::JoinBy(Applied, TEXT(","), [](float Value)
+                { return FString::FromInt(static_cast<int32>(Value)); });
+        }
+    };
+
+    // Long pause: the held pose and cache survive an arbitrary wait, the
+    // resumed schedule continues exactly where it stopped, and no paused
+    // interval is replayed or counted as a late segment.
+    FScenario Pause;
+    Pause.Setup(4);
+    TestTrue(TEXT("pause scenario play starts"),
+        Pause.Session.StartLocalPlayback().bAccepted);
+    Pause.ApplySlot(10.0, 0);
+    TestEqual(TEXT("pause scenario applied the first pose"), Pause.Applied.Num(), 1);
+    const FMtoUCacheTransition Paused = Pause.Session.PauseLocalPlayback();
+    TestEqual(TEXT("pause reports its own outcome"),
+        Paused.Kind, FMtoUCacheTransition::EKind::Paused);
+    TestEqual(TEXT("pause holds the applied source frame"), Paused.SourceFrame, 100);
+    TestEqual(TEXT("pause reports the segment's applied frames"), Paused.AppliedFrames, 1);
+    TestEqual(TEXT("pause holds the pose"), Pause.Session.GetState(), EMtoUCacheState::Paused);
+    Pause.Clock += 120.0;
+    TestEqual(TEXT("a long pause produces no completion"),
+        Pause.Session.Tick().Kind, FMtoUCacheTransition::EKind::None);
+    TestEqual(TEXT("a long pause never fails playback"),
+        Pause.Session.GetState(), EMtoUCacheState::Paused);
+    const FMtoUCacheTransition Resumed = Pause.Session.ResumeLocalPlayback();
+    TestEqual(TEXT("resume reports its own outcome"),
+        Resumed.Kind, FMtoUCacheTransition::EKind::Resumed);
+    TestEqual(TEXT("resume continues at the held source frame"), Resumed.SourceFrame, 100);
+    // The pause shifts the schedule by the 120s wait: the next pose is due
+    // one interval after the resume, never immediately as a catch-up.
+    const double ResumedBaseline = 130.0;
+    Pause.ApplySlot(ResumedBaseline, 1);
+    Pause.ApplySlot(ResumedBaseline, 2);
+    const FMtoUCacheTransition PauseCompletion = Pause.ApplySlot(ResumedBaseline, 3);
+    TestEqual(TEXT("resume never replays paused frames"),
+        Pause.AppliedSequence(), FString(TEXT("0,1,2,3")));
+    TestEqual(TEXT("pause scenario completes after every pose"),
+        Pause.Session.GetState(), EMtoUCacheState::Completed);
+    TestEqual(TEXT("an unbroken whole-cache run completes with the cache scope"),
+        PauseCompletion.bWholeCacheScope, true);
+    TestEqual(TEXT("the paused run reports its whole range"), PauseCompletion.StartFrame, 100);
+    TestEqual(TEXT("the paused run reports its whole frame count"), PauseCompletion.FrameCount, 4);
+    TestTrue(TEXT("a paused run measures only its playing time"),
+        FMath::IsNearlyEqual(
+            PauseCompletion.ElapsedSeconds, 3.0 * Interval + SlotMargin, 1e-6));
+
+    // Seek: only sampled source frames are accepted, a refused frame never
+    // clamps or changes state, and an accepted seek displays its target and
+    // holds it until a resume opens the segment's play.
+    FScenario Seek;
+    Seek.Setup(4);
+    const FMtoUCacheTransition OutOfRangeLow = Seek.Session.SeekLocalPlayback(99);
+    TestFalse(TEXT("a source frame below the capture is refused"), OutOfRangeLow.bAccepted);
+    TestEqual(TEXT("below-range seek names its own code"),
+        OutOfRangeLow.ErrorCode, FString(TEXT("CACHE_SEEK_INVALID")));
+    TestTrue(TEXT("below-range prompt names the requested frame"),
+        OutOfRangeLow.Details.Contains(TEXT("99")));
+    TestTrue(TEXT("below-range prompt names the sampled range"),
+        OutOfRangeLow.Details.Contains(TEXT("100..103")));
+    const FMtoUCacheTransition OutOfRangeHigh = Seek.Session.SeekLocalPlayback(104);
+    TestFalse(TEXT("a source frame above the capture is refused"), OutOfRangeHigh.bAccepted);
+    TestEqual(TEXT("a refused seek changes no state"),
+        Seek.Session.GetState(), EMtoUCacheState::Ready);
+    TestEqual(TEXT("a refused seek applies no pose"), Seek.Applied.Num(), 0);
+
+    const FMtoUCacheTransition Seeked = Seek.Session.SeekLocalPlayback(102);
+    TestTrue(TEXT("a sampled source frame is accepted"), Seeked.bAccepted);
+    TestEqual(TEXT("seek reports its own outcome"),
+        Seeked.Kind, FMtoUCacheTransition::EKind::Seeked);
+    TestEqual(TEXT("seek displays the requested source frame"), Seeked.SourceFrame, 102);
+    TestEqual(TEXT("seek holds playback"), Seek.Session.GetState(), EMtoUCacheState::Paused);
+    TestEqual(TEXT("seek applies its target immediately"), Seek.Applied.Num(), 1);
+    TestEqual(TEXT("seek applied the requested pose"), Seek.Applied[0], 2.0f);
+    const FMtoUCachePlaybackView SeekView = Seek.Session.GetView();
+    TestTrue(TEXT("the held pose is the seek target"), SeekView.bPositionedBySeek);
+    TestEqual(TEXT("seek view names the target source frame"), SeekView.CurrentSourceFrame, 102);
+    TestEqual(TEXT("seek opens a new segment from the target"), SeekView.AppliedFrames, 1);
+    TestTrue(TEXT("seek opens a new attempt identity"), Seeked.PlayId > 0);
+
+    TestEqual(TEXT("seek resume continues the segment"),
+        Seek.Session.ResumeLocalPlayback().Kind, FMtoUCacheTransition::EKind::Resumed);
+    const double SeekBaseline = 10.0;
+    const FMtoUCacheTransition SeekCompletion = Seek.ApplySlot(SeekBaseline, 1);
+    TestEqual(TEXT("a seek never re-applies its displayed target"), Seek.Applied.Num(), 2);
+    TestEqual(TEXT("the segment advances past the target"), Seek.Applied[1], 3.0f);
+    TestEqual(TEXT("a seeked segment completes"),
+        SeekCompletion.Kind, FMtoUCacheTransition::EKind::Completed);
+    TestFalse(TEXT("a seeked segment never claims the whole-cache scope"),
+        SeekCompletion.bWholeCacheScope);
+    TestEqual(TEXT("a segment completion names its first source frame"), SeekCompletion.StartFrame, 102);
+    TestEqual(TEXT("a segment completion names its last source frame"), SeekCompletion.EndFrame, 103);
+    TestEqual(TEXT("a segment reports its applied frames"), SeekCompletion.FrameCount, 2);
+
+    // Loop: the last accepted pose wraps to the first frame, the schedule
+    // stays continuous, and turning loop off completes the current round as a
+    // segment instead of claiming the whole-cache replay.
+    FScenario Loop;
+    Loop.Setup(3);
+    TestEqual(TEXT("loop selection before an attempt sends no outcome"),
+        Loop.Session.SetLocalLoop(true).Kind, FMtoUCacheTransition::EKind::None);
+    TestTrue(TEXT("loop selection is visible before playback"), Loop.Session.IsLoopEnabled());
+    const FMtoUCacheTransition LoopPlay = Loop.Session.StartLocalPlayback();
+    TestTrue(TEXT("loop attempt reports its selection to Maya"), LoopPlay.bLoopEnabled);
+    for (int32 Slot = 0; Slot < 6; ++Slot)
+    {
+        Loop.ApplySlot(10.0, Slot);
+    }
+    TestEqual(TEXT("loop keeps one pose per scheduled slot"),
+        Loop.AppliedSequence(), FString(TEXT("0,1,2,0,1,2")));
+    TestEqual(TEXT("loop wraps back to the first frame"), Loop.Session.GetLoopRound(), 2);
+    TestEqual(TEXT("loop never completes the attempt"),
+        Loop.Session.GetState(), EMtoUCacheState::Playing);
+    const FMtoUCacheTransition LoopOff = Loop.Session.SetLocalLoop(false);
+    TestEqual(TEXT("loop selection change reports to Maya"),
+        LoopOff.Kind, FMtoUCacheTransition::EKind::LoopChanged);
+    TestFalse(TEXT("loop selection change carries the new selection"), LoopOff.bLoopEnabled);
+    Loop.ApplySlot(10.0, 6);
+    Loop.ApplySlot(10.0, 7);
+    const FMtoUCacheTransition RoundCompletion = Loop.ApplySlot(10.0, 8);
+    TestEqual(TEXT("the current round completes after loop is turned off"),
+        RoundCompletion.Kind, FMtoUCacheTransition::EKind::Completed);
+    TestFalse(TEXT("a looped round never claims the whole-cache scope"),
+        RoundCompletion.bWholeCacheScope);
+    TestEqual(TEXT("the completed round reports its own frames"), RoundCompletion.FrameCount, 3);
+    TestEqual(TEXT("the completed round keeps one pose per slot"),
+        Loop.AppliedSequence(), FString(TEXT("0,1,2,0,1,2,0,1,2")));
+
+    // A one-frame cache under loop advances one round per interval: repeated
+    // playback can neither burst nor report a completion twice.
+    FScenario Single;
+    Single.Setup(1);
+    Single.Session.SetLocalLoop(true);
+    Single.Session.StartLocalPlayback();
+    for (int32 Round = 1; Round <= 4; ++Round)
+    {
+        Single.Clock = 10.0 + static_cast<double>(Round - 1) * Interval + SlotMargin;
+        const FMtoUCacheTransition Wrapped = Single.Session.Tick();
+        TestEqual(*FString::Printf(TEXT("one-frame round %d wraps"), Round),
+            Wrapped.Kind, FMtoUCacheTransition::EKind::Looped);
+        TestEqual(*FString::Printf(TEXT("one-frame round %d applies one pose"), Round),
+            Wrapped.AppliedFramesThisTick, 1);
+        TestEqual(*FString::Printf(TEXT("one-frame round %d is counted"), Round),
+            Single.Session.GetLoopRound(), Round);
+    }
+    TestEqual(TEXT("single-frame looping keeps the attempt running"),
+        Single.Session.GetState(), EMtoUCacheState::Playing);
+
+    // Stop from a pause keeps the cache and the held pose for a later replay.
+    FScenario Stop;
+    Stop.Setup(2);
+    Stop.Session.StartLocalPlayback();
+    Stop.ApplySlot(10.0, 0);
+    Stop.Session.PauseLocalPlayback();
+    const FMtoUCacheTransition Stopped = Stop.Session.StopLocalPlayback();
+    TestEqual(TEXT("a paused attempt can be stopped"),
+        Stopped.Kind, FMtoUCacheTransition::EKind::Stopped);
+    TestEqual(TEXT("stop from pause holds the cache"),
+        Stop.Session.GetState(), EMtoUCacheState::Stopped);
+    FMtoUCachePlaybackView StopView = Stop.Session.GetView();
+    StopView.bConnected = true;
+    TestEqual(TEXT("stop from pause keeps the held source frame"),
+        StopView.CurrentSourceFrame, 100);
+    TestTrue(TEXT("stop from pause allows another replay"), StopView.CanPlay());
+    TestFalse(TEXT("stop from pause is no longer pausable"), StopView.CanPause());
+    TestFalse(TEXT("stop from pause cannot be resumed"), StopView.CanResume());
+
+    // A recapture invalidates every playback selection and segment.
+    FScenario Recapture;
+    Recapture.Setup(2);
+    Recapture.Session.SetLocalLoop(true);
+    Recapture.Session.StartLocalPlayback();
+    Recapture.ApplySlot(10.0, 0);
+    Recapture.Session.SeekLocalPlayback(101);
+    FMtoUCacheCommand RecaptureBegin = MakeCacheBeginCommand(7, 2, 30.0, 2);
+    RecaptureBegin.Begin.StartFrame = 100;
+    RecaptureBegin.Begin.EndFrame = 101;
+    TestTrue(TEXT("recapture begins a new upload"),
+        Recapture.Session.HandleCommand(RecaptureBegin).bAccepted);
+    TestFalse(TEXT("recapture clears the loop selection"), Recapture.Session.IsLoopEnabled());
+    TestEqual(TEXT("recapture clears the loop round"), Recapture.Session.GetLoopRound(), 0);
+    TestEqual(TEXT("recapture clears the positioned pose"),
+        Recapture.Session.GetView().bPositionedBySeek, false);
+    TestTrue(TEXT("recapture clears the held source frame"),
+        !Recapture.Session.GetView().bHasAppliedSourceFrame);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheNegativeSourceFrameTest,
+    "MtoULiveLink.CachedPlayback.NegativeSourceFrame",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCacheNegativeSourceFrameTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    double Clock = 10.0;
+    FMtoUCacheSession Session;
+    Session.SetClock([&Clock]() { return Clock; });
+    Session.SetPublish([](const FMtoUFrameMessage&) { return true; });
+    Session.BeginSession({1, 0, 7});
+
+    auto Upload = [this, &Session](int32 Start, int32 End, int32 UploadId)
+    {
+        FMtoUCacheCommand Begin = MakeCacheBeginCommand(7, End - Start + 1, 30.0, UploadId);
+        Begin.Begin.StartFrame = Start;
+        Begin.Begin.EndFrame = End;
+        TestTrue(TEXT("negative range begin accepted"), Session.HandleCommand(Begin).bAccepted);
+        for (int32 Index = 0; Index <= End - Start; ++Index)
+        {
+            TestTrue(TEXT("negative range frame accepted"), Session.HandleCommand(
+                MakeCachedFrameCommand(Index, static_cast<float>(Start + Index))).bAccepted);
+        }
+        TestTrue(TEXT("negative range ready"), Session.HandleCommand(
+            MakeSimpleCacheCommand(FMtoUCacheCommand::EKind::End)).bAccepted);
+    };
+
+    Upload(-1, -1, 1);
+    TestFalse(TEXT("ready single frame has no applied source frame"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("single frame play starts"), Session.StartLocalPlayback().bAccepted);
+    TestFalse(TEXT("play before first tick has no applied source frame"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("single negative frame completes"),
+        Session.Tick().Kind, FMtoUCacheTransition::EKind::Completed);
+    TestTrue(TEXT("applied -1 is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("completed source frame is -1"), Session.GetView().CurrentSourceFrame, -1);
+    TestTrue(TEXT("single frame can play again"), Session.StartLocalPlayback().bAccepted);
+    TestTrue(TEXT("replay retains the held -1 frame before its first tick"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestEqual(TEXT("held frame remains -1"), Session.GetView().CurrentSourceFrame, -1);
+
+    Upload(-2, 0, 2);
+    TestFalse(TEXT("new upload clears previous applied-frame validity"),
+        Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("three-frame play starts"), Session.StartLocalPlayback().bAccepted);
+    TestEqual(TEXT("first negative frame applies"),
+        Session.Tick().AppliedFramesThisTick, 1);
+    TestEqual(TEXT("first applied source frame"), Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("first applied frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("stop retains applied pose"), Session.StopLocalPlayback().bAccepted);
+    TestEqual(TEXT("stopped source frame"), Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("stopped source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    TestTrue(TEXT("replay after stop starts"), Session.StartLocalPlayback().bAccepted);
+    TestEqual(TEXT("replay holds prior source frame before first tick"),
+        Session.GetView().CurrentSourceFrame, -2);
+    TestTrue(TEXT("replay held source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
+    Session.Tick();
+    Clock += 1.0 / 30.0;
+    Session.Tick();
+    Clock += 1.0 / 30.0;
+    TestEqual(TEXT("multi-frame negative range completes"),
+        Session.Tick().Kind, FMtoUCacheTransition::EKind::Completed);
+    TestEqual(TEXT("range ends on source frame zero"), Session.GetView().CurrentSourceFrame, 0);
+    TestTrue(TEXT("completed source frame is valid"), Session.GetView().bHasAppliedSourceFrame);
     return true;
 }
 
@@ -1202,6 +2571,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheTransitionTest,
 bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
+    // Expected: the missed-window cases log the stop they cause.
+    AddExpectedMessagePlain(TEXT("Cached playback stopped without dropping frames"),
+        ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     using EKind = FMtoUCacheTransition::EKind;
     using ECommand = FMtoUCacheCommand::EKind;
     double Clock = 100.0;
@@ -1277,8 +2653,11 @@ bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
     CheckDemand(TEXT("performance failure releases realtime"), Failed, false);
     TestEqual(TEXT("performance failure is emitted only once"), Session.Tick().Kind, EKind::None);
 
-    const auto Cleared = Session.HandleCommand(MakeSimpleCacheCommand(ECommand::Clear));
+    auto Clear = MakeSimpleCacheCommand(ECommand::Clear);
+    Clear.ClearId = 1;
+    const auto Cleared = Session.HandleCommand(Clear);
     CheckDemand(TEXT("clear restores realtime"), Cleared, true);
+    TestEqual(TEXT("clear echoes its own request identity"), Cleared.ClearId, 1);
     TestEqual(TEXT("clear captures released upload"), Cleared.UploadId, 1);
     TestEqual(TEXT("clear captures released play"), Cleared.PlayId, 2);
     TestTrue(TEXT("clear permits live frames"), Session.AcceptsLiveFrames());
@@ -1329,6 +2708,31 @@ bool FMtoUCacheTransitionTest::RunTest(const FString& Parameters)
     Session.EndSession();
     TestEqual(TEXT("teardown cannot emit old completion"), Session.Tick().Kind, EKind::None);
     TestEqual(TEXT("teardown releases frames"), Session.GetBufferedFrameCount(), 0);
+
+    FMtoUCacheSession ClearSession;
+    ClearSession.BeginSession({1, 0, 7});
+    const auto EmptyClear = ClearSession.HandleCommand(Clear);
+    TestTrue(TEXT("first clear works without a buffered upload"), EmptyClear.bAccepted);
+    TestEqual(TEXT("empty clear echoes request identity"), EmptyClear.ClearId, 1);
+    TestEqual(TEXT("new cache entry after clear"),
+        ClearSession.HandleCommand(MakeSimpleCacheCommand(ECommand::Enter)).Kind,
+        EKind::Entered);
+    TestTrue(TEXT("new cache enters after clear"),
+        ClearSession.HandleCommand(MakeCacheBeginCommand(7, 1, 30.0, 1)).bAccepted);
+    const auto StaleClear = ClearSession.HandleCommand(Clear);
+    TestFalse(TEXT("old clear identity cannot erase a new upload"), StaleClear.bAccepted);
+    TestEqual(TEXT("old clear is a metadata rejection"),
+        StaleClear.ErrorCode, FString(TEXT("CACHE_METADATA_INVALID")));
+    TestEqual(TEXT("new upload survives old clear"),
+        ClearSession.GetState(), EMtoUCacheState::Receiving);
+    Clear.ClearId = 2;
+    const auto NextClear = ClearSession.HandleCommand(Clear);
+    TestTrue(TEXT("new clear identity releases the upload"), NextClear.bAccepted);
+    TestEqual(TEXT("new clear echoes request identity"), NextClear.ClearId, 2);
+    ClearSession.BeginSession({1, 0, 7});
+    Clear.ClearId = 1;
+    TestTrue(TEXT("new session accepts fresh clear identity"),
+        ClearSession.HandleCommand(Clear).bAccepted);
     return true;
 }
 
@@ -1497,7 +2901,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("[\"bone_%d\",%d,[0,0,0,0,0,0,1,1,1,1]]"), Index, Index - 1);
     }
     const FString Valid = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"), *Bones);
     FMtoUInitMessage Message;
     FString Error;
     FString ErrorCode;
@@ -1508,7 +2912,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animation workflow is retained"), Message.Workflow == FMtoUWorkflows::Animation);
     TestTrue(TEXT("blendshape transmission is retained"), Message.bBlendshapesEnabled);
     TestFalse(TEXT("protocol version 2 is rejected"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":11"), TEXT("\"version\":2"))), Message, Error, &ErrorCode));
     TestEqual(TEXT("version 2 reports a protocol mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     ErrorCode.Reset();
     TestFalse(TEXT("protocol-v3 clients are rejected"),
@@ -1516,7 +2920,7 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
             TEXT("{\"type\":\"init\",\"version\":3,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error, &ErrorCode));
     TestEqual(TEXT("protocol-v3 clients report a version mismatch"), ErrorCode, FString(TEXT("PROTOCOL_VERSION_MISMATCH")));
     TestFalse(TEXT("version must have numeric JSON type"),
-        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"revision\":9,\"version\":6"), TEXT("\"version\":\"4\""))), Message, Error));
+        FMtoUProtocol::ParseInit(Utf8(Valid.Replace(TEXT("\"version\":11"), TEXT("\"version\":\"4\""))), Message, Error));
     TestFalse(TEXT("a missing workflow field is rejected"), FMtoUProtocol::ParseInit(Utf8(Valid.Replace(
         TEXT("\"workflow\":\"animation\","), TEXT(""))), Message, Error));
     TestTrue(TEXT("missing workflow diagnostic identifies the field"), Error.Contains(TEXT("workflow")));
@@ -1536,23 +2940,23 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
         TEXT("\"blendshapes_enabled\":true"), TEXT("\"blendshapes_enabled\":\"true\""))), Message, Error));
     TestTrue(TEXT("duplicate Maya short bone names are retained for Unreal remapping"),
         FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"root\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("a second root is rejected"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"other\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("parents must precede children"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"child\",1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform is required"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local quaternion must be normalized"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,2,1,1,1]]],\"curves\":[]}")), Message, Error));
     TestFalse(TEXT("bind-local transform must be invertible"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,0,1,1]]],\"curves\":[]}")), Message, Error));
 
     TestTrue(TEXT("tiny non-zero bind scale is accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1e-12,1e-12,1e-12]]],\"curves\":[]}")), Message, Error));
 
     const FString MarkerJson =
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"@\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     TArray<uint8> OverlongUtf8 = Utf8(MarkerJson);
     const int32 OverlongMarker = OverlongUtf8.Find(static_cast<uint8>('@'));
     OverlongUtf8[OverlongMarker] = 0xc0;
@@ -1569,28 +2973,28 @@ bool FMtoUInitValidationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("invalid UTF-8 diagnostic is actionable"), Error.Contains(TEXT("UTF-8")));
 
     TestTrue(TEXT("valid multibyte UTF-8 names are accepted"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"根\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"笑\"]}")), Message, Error));
     TestTrue(TEXT("multibyte bone name is preserved"), Message.Bones[0].Name == FName(TEXT("根")));
     TestTrue(TEXT("multibyte curve name is preserved"), Message.Curves[0] == FName(TEXT("笑")));
 
     const FString OverlongName = FString::ChrN(NAME_SIZE, TEXT('x'));
     TestFalse(TEXT("overlong bone name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"%s\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong bone diagnostic identifies the limit"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL bone name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"bad\\u0000tail\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL bone diagnostic is actionable"), Error.Contains(TEXT("Bone 1"))
         && Error.Contains(TEXT("U+0000")));
     TestFalse(TEXT("overlong curve name is rejected before FName construction"), FMtoUProtocol::ParseInit(Utf8(
-        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
+        FString::Printf(TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"%s\"]}"),
             *OverlongName)), Message, Error));
     TestTrue(TEXT("overlong curve diagnostic identifies the limit"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("NAME_SIZE")));
     TestFalse(TEXT("embedded NUL curve name is rejected before truncation"), FMtoUProtocol::ParseInit(Utf8(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[\"bad\\u0000tail\"]}")),
         Message, Error));
     TestTrue(TEXT("embedded NUL curve diagnostic is actionable"), Error.Contains(TEXT("Curve 0"))
         && Error.Contains(TEXT("U+0000")));
@@ -2096,8 +3500,8 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
         FMtoUConnectionNegotiator::Negotiate(ExactCharacter, ExactTarget);
     TestTrue(TEXT("equivalent shuffled skeletons are usable"), Exact.bUsable);
     TestTrue(TEXT("usable outcome has no failure category"), Exact.FailureCategory.IsEmpty());
-    TestTrue(TEXT("publish names preserve Maya transform order"),
-        Exact.PublishBoneNames == TArray<FName>({TEXT("root"), TEXT("arm"), TEXT("hand")}));
+    TestTrue(TEXT("Maya transform order maps onto the shuffled Unreal bones"),
+        Exact.TargetBoneIndices == TArray<int32>({1, 2, 0}));
     TestTrue(TEXT("matching Maya curve is accepted by index and name"),
         Exact.AcceptedCurveIndices == TArray<int32>({0})
         && Exact.AcceptedCurveNames == TArray<FName>({TEXT("Smile")}));
@@ -2132,8 +3536,9 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     const FMtoUNegotiationOutcome Remapped =
         FMtoUConnectionNegotiator::Negotiate(DuplicateCharacter, AutoRenamedTarget);
     TestTrue(TEXT("unique parent-scoped numeric suffix remaps are usable"), Remapped.bUsable);
-    TestTrue(TEXT("second duplicate receives the UE imported name"),
-        Remapped.PublishBoneNames[5] == FName(TEXT("tip_21")));
+    // Target index 5 is the imported `tip_21` rename of Maya's second `tip_2`.
+    TestTrue(TEXT("second duplicate maps onto the UE imported name"),
+        Remapped.TargetBoneIndices[5] == 5);
     TestEqual(TEXT("both imported renames are reported"), Remapped.BoneNameMappings.Num(), 2);
 
     FMtoUTargetDescription AmbiguousTarget = AutoRenamedTarget;
@@ -2189,9 +3594,10 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
     const FMtoUNegotiationOutcome SplitSpine =
         FMtoUConnectionNegotiator::Negotiate(SplitSpineCharacter, SplitSpineTarget);
     TestTrue(TEXT("a hash-renamed ancestor maps its whole branch"), SplitSpine.bUsable);
-    TestTrue(TEXT("the renamed bone publishes the Unreal hash name"),
-        SplitSpine.PublishBoneNames[5] == HashRename(TEXT("spine_04"), HeadHash)
-        && SplitSpine.PublishBoneNames[3] == FName(TEXT("spine_04")));
+    // Target index 5 is the hash-renamed head branch; index 3 keeps the plain
+    // name under the body branch, so each duplicate maps to its own candidate.
+    TestTrue(TEXT("the renamed bone maps onto the Unreal hash name"),
+        SplitSpine.TargetBoneIndices[5] == 5 && SplitSpine.TargetBoneIndices[3] == 3);
     TestTrue(TEXT("the hash rename is reported exactly once"),
         SplitSpine.BoneNameMappings.Num() == 1
         && SplitSpine.BoneNameMappings[0].Contains(HeadHash));
@@ -2366,10 +3772,13 @@ bool FMtoUConnectionNegotiatorTest::RunTest(const FString& Parameters)
             {},
         });
     TestFalse(TEXT("one Unreal bone cannot satisfy two Maya bones"), ReusedTarget.bUsable);
-    TestTrue(TEXT("the second Maya bone stays missing after the first mapping"),
-        ReusedTarget.MissingBones == TArray<FString>({TEXT("tip")}));
-    TestTrue(TEXT("the mapped Unreal bone is not reported as extra or unreached"),
-        ReusedTarget.ExtraBones.IsEmpty() && ReusedTarget.UnreachedUnrealBones.IsEmpty());
+    TestTrue(TEXT("the two indistinguishable sources are reported as one ambiguity"),
+        ReusedTarget.MappingAmbiguities.Num() == 1
+        && ReusedTarget.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+        && ReusedTarget.MappingAmbiguities[0].Contains(TEXT("root/tip")));
+    TestTrue(TEXT("the contested target is explained instead of listed as missing or extra"),
+        ReusedTarget.MissingBones.IsEmpty()
+        && ReusedTarget.ExtraBones.IsEmpty() && ReusedTarget.UnreachedUnrealBones.IsEmpty());
 
     // A hash-shaped name for an unduplicated Maya name is a hint, never a
     // mapping: the strict candidate rules still decide.
@@ -2673,6 +4082,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUSourceSocketFlowTest,
 bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     // Other socket tests leave destroyed editor worlds pending collection.
     // Start this zero/one/two-actor fixture without their global iterator entries.
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
@@ -2725,7 +4137,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     FSocket* MultipleActorClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("multiple-actor validation client connects"), MultipleActorClient);
     const TArray<uint8> MultipleActorInit = Packet(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}"));
     TestTrue(TEXT("multiple-actor init is sent"), MultipleActorClient
         && SendBytes(*MultipleActorClient, MultipleActorInit.GetData(), MultipleActorInit.Num()));
     TArray<uint8> Payload;
@@ -2763,7 +4175,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -2990,6 +4402,14 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
             && ReadyText.Contains(TEXT("\"revision\":9"))
             && ReadyText.Contains(TEXT("\"frame_count\":2")));
     }
+    {
+        const FMtoUCachePlaybackView View = Source->GetActorCachePlaybackView(*Actor);
+        TestTrue(TEXT("complete upload waits for a UE play action"), View.CanPlay());
+        TestFalse(TEXT("upload validation does not start playback"), View.CanStop());
+        TestEqual(TEXT("actor shows source range start"), View.StartFrame, 2001);
+        TestEqual(TEXT("actor shows source range end"), View.EndFrame, 2002);
+        TestEqual(TEXT("no pose is applied before play"), View.CurrentSourceFrame, INDEX_NONE);
+    }
 
     // A recoverably rejected begin switches intake to its own poisoned
     // identity. Frames/end already pipelined behind it are discarded without
@@ -3039,8 +4459,15 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("intruding live frame produces no reply"), bSilent);
     }
 
-    TestTrue(TEXT("identity-matched cache_play is sent"),
-        SendLine(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("Unreal actor action starts the verified cache"),
+        Source->StartActorCachedPlayback(*Actor));
+    Payload.Reset();
+    TestTrue(TEXT("Maya receives the identity-scoped UE play outcome"),
+        Primary && ReceivePacket(*Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("play outcome identifies the validated upload and attempt"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_playing\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":3"))
+        && FromUtf8(Payload).Contains(TEXT("\"play_id\":1")));
     bool bFirstCachedPoseApplied = false;
     bool bSecondCachedPoseApplied = false;
     bool bIntruderVisible = false;
@@ -3086,6 +4513,26 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
         && CompletionPayload.Contains(TEXT("\"play_id\":1"))
         && CompletionPayload.Contains(TEXT("\"applied_frame_count\":2"))
         && CompletionPayload.Contains(TEXT("elapsed_seconds")));
+    TestEqual(TEXT("actor shows the final applied source frame"),
+        Source->GetActorCachePlaybackView(*Actor).CurrentSourceFrame, 2002);
+    TestTrue(TEXT("Unreal can replay the retained cache"),
+        Source->StartActorCachedPlayback(*Actor));
+    Payload.Reset();
+    TestTrue(TEXT("replay-again outcome is sent"),
+        Primary && ReceivePacket(*Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("replay-again uses a fresh play identity"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_playing\""))
+        && FromUtf8(Payload).Contains(TEXT("\"play_id\":2")));
+    TestTrue(TEXT("Unreal can stop its replay without clearing the cache"),
+        Source->StopActorCachedPlayback(*Actor));
+    Payload.Reset();
+    TestTrue(TEXT("stop outcome is sent"),
+        Primary && ReceivePacket(*Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("stop retains the second attempt's identity"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_stopped\""))
+        && FromUtf8(Payload).Contains(TEXT("\"play_id\":2")));
+    TestTrue(TEXT("stopped cache remains playable"),
+        Source->GetActorCachePlaybackView(*Actor).CanPlay());
 
     // The valid upload after the rejected identity is admitted normally.
     TestTrue(TEXT("new upload after poisoned identity is sent"),
@@ -3139,7 +4586,7 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     // Switching back to live preview clears the Unreal buffer first; the
     // cleared outcome arrives before the resumed live pose can be evaluated.
     TestTrue(TEXT("cache_clear is sent"),
-        SendLine(TEXT("{\"type\":\"cache_clear\"}")));
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), Primary && ReceivePacket(
         *Primary, Payload, [&]() { Source->Update(); }));
@@ -3169,7 +4616,37 @@ bool FMtoUSourceSocketFlowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("live sampling resumes after the cached session clears"), bLiveResumed);
 
-
+    // An older clear cannot reset the worker's upload stamp before the Game
+    // Thread rejects it; subsequent frames still belong to this upload.
+    TestTrue(TEXT("new cache entry after clear is sent"),
+        SendLine(TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("new two-frame upload begins"),
+        SendLine(TEXT("{\"type\":\"cache_begin\",\"upload_id\":7,\"revision\":9,\"fps\":30,\"start_frame\":5001,\"end_frame\":5002,\"frame_count\":2,\"payload_size\":512}"))
+        && SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[11,12,13,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}")));
+    TestTrue(TEXT("old clear identity is sent during the new upload"),
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
+    Payload.Reset();
+    TestTrue(TEXT("old clear identity is rejected"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("old clear rejection is a metadata error"),
+        FromUtf8(Payload).Contains(TEXT("CACHE_METADATA_INVALID")));
+    TestTrue(TEXT("new upload continues after stale clear"),
+        SendLine(TEXT("{\"type\":\"cache_frame\",\"index\":1,\"transforms\":[[21,22,23,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0]}"))
+        && SendLine(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("new upload reaches Ready after stale clear"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("ready belongs to upload seven"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\""))
+        && FromUtf8(Payload).Contains(TEXT("\"upload_id\":7")));
+    TestTrue(TEXT("fresh clear identity releases upload seven"),
+        SendLine(TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}")));
+    Payload.Reset();
+    TestTrue(TEXT("fresh clear is acknowledged"), Primary && ReceivePacket(
+        *Primary, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("clear acknowledgement echoes its own identity"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\""))
+        && FromUtf8(Payload).Contains(TEXT("\"clear_id\":2")));
 
     const TArray<uint8> WrongCount = Packet(
         TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[0.5]}"));
@@ -3225,6 +4702,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheClearRestoresLivePreviewTest,
 bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -3509,7 +4989,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
         return false;
     }
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -3561,7 +5041,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
     TestTrue(TEXT("cached entry exposes the disabled base realtime"), EffectiveMatchesBase(false));
-    TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("leaving cached ownership restores live preview realtime"), HasOverride());
@@ -3573,11 +5053,31 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("second entry releases viewport realtime again"), HasNoOverride());
     TestTrue(TEXT("second entry exposes the disabled base realtime again"), EffectiveMatchesBase(false));
-    TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("second cache clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}")));
     TestTrue(TEXT("second clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("repeated clear restores live preview realtime again"), HasOverride());
     SendLiveAndExpect(Primary, FVector(61.0, 62.0, 63.0), TEXT("live frame after second clear is sent"));
+
+    // Recapture can clear cached ownership, re-enter, then fail before
+    // cache_begin while creating Maya's temporary file. The final clear must
+    // return UE to Idle so the next live pose reaches the display.
+    TestTrue(TEXT("recapture starts in cached mode"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    TestTrue(TEXT("recapture sends its first clear"),
+        SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":3}")));
+    TestTrue(TEXT("recapture clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("recapture re-enters cached mode"), SendText(Primary, TEXT("{\"type\":\"cache_enter\"}")));
+    FPlatformProcess::Sleep(0.02f);
+    Source->Update();
+    TestTrue(TEXT("cache creation failure starts from cached ownership"), HasNoOverride());
+    TestTrue(TEXT("cache creation failure sends final clear"),
+        SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":4}")));
+    TestTrue(TEXT("cache creation failure clear is acknowledged"),
+        ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
+    TestTrue(TEXT("cache creation failure restores live preview realtime"), HasOverride());
+    SendLiveAndExpect(Primary, FVector(66.0, 67.0, 68.0),
+        TEXT("live frame after cache creation failure is sent"));
 
     // A recoverable upload validation failure drops to Idle and must restore
     // the same live preview behavior, with the ordered clear keeping the
@@ -3592,7 +5092,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("mismatched revision reports a recoverable error"),
         ReceiveText(Primary).Contains(TEXT("CACHE_REVISION_MISMATCH")));
     TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
-    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("recovery clear is sent"), SendText(Primary, TEXT("{\"type\":\"cache_clear\",\"clear_id\":5}")));
     TestTrue(TEXT("recovery clear is acknowledged"),
         ReceiveText(Primary).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("recovery clear keeps live preview realtime"), HasOverride());
@@ -3667,7 +5167,7 @@ bool FMtoUCacheClearRestoresLivePreviewTest::RunTest(const FString& Parameters)
     Source->Update();
     TestTrue(TEXT("base-on entry releases the plugin viewport override"), HasNoOverride());
     TestTrue(TEXT("base-on entry keeps the enabled base realtime"), EffectiveMatchesBase(true));
-    TestTrue(TEXT("base-on cache clear is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("base-on cache clear is sent"), SendText(Reconnect, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("base-on clear is acknowledged"),
         ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("base-on clear restores live preview realtime"), HasOverride());
@@ -3746,6 +5246,9 @@ void FMtoUCacheClearNaturalRefreshTest::GetTests(
 bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
 #if !WITH_EDITOR
     AddError(TEXT("natural refresh test requires an editor build."));
     return false;
@@ -3916,7 +5419,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
         const FString ChildBoneName = TestSkeleton->GetBoneName(1).ToString();
         State->RootBoneId = TestSkeleton->GetBoneName(0);
         State->InitPacket = FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
             *RootBoneName,
             *TransformJson(TestSkeleton->GetRefBonePose()[0]),
             *ChildBoneName,
@@ -3964,7 +5467,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
         FPlatformProcess::Sleep(0.02f);
         Source->Update();
         Self->TestTrue(TEXT("cached entry releases viewport realtime"), HasNoOverride());
-        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}"));
         Self->TestTrue(TEXT("cache clear is sent"),
             SendBytes(*Client, ClearBytes.GetData(), ClearBytes.Num()));
         TArray<uint8> ClearPayload;
@@ -4096,7 +5599,7 @@ bool FMtoUCacheClearNaturalRefreshTest::RunTest(const FString& Parameters)
             ReceivePacket(Client, ErrorPayload, [&]() { Source.Update(); })
             && FromUtf8(ErrorPayload).Contains(TEXT("CACHE_REVISION_MISMATCH")));
         Self->TestTrue(TEXT("recoverable failure restores live preview realtime"), HasOverride());
-        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\"}"));
+        const TArray<uint8> ClearBytes = Packet(TEXT("{\"type\":\"cache_clear\",\"clear_id\":2}"));
         Self->TestTrue(TEXT("recovery clear is sent"),
             SendBytes(Client, ClearBytes.GetData(), ClearBytes.Num()));
         TArray<uint8> ClearPayload;
@@ -4220,6 +5723,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCacheSessionReconnectTest,
 bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Expected: the rejection paths below log their refusal by design.
+    AddExpectedMessagePlain(TEXT("Rejected cache"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, 0);
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
     if (!SocketSubsystem)
@@ -4261,6 +5767,8 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // The v9 workflows negotiate without a linkage pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -4283,7 +5791,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
         ? TransformJson(TestSkeleton->GetRefBonePose()[1])
         : TEXT("[0,0,0,0,0,0,1,1,1,1]");
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":[\"Missing\"]}"),
         *RootBoneName,
         *RootBind,
         *ChildBoneName,
@@ -4488,7 +5996,7 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
             PlayToCompletion(Reconnect, 1, FVector(41.0, 42.0, 43.0), FVector(51.0, 52.0, 53.0), Completion));
     }
     TestTrue(TEXT("reconnected clear is sent"),
-        SendText(Reconnect, TEXT("{\"type\":\"cache_clear\"}")));
+        SendText(Reconnect, TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     TestTrue(TEXT("clear is acknowledged"),
         ReceiveText(Reconnect).Contains(TEXT("\"type\":\"cache_cleared\"")));
     TestTrue(TEXT("duplicate upload after clear is sent"),
@@ -4540,6 +6048,8 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
     DestroySocket(*SocketSubsystem, Third);
     TestTrue(TEXT("final disconnect returns source to listening"), WaitListening());
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -4554,9 +6064,10 @@ bool FMtoUCacheSessionReconnectTest::RunTest(const FString& Parameters)
 }
 
 // Explicit opt-in: the ordinary Runtime suite never assumes Maya is installed.
-// The peer executes real Maya capture, controller reconnect and retained replay.
+// The peer executes real Maya capture, controller reconnect, retained upload,
+// and enabled custom-range recapture. The actor starts every local play.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCacheReconnectTest,
-    "MtoULiveLink.Source.MayaCacheReconnect",
+    "MtoUOptIn.Source.MayaCacheReconnect",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
@@ -4565,8 +6076,8 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
     FString Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
     {
-        AddInfo(TEXT("Host check not requested; supply MtoUMayapy, MtoUMayaPeer and MtoUEvidence."));
-        return true;
+        AddError(TEXT("Host check requires -MtoUMayapy=, -MtoUMayaPeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
@@ -4595,6 +6106,7 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
         ILiveLinkClient::ModularFeatureName);
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid Guid = Client.AddSource(Source);
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     const FLiveLinkSubjectKey Key(Guid, FName(TEXT("MtoU_Character")));
     TArray<uint64> Sessions;
     TArray<FVector> Applied;
@@ -4616,6 +6128,7 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
     }
     const FString Fixture = FPaths::Combine(Evidence, TEXT("maya-fixture.json"));
     const FString Result = FPaths::Combine(Evidence, TEXT("maya-result.json"));
+    IFileManager::Get().Delete(*Result);
     TestTrue(TEXT("write host fixture"), FFileHelper::SaveStringToFile(
         FString::Printf(TEXT("{\"port\":%d,\"bones\":[%s]}"), Port, *Bones), *Fixture));
     const FString Args = FString::Printf(TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
@@ -4623,6 +6136,9 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
     FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *Args, false, true, true,
         nullptr, 0, nullptr, nullptr);
     TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+    bool bAStarted = false;
+    bool bBStarted = false;
+    bool bCStarted = false;
     const double Deadline = FPlatformTime::Seconds() + 120.0;
     while (Process.IsValid() && FPlatformProcess::IsProcRunning(Process)
         && FPlatformTime::Seconds() < Deadline)
@@ -4630,6 +6146,34 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
         const int32 Before = Applied.Num();
         Source->Update();
         Client.ForceTick();
+        FString ProgressText;
+        TSharedPtr<FJsonObject> Progress;
+        if (FFileHelper::LoadFileToString(ProgressText, *Result)
+            && JsonObjectFromBytes(Utf8(ProgressText), Progress))
+        {
+            FString Phase;
+            if (Progress->TryGetStringField(TEXT("phase"), Phase))
+            {
+                bool* Started = Phase == TEXT("a_ready") ? &bAStarted
+                    : Phase == TEXT("b_ready") ? &bBStarted
+                    : Phase == TEXT("c_ready") ? &bCStarted : nullptr;
+                if (Started && !*Started)
+                {
+                    const FMtoUCachePlaybackView View = Actor->GetCachePlaybackView();
+                    TestEqual(TEXT("Maya upload waits Ready for UE actor action"),
+                        View.State, EMtoUCacheState::Ready);
+                    TestEqual(TEXT("uploaded source start frame"), View.StartFrame,
+                        Phase == TEXT("c_ready") ? -1 : 1);
+                    TestEqual(TEXT("uploaded source end frame"), View.EndFrame,
+                        Phase == TEXT("c_ready") ? 1 : 4);
+                    TestEqual(TEXT("uploaded source frame count"), View.FrameCount,
+                        Phase == TEXT("c_ready") ? 3 : 4);
+                    TestTrue(TEXT("actor starts Maya-uploaded cache"),
+                        Actor->StartCachedPlayback());
+                    *Started = true;
+                }
+            }
+        }
         if (Applied.Num() > Before)
         {
             FLiveLinkSubjectFrameData Frame;
@@ -4645,6 +6189,8 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
         }
         FPlatformProcess::Sleep(0.001f);
     }
+    TestTrue(TEXT("actor starts both playback-range uploads and the custom-range upload"),
+        bAStarted && bBStarted && bCStarted);
     int32 ExitCode = -1;
     if (Process.IsValid())
     {
@@ -4666,11 +6212,14 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
         AddInfo(ResultText);
     }
     else { AddError(TEXT("Invalid Maya result JSON")); }
-    TestEqual(TEXT("two real Maya cached cycles publish exactly four frames each"), Applied.Num(), 8);
-    TestEqual(TEXT("every cached frame can be evaluated from the Live Link subject"), Evaluated.Num(), 8);
-    if (Applied.Num() == 8 && Evaluated.Num() == 8)
+    TestEqual(TEXT("default and retained cycles apply four frames; custom range applies three"),
+        Applied.Num(), 11);
+    TestEqual(TEXT("every cached frame can be evaluated from the Live Link subject"),
+        Evaluated.Num(), 11);
+    if (Applied.Num() == 11 && Evaluated.Num() == 11)
     {
         TestTrue(TEXT("same source negotiated a different session"), Sessions[0] != Sessions[4]);
+        TestEqual(TEXT("custom recapture stays in the second session"), Sessions[8], Sessions[4]);
         for (int32 Index = 0; Index < 4; ++Index)
         {
             TestEqual(TEXT("A owns its four frames"), Sessions[Index], Sessions[0]);
@@ -4683,9 +6232,512 @@ bool FMtoUMayaCacheReconnectTest::RunTest(const FString& Parameters)
                 Index, Sessions[Index], Sessions[Index + 4], *Applied[Index].ToString(),
                 *Evaluated[Index].ToString()));
         }
+        for (int32 Index = 8; Index < 11; ++Index)
+        {
+            TestTrue(TEXT("custom range applies its new animated poses"),
+                Index == 8 || !Applied[Index].Equals(Applied[Index - 1]));
+            TestTrue(TEXT("custom range evaluated pose matches applied pose"),
+                Evaluated[Index].Equals(Applied[Index]));
+            AddInfo(FString::Printf(TEXT("Custom source frame %d: input=%s evaluated=%s"),
+                Index - 9, *Applied[Index].ToString(), *Evaluated[Index].ToString()));
+        }
     }
     Source->StopListener();
     Client.RemoveSource(Source);
+    MtoUSetActiveSource(PreviousSource);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaInteractivePlaybackTest,
+    "MtoUOptIn.Source.MayaInteractivePlayback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaInteractivePlaybackTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Mayapy, Peer, Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy))
+    {
+        AddError(TEXT("Host check requires -MtoUMayapy=, -MtoUMayaPeer= and -MtoUEvidence=."));
+        return false;
+    }
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaPeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer))
+    {
+        AddError(TEXT("Host check requires existing mayapy/peer paths and an evidence directory."));
+        return false;
+    }
+    ISocketSubsystem* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    if (!Sockets) { return false; }
+    FSocket* Reservation = BindLoopback(*Sockets, 0, true);
+    if (!Reservation) { return false; }
+    TSharedRef<FInternetAddr> Address = Sockets->CreateInternetAddr();
+    Reservation->GetAddress(*Address);
+    const uint16 Port = static_cast<uint16>(Address->GetPort());
+    DestroySocket(*Sockets, Reservation);
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    if (!World) { return false; }
+    FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    Context.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = AddBoundActor(*World);
+    TestNotNull(TEXT("real host binding actor"), Actor);
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    ILiveLinkClient& Client = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(
+        ILiveLinkClient::ModularFeatureName);
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid Guid = Client.AddSource(Source);
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    const FLiveLinkSubjectKey Key(Guid, FName(TEXT("MtoU_Character")));
+    TArray<FVector> Applied;
+    FMtoUSessionIsolationTestAccess::ObserveApplied(*Source,
+        [&](uint64 Session, const FMtoUFrameMessage& Frame)
+        {
+            (void)Session;
+            if (!Frame.Transforms.IsEmpty())
+            {
+                Applied.Add(Frame.Transforms[0].Translation);
+            }
+        });
+    const FReferenceSkeleton& Skeleton = Actor->GetSkeletalMeshComponent()
+        ->GetSkeletalMeshAsset()->GetRefSkeleton();
+    FString Bones;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index) { Bones += TEXT(","); }
+        Bones += FString::Printf(TEXT("[\"%s\",%d]"),
+            *Skeleton.GetBoneName(Index).ToString(), Skeleton.GetParentIndex(Index));
+    }
+    const FString Fixture = FPaths::Combine(Evidence, TEXT("interactive-fixture.json"));
+    const FString Result = FPaths::Combine(Evidence, TEXT("interactive-result.json"));
+    IFileManager::Get().Delete(*Result);
+    TestTrue(TEXT("write host fixture"), FFileHelper::SaveStringToFile(
+        FString::Printf(TEXT("{\"port\":%d,\"bones\":[%s]}"), Port, *Bones), *Fixture));
+    const FString Args = FString::Printf(TEXT("\"%s\" --fixture \"%s\" --result \"%s\""),
+        *Peer, *Fixture, *Result);
+    FProcHandle Process = FPlatformProcess::CreateProc(*Mayapy, *Args, false, true, true,
+        nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("real Maya process starts"), Process.IsValid());
+
+    const int32 FirstSourceFrame = 1;
+    const int32 LastSourceFrame = 24;
+    const float ValuePerFrame = 10.0f;
+    const int32 FrameCount = LastSourceFrame - FirstSourceFrame + 1;
+
+    const auto ReadPeer = [&]() -> TSharedPtr<FJsonObject>
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Object;
+        if (FFileHelper::LoadFileToString(Text, *Result)
+            && JsonObjectFromBytes(Utf8(Text), Object))
+        {
+            return Object;
+        }
+        return nullptr;
+    };
+    const auto PumpOnce = [&]()
+    {
+        Source->Update();
+        Client.ForceTick();
+    };
+    const auto ProcessAlive = [&]()
+    {
+        return Process.IsValid() && FPlatformProcess::IsProcRunning(Process);
+    };
+    // Waits on the actor's own view, which is also how Maya's progress is
+    // observed: the peer's result file is only read after it exits.
+    const auto WaitActor = [&](TFunctionRef<bool(const FMtoUCachePlaybackView&)> Predicate,
+        double TimeoutSeconds) -> bool
+    {
+        PollUntil([&]()
+        {
+            if (!ProcessAlive())
+            {
+                return true;
+            }
+            PumpOnce();
+            return Actor && Predicate(Actor->GetCachePlaybackView());
+        }, TimeoutSeconds);
+        return ProcessAlive() && Actor && Predicate(Actor->GetCachePlaybackView());
+    };
+    const auto WaitProcessExit = [&](double TimeoutSeconds) -> bool
+    {
+        return PollUntil([&]()
+        {
+            PumpOnce();
+            return !ProcessAlive();
+        }, TimeoutSeconds);
+    };
+    const auto EvaluateRoot = [&]() -> TOptional<FVector>
+    {
+        FLiveLinkSubjectFrameData Frame;
+        if (Client.EvaluateFrameFromSource_AnyThread(
+                Key, ULiveLinkAnimationRole::StaticClass(), Frame))
+        {
+            if (const FLiveLinkAnimationFrameData* Animation =
+                    Frame.FrameData.Cast<FLiveLinkAnimationFrameData>())
+            {
+                if (!Animation->Transforms.IsEmpty())
+                {
+                    return Animation->Transforms[0].GetTranslation();
+                }
+            }
+        }
+        return TOptional<FVector>();
+    };
+    const auto WaitPose = [&](int32 SourceFrame, double TimeoutSeconds) -> bool
+    {
+        const FVector Expected(SourceFrame * ValuePerFrame, 0.0, 0.0);
+        return PollUntil([&]()
+        {
+            PumpOnce();
+            const TOptional<FVector> Pose = EvaluateRoot();
+            return Pose.IsSet() && Pose.GetValue().Equals(Expected, 0.5);
+        }, TimeoutSeconds);
+    };
+    // One ordered run of the captured animation: each pose names its own frame.
+    const auto AppliedSliceMatches = [&](int32 StartIndex, int32 FirstFrame, int32 Count)
+    {
+        if (StartIndex < 0 || Applied.Num() < StartIndex + Count)
+        {
+            return false;
+        }
+        for (int32 Index = 0; Index < Count; ++Index)
+        {
+            const FVector Expected(
+                (FirstFrame + Index) * ValuePerFrame, 0.0, 0.0);
+            if (!Applied[StartIndex + Index].Equals(Expected, 0.5))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Maya captures and uploads the whole range; Unreal waits for its own action.
+    const bool bReachedReady = WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Ready; }, 180.0);
+    {
+        const FMtoUCachePlaybackView Observed = Actor->GetCachePlaybackView();
+        AddInfo(FString::Printf(
+            TEXT("after the initial wait: state=%d connected=%d range=%d..%d frames=%d error=%s"),
+            static_cast<int32>(Observed.State), Observed.bConnected ? 1 : 0,
+            Observed.StartFrame, Observed.EndFrame, Observed.FrameCount,
+            *Observed.ErrorDetails));
+    }
+    TestTrue(TEXT("real Maya upload reaches Ready"), bReachedReady);
+    const FMtoUCachePlaybackView ReadyView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("Maya-uploaded cache is Ready for the binding actor"),
+        ReadyView.State, EMtoUCacheState::Ready);
+    TestEqual(TEXT("uploaded source range start"), ReadyView.StartFrame, FirstSourceFrame);
+    TestEqual(TEXT("uploaded source range end"), ReadyView.EndFrame, LastSourceFrame);
+    TestEqual(TEXT("uploaded source frame count"), ReadyView.FrameCount, FrameCount);
+
+    // Play, pause, and hold: an arbitrarily long inspection must neither fail
+    // playback nor move the held pose.
+    TestTrue(TEXT("actor starts the Maya-uploaded cache"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("playback applies its first poses"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Playing && View.AppliedFrames >= 2; }, 5.0));
+    TestTrue(TEXT("actor pauses the running playback"), Actor->PauseCachedPlayback());
+    const FMtoUCachePlaybackView PausedView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("pause holds the pose"), PausedView.State, EMtoUCacheState::Paused);
+    TestTrue(TEXT("pause reports an applied source frame"), PausedView.bHasAppliedSourceFrame);
+    const int32 HeldFrame = PausedView.CurrentSourceFrame;
+    const int32 AppliedBeforePause = Applied.Num();
+    const TOptional<FVector> HeldPose = EvaluateRoot();
+    TestTrue(TEXT("the held pose can be evaluated"), HeldPose.IsSet());
+    bool bHeldPoseStable = HeldPose.IsSet();
+    bool bFailedWhilePaused = false;
+    const double HoldDeadline = FPlatformTime::Seconds() + 2.5;
+    while (FPlatformTime::Seconds() < HoldDeadline)
+    {
+        PumpOnce();
+        const TOptional<FVector> Observed = EvaluateRoot();
+        bHeldPoseStable &= Observed.IsSet()
+            && HeldPose.IsSet()
+            && Observed.GetValue().Equals(HeldPose.GetValue(), 0.01);
+        bFailedWhilePaused |= Actor->GetCachePlaybackView().State == EMtoUCacheState::Failed;
+        FPlatformProcess::Sleep(0.01f);
+    }
+    TestFalse(TEXT("a long pause never fails playback"), bFailedWhilePaused);
+    TestTrue(TEXT("a long pause holds one pose"), bHeldPoseStable);
+    TestEqual(TEXT("a long pause keeps the held source frame"),
+        Actor->GetCachePlaybackView().CurrentSourceFrame, HeldFrame);
+
+    // Resume continues from the held position without replaying paused frames.
+    TestTrue(TEXT("actor resumes from the held pose"), Actor->ResumeCachedPlayback());
+    TestTrue(TEXT("resume keeps playing"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.State == EMtoUCacheState::Playing
+            && View.CurrentSourceFrame > 0; }, 5.0));
+    TestTrue(TEXT("resume applies the pose after the held one"),
+        PollUntil([&]()
+        {
+            PumpOnce();
+            return Applied.Num() > AppliedBeforePause + 1
+                && AppliedSliceMatches(AppliedBeforePause, HeldFrame + 1, 2);
+        }, 3.0));
+
+    // Seek forward, seek backward, and refuse an unsampled frame.
+    TestTrue(TEXT("seek forward is accepted"), Actor->SeekCachedPlayback(20));
+    const FMtoUCachePlaybackView ForwardView = Actor->GetCachePlaybackView();
+    TestEqual(TEXT("seek holds playback"), ForwardView.State, EMtoUCacheState::Paused);
+    TestEqual(TEXT("seek reports its target"), ForwardView.CurrentSourceFrame, 20);
+    TestTrue(TEXT("seek displays its target pose"), WaitPose(20, 3.0));
+    TestTrue(TEXT("seek backward is accepted"), Actor->SeekCachedPlayback(5));
+    TestTrue(TEXT("backward seek displays its target pose"), WaitPose(5, 3.0));
+    TestFalse(TEXT("an unsampled source frame is refused"), Actor->SeekCachedPlayback(99));
+    TestEqual(TEXT("a refused seek keeps its held frame"),
+        Actor->GetCachePlaybackView().CurrentSourceFrame, 5);
+    TestTrue(TEXT("a refused seek names its reason"),
+        Actor->GetCachePlaybackView().ErrorDetails.Contains(TEXT("CACHE_SEEK_INVALID")));
+
+    // Loop two rounds, then let the current round complete as a segment.
+    TestTrue(TEXT("actor stops the paused attempt before looping"), Actor->StopCachedPlayback());
+    TestTrue(TEXT("loop selection is accepted"), Actor->SetCachedLoopEnabled(true));
+    TestTrue(TEXT("looping attempt reports its selection"),
+        Actor->GetCachePlaybackView().bLoopEnabled);
+    const int32 AppliedBeforeLoop = Applied.Num();
+    TestTrue(TEXT("actor plays the cache under loop"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("the first loop round wraps"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.LoopRound >= 1; }, 5.0));
+    TestTrue(TEXT("the second loop round wraps"), WaitActor([](const FMtoUCachePlaybackView& View)
+        { return View.LoopRound >= 2; }, 5.0));
+    // Each loop round replays the whole captured range in order.
+    const bool bLoopFramesInOrder =
+        AppliedSliceMatches(AppliedBeforeLoop, FirstSourceFrame, FrameCount)
+        && AppliedSliceMatches(
+            AppliedBeforeLoop + FrameCount, FirstSourceFrame, FrameCount);
+    if (!bLoopFramesInOrder)
+    {
+        TArray<FString> Values;
+        for (int32 Index = AppliedBeforeLoop; Index < Applied.Num(); ++Index)
+        {
+            Values.Add(FString::FromInt(static_cast<int32>(Applied[Index].X)));
+        }
+        AddInfo(FString::Printf(TEXT("loop attempt applied %d poses from index %d: %s"),
+            Applied.Num() - AppliedBeforeLoop, AppliedBeforeLoop,
+            *FString::Join(Values, TEXT(","))));
+    }
+    TestTrue(TEXT("both rounds replay every captured frame in order"),
+        bLoopFramesInOrder);
+    TestTrue(TEXT("loop selection is turned off mid-round"), Actor->SetCachedLoopEnabled(false));
+    TestTrue(TEXT("the current round completes instead of wrapping again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Completed; }, 5.0));
+
+    // Both endpoints stay addressable after the loop, and the attempt stops
+    // holding the last displayed frame.
+    TestTrue(TEXT("first endpoint seek is accepted"), Actor->SeekCachedPlayback(FirstSourceFrame));
+    TestTrue(TEXT("first endpoint pose is displayed"), WaitPose(FirstSourceFrame, 3.0));
+    TestTrue(TEXT("last endpoint seek is accepted"), Actor->SeekCachedPlayback(LastSourceFrame));
+    TestTrue(TEXT("last endpoint pose is displayed"), WaitPose(LastSourceFrame, 3.0));
+    TestTrue(TEXT("a paused attempt can be stopped"), Actor->StopCachedPlayback());
+    TestEqual(TEXT("stop holds the retained cache"),
+        Actor->GetCachePlaybackView().State, EMtoUCacheState::Stopped);
+
+    // Maya leaves cached playback, reconnects after a real transport loss,
+    // uploads a fresh cache, and leaves again.
+    TestTrue(TEXT("Maya leaves cached playback and clears the Unreal cache"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Idle; }, 30.0));
+    TestTrue(TEXT("Maya reconnects and uploads again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Ready; }, 120.0));
+    TestEqual(TEXT("reconnected upload keeps the same captured range"),
+        Actor->GetCachePlaybackView().EndFrame, LastSourceFrame);
+    TestTrue(TEXT("the reconnected cache starts from the actor"), Actor->StartCachedPlayback());
+    TestTrue(TEXT("the reconnected cache plays to completion"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Completed; }, 10.0));
+    TestTrue(TEXT("Maya leaves the reconnected upload again"),
+        WaitActor([](const FMtoUCachePlaybackView& View)
+            { return View.State == EMtoUCacheState::Idle; }, 30.0));
+    TestTrue(TEXT("Maya finishes the interactive host check"),
+        WaitProcessExit(120.0));
+
+    int32 ExitCode = -1;
+    if (Process.IsValid())
+    {
+        if (FPlatformProcess::IsProcRunning(Process))
+        {
+            FPlatformProcess::TerminateProc(Process, true);
+            AddError(TEXT("Maya host check timed out"));
+        }
+        FPlatformProcess::GetProcReturnCode(Process, &ExitCode);
+        FPlatformProcess::CloseProc(Process);
+    }
+    TestEqual(TEXT("Maya host assertions and cleanup pass"), ExitCode, 0);
+
+    const TSharedPtr<FJsonObject> PeerResult = ReadPeer();
+    TestTrue(TEXT("Maya result exists"), PeerResult.IsValid());
+    if (PeerResult.IsValid() && PeerResult->HasField(TEXT("outcomes")))
+    {
+        TestTrue(TEXT("Maya host check reports success"),
+            PeerResult->GetBoolField(TEXT("ok")));
+        TestTrue(TEXT("Maya retains the completed cache after leaving cached playback"),
+            PeerResult->GetBoolField(TEXT("cache_retained_after_leave")));
+        TestTrue(TEXT("closing the controller releases every transient cache"),
+            PeerResult->GetBoolField(TEXT("caches_cleaned")));
+        TestTrue(TEXT("Maya reports no diagnostic during the reconnect leg"),
+            PeerResult->GetArrayField(TEXT("reconnect_diagnostics")).IsEmpty());
+        TestEqual(TEXT("both sessions captured the whole range"),
+            static_cast<int32>(PeerResult->GetArrayField(TEXT("sessions")).Num()), 2);
+        for (const TSharedPtr<FJsonValue>& SessionValue
+            : PeerResult->GetArrayField(TEXT("sessions")))
+        {
+            const TSharedPtr<FJsonObject> Session = SessionValue->AsObject();
+            TestEqual(TEXT("a captured session uploads the whole range"),
+                static_cast<int32>(Session->GetNumberField(TEXT("frame_count"))), FrameCount);
+            TestEqual(TEXT("a captured session uploads its own identity"),
+                static_cast<int32>(Session->GetNumberField(TEXT("upload_id"))), 1);
+        }
+
+        TArray<TSharedPtr<FJsonValue>> Outcomes =
+            PeerResult->GetArrayField(TEXT("outcomes"));
+        auto OutcomeTypes = [&]()
+        {
+            TArray<FString> Types;
+            for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+            {
+                Types.Add(Value->AsObject()->GetStringField(TEXT("type")));
+            }
+            return Types;
+        };
+        const TArray<FString> Types = OutcomeTypes();
+        for (const TCHAR* Required : {TEXT("cache_playing"), TEXT("cache_paused"),
+                 TEXT("cache_resumed"), TEXT("cache_seeked"), TEXT("cache_looped"),
+                 TEXT("cache_loop_changed"), TEXT("cache_complete"), TEXT("cache_stopped")})
+        {
+            TestTrue(*FString::Printf(TEXT("Maya received %s"), Required),
+                Types.Contains(Required));
+        }
+        int32 Seeked20 = 0;
+        int32 Seeked5 = 0;
+        int32 Seeked99 = 0;
+        int32 Looped1 = 0;
+        int32 Looped2 = 0;
+        int32 SegmentCompletions = 0;
+        int32 LoopPlays = 0;
+        int32 PausedOutcomes = 0;
+        for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+        {
+            const TSharedPtr<FJsonObject> Outcome = Value->AsObject();
+            const FString Type = Outcome->GetStringField(TEXT("type"));
+            if (Type == TEXT("cache_seeked"))
+            {
+                const int32 Frame = static_cast<int32>(Outcome->GetNumberField(TEXT("source_frame")));
+                Seeked20 += Frame == 20;
+                Seeked5 += Frame == 5;
+                Seeked99 += Frame == 99;
+            }
+            else if (Type == TEXT("cache_looped"))
+            {
+                const int32 Round = static_cast<int32>(Outcome->GetNumberField(TEXT("round")));
+                Looped1 += Round == 1;
+                Looped2 += Round == 2;
+            }
+            else if (Type == TEXT("cache_complete")
+                && Outcome->GetStringField(TEXT("session")) == TEXT("A"))
+            {
+                // The interactive attempt only ever ended a seeked or looped
+                // segment, so it must never claim the whole-cache scope.
+                TestTrue(TEXT("a looped run never claims the whole-cache completion scope"),
+                    Outcome->GetStringField(TEXT("scope")) == TEXT("segment"));
+                SegmentCompletions += 1;
+            }
+            else if (Type == TEXT("cache_playing"))
+            {
+                LoopPlays += Outcome->GetBoolField(TEXT("loop")) ? 1 : 0;
+            }
+            else if (Type == TEXT("cache_paused"))
+            {
+                PausedOutcomes += 1;
+                TestTrue(TEXT("a pause names the pose it holds"),
+                    Outcome->GetNumberField(TEXT("applied_frames")) >= 1);
+            }
+        }
+        TestEqual(TEXT("both interactive seeks reach Maya"), Seeked20 + Seeked5, 2);
+        TestEqual(TEXT("a refused seek never reaches Maya"), Seeked99, 0);
+        TestTrue(TEXT("a local refusal is never reported as a peer error"),
+            !Types.Contains(TEXT("error")));
+        TestEqual(TEXT("Maya sees the first loop round"), Looped1, 1);
+        TestEqual(TEXT("Maya sees the second loop round"), Looped2, 1);
+        TestEqual(TEXT("one segment completion ends the looped attempt"), SegmentCompletions, 1);
+        TestEqual(TEXT("the looping attempt reports its loop selection"), LoopPlays, 1);
+        TestEqual(TEXT("one pause outcome reaches Maya"), PausedOutcomes, 1);
+
+        TArray<FString> Presentation;
+        for (const TSharedPtr<FJsonValue>& Value
+            : PeerResult->GetArrayField(TEXT("presentation")))
+        {
+            Presentation.Add(Value->AsString());
+        }
+        auto HasText = [&](const TCHAR* Fragment)
+        {
+            for (const FString& Text : Presentation)
+            {
+                if (Text.Contains(Fragment)) { return true; }
+            }
+            return false;
+        };
+        int32 CacheScopeCompletions = 0;
+        for (const TSharedPtr<FJsonValue>& Value : Outcomes)
+        {
+            const TSharedPtr<FJsonObject> Outcome = Value->AsObject();
+            if (Outcome->GetStringField(TEXT("type")) == TEXT("cache_complete")
+                && Outcome->GetStringField(TEXT("scope")) == TEXT("cache")
+                && Outcome->GetStringField(TEXT("session")) == TEXT("B"))
+            {
+                CacheScopeCompletions += 1;
+                TestEqual(TEXT("a reconnected whole-cache run reports every frame"),
+                    static_cast<int32>(Outcome->GetNumberField(TEXT("applied_frame_count"))),
+                    FrameCount);
+            }
+        }
+        TestEqual(TEXT("the reconnected run completes as a whole-cache attempt"),
+            CacheScopeCompletions, 1);
+
+        TestTrue(TEXT("Maya shows the paused source frame"), HasText(TEXT("已暂停于源帧")));
+        TestTrue(TEXT("Maya shows the seeked source frame"), HasText(TEXT("已定位到源帧")));
+        TestTrue(TEXT("Maya shows the looped round"), HasText(TEXT("第 2 轮")));
+        TestTrue(TEXT("Maya shows the segment completion"), HasText(TEXT("播放段完成")));
+        TestTrue(TEXT("Maya shows the segment frame range"), HasText(TEXT("源帧 1–24")));
+
+        bool bSecondRoundShown = false;
+        for (const TSharedPtr<FJsonValue>& Value
+            : PeerResult->GetArrayField(TEXT("view_snapshots")))
+        {
+            const TSharedPtr<FJsonObject> Snapshot = Value->AsObject();
+            const FString State = Snapshot->GetStringField(TEXT("state"));
+            const FString Type = Snapshot->GetStringField(TEXT("type"));
+            if (State == TEXT("PAUSED") && Type == TEXT("cache_paused"))
+            {
+                TestEqual(TEXT("Maya's paused view names the held frame"),
+                    static_cast<int32>(Snapshot->GetNumberField(TEXT("source_frame"))), HeldFrame);
+            }
+            if (State == TEXT("SEEKED") && Type == TEXT("cache_seeked"))
+            {
+                const int32 Frame =
+                    static_cast<int32>(Snapshot->GetNumberField(TEXT("source_frame")));
+                TestTrue(TEXT("Maya's seeked view names a seek target"),
+                    Frame == 20 || Frame == 5 || Frame == FirstSourceFrame
+                    || Frame == LastSourceFrame);
+            }
+            if (State == TEXT("REPLAYING") && Type == TEXT("cache_looped")
+                && static_cast<int32>(Snapshot->GetNumberField(TEXT("loop_round"))) == 2)
+            {
+                bSecondRoundShown = true;
+            }
+        }
+        TestTrue(TEXT("Maya's looping view counts the second round"), bSecondRoundShown);
+    }
+
+    Source->StopListener();
+    Client.RemoveSource(Source);
+    MtoUSetActiveSource(PreviousSource);
     World->DestroyWorld(false);
     GEngine->DestroyWorldContext(World);
     return true;
@@ -4750,7 +6802,7 @@ bool FMtoUCacheBackpressureSocketTest::RunTest(const FString& Parameters)
         return false;
     }
     const FString InitText = TEXT(
-        "{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\","
+        "{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\","
         "\"blendshapes_enabled\":true,\"bones\":[[\"Bone01\",-1,"
         "[0,0,0,0,0,0,1,1,1,1]],[\"Bone02\",0,[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}");
     const TArray<uint8> InitBytes = Packet(InitText);
@@ -5042,6 +7094,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // The v9 workflows negotiate without a linkage pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
@@ -5063,7 +7117,7 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         const FString RootBind = TransformJson(TestSkeleton->GetRefBonePose()[0]);
         const FString ChildBind = TransformJson(TestSkeleton->GetRefBonePose()[1]);
         return Packet(FString::Printf(
-            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"%s\",\"blendshapes_enabled\":%s,\"bones\":[[\"%s\",-1,%s],[\"%s\",0,%s]],\"curves\":%s}"),
             *Workflow,
             bBlendshapes ? TEXT("true") : TEXT("false"),
             *RootBoneName,
@@ -5412,6 +7466,47 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("Driver-only Morph value applies to the complete character display"),
         bDriverValueApplied);
+    const FMtoUPreviewReadiness ComparisonReadiness = Actor->GetPreviewReadiness();
+    UAnimInstance* ComparisonAnimInstance = SkeletalMeshComponent->GetAnimInstance();
+    TestTrue(TEXT("original garment comparison keeps the Generated pose driver and Driver follower"),
+        Actor->ShowOriginalGarment()
+        && Actor->GetDisplayTarget() == EMtoUDisplayTarget::OriginalGarment
+        && Actor->GetPreviewReadiness().GeneratedPreview == ComparisonReadiness.GeneratedPreview
+        && Actor->GetPreviewReadiness().State == ComparisonReadiness.State
+        && SkeletalMeshComponent->GetSkeletalMeshAsset() == GeneratedPreview
+        && SkeletalMeshComponent->GetAnimInstance() == ComparisonAnimInstance
+        && !SkeletalMeshComponent->IsMaterialSectionShown(0, 0)
+        && DriverDisplay && DriverDisplay->IsVisible()
+        && DriverDisplay->IsMaterialSectionShown(0, 0));
+    const TArray<uint8> ComparedFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[2,3,4,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1]],\"curves\":[0.9,0.5,0.25,0.4]}"));
+    TestTrue(TEXT("new Morph frame is sent while the original garment is visible"),
+        PartialClient && SendBytes(*PartialClient, ComparedFrame.GetData(), ComparedFrame.Num()));
+    const bool bComparedDriverUpdated = PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+            Actor->Tick(0.0f); // Headless world has no editor viewport tick.
+            return DriverDisplay
+                && DriverDisplay->GetBoneTransform(0).GetTranslation().Equals(FVector(2.0, 3.0, 4.0))
+                && FMath::IsNearlyEqual(
+                    DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.4f);
+        });
+    TestTrue(TEXT("visible original garment receives the new pose and Morph"),
+        bComparedDriverUpdated);
+    float ComparedGeneratedValue = 0.0f;
+    TestTrue(TEXT("restore shows Generated without replacing the session or Morph values"),
+        Actor->RestoreGeneratedGarment()
+        && Actor->GetPreviewReadiness().GeneratedPreview == ComparisonReadiness.GeneratedPreview
+        && SkeletalMeshComponent->GetAnimInstance() == ComparisonAnimInstance
+        && SkeletalMeshComponent->IsMaterialSectionShown(0, 0)
+        && SkeletalMeshComponent->GetBoneTransform(0).GetTranslation().Equals(FVector(2.0, 3.0, 4.0))
+        && SkeletalMeshComponent->GetCurveValue(
+            FName(TEXT("Accepted")), 0.0f, ComparedGeneratedValue)
+        && FMath::IsNearlyEqual(ComparedGeneratedValue, 0.5f)
+        && DriverDisplay && !DriverDisplay->IsMaterialSectionShown(0, 0)
+        && FMath::IsNearlyEqual(DriverDisplay->GetMorphTarget(FName(TEXT("DriverOnly"))), 0.4f));
     float NeverAcceptedValue = 0.0f;
     TestTrue(TEXT("non-accepted Generated Morph remains zero"),
         !SkeletalMeshComponent->GetCurveValue(
@@ -5481,6 +7576,8 @@ bool FMtoUWorkflowNegotiationTest::RunTest(const FString& Parameters)
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == VisibleTargetBefore
         && SkeletalMeshComponent->GetDisablePostProcessBlueprint());
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -5517,6 +7614,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUPreviewReadinessTest,
 bool FMtoUPreviewReadinessTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     USkeletalMesh* Driver = LoadObject<USkeletalMesh>(
         nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
     UWorld* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
@@ -5931,6 +8031,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     MakeReadyRevision(FirstGenerated);
     TestTrue(TEXT("test actor owns a ready transient Generated Preview"),
         Actor && Actor->GetPreviewReadiness().IsUsable());
+    TestTrue(TEXT("an actor that never streamed starts idle"),
+        Actor && Actor->GetLinkSessionState() == EMtoULinkSessionState::Idle);
 
     // Earlier automation worlds are only pending destruction at this point;
     // collect them so global actor discovery sees exactly this test's actor.
@@ -5938,13 +8040,15 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // The v9 workflows negotiate without a linkage pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -5968,7 +8072,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("ready Model revision negotiates a streaming session"),
         NegotiateModelReady(Primary).Contains(TEXT("\"type\":\"ready\"")));
     TestTrue(TEXT("connected actor reports the live session"),
-        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected")));
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Connected"))
+            && Actor->GetLinkSessionState() == EMtoULinkSessionState::Streaming);
 
     // ADR-0002 boundary: a relevant reimport of a Preview input ends the
     // active session without implicitly generating a new Preview.
@@ -5983,7 +8088,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("source returns to listening after the boundary termination"), bReturnedToListening);
     TestTrue(TEXT("terminated actor shows the true disconnected state"),
-        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected")));
+        Actor && Actor->GetConnectionStatus().Equals(TEXT("Disconnected"))
+            && Actor->GetLinkSessionState() == EMtoULinkSessionState::Ended);
     const FMtoUPreviewReadiness AfterReimport = Actor->GetPreviewReadiness();
     TestTrue(TEXT("reimport invalidates the previous revision without a new Preview"),
         AfterReimport.State == EMtoUPreviewState::Dirty
@@ -6010,6 +8116,8 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("second model client connects"), Second);
     TestTrue(TEXT("refreshed revision negotiates ready again"),
         NegotiateModelReady(Second).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("a new session replaces the ended one"),
+        Actor && Actor->GetLinkSessionState() == EMtoULinkSessionState::Streaming);
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
     Actor->Destroy();
     TestTrue(TEXT("actor destruction ends the live session on the wire"),
@@ -6031,10 +8139,19 @@ bool FMtoUSessionTerminationBoundaryTest::RunTest(const FString& Parameters)
     MtoURequestStreamingSessionEnd();
     FSocket* AfterDestroyClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("post-destruction client connects"), AfterDestroyClient);
+    // A destroyed target is refused before any pose work starts. The v10
+    // handshake refuses an unpaired or unresolvable object before it looks for
+    // a placed actor, so the diagnostic is one of those codes rather than the
+    // v9 NO_BINDING_ACTOR alone.
+    const FString DeletedReply = NegotiateModelReady(AfterDestroyClient);
     TestTrue(TEXT("a deleted Binding actor leaves no streaming target"),
-        NegotiateModelReady(AfterDestroyClient).Contains(TEXT("NO_BINDING_ACTOR")));
+        DeletedReply.Contains(TEXT("NO_BINDING_ACTOR"))
+        || DeletedReply.Contains(TEXT("PAIRING_REQUIRED"))
+        || DeletedReply.Contains(TEXT("TARGET_UNKNOWN")));
     DestroySocket(*SocketSubsystem, AfterDestroyClient);
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -6111,7 +8228,7 @@ bool FMtoUPieTargetPolicyTest::RunTest(const FString& Parameters)
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> Init = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     // PIE is not supported: its duplicated Binding actor must not be treated
@@ -6255,13 +8372,15 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // The v9 workflows negotiate without a linkage pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
     const FReferenceSkeleton* TestSkeleton = Driver ? &Driver->GetRefSkeleton() : nullptr;
     TestTrue(TEXT("test mesh has at least one bone"), TestSkeleton && TestSkeleton->GetNum() >= 1);
     const TArray<uint8> ModelInit = Packet(FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":6,\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"model\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Accepted\"]}"),
         *ReferenceSkeletonBonesJson(*TestSkeleton)));
 
     auto NegotiateModelReady = [&](FSocket* Client) -> FString
@@ -6377,10 +8496,17 @@ bool FMtoUWorldUnloadTerminationTest::RunTest(const FString& Parameters)
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
     FSocket* AfterUnloadClient = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("post-unload client connects"), AfterUnloadClient);
+    // Same v10 refusal order as the deleted-actor case: an unresolvable or
+    // unpaired object is refused before actor discovery.
+    const FString UnloadedReply = NegotiateModelReady(AfterUnloadClient);
     TestTrue(TEXT("an unloaded world leaves no stale streaming target"),
-        NegotiateModelReady(AfterUnloadClient).Contains(TEXT("NO_BINDING_ACTOR")));
+        UnloadedReply.Contains(TEXT("NO_BINDING_ACTOR"))
+        || UnloadedReply.Contains(TEXT("PAIRING_REQUIRED"))
+        || UnloadedReply.Contains(TEXT("TARGET_UNKNOWN")));
     DestroySocket(*SocketSubsystem, AfterUnloadClient);
 
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     return true;
@@ -6534,6 +8660,27 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("the Head owns a Head-only Morph and repeats the shared Morph"),
         AddUniformMorph(*Head, FName(TEXT("HeadOnly")), FVector3f(0.0f, 1.0f, 0.0f))
         && AddUniformMorph(*Head, FName(TEXT("Shared")), FVector3f(1.0f, 0.0f, 0.0f)));
+    // A reproducible split export: only the part skins ClothTip; the old Primary
+    // has no such branch. The extra exported branch has no positive influence.
+    USkeleton* SharedSkeleton = DuplicateObject<USkeleton>(Primary->GetSkeleton(), Actor);
+    Primary->SetSkeleton(SharedSkeleton);
+    Head->SetSkeleton(SharedSkeleton);
+    FReferenceSkeleton PartSkeleton;
+    {
+        FReferenceSkeletonModifier Modifier(PartSkeleton, nullptr);
+        Modifier.Add(Primary->GetRefSkeleton().GetRefBoneInfo()[0], Primary->GetRefSkeleton().GetRefBonePose()[0]);
+        Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), Primary->GetRefSkeleton().GetRefBonePose()[1]);
+        Modifier.Add(FMeshBoneInfo(TEXT("UnusedExport"), TEXT("UnusedExport"), 0), FTransform::Identity);
+    }
+    Head->SetRefSkeleton(PartSkeleton);
+    Head->CalculateInvRefMatrices();
+    SharedSkeleton->MergeAllBonesToBoneTree(Head);
+    FReferenceSkeleton MayaSkeleton = Primary->GetRefSkeleton();
+    {
+        FReferenceSkeletonModifier Modifier(MayaSkeleton, nullptr);
+        Modifier.Add(FMeshBoneInfo(TEXT("UnusedMaya"), TEXT("UnusedMaya"), 0), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), PartSkeleton.GetRefBonePose()[1]);
+    }
     Binding->SkeletalMesh = Primary;
     Actor->NotifyBindingInputsChanged();
     AddCharacterPart(*Binding, TEXT("Head"), Head);
@@ -6551,26 +8698,31 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         Actor->GetDisplayTarget() == EMtoUDisplayTarget::Driver
         && SkeletalMeshComponent->GetSkeletalMeshAsset() == Primary
         && PartComponents[0]->GetSkeletalMeshAsset() == Head);
-    TestTrue(TEXT("the part evaluates the one character subject"),
+    // The part is a Live Link display of the actor's one subject; it evaluates
+    // only once a session negotiated the actor.
+    TestTrue(TEXT("the part is a Live Link display of the character"),
         Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance()) != nullptr
-        && Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())
-            ->GetEnableLiveLinkEvaluation()
         && PartComponents[0]->GetUpdateAnimationInEditor()
         && PartComponents[0]->GetDisablePostProcessBlueprint());
+    TestFalse(TEXT("an unconnected part evaluates no subject"),
+        Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())
+        && Cast<ULiveLinkInstance>(PartComponents[0]->GetAnimInstance())->GetEnableLiveLinkEvaluation());
 
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
     TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
     const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    // The v9 workflows negotiate without a linkage pairing.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
     const FLiveLinkSubjectKey SubjectKey(SourceGuid, FName(TEXT("MtoU_Character")));
 
     FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
     TestNotNull(TEXT("character part client connects"), Client);
-    const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
+    const FString Bones = ReferenceSkeletonBonesJson(MayaSkeleton);
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
+        TEXT("{\"type\":\"init\",\"revision\":11,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"HeadOnly\",\"Shared\",\"Missing\"]}"),
         *Bones);
     const TArray<uint8> InitPacket = Packet(Init);
     TestTrue(TEXT("character part init is sent"), Client
@@ -6585,11 +8737,19 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         && Reply.Contains(TEXT("\"accepted_morph_count\":2")));
     TestTrue(TEXT("a Head-only Morph is not reported as missing in Unreal"),
         Reply.Contains(TEXT("\"missing_in_unreal\":[\"Missing\"]")));
+    TestTrue(TEXT("the part evaluates the one character subject"), PollUntil([&]()
+    {
+        Source->Update();
+        const TArray<TObjectPtr<UMtoUCharacterPartComponent>>& Parts = Actor->GetCharacterPartComponents();
+        ULiveLinkInstance* Instance = Parts.Num() == 1 && Parts[0]
+            ? Cast<ULiveLinkInstance>(Parts[0]->GetAnimInstance()) : nullptr;
+        return Instance && Instance->GetEnableLiveLinkEvaluation();
+    }, 5.0));
 
     // A frame carries one value per manifest name, in manifest order; only the
     // accepted names are published to the subject.
     const TArray<uint8> Frame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,8,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
     TestTrue(TEXT("composed character frame is sent"), Client
         && SendBytes(*Client, Frame.GetData(), Frame.Num()));
 
@@ -6620,12 +8780,13 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         const FVector PrimaryRoot =
             SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World).GetLocation();
         const FVector PartChild =
-            Part->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
+            Part->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation();
         const FVector PrimaryChild =
             SkeletalMeshComponent->GetBoneTransform(ChildBoneName, RTS_World).GetLocation();
-        return PartRoot.Equals(PrimaryRoot, 0.1) && PartChild.Equals(PrimaryChild, 0.1);
+        return PartRoot.Equals(FVector(5, 0, 0), 0.1) && PartRoot.Equals(PrimaryRoot, 0.1)
+            && PartChild.Equals(FVector(5, 8, 0), 0.1) && !PartChild.Equals(PrimaryChild, 0.1);
     });
-    TestTrue(TEXT("body, head, and face bones move the part with the Primary"), bPartFollowsTheStreamedPose);
+    TestTrue(TEXT("part-only ClothTip moves independently while the common root agrees"), bPartFollowsTheStreamedPose);
 
     // The transient test world tick does not drive skeletal animation, so each
     // component is animated explicitly. Live Link curves are the observable
@@ -6647,6 +8808,31 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
             }
         }
     };
+    int32 SkinVertexIndex = INDEX_NONE;
+    float ClothWeight = 0;
+    const auto& SkinLOD = Head->GetResourceForRendering()->LODRenderData[0];
+    for (const auto& Section : SkinLOD.RenderSections)
+    {
+        for (uint32 Vertex = Section.BaseVertexIndex; Vertex < Section.BaseVertexIndex + Section.NumVertices; ++Vertex)
+        {
+            float Weight = 0;
+            for (uint32 Influence = 0; Influence < SkinLOD.SkinWeightVertexBuffer.GetMaxBoneInfluences(); ++Influence)
+            {
+                const uint16 Value = SkinLOD.SkinWeightVertexBuffer.GetBoneWeight(Vertex, Influence);
+                if (Value && Section.BoneMap[SkinLOD.SkinWeightVertexBuffer.GetBoneIndex(Vertex, Influence)] == 1)
+                { Weight += float(Value) / 65535.0f; }
+            }
+            if (Weight > ClothWeight) { ClothWeight = Weight; SkinVertexIndex = Vertex; }
+        }
+    }
+    TestTrue(TEXT("the fixture has a surface weighted to ClothTip"), SkinVertexIndex != INDEX_NONE);
+    auto SkinVertex = [&]()
+    {
+        auto& LOD = Head->GetResourceForRendering()->LODRenderData[0];
+        return USkinnedMeshComponent::GetSkinnedVertexPosition(
+            PartComponents[0], FMath::Max(0, SkinVertexIndex), LOD, LOD.SkinWeightVertexBuffer);
+    };
+    const FVector3f LiveVertex = SkinVertex();
     float PartOnlyValue = 0.0f;
     const bool bPartOwnMorphApplied = PollUntil([&]()
     {
@@ -6717,7 +8903,7 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("cached playback entry, upload, and end are sent"),
         SendText(TEXT("{\"type\":\"cache_enter\"}"))
         && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":11,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
-        && SendText(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.5,0.25,0.0]}"))
+        && SendText(TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,12,0,0,0,0,1,1,1,1]],\"curves\":[0.5,0.25,0.0]}"))
         && SendText(TEXT("{\"type\":\"cache_end\"}")));
     Payload.Reset();
     TestTrue(TEXT("cached upload reaches ready"), Client && ReceivePacket(
@@ -6738,6 +8924,10 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("a captured frame drives the Primary and its parts together"),
         bPartsFollowCachedPlayback);
+    TestTrue(TEXT("cached ClothTip pose is consumed by the part"),
+        PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(7, 12, 0), 0.1));
+    TestTrue(TEXT("the part's skinned surface follows its independent bone in cached playback"),
+        (SkinVertex() - LiveVertex).Equals(FVector3f(2, 4 * ClothWeight, 0), 0.1f));
     // Playback must finish before the session accepts a clear.
     FString PlaybackOutcome;
     const bool bPlaybackCompleted = PollUntil([&]()
@@ -6752,14 +8942,14 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
         return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
     });
     TestTrue(TEXT("cached playback completes"), bPlaybackCompleted);
-    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\"}")));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
     Payload.Reset();
     TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
         *Client, Payload, [&]() { Source->Update(); }));
     TestTrue(TEXT("cleared outcome received"),
         FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
     const TArray<uint8> ResumedFrame = Packet(
-        TEXT("{\"type\":\"frame\",\"transforms\":[[13,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
+        TEXT("{\"type\":\"frame\",\"transforms\":[[13,0,0,0,0,0,1,1,1,1],[1,0,0,0,0,0,1,1,1,1],[999,0,0,0,0,0,1,1,1,1],[0,16,0,0,0,0,1,1,1,1]],\"curves\":[0.25,0.5,0.0]}"));
     TestTrue(TEXT("resumed live frame is sent"), Client
         && SendBytes(*Client, ResumedFrame.GetData(), ResumedFrame.Num()));
     const bool bPartFollowsLivePreviewAgain = PollUntil([&]()
@@ -6772,6 +8962,32 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     });
     TestTrue(TEXT("returning to live preview drives the part again"),
         bPartFollowsLivePreviewAgain);
+
+    TestTrue(TEXT("resumed real-time ClothTip uses the same mapping"),
+        PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(13, 16, 0), 0.1));
+
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("animation disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
+    USkeletalMesh* Generated = MakeTransientGeneratedPreview(Primary, *Actor);
+    TestTrue(TEXT("Model test establishes garment readiness from Primary only"),
+        FMtoUPreviewReadinessTestAccess::Begin(*Actor)
+        && FMtoUPreviewReadinessTestAccess::Commit(*Actor, Generated, false, TEXT("test garment"), FString(), {0}));
+    Client = ConnectLoopback(*SocketSubsystem, Port);
+    const auto ModelInit = Packet(Init.Replace(TEXT("animation"), TEXT("model")));
+    TestTrue(TEXT("extended character reconnects in Model workflow"), Client
+        && SendBytes(*Client, ModelInit.GetData(), ModelInit.Num())
+        && ReceivePacket(*Client, Payload, [&]() { Source->Update(); })
+        && FromUtf8(Payload).Contains(TEXT("\"type\":\"ready\"")));
+    TestTrue(TEXT("model pose is sent"), Client && SendBytes(*Client, Frame.GetData(), Frame.Num()));
+    TestTrue(TEXT("Model part-only bone animates beside the generated garment"), PollUntil([&]()
+    {
+        PumpCharacter();
+        return Actor->GetDisplayTarget() == EMtoUDisplayTarget::GeneratedPreview
+            && PartComponents[0]->GetBoneTransform(FName(TEXT("ClothTip")), RTS_World).GetLocation().Equals(FVector(5, 8, 0), 0.1)
+            && SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World).GetLocation().Equals(FVector(5, 0, 0), 0.1);
+    }));
+    TestTrue(TEXT("Model keeps the Primary skeleton on its generated garment"),
+        Generated->GetRefSkeleton().FindBoneIndex(TEXT("ClothTip")) == INDEX_NONE);
 
     // A part edit made through a real editor transaction must terminate the
     // running session before the new composition can be displayed, so frames
@@ -6809,6 +9025,8 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     DestroySocket(*SocketSubsystem, Client);
     TestTrue(TEXT("source returns to listening after the composed disconnect"),
         WaitForStatus(Source, TEXT("Listening on")));
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
     Source->StopListener();
     LiveLinkClient.RemoveSource(Source);
     if (World)
@@ -6822,10 +9040,673 @@ bool FMtoUCharacterPartsWorkflowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartSourceMappingTest,
+    "MtoULiveLink.Workflow.CharacterPartSourceMapping",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUCharacterPartSourceMappingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        TestTrue(TEXT("Live Link client feature is available"), false);
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Actor->GetBinding())
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    USkeletalMesh* Primary = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    USkeletalMesh* Part = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    TestTrue(TEXT("source-mapping fixtures are created"), Primary && Part);
+    if (!Primary || !Part)
+    {
+        return false;
+    }
+    // The part skins one branch the Primary never had, so `Cloth1` is a
+    // required target of the composed character rather than an extra branch.
+    USkeleton* SharedSkeleton = DuplicateObject<USkeleton>(Primary->GetSkeleton(), Actor);
+    Primary->SetSkeleton(SharedSkeleton);
+    Part->SetSkeleton(SharedSkeleton);
+    FReferenceSkeleton PartSkeleton;
+    {
+        FReferenceSkeletonModifier Modifier(PartSkeleton, nullptr);
+        Modifier.Add(
+            Primary->GetRefSkeleton().GetRefBoneInfo()[0],
+            Primary->GetRefSkeleton().GetRefBonePose()[0]);
+        Modifier.Add(
+            FMeshBoneInfo(TEXT("Cloth1"), TEXT("Cloth1"), 0),
+            Primary->GetRefSkeleton().GetRefBonePose()[1]);
+    }
+    Part->SetRefSkeleton(PartSkeleton);
+    Part->CalculateInvRefMatrices();
+    SharedSkeleton->MergeAllBonesToBoneTree(Part);
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    AddCharacterPart(*Binding, TEXT("Head"), Part);
+    Actor->NotifyCharacterPartsChanged();
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("the composed character requires the part-only branch"),
+        Composition.IsUsable()
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
+    if (!Composition.IsUsable())
+    {
+        return false;
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton& PrimarySkeleton = Primary->GetRefSkeleton();
+    const FTransform ClothBind = PartSkeleton.GetRefBonePose()[1];
+    const FString PrimaryBones = ReferenceSkeletonBonesJson(PrimarySkeleton);
+    // A split export carries the whole Primary branch, the duplicated `Cloth`
+    // short name one import generated an `Cloth1` target from, and the exact
+    // `Cloth1` itself. The rename candidate is captured first on purpose.
+    const FString MayaBones = FString::Printf(
+        TEXT("%s,[\"Cloth\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",0,%s]"),
+        *PrimaryBones,
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
+        *TransformJson(FTransform::Identity),
+        *TransformJson(ClothBind));
+    const FString Init = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":21,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *MayaBones);
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("source-mapping client connects"), Client);
+    const TArray<uint8> InitPacket = Packet(Init);
+    TestTrue(TEXT("source-mapping init is sent"),
+        Client && SendBytes(*Client, InitPacket.GetData(), InitPacket.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the composed character negotiates ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString ReadyReply = FromUtf8(Payload);
+    TestTrue(TEXT("the exact source owns the target without an import rename"),
+        ReadyReply.Contains(TEXT("\"type\":\"ready\""))
+        && ReadyReply.Contains(TEXT("\"bone_name_remaps\":[]"))
+        && !ReadyReply.Contains(TEXT("missing_in_unreal\":[\"")));
+    if (!ReadyReply.Contains(TEXT("\"type\":\"ready\"")))
+    {
+        // Leave no session, source, or world behind: the tests that run after
+        // this one share the same editor process.
+        AddError(FString::Printf(TEXT("negotiation reply: %s"), *ReadyReply));
+        DestroySocket(*SocketSubsystem, Client);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+
+    USkeletalMeshComponent* SkeletalMeshComponent = Actor->GetSkeletalMeshComponent();
+    USkeletalMeshComponent* PartComponent = Actor->GetCharacterPartComponents().IsEmpty()
+        ? nullptr
+        : Actor->GetCharacterPartComponents()[0];
+    TestNotNull(TEXT("the part owns one display component"), PartComponent);
+    if (!PartComponent)
+    {
+        return false;
+    }
+    // The transient test world does not drive skeletal animation, so every
+    // component is evaluated explicitly, exactly as the character parts
+    // workflow fixture does.
+    auto Pump = [&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        for (USkeletalMeshComponent* Component : { SkeletalMeshComponent, PartComponent })
+        {
+            if (Component && Component->IsRegistered())
+            {
+                Component->TickAnimation(1.0f / 60.0f, false);
+                Component->RefreshBoneTransforms();
+            }
+        }
+    };
+    const FName RootBoneName = PrimarySkeleton.GetBoneName(0);
+    const FString LiveFrame = FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[5,0,0,0,0,0,1,1,1,1],%s,[11,0,0,0,0,0,1,1,1,1],[12,0,0,0,0,0,1,1,1,1],[20,8,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[1]));
+    const TArray<uint8> Frame = Packet(LiveFrame);
+    TestTrue(TEXT("source-mapping live frame is sent"),
+        Client && SendBytes(*Client, Frame.GetData(), Frame.Num()));
+    TestTrue(TEXT("the required branch follows the exact source, not the earlier rename candidate"),
+        PollUntil([&]()
+        {
+            Pump();
+            return PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+                    .GetLocation().Equals(FVector(25.0, 8.0, 0.0), 0.1)
+                && SkeletalMeshComponent->GetBoneTransform(RootBoneName, RTS_World)
+                    .GetLocation().Equals(FVector(5.0, 0.0, 0.0), 0.1);
+        }));
+    // The rename candidate is an unused branch, so its own animation must not
+    // reach the displayed branch in any form.
+    TestFalse(TEXT("the discarded rename candidate drives nothing"),
+        PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+            .GetLocation().Equals(FVector(16.0, 0.0, 0.0), 0.1));
+
+    // Cached Playback consumes the same frozen projection, so a captured frame
+    // must drive the exact source as well.
+    auto SendText = [&](const TCHAR* Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return Client && SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    const FString CachedFrame = FString::Printf(
+        TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":[[7,0,0,0,0,0,1,1,1,1],%s,[13,0,0,0,0,0,1,1,1,1],[14,0,0,0,0,0,1,1,1,1],[30,8,0,0,0,0,1,1,1,1]],\"curves\":[]}"),
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[1]));
+    TestTrue(TEXT("cached playback entry, upload, and end are sent"),
+        SendText(TEXT("{\"type\":\"cache_enter\"}"))
+        && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":21,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
+        && SendText(*CachedFrame)
+        && SendText(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("cached upload reaches ready"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("the cached outcome belongs to this upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\"")));
+    TestTrue(TEXT("cached playback starts"), SendText(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("cached playback keeps the same source mapping"),
+        PollUntil([&]()
+        {
+            Pump();
+            return PartComponent->GetBoneTransform(FName(TEXT("Cloth1")), RTS_World)
+                .GetLocation().Equals(FVector(37.0, 8.0, 0.0), 0.1);
+        }));
+    FString PlaybackOutcome;
+    TestTrue(TEXT("cached playback completes"), PollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        while (Client && Client->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+        {
+            PlaybackOutcome.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+        }
+        return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
+    }));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+
+    // A second Maya source with the same exact name under the same mapped
+    // parent would make the required target answer to two animations, so the
+    // connection must be refused instead of publishing one of them.
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
+    Client = ConnectLoopback(*SocketSubsystem, Port);
+    const FString AmbiguousInit = FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":22,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth1\",0,%s],[\"Cloth1\",0,%s]],\"curves\":[]}"),
+        *PrimaryBones,
+        *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
+        *TransformJson(ClothBind),
+        *TransformJson(ClothBind));
+    const TArray<uint8> AmbiguousPacket = Packet(AmbiguousInit);
+    Payload.Reset();
+    TestTrue(TEXT("the ambiguous init is sent"),
+        Client && SendBytes(*Client, AmbiguousPacket.GetData(), AmbiguousPacket.Num()));
+    TestTrue(TEXT("a second source for one required target is refused"), Client && ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString AmbiguousReply = FromUtf8(Payload);
+    AddInfo(FString::Printf(TEXT("ambiguity reply: %s"), *AmbiguousReply));
+    TestTrue(TEXT("the refusal names the target and its competing sources"),
+        AmbiguousReply.Contains(TEXT("\"type\":\"error\""))
+        && AmbiguousReply.Contains(TEXT("SKELETON_MISMATCH"))
+        && AmbiguousReply.Contains(TEXT("Mapping ambiguities"))
+        && AmbiguousReply.Contains(TEXT("'Cloth1' below"))
+        && AmbiguousReply.Contains(TEXT("2 Maya bones")));
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("the refused connection returns the source to listening"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    // Both Cloth and Cloth1 are now required. The two same-parent Maya Cloth
+    // sources cannot split across them in capture order; no session may start.
+    USkeletalMesh* ExactPart = MakeCharacterPartMesh(Part, *Actor);
+    TestNotNull(TEXT("additional exact-name part is created"), ExactPart);
+    if (ExactPart)
+    {
+        FReferenceSkeleton ExactPartSkeleton;
+        {
+            FReferenceSkeletonModifier Modifier(ExactPartSkeleton, nullptr);
+            Modifier.Add(
+                PrimarySkeleton.GetRefBoneInfo()[0],
+                PrimarySkeleton.GetRefBonePose()[0]);
+            Modifier.Add(
+                FMeshBoneInfo(TEXT("Cloth"), TEXT("Cloth"), 0), ClothBind);
+        }
+        ExactPart->SetSkeleton(SharedSkeleton);
+        ExactPart->SetRefSkeleton(ExactPartSkeleton);
+        ExactPart->CalculateInvRefMatrices();
+        SharedSkeleton->MergeAllBonesToBoneTree(ExactPart);
+        AddCharacterPart(*Binding, TEXT("ExactCloth"), ExactPart);
+        Actor->NotifyCharacterPartsChanged();
+        const FMtoUCharacterComposition TwoPartComposition =
+            FMtoUCharacterComposition::Resolve(Binding);
+        TestTrue(TEXT("both exact and suffix branches are required by the character"),
+            TwoPartComposition.IsUsable()
+            && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth")) != INDEX_NONE
+            && TwoPartComposition.RequiredSkeleton.FindBoneIndex(TEXT("Cloth1")) != INDEX_NONE);
+        Client = ConnectLoopback(*SocketSubsystem, Port);
+        const FString TwoTargetInit = FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":23,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"Cloth\",0,%s],[\"Cloth\",0,%s]],\"curves\":[]}"),
+            *PrimaryBones, *TransformJson(ClothBind), *TransformJson(ClothBind));
+        const TArray<uint8> TwoTargetPacket = Packet(TwoTargetInit);
+        TestTrue(TEXT("two-target init is sent"),
+            Client && SendBytes(*Client, TwoTargetPacket.GetData(), TwoTargetPacket.Num()));
+        Payload.Reset();
+        TestTrue(TEXT("two-target handshake replies"), Client && ReceivePacket(
+            *Client, Payload, [&]() { Source->Update(); }));
+        const FString CollisionReply = FromUtf8(Payload);
+        TestTrue(TEXT("public handshake rejects indistinguishable sources rather than publishing either motion"),
+            CollisionReply.Contains(TEXT("\"type\":\"error\""))
+            && CollisionReply.Contains(TEXT("SKELETON_MISMATCH"))
+            && CollisionReply.Contains(TEXT("Mapping ambiguities"))
+            && CollisionReply.Contains(TEXT("'Cloth' below"))
+            && CollisionReply.Contains(TEXT("2 Maya bones")));
+        DestroySocket(*SocketSubsystem, Client);
+        TestTrue(TEXT("two-target refusal resumes listening"), WaitForStatus(Source, TEXT("Listening on")));
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        FLiveLinkSubjectFrameData RejectedFrame;
+        TestFalse(TEXT("two-target refusal leaves no published subject"),
+            LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                FLiveLinkSubjectKey(SourceGuid, FName(TEXT("MtoU_Character"))),
+                ULiveLinkAnimationRole::StaticClass(), RejectedFrame));
+    }
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    if (World)
+    {
+        World->DestroyWorld(false);
+        if (GEngine)
+        {
+            GEngine->DestroyWorldContext(World);
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartRenameProjectionTest,
+    "MtoULiveLink.Workflow.CharacterPartRenameProjection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoUCharacterPartRenameProjectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        TestTrue(TEXT("Live Link client feature is available"), false);
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (World && GEngine)
+    {
+        FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+        WorldContext.SetCurrentWorld(World);
+        World->InitializeActorsForPlay(FURL());
+    }
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Actor->GetBinding())
+    {
+        return false;
+    }
+    UMtoULiveLinkBinding* Binding = Actor->GetBinding();
+    USkeletalMesh* Primary = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    USkeletalMesh* NarrowPart = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    USkeletalMesh* BroadPart = MakeCharacterPartMesh(Binding->SkeletalMesh, *Actor);
+    TestTrue(TEXT("rename-projection fixtures are created"), Primary && NarrowPart && BroadPart);
+    if (!Primary || !NarrowPart || !BroadPart)
+    {
+        return false;
+    }
+    // Both parts skin a branch the Primary never had, so the composed character
+    // requires `Cloth11` and `Cloth2`: names only an importer rename of the
+    // duplicated Maya short names `Cloth1` and `Cloth` can reach.
+    USkeleton* SharedSkeleton = DuplicateObject<USkeleton>(Primary->GetSkeleton(), Actor);
+    Primary->SetSkeleton(SharedSkeleton);
+    NarrowPart->SetSkeleton(SharedSkeleton);
+    BroadPart->SetSkeleton(SharedSkeleton);
+    const FReferenceSkeleton& PrimarySkeleton = Primary->GetRefSkeleton();
+    const FName NarrowName(TEXT("Cloth11"));
+    const FName BroadName(TEXT("Cloth2"));
+    const FTransform BranchPose(FVector(0.0, 5.0, 0.0));
+    const auto AddPartBranch = [&](USkeletalMesh& Part, FName BranchName)
+    {
+        FReferenceSkeleton PartSkeleton;
+        {
+            FReferenceSkeletonModifier Modifier(PartSkeleton, nullptr);
+            Modifier.Add(
+                PrimarySkeleton.GetRefBoneInfo()[0],
+                PrimarySkeleton.GetRefBonePose()[0]);
+            Modifier.Add(FMeshBoneInfo(BranchName, BranchName.ToString(), 0), BranchPose);
+        }
+        Part.SetRefSkeleton(PartSkeleton);
+        Part.CalculateInvRefMatrices();
+        SharedSkeleton->MergeAllBonesToBoneTree(&Part);
+    };
+    AddPartBranch(*NarrowPart, NarrowName);
+    AddPartBranch(*BroadPart, BroadName);
+    Binding->SkeletalMesh = Primary;
+    Actor->NotifyBindingInputsChanged();
+    AddCharacterPart(*Binding, TEXT("NarrowCoat"), NarrowPart);
+    AddCharacterPart(*Binding, TEXT("BroadCoat"), BroadPart);
+    Actor->NotifyCharacterPartsChanged();
+    const FMtoUCharacterComposition Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("the composed character requires both renamed branches"),
+        Composition.IsUsable()
+        && Composition.RequiredSkeleton.FindBoneIndex(NarrowName) != INDEX_NONE
+        && Composition.RequiredSkeleton.FindBoneIndex(BroadName) != INDEX_NONE);
+    if (!Composition.IsUsable())
+    {
+        return false;
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    USkeletalMeshComponent* NarrowComponent = nullptr;
+    USkeletalMeshComponent* BroadComponent = nullptr;
+    for (const TObjectPtr<UMtoUCharacterPartComponent>& Component : Actor->GetCharacterPartComponents())
+    {
+        if (!Component)
+        {
+            continue;
+        }
+        if (Component->PartMesh == NarrowPart)
+        {
+            NarrowComponent = Component;
+        }
+        if (Component->PartMesh == BroadPart)
+        {
+            BroadComponent = Component;
+        }
+    }
+    TestTrue(TEXT("both parts own a display component"), NarrowComponent && BroadComponent);
+    if (!NarrowComponent || !BroadComponent)
+    {
+        return false;
+    }
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    // Maya carries both short names twice: once on an unused spare branch that
+    // only makes them duplicates, and once below the mapped root. The two body
+    // siblings are captured in either order.
+    const FString PrimaryBones = ReferenceSkeletonBonesJson(PrimarySkeleton);
+    const auto InitText = [&](bool bNarrowFirst, int32 Revision)
+    {
+        return FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":%d,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s,[\"spare\",0,%s],[\"Cloth\",2,%s],[\"Cloth1\",2,%s],[\"%s\",0,%s],[\"%s\",0,%s]],\"curves\":[]}"),
+            Revision,
+            *PrimaryBones,
+            *TransformJson(PrimarySkeleton.GetRefBonePose()[0]),
+            *TransformJson(FTransform::Identity),
+            *TransformJson(FTransform::Identity),
+            bNarrowFirst ? TEXT("Cloth1") : TEXT("Cloth"),
+            *TransformJson(FTransform::Identity),
+            bNarrowFirst ? TEXT("Cloth") : TEXT("Cloth1"),
+            *TransformJson(FTransform::Identity));
+    };
+    // Maya bone order: root, child, spare, Cloth(spare), Cloth1(spare), then the
+    // two body siblings in capture order. Both branch bones are published with
+    // an identity bind pose, so a frame's translation reaches the target's own
+    // reference pose, five units below the root's offset.
+    const auto TransformsJson = [&](bool bNarrowFirst, double BroadX, double NarrowX)
+    {
+        const FString Broad = TransformJson(FTransform(FVector(BroadX, 0.0, 0.0)));
+        const FString Narrow = TransformJson(FTransform(FVector(NarrowX, 0.0, 0.0)));
+        return FString::Printf(
+            TEXT("[[5,0,0,0,0,0,1,1,1,1],%s,[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1],[0,0,0,0,0,0,1,1,1,1],%s,%s]"),
+            *TransformJson(PrimarySkeleton.GetRefBonePose()[1]),
+            bNarrowFirst ? *Narrow : *Broad,
+            bNarrowFirst ? *Broad : *Narrow);
+    };
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("rename-projection client connects"), Client);
+    if (!Client)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+        return false;
+    }
+    const auto CleanUp = [&](FSocket*& InOutClient)
+    {
+        DestroySocket(*SocketSubsystem, InOutClient);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        if (World)
+        {
+            World->DestroyWorld(false);
+            if (GEngine)
+            {
+                GEngine->DestroyWorldContext(World);
+            }
+        }
+    };
+
+    const TArray<uint8> InitBytes = Packet(InitText(false, 31));
+    TestTrue(TEXT("rename-projection init is sent"),
+        SendBytes(*Client, InitBytes.GetData(), InitBytes.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the composed character negotiates ready"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString ReadyReply = FromUtf8(Payload);
+    AddInfo(TEXT("Rename-projection handshake: ") + ReadyReply);
+    TestTrue(TEXT("both importer renames are negotiated in one session"),
+        ReadyReply.Contains(TEXT("\"type\":\"ready\""))
+        && ReadyReply.Contains(TEXT("Cloth -> Cloth2"))
+        && ReadyReply.Contains(TEXT("Cloth1 -> Cloth11")));
+    if (!ReadyReply.Contains(TEXT("\"type\":\"ready\"")))
+    {
+        AddError(FString::Printf(TEXT("negotiation reply: %s"), *ReadyReply));
+        CleanUp(Client);
+        return false;
+    }
+
+    auto Pump = [&]()
+    {
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        World->Tick(LEVELTICK_All, 1.0f / 60.0f);
+        for (USkeletalMeshComponent* Component : { NarrowComponent, BroadComponent })
+        {
+            if (Component && Component->IsRegistered())
+            {
+                Component->TickAnimation(1.0f / 60.0f, false);
+                Component->RefreshBoneTransforms();
+            }
+        }
+    };
+    const auto BoneLocation = [](USkeletalMeshComponent& Component, FName Bone)
+    {
+        return Component.GetBoneTransform(Bone, RTS_World).GetLocation();
+    };
+
+    const FString LiveFrame = FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":%s,\"curves\":[]}"),
+        *TransformsJson(false, 10.0, 20.0));
+    const TArray<uint8> LiveBytes = Packet(LiveFrame);
+    TestTrue(TEXT("rename-projection live frame is sent"),
+        SendBytes(*Client, LiveBytes.GetData(), LiveBytes.Num()));
+    TestTrue(TEXT("each renamed target follows its own Maya source"),
+        PollUntil([&]()
+        {
+            Pump();
+            return BoneLocation(*BroadComponent, BroadName).Equals(FVector(15.0, 5.0, 0.0), 0.1)
+                && BoneLocation(*NarrowComponent, NarrowName).Equals(FVector(25.0, 5.0, 0.0), 0.1);
+        }));
+
+    // Cached Playback consumes the same frozen projection, so a captured frame
+    // must drive the same sources.
+    auto SendText = [&](const TCHAR* Text)
+    {
+        const TArray<uint8> Bytes = Packet(Text);
+        return SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+    };
+    const FString CachedFrame = FString::Printf(
+        TEXT("{\"type\":\"cache_frame\",\"index\":0,\"transforms\":%s,\"curves\":[]}"),
+        *TransformsJson(false, 30.0, 40.0));
+    TestTrue(TEXT("cached playback entry, upload, and end are sent"),
+        SendText(TEXT("{\"type\":\"cache_enter\"}"))
+        && SendText(TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":31,\"fps\":30,\"start_frame\":1,\"end_frame\":1,\"frame_count\":1,\"payload_size\":512}"))
+        && SendText(*CachedFrame)
+        && SendText(TEXT("{\"type\":\"cache_end\"}")));
+    Payload.Reset();
+    TestTrue(TEXT("cached upload reaches ready"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("the cached outcome belongs to this upload"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_ready\"")));
+    TestTrue(TEXT("cached playback starts"), SendText(TEXT("{\"type\":\"cache_play\",\"play_id\":1}")));
+    TestTrue(TEXT("cached playback keeps the same rename projection"),
+        PollUntil([&]()
+        {
+            Pump();
+            return BoneLocation(*BroadComponent, BroadName).Equals(FVector(35.0, 5.0, 0.0), 0.1)
+                && BoneLocation(*NarrowComponent, NarrowName).Equals(FVector(45.0, 5.0, 0.0), 0.1);
+        }));
+    FString PlaybackOutcome;
+    TestTrue(TEXT("cached playback completes"), PollUntil([&]()
+    {
+        Pump();
+        uint8 Buffer[65536];
+        int32 Read = 0;
+        while (Client && Client->Recv(Buffer, sizeof(Buffer), Read) && Read > 0)
+        {
+            PlaybackOutcome.Append(FromUtf8(TArray<uint8>(Buffer, Read)));
+        }
+        return PlaybackOutcome.Contains(TEXT("\"type\":\"cache_complete\""));
+    }));
+    TestTrue(TEXT("cached playback is cleared"), SendText(TEXT("{\"type\":\"cache_clear\",\"clear_id\":1}")));
+    Payload.Reset();
+    TestTrue(TEXT("clear is acknowledged"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TestTrue(TEXT("cleared outcome received"),
+        FromUtf8(Payload).Contains(TEXT("\"type\":\"cache_cleared\"")));
+
+    // The same character reconnects with the two body siblings captured in the
+    // opposite order: the accepted mapping must not change.
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("disconnect releases the subject"), WaitForStatus(Source, TEXT("Listening on")));
+    Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("reversed-order client connects"), Client);
+    if (!Client)
+    {
+        CleanUp(Client);
+        return false;
+    }
+    const TArray<uint8> ReversedInitBytes = Packet(InitText(true, 32));
+    Payload.Reset();
+    TestTrue(TEXT("the reversed-order init is sent"),
+        SendBytes(*Client, ReversedInitBytes.GetData(), ReversedInitBytes.Num()));
+    TestTrue(TEXT("the reversed-order handshake replies"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    const FString ReversedReply = FromUtf8(Payload);
+    AddInfo(TEXT("Reversed-order handshake: ") + ReversedReply);
+    TestTrue(TEXT("the reversed capture negotiates the same two renames"),
+        ReversedReply.Contains(TEXT("\"type\":\"ready\""))
+        && ReversedReply.Contains(TEXT("Cloth -> Cloth2"))
+        && ReversedReply.Contains(TEXT("Cloth1 -> Cloth11")));
+    const FString ReversedFrame = FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":%s,\"curves\":[]}"),
+        *TransformsJson(true, 10.0, 20.0));
+    const TArray<uint8> ReversedFrameBytes = Packet(ReversedFrame);
+    TestTrue(TEXT("the reversed-order frame is sent"),
+        SendBytes(*Client, ReversedFrameBytes.GetData(), ReversedFrameBytes.Num()));
+    TestTrue(TEXT("reversing the capture keeps every renamed target on its own source"),
+        PollUntil([&]()
+        {
+            Pump();
+            return BoneLocation(*BroadComponent, BroadName).Equals(FVector(15.0, 5.0, 0.0), 0.1)
+                && BoneLocation(*NarrowComponent, NarrowName).Equals(FVector(25.0, 5.0, 0.0), 0.1);
+        }));
+
+    CleanUp(Client);
+    return true;
+}
+
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartLifecycleTest,
     "MtoULiveLink.Actor.CharacterPartLifecycle",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
 bool FMtoUCharacterPartLifecycleTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -6980,6 +9861,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartTransactionsTest,
 bool FMtoUCharacterPartTransactionsTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ignored: the engine notes the context-free test world on actor teardown.
+    AddExpectedMessagePlain(TEXT("World has no context"), ELogVerbosity::Warning,
+        EAutomationExpectedMessageFlags::Contains, -1);
     UPackage* Package = CreatePackage(TEXT("/Temp/MtoUCharacterPartTransactions"));
     UWorld* World = UWorld::CreateWorld(
         EWorldType::EditorPreview, false, TEXT("MtoUCharacterPartTransactions"), Package, true);
@@ -7252,7 +10136,7 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("source reaches listening state"),
         WaitForStatus(Source, TEXT("Listening on")));
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":17,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *ReferenceSkeletonBonesJson(Primary->GetRefSkeleton()));
     const auto ConnectAndNegotiate = [&](FSocket*& OutClient)
     {
@@ -7361,6 +10245,384 @@ bool FMtoUPreviewInputRestoreTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneNegotiationTest,
+    "MtoULiveLink.Negotiation.RequiredBones",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneNegotiationTest::RunTest(const FString& Parameters)
+{
+    FMtoUCharacterDescription Maya;
+    Maya.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0}, {TEXT("unused"), 0},
+        {TEXT("cloth"), 0}, {TEXT("tip"), 3}};
+    FMtoUTargetDescription Target;
+    Target.bAllowUnusedSourceBones = true;
+    Target.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0}, {TEXT("cloth"), 0}, {TEXT("tip"), 2}};
+    Target.BoneOwners = {TEXT("Body, Coat"), TEXT("Body"), TEXT("Coat (ancestor)"), TEXT("Coat")};
+    auto Result = FMtoUConnectionNegotiator::Negotiate(Maya, Target);
+    TestTrue(TEXT("required union accepts interleaved unused source branches"), Result.bUsable);
+    TestTrue(TEXT("source projection identifies the actual cloth motion"),
+        Result.TargetBoneIndices == TArray<int32>({0, 1, -1, 2, 3}));
+    auto Missing = Maya;
+    Missing.Bones.SetNum(3);
+    Result = FMtoUConnectionNegotiator::Negotiate(Missing, Target);
+    TestFalse(TEXT("missing required branch rejects"), Result.bUsable);
+    TestTrue(TEXT("missing and unreached dependencies name their owner"),
+        Result.ExtraBones.Contains(TEXT("cloth (required by Coat (ancestor))"))
+        && Result.UnreachedUnrealBones.Contains(TEXT("tip (required by Coat)")));
+    auto WrongParent = Maya;
+    WrongParent.Bones[4].ParentIndex = 1;
+    TestFalse(TEXT("required bone under wrong parent rejects"), FMtoUConnectionNegotiator::Negotiate(WrongParent, Target).bUsable);
+    // An unused duplicate on another matched branch is harmless, whichever is first.
+    Maya.Bones.Insert({TEXT("tip"), 1}, 2);
+    Maya.Bones[5].ParentIndex = 4;
+    TestTrue(TEXT("an unused earlier duplicate cannot reject a required later branch"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones[3].Name = TEXT("tip1");
+    TestTrue(TEXT("numeric mapping retains counts from the complete Maya snapshot"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones[3].Name = TEXT("tip_0123456789abcdef0123456789abcdef");
+    TestTrue(TEXT("hash mapping remains parent-scoped on a subset"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    Target.Bones.Add({TEXT("tip2"), 2});
+    TestFalse(TEXT("subset negotiation cannot guess between suffix candidates"),
+        FMtoUConnectionNegotiator::Negotiate(Maya, Target).bUsable);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneSourceTest,
+    "MtoULiveLink.Negotiation.RequiredBoneSources",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneSourceTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FMtoUTargetDescription JointTarget;
+    JointTarget.bAllowUnusedSourceBones = true;
+    JointTarget.Bones = {{TEXT("root"), -1}, {TEXT("joint1"), 0}};
+    JointTarget.BoneOwners = {TEXT("Body"), TEXT("Coat")};
+
+    // The exact name is published after the rename candidate that also matches
+    // the required target, and then before it. The exact source must take the
+    // target in both captures, and the losing duplicate must stay unused
+    // instead of being published as the authority for the branch.
+    const FMtoUCharacterDescription RenameBeforeExact = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("joint")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint1")), 0},
+        },
+        {},
+    };
+    const FMtoUCharacterDescription ExactBeforeRename = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("joint1")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint")), 0},
+        },
+        {},
+    };
+    const FMtoUNegotiationOutcome RenameFirst =
+        FMtoUConnectionNegotiator::Negotiate(RenameBeforeExact, JointTarget);
+    const FMtoUNegotiationOutcome ExactFirst =
+        FMtoUConnectionNegotiator::Negotiate(ExactBeforeRename, JointTarget);
+    TestTrue(TEXT("the exact name takes the target a rename candidate claimed first"),
+        RenameFirst.bUsable
+        && RenameFirst.TargetBoneIndices == TArray<int32>({0, -1, -1, 1}));
+    TestTrue(TEXT("the same exact source takes it when the capture lists it first"),
+        ExactFirst.bUsable
+        && ExactFirst.TargetBoneIndices == TArray<int32>({0, 1, -1, -1}));
+    TestTrue(TEXT("a superseded rename claim is never published as a mapping"),
+        RenameFirst.BoneNameMappings.IsEmpty() && ExactFirst.BoneNameMappings.IsEmpty());
+
+    // One published short name under one mapped parent, twice: both sources
+    // match the single required target, so the character must refuse rather
+    // than stream whichever source the capture happened to list first.
+    const FMtoUCharacterDescription DuplicateShortName = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("group")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint")), 1},
+        },
+        {},
+    };
+    FMtoUTargetDescription GroupTarget;
+    GroupTarget.bAllowUnusedSourceBones = true;
+    GroupTarget.Bones = {{TEXT("root"), -1}, {TEXT("group"), 0}, {TEXT("joint"), 1}};
+    GroupTarget.BoneOwners = {TEXT("Body"), TEXT("Body"), TEXT("Coat")};
+    const FMtoUNegotiationOutcome AmbiguousJoint =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, GroupTarget);
+    TestFalse(TEXT("two exact sources for one required target reject the connection"),
+        AmbiguousJoint.bUsable);
+    TestEqual(TEXT("a duplicate source keeps the stable failure category"),
+        AmbiguousJoint.FailureCategory, FString(TEXT("SKELETON_MISMATCH")));
+    TestTrue(TEXT("the ambiguity names the required target, its parent, and both sources"),
+        AmbiguousJoint.MappingAmbiguities.Num() == 1
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("'joint' below group"))
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+        && AmbiguousJoint.MappingAmbiguities[0].Contains(TEXT("root/group/joint")));
+    TestTrue(TEXT("a rejected ambiguity carries no source projection"),
+        AmbiguousJoint.TargetBoneIndices.IsEmpty() && AmbiguousJoint.BoneNameMappings.IsEmpty());
+
+    // The same collision on the imported rename form: neither duplicate can be
+    // preferred, so the suffix target is ambiguous as well.
+    FMtoUTargetDescription RenamedGroupTarget;
+    RenamedGroupTarget.bAllowUnusedSourceBones = true;
+    RenamedGroupTarget.Bones = {{TEXT("root"), -1}, {TEXT("group"), 0}, {TEXT("joint1"), 1}};
+    const FMtoUNegotiationOutcome AmbiguousRename =
+        FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, RenamedGroupTarget);
+    TestFalse(TEXT("two rename candidates for one required target reject the connection"),
+        AmbiguousRename.bUsable);
+    TestTrue(TEXT("the rename ambiguity names the imported target"),
+        AmbiguousRename.MappingAmbiguities.Num() == 1
+        && AmbiguousRename.MappingAmbiguities[0].Contains(TEXT("'joint1' below group")));
+
+    // Two branches that map to their own parents each keep a duplicate short
+    // name: only the mapped parent's own scope decides competition.
+    const FMtoUCharacterDescription SplitBranches = {
+        {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("left")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("right")), 0},
+            {FName(TEXT("joint")), 3},
+        },
+        {},
+    };
+    FMtoUTargetDescription SplitTarget;
+    SplitTarget.bAllowUnusedSourceBones = true;
+    SplitTarget.Bones = {
+        {TEXT("root"), -1}, {TEXT("left"), 0}, {TEXT("joint"), 1},
+        {TEXT("right"), 0}, {TEXT("joint"), 3}};
+    const FMtoUNegotiationOutcome Split =
+        FMtoUConnectionNegotiator::Negotiate(SplitBranches, SplitTarget);
+    TestTrue(TEXT("duplicate short names under their own mapped parents stay supported"),
+        Split.bUsable && Split.TargetBoneIndices == TArray<int32>({0, 1, 2, 3, 4}));
+    // Two indistinguishable siblings cannot be assigned to separate exact and
+    // importer-suffixed targets just because both happen to be available.
+    for (const FName Suffix : {FName(TEXT("joint1")),
+        FName(TEXT("joint_0123456789abcdef0123456789abcdef"))})
+    {
+        FMtoUTargetDescription TwoTargets = GroupTarget;
+        TwoTargets.Bones.Add({Suffix, 1});
+        const FMtoUNegotiationOutcome Collision =
+            FMtoUConnectionNegotiator::Negotiate(DuplicateShortName, TwoTargets);
+        TestFalse(TEXT("a free suffix does not absorb a duplicate exact source"),
+            Collision.bUsable);
+        TestTrue(TEXT("the conflicting exact target, parent and source paths are diagnosed"),
+            Collision.FailureCategory == TEXT("SKELETON_MISMATCH")
+            && Collision.MappingAmbiguities.Num() == 1
+            && Collision.MappingAmbiguities[0].Contains(TEXT("'joint' below group"))
+            && Collision.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+            && Collision.MappingAmbiguities[0].Contains(TEXT("root/group/joint")));
+    }
+
+    // A later exact sibling reserves joint1 before the earlier joint considers
+    // its two possible importer renames. An unused duplicate on another branch
+    // is not a contender for either target.
+    FMtoUCharacterDescription TwoSourceNames;
+    TwoSourceNames.Bones = {{TEXT("root"), -1}, {TEXT("spare"), 0},
+        {TEXT("joint"), 1}, {TEXT("body"), 0}, {TEXT("joint"), 3},
+        {TEXT("joint1"), 3}};
+    FMtoUTargetDescription ReservedTargets;
+    ReservedTargets.bAllowUnusedSourceBones = true;
+    ReservedTargets.Bones = {{TEXT("root"), -1}, {TEXT("body"), 0},
+        {TEXT("joint1"), 1}, {TEXT("joint2"), 1}};
+    const FMtoUNegotiationOutcome RenameBeforeExactSibling =
+        FMtoUConnectionNegotiator::Negotiate(TwoSourceNames, ReservedTargets);
+    TestTrue(TEXT("exact source reserves joint1 in the rename-first capture"),
+        RenameBeforeExactSibling.bUsable
+        && RenameBeforeExactSibling.TargetBoneIndices == TArray<int32>({0, -1, -1, 1, 3, 2})
+        && RenameBeforeExactSibling.BoneNameMappings.Num() == 1
+        && RenameBeforeExactSibling.BoneNameMappings[0].Contains(TEXT("joint -> joint2")));
+    Swap(TwoSourceNames.Bones[4], TwoSourceNames.Bones[5]);
+    const FMtoUNegotiationOutcome ExactBeforeRenameSibling =
+        FMtoUConnectionNegotiator::Negotiate(TwoSourceNames, ReservedTargets);
+    TestTrue(TEXT("the same names map identically after reversing sibling order"),
+        ExactBeforeRenameSibling.bUsable
+        && ExactBeforeRenameSibling.TargetBoneIndices == TArray<int32>({0, -1, -1, 1, 2, 3})
+        && ExactBeforeRenameSibling.BoneNameMappings == RenameBeforeExactSibling.BoneNameMappings);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneRenameOrderTest,
+    "MtoULiveLink.Negotiation.RequiredBoneRenameOrder",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneRenameOrderTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // Two duplicated short names that only resolve together: `joint1` has no
+    // target other than `joint11`, which leaves `joint` for `joint2`. Neither
+    // order of the two body siblings may decide the mapping, and the unused
+    // spare branch only supplies the duplicated short names.
+    FMtoUCharacterDescription RenameChain;
+    RenameChain.Bones = {
+        {FName(TEXT("root")), INDEX_NONE},
+        {FName(TEXT("spare")), 0},
+        {FName(TEXT("joint")), 1},
+        {FName(TEXT("joint1")), 1},
+        {FName(TEXT("body")), 0},
+        {FName(TEXT("joint")), 4},
+        {FName(TEXT("joint1")), 4}};
+    FMtoUTargetDescription RenameChainTarget;
+    RenameChainTarget.bAllowUnusedSourceBones = true;
+    RenameChainTarget.Bones = {
+        {FName(TEXT("root")), INDEX_NONE},
+        {FName(TEXT("body")), 0},
+        {FName(TEXT("joint11")), 1},
+        {FName(TEXT("joint2")), 1}};
+    const FMtoUNegotiationOutcome BroadFirst =
+        FMtoUConnectionNegotiator::Negotiate(RenameChain, RenameChainTarget);
+    AddInfo(TEXT("Broad-first chain: ") + BroadFirst.TechnicalDetails()
+        + FString::Printf(TEXT(" [usable=%d, indices=%s, remaps=%s]"),
+            BroadFirst.bUsable,
+            *FString::JoinBy(BroadFirst.TargetBoneIndices, TEXT(","), [](int32 Index) { return FString::FromInt(Index); }),
+            *FString::Join(BroadFirst.BoneNameMappings, TEXT(", "))));
+    TestTrue(TEXT("both importer renames resolve together in the broad-first capture"),
+        BroadFirst.bUsable
+        && BroadFirst.TargetBoneIndices == TArray<int32>({0, -1, -1, -1, 1, 3, 2}));
+    TestTrue(TEXT("each renamed target reports the sibling that drives it"),
+        BroadFirst.BoneNameMappings == TArray<FString>(
+            {TEXT("body/joint -> joint2"), TEXT("body/joint1 -> joint11")}));
+
+    Swap(RenameChain.Bones[5], RenameChain.Bones[6]);
+    const FMtoUNegotiationOutcome NarrowFirst =
+        FMtoUConnectionNegotiator::Negotiate(RenameChain, RenameChainTarget);
+    TestTrue(TEXT("the narrow-first capture keeps the same usable mapping"),
+        NarrowFirst.bUsable
+        && NarrowFirst.TargetBoneIndices == TArray<int32>({0, -1, -1, -1, 1, 2, 3}));
+    TestTrue(TEXT("reversing the sibling capture keeps the same rename set"),
+        NarrowFirst.BoneNameMappings == BroadFirst.BoneNameMappings);
+
+    // Two indistinguishable sources that can each drive both renamed targets:
+    // several assignments cover them, so every sibling order must refuse.
+    FMtoUCharacterDescription AmbiguousPair;
+    AmbiguousPair.Bones = {
+        {FName(TEXT("root")), INDEX_NONE},
+        {FName(TEXT("spare")), 0},
+        {FName(TEXT("joint")), 1},
+        {FName(TEXT("joint")), 1},
+        {FName(TEXT("body")), 0},
+        {FName(TEXT("joint")), 4},
+        {FName(TEXT("joint")), 4}};
+    FMtoUTargetDescription AmbiguousPairTarget;
+    AmbiguousPairTarget.bAllowUnusedSourceBones = true;
+    AmbiguousPairTarget.Bones = {
+        {FName(TEXT("root")), INDEX_NONE},
+        {FName(TEXT("body")), 0},
+        {FName(TEXT("joint1")), 1},
+        {FName(TEXT("joint2")), 1}};
+    for (int32 Order = 0; Order < 2; ++Order)
+    {
+        if (Order == 1)
+        {
+            Swap(AmbiguousPair.Bones[5], AmbiguousPair.Bones[6]);
+        }
+        const FMtoUNegotiationOutcome Ambiguous =
+            FMtoUConnectionNegotiator::Negotiate(AmbiguousPair, AmbiguousPairTarget);
+        AddInfo(FString::Printf(TEXT("Ambiguous pair order %d: %s"),
+            Order, *Ambiguous.TechnicalDetails()));
+        TestFalse(TEXT("two indistinguishable sources for two targets reject in every order"),
+            Ambiguous.bUsable);
+        TestTrue(TEXT("every contested target names both indistinguishable sources"),
+            Ambiguous.MappingAmbiguities.Num() == 2
+            && Ambiguous.MappingAmbiguities[0].Contains(TEXT("2 Maya bones"))
+            && Ambiguous.MappingAmbiguities[0].Contains(TEXT("root/body/joint"))
+            && Ambiguous.MappingAmbiguities[1].Contains(TEXT("2 Maya bones")));
+    }
+
+    // Three duplicated short names whose only valid assignment is a chain:
+    // `joint11` can only become `joint112`, which leaves `joint12` for `joint1`
+    // and `joint2` for `joint`. Every sibling permutation must agree.
+    const FName ChainSources[3] = {
+        FName(TEXT("joint")), FName(TEXT("joint1")), FName(TEXT("joint11"))};
+    const int32 ChainTargets[3] = {2, 3, 4};
+    const TArray<TArray<int32>> Permutations = {
+        {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    for (const TArray<int32>& Order : Permutations)
+    {
+        FMtoUCharacterDescription Chain;
+        Chain.Bones = {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("spare")), 0},
+            {FName(TEXT("joint")), 1},
+            {FName(TEXT("joint1")), 1},
+            {FName(TEXT("joint11")), 1},
+            {FName(TEXT("body")), 0}};
+        for (int32 SourceIndex : Order)
+        {
+            Chain.Bones.Add({ChainSources[SourceIndex], 5});
+        }
+        FMtoUTargetDescription ChainTarget;
+        ChainTarget.bAllowUnusedSourceBones = true;
+        ChainTarget.Bones = {
+            {FName(TEXT("root")), INDEX_NONE},
+            {FName(TEXT("body")), 0},
+            {FName(TEXT("joint2")), 1},
+            {FName(TEXT("joint12")), 1},
+            {FName(TEXT("joint112")), 1}};
+        TArray<int32> Expected = {0, -1, -1, -1, -1, 1};
+        for (int32 SourceIndex : Order)
+        {
+            Expected.Add(ChainTargets[SourceIndex]);
+        }
+        const FMtoUNegotiationOutcome ChainResult =
+            FMtoUConnectionNegotiator::Negotiate(Chain, ChainTarget);
+        TestTrue(FString::Printf(TEXT("chain permutation %d%d%d keeps the only valid mapping"),
+            Order[0], Order[1], Order[2]),
+            ChainResult.bUsable && ChainResult.TargetBoneIndices == Expected);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoURequiredBoneLODTest,
+    "MtoULiveLink.Negotiation.RequiredBoneLODs",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMtoURequiredBoneLODTest::RunTest(const FString& Parameters)
+{
+    USkeletalMesh* Base = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    if (!TestNotNull(TEXT("fixture mesh loads"), Base)) { return false; }
+    auto* Binding = NewObject<UMtoULiveLinkBinding>();
+    Binding->SkeletalMesh = DuplicateObject<USkeletalMesh>(Base, Binding);
+    auto* Coat = DuplicateObject<USkeletalMesh>(Base, Binding);
+    FReferenceSkeleton Ref = Coat->GetRefSkeleton();
+    const int32 ParentIndex = Ref.GetNum();
+    {
+        FReferenceSkeletonModifier Modifier(Ref, nullptr);
+        Modifier.Add(FMeshBoneInfo(TEXT("CoatParent"), TEXT("CoatParent"), 0), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("CoatTip"), TEXT("CoatTip"), ParentIndex), FTransform(FVector(0, 5, 0)));
+    }
+    Coat->SetRefSkeleton(Ref);
+    auto* LOD = new FSkeletalMeshLODRenderData();
+    auto& Section = LOD->RenderSections.AddDefaulted_GetRef();
+    Section.BaseVertexIndex = 0; Section.NumVertices = 1;
+    Section.BoneMap.Add(ParentIndex + 1);
+    TArray<FSkinWeightInfo> Weights;
+    Weights.AddZeroed(); Weights[0].InfluenceWeights[0] = 65535;
+    LOD->SkinWeightVertexBuffer.SetNeedsCPUAccess(true);
+    LOD->SkinWeightVertexBuffer = Weights;
+    Coat->GetResourceForRendering()->LODRenderData.Add(LOD);
+    AddCharacterPart(*Binding, TEXT("Coat"), Coat);
+    auto Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("a bone used only in LOD1 and its unweighted ancestor join the target"),
+        Composition.IsUsable() && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatTip")) != INDEX_NONE
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatParent")) != INDEX_NONE);
+    Binding->AdditionalParts[0].bEnabled = false;
+    Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestTrue(TEXT("disabled LOD dependencies leave the target"), Composition.IsUsable()
+        && Composition.RequiredSkeleton.FindBoneIndex(TEXT("CoatTip")) == INDEX_NONE);
+    Binding->AdditionalParts[0].bEnabled = true;
+    Section.BoneMap[0] = 65000;
+    Composition = FMtoUCharacterComposition::Resolve(Binding);
+    TestFalse(TEXT("invalid positive skin indices fail closed"), Composition.IsUsable());
+    TestTrue(TEXT("the malformed LOD identifies the part and LOD"), Composition.Diagnostics.Contains(TEXT("Coat"))
+        && Composition.Diagnostics.Contains(TEXT("LOD 1")));
+    Section.BoneMap[0] = ParentIndex + 1;
+    LOD->SkinWeightVertexBuffer.CleanUp();
+    TestFalse(TEXT("unreadable skinning data fails closed"), FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartCompatibilityTest,
     "MtoULiveLink.Negotiation.CharacterPartCompatibility",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -7423,11 +10685,11 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
     TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
 
-    // The Maya description always matches the Primary Driver, so every failure
-    // below can only come from the Additional Parts of the composition.
+    // The Maya description matches the required Primary bones, so a part-only
+    // extra bone cannot be the reason for any failure below.
     const FString Bones = ReferenceSkeletonBonesJson(Primary->GetRefSkeleton());
     const FString Init = FString::Printf(
-        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":6,\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        TEXT("{\"type\":\"init\",\"revision\":13,\"version\":11,\"object_id\":\"character\",\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\",\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
         *Bones);
     auto NegotiateCurrentBinding = [&](FString& OutReply)
     {
@@ -7484,8 +10746,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
         && Reply.Contains(OtherSkeleton->GetName()));
     PartMesh->SetSkeleton(Primary->GetSkeleton());
 
-    // An extra bone the Primary Driver does not have can never be driven, so it
-    // is a hard incompatibility naming the offending bone.
+    // Unweighted exported branches do not create a character dependency.
     const FReferenceSkeleton OriginalPartSkeleton = PartMesh->GetRefSkeleton();
     FReferenceSkeleton ExtraBoneSkeleton = OriginalPartSkeleton;
     {
@@ -7497,14 +10758,13 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     }
     PartMesh->SetRefSkeleton(ExtraBoneSkeleton);
     Actor->NotifyCharacterPartsChanged();
-    TestTrue(TEXT("a bone absent from the Primary Driver is refused by bone name"),
+    TestTrue(TEXT("an unused bone absent from the Primary does not block negotiation"),
         NegotiateCurrentBinding(Reply)
-        && Reply.Contains(TEXT("SKELETON_MISMATCH"))
-        && Reply.Contains(TEXT("ExtraHeadBone")));
+        && Reply.Contains(TEXT("\"type\":\"ready\"")));
     PartMesh->SetRefSkeleton(OriginalPartSkeleton);
 
-    // Shared bones must agree in reference pose, because the streamed pose is
-    // computed against the Primary Driver's reference pose.
+    // Shared required bones must agree in reference pose, because the streamed
+    // pose is computed against the character's own reference pose.
     FReferenceSkeleton ShiftedSkeleton = OriginalPartSkeleton;
     const int32 ShiftedBoneIndex = ShiftedSkeleton.GetRawRefBonePose().Num() - 1;
     const FTransform ShiftedOriginal =
@@ -7560,8 +10820,23 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     {
         auto& Palette = PartRenderData->LODRenderData.Last().RenderSections[0].BoneMap;
         Palette.Add(static_cast<FBoneIndexType>(UnusedIndex));
+        TestTrue(TEXT("a zero-weight palette entry does not create a dependency"),
+            FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        auto& Weights = PartRenderData->LODRenderData.Last().SkinWeightVertexBuffer;
+        auto& PrimaryLOD = Primary->GetResourceForRendering()->LODRenderData.Last();
+        auto& PrimaryPalette = PrimaryLOD.RenderSections[0].BoneMap;
+        const uint32 Vertex = PartRenderData->LODRenderData.Last().RenderSections[0].BaseVertexIndex;
+        const uint32 OldBone = Weights.GetBoneIndex(Vertex, 0);
+        const uint32 PrimaryVertex = PrimaryLOD.RenderSections[0].BaseVertexIndex;
+        const uint32 PrimaryOldBone = PrimaryLOD.SkinWeightVertexBuffer.GetBoneIndex(PrimaryVertex, 0);
+        PrimaryPalette.Add(static_cast<FBoneIndexType>(UnusedIndex));
+        Weights.SetBoneIndex(Vertex, 0, Palette.Num() - 1);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryPalette.Num() - 1);
         TestFalse(TEXT("a conflicting influence in the last LOD still rejects the part"),
             FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Weights.SetBoneIndex(Vertex, 0, OldBone);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryOldBone);
+        PrimaryPalette.Pop();
         Palette.Pop();
         // A non-weighted parent is relevant when one of its descendants skins.
         FReferenceSkeleton WithChild = ExtendedPart;
@@ -7577,8 +10852,14 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
         Primary->SetRefSkeleton(PrimaryWithChild);
         PartMesh->SetRefSkeleton(WithChild);
         Palette.Add(static_cast<FBoneIndexType>(UnusedIndex + 1));
+        PrimaryPalette.Add(static_cast<FBoneIndexType>(UnusedIndex + 1));
+        Weights.SetBoneIndex(Vertex, 0, Palette.Num() - 1);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryPalette.Num() - 1);
         TestFalse(TEXT("unweighted ancestor of a skinning bone remains checked"),
             FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+        Weights.SetBoneIndex(Vertex, 0, OldBone);
+        PrimaryLOD.SkinWeightVertexBuffer.SetBoneIndex(PrimaryVertex, 0, PrimaryOldBone);
+        PrimaryPalette.Pop();
         Palette.Pop();
     }
     FReferenceSkeleton ParentOrderPrimary;
@@ -7597,8 +10878,16 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
     }
     Primary->SetRefSkeleton(ParentOrderPrimary);
     PartMesh->SetRefSkeleton(ParentOrderPart);
+    auto& PrimaryPalette = Primary->GetResourceForRendering()->LODRenderData[0].RenderSections[0].BoneMap;
+    auto& PartPalette = PartMesh->GetResourceForRendering()->LODRenderData[0].RenderSections[0].BoneMap;
+    const auto SavedPrimaryPalette = PrimaryPalette;
+    const auto SavedPartPalette = PartPalette;
+    for (auto& Bone : PrimaryPalette) { Bone = 3; }
+    for (auto& Bone : PartPalette) { Bone = 3; }
     TestFalse(TEXT("equal parent indices cannot conceal different parent names"),
         FMtoUCharacterComposition::Resolve(Binding).IsUsable());
+    PrimaryPalette = SavedPrimaryPalette;
+    PartPalette = SavedPartPalette;
     Primary->SetRefSkeleton(OriginalPrimarySkeleton);
     PartMesh->SetRefSkeleton(OriginalPartSkeleton);
     // A Binding without a Primary Driver has no character at all.
@@ -7624,7 +10913,7 @@ bool FMtoUCharacterPartCompatibilityTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUCharacterPartsAssetTest,
-    "MtoULiveLink.Actor.CharacterPartsAsset",
+    "MtoUOptIn.Actor.CharacterPartsAsset",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
@@ -7632,8 +10921,8 @@ bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
     FString BindingPath;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
     {
-        AddInfo(TEXT("External split-character acceptance requires -MtoUCharacterPartsBinding=<asset path>."));
-        return true;
+        AddError(TEXT("Split-character acceptance requires -MtoUCharacterPartsBinding=<asset path>."));
+        return false;
     }
     UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
     if (!TestNotNull(TEXT("production Binding loads"), Binding)) { return false; }
@@ -7683,7 +10972,7 @@ bool FMtoUCharacterPartsAssetTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartTransactionsTest,
-    "MtoULiveLink.Actor.LoadedCharacterPartTransactions",
+    "MtoUOptIn.Actor.LoadedCharacterPartTransactions",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters)
@@ -7693,9 +10982,9 @@ bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsBinding="), BindingPath))
     {
-        AddInfo(TEXT("Load a saved split-character map and supply -MtoULoadedCharacterMap=<package> "));
-        AddInfo(TEXT("and -MtoUCharacterPartsBinding=<asset path> to check its transactions."));
-        return true;
+        AddError(TEXT("Load a saved split-character map and supply -MtoULoadedCharacterMap=<package> "
+            "and -MtoUCharacterPartsBinding=<asset path>."));
+        return false;
     }
     UMtoULiveLinkBinding* Binding = LoadObject<UMtoULiveLinkBinding>(nullptr, *BindingPath);
     if (!TestNotNull(TEXT("production Binding loads"), Binding))
@@ -7775,7 +11064,7 @@ bool FMtoULoadedCharacterPartTransactionsTest::RunTest(const FString& Parameters
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULoadedCharacterPartsTest,
-    "MtoULiveLink.Actor.LoadedCharacterParts",
+    "MtoUOptIn.Actor.LoadedCharacterParts",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
@@ -7783,8 +11072,8 @@ bool FMtoULoadedCharacterPartsTest::RunTest(const FString& Parameters)
     FString MapPath;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULoadedCharacterMap="), MapPath))
     {
-        AddInfo(TEXT("Load a saved character map and supply -MtoULoadedCharacterMap=<package path>."));
-        return true;
+        AddError(TEXT("Load a saved character map and supply -MtoULoadedCharacterMap=<package path>."));
+        return false;
     }
     int32 ActorsChecked = 0;
     for (TObjectIterator<AMtoULiveLinkActor> It; It; ++It)
@@ -7860,7 +11149,7 @@ void WriteMtoUEvidence(const FString& Path, const TSharedRef<FJsonObject>& Value
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaCharacterPartsHostTest,
-    "MtoULiveLink.Source.MayaCharacterPartsHost",
+    "MtoUOptIn.Source.MayaCharacterPartsHost",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
@@ -7869,10 +11158,10 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     FString Fixture, Mayapy, Peer, Evidence;
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPartsFixture="), Fixture))
     {
-        AddInfo(TEXT("Cross-host character-parts acceptance not requested; supply"));
-        AddInfo(TEXT("-MtoUCharacterPartsFixture=<json> with binding/scene/root/poses,"));
-        AddInfo(TEXT("-MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=."));
-        return true;
+        AddError(TEXT("Cross-host character-parts acceptance requires "
+            "-MtoUCharacterPartsFixture=<json> with binding/scene/root/poses, "
+            "-MtoUMayapy=, -MtoUCharacterPeer= and -MtoUEvidence=."));
+        return false;
     }
     if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
         || !FParse::Value(FCommandLine::Get(), TEXT("MtoUCharacterPeer="), Peer)
@@ -7898,15 +11187,88 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     {
         return false;
     }
-    UMtoULiveLinkBinding* Original = LoadObject<UMtoULiveLinkBinding>(
-        nullptr, *FixtureObject->GetStringField(TEXT("binding")));
-    TestNotNull(TEXT("production Binding loads"), Original);
+    bool bSynthetic = false;
+    FixtureObject->TryGetBoolField(TEXT("synthetic_secondary_bones"), bSynthetic);
+    UMtoULiveLinkBinding* Original = nullptr;
+    if (bSynthetic)
+    {
+        Original = NewObject<UMtoULiveLinkBinding>();
+        auto* Base = LoadObject<USkeletalMesh>(nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+        if (!TestNotNull(TEXT("synthetic cube loads"), Base)) { return false; }
+        auto* Skeleton = DuplicateObject<USkeleton>(Base->GetSkeleton(), Original);
+        Original->SkeletalMesh = DuplicateObject<USkeletalMesh>(Base, Original);
+        Original->SkeletalMesh->SetSkeleton(Skeleton);
+        auto* Head = DuplicateObject<USkeletalMesh>(Base, Original);
+        Head->SetSkeleton(Skeleton);
+        FReferenceSkeleton HeadRef = Base->GetRefSkeleton();
+        {
+            FReferenceSkeletonModifier Modifier(HeadRef, nullptr);
+            Modifier.Add(FMeshBoneInfo(TEXT("UnusedExport"), TEXT("UnusedExport"), 0), FTransform::Identity);
+        }
+        Head->SetRefSkeleton(HeadRef);
+        Head->CalculateInvRefMatrices();
+        auto* Coat = DuplicateObject<USkeletalMesh>(Base, Original);
+        Coat->SetSkeleton(Skeleton);
+        FReferenceSkeleton CoatRef;
+        {
+            FReferenceSkeletonModifier Modifier(CoatRef, nullptr);
+            Modifier.Add(Base->GetRefSkeleton().GetRefBoneInfo()[0], Base->GetRefSkeleton().GetRefBonePose()[0]);
+            Modifier.Add(FMeshBoneInfo(TEXT("ClothTip"), TEXT("ClothTip"), 0), Base->GetRefSkeleton().GetRefBonePose()[1]);
+        }
+        Coat->SetRefSkeleton(CoatRef);
+        Coat->CalculateInvRefMatrices();
+        Skeleton->MergeAllBonesToBoneTree(Coat);
+        AddUniformMorph(*Head, TEXT("HeadOnly"), FVector3f(0, 1, 0));
+        AddUniformMorph(*Original->SkeletalMesh, TEXT("Shared"), FVector3f(1, 0, 0));
+        AddUniformMorph(*Coat, TEXT("Shared"), FVector3f(1, 0, 0));
+        AddCharacterPart(*Original, TEXT("Head"), Head);
+        AddCharacterPart(*Original, TEXT("Coat"), Coat);
+        const auto Composition = FMtoUCharacterComposition::Resolve(Original);
+        TestTrue(TEXT("synthetic composition resolves"), Composition.IsUsable());
+        TArray<TSharedPtr<FJsonValue>> Bones;
+        auto Reader = TJsonReaderFactory<>::Create(TEXT("[") + ReferenceSkeletonBonesJson(Composition.RequiredSkeleton) + TEXT("]"));
+        FJsonSerializer::Deserialize(Reader, Bones);
+        FixtureObject->SetArrayField(TEXT("synthetic_bones"), Bones);
+        FixtureObject->SetStringField(TEXT("root"), TEXT("|Group|") + Composition.RequiredSkeleton.GetBoneName(0).ToString());
+    }
+    else
+    {
+        Original = LoadObject<UMtoULiveLinkBinding>(nullptr, *FixtureObject->GetStringField(TEXT("binding")));
+    }
+    TestNotNull(TEXT("character Binding loads"), Original);
     if (!Original || !Original->SkeletalMesh)
     {
         return false;
     }
     UMtoULiveLinkBinding* Binding = DuplicateObject<UMtoULiveLinkBinding>(
         Original, GetTransientPackage());
+    // A production outfit can be tested without editing the owner's Binding.
+    // The same transient fixture overrides are used by the rendered acceptance.
+    if (FixtureObject->HasField(TEXT("primary_mesh")))
+    {
+        const FString Path = FixtureObject->GetStringField(TEXT("primary_mesh"));
+        Binding->SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+        if (!TestNotNull(TEXT("fixture Primary Driver loads"), Binding->SkeletalMesh.Get()))
+        { AddError(Path); return false; }
+    }
+    if (FixtureObject->HasField(TEXT("parts")))
+    {
+        Binding->AdditionalParts.Reset();
+        for (const TSharedPtr<FJsonValue>& Value : FixtureObject->GetArrayField(TEXT("parts")))
+        {
+            const TSharedPtr<FJsonObject> PartValue = Value->AsObject();
+            if (!PartValue) { AddError(TEXT("Fixture part must be an object")); return false; }
+            FMtoUCharacterPart& Part = Binding->AdditionalParts.AddDefaulted_GetRef();
+            Part.PartName = PartValue->GetStringField(TEXT("name"));
+            const FString Path = PartValue->GetStringField(TEXT("mesh"));
+            Part.SkeletalMesh = LoadObject<USkeletalMesh>(nullptr, *Path);
+            Part.bEnabled = !PartValue->HasField(TEXT("enabled"))
+                || PartValue->GetBoolField(TEXT("enabled"));
+            if (!TestNotNull(TEXT("fixture Additional Part loads"), Part.SkeletalMesh.Get()))
+            { AddError(Path); return false; }
+        }
+        Binding->EnsureCharacterPartIds();
+    }
     int32 EnabledParts = 0;
     for (FMtoUCharacterPart& Part : Binding->AdditionalParts)
     {
@@ -7918,7 +11280,7 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     }
     AddInfo(FString::Printf(TEXT("Measured configuration: primary + %d enabled part(s)"),
         EnabledParts));
-    TestTrue(TEXT("the fixture exercises a split character"), Original->AdditionalParts.Num() >= 2);
+    TestTrue(TEXT("the fixture exercises a split character"), Binding->AdditionalParts.Num() >= 2);
 
     ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
@@ -8044,9 +11406,12 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         return Result.IsValid() && Result->TryGetStringField(TEXT("phase"), Phase)
             && (Phase == TEXT("loaded") || Phase == TEXT("failed"));
     }, 600.0);
-    TestTrue(TEXT("Maya peer loads the production scene"), bPeerLoaded);
-    if (!bPeerLoaded)
+    const auto LoadedResult = ReadResult();
+    const bool bLoadedWithoutError = bPeerLoaded && LoadedResult.IsValid() && !LoadedResult->HasField(TEXT("error"));
+    TestTrue(TEXT("Maya peer loads the character"), bLoadedWithoutError);
+    if (!bLoadedWithoutError)
     {
+        if (LoadedResult.IsValid() && LoadedResult->HasField(TEXT("error"))) { AddError(LoadedResult->GetStringField(TEXT("error"))); }
         FPlatformProcess::TerminateProc(Process, true);
         FPlatformProcess::CloseProc(Process);
         Source->StopListener();
@@ -8161,9 +11526,7 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
                     {
                         for (const uint16 Bone : Section.BoneMap)
                         {
-                            const int32 SkeletonBone = LOD.RequiredBones.IsValidIndex(Bone)
-                                ? static_cast<int32>(LOD.RequiredBones[Bone])
-                                : INDEX_NONE;
+                            const int32 SkeletonBone = Bone < PartSkeleton.GetNum() ? Bone : INDEX_NONE;
                             for (int32 Index = SkeletonBone; Index != INDEX_NONE;
                                  Index = PartSkeleton.GetParentIndex(Index))
                             {
@@ -8391,8 +11754,8 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         Realtime.MeanMilliseconds, Realtime.MedianMilliseconds, Realtime.P95Milliseconds,
         Realtime.Fps));
 
-    // Cached Playback through the production Maya controller: capture, upload,
-    // local replay, stop, replay again, clear and the return to live preview.
+    // Cached Playback through the production Maya controller and actor:
+    // capture, upload, actor play/stop/replay, clear, return to live preview.
     // Applied cached frames are observed on the Game Thread so the local
     // replay rate is measured here, not only reported by Maya.
     TArray<double> CachedFrameSeconds;
@@ -8406,8 +11769,8 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
                 CachedRoots.Add(Frame.Transforms[0].Translation);
             }
         });
-    SendCommand(TEXT("cache_play"));
-    const bool bCachePlayed = PollUntil([&]()
+    SendCommand(TEXT("cache_upload"));
+    const bool bCacheUploaded = PollUntil([&]()
     {
         PumpAll();
         const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
@@ -8415,9 +11778,11 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         {
             return false;
         }
-        return CachedPhase == TEXT("cached");
+        return CachedPhase == TEXT("ready");
     }, 600.0);
-    TestTrue(TEXT("Maya captures, uploads and replays the animation cache"), bCachePlayed);
+    TestTrue(TEXT("Maya captures and uploads the animation cache to Ready"), bCacheUploaded);
+    TestEqual(TEXT("UE waits for the actor playback action"),
+        Source->GetActorCachePlaybackView(*Actor).State, EMtoUCacheState::Ready);
     const TSharedPtr<FJsonObject> CacheResult = PeerResult(CommandId);
     int32 CachedFrames = 0;
     if (CacheResult.IsValid() && CacheResult->HasField(TEXT("cache_summary")))
@@ -8434,6 +11799,14 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         }
         AddInfo(FString::Printf(TEXT("Maya cache: %d frames at %.3f fps"), CachedFrames, SceneFps));
     }
+    TestTrue(TEXT("UE actor starts the uploaded animation cache"),
+        Source->StartActorCachedPlayback(*Actor));
+    const bool bCachePlayed = PollUntil([&]()
+    {
+        PumpAll();
+        return Source->GetActorCachePlaybackView(*Actor).State == EMtoUCacheState::Completed;
+    }, 300.0);
+    TestTrue(TEXT("UE completes the Maya-uploaded animation cache"), bCachePlayed);
     // One frame is held on entry, so the captured frames plus that hold are
     // what a correct local replay applies.
     TestTrue(TEXT("Unreal applies the captured frames locally"),
@@ -8451,14 +11824,14 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     const int32 CachedRootCount = CachedRoots.Num();
     VerifyComposedPose(TEXT("cached playback"));
 
-    SendCommand(TEXT("cache_replay"));
+    TestTrue(TEXT("UE actor starts retained cache again"),
+        Source->StartActorCachedPlayback(*Actor));
     const bool bCacheReplayed = PollUntil([&]()
     {
         PumpAll();
-        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
-        return Result.IsValid() && Result->GetStringField(TEXT("phase")) == TEXT("replayed");
+        return Source->GetActorCachePlaybackView(*Actor).State == EMtoUCacheState::Completed;
     }, 300.0);
-    TestTrue(TEXT("Maya replays the retained cache"), bCacheReplayed);
+    TestTrue(TEXT("UE replays the retained cache"), bCacheReplayed);
     TestTrue(TEXT("replaying the cache applies further frames"),
         CachedRoots.Num() > CachedRootCount);
     VerifyComposedPose(TEXT("cached replay"));
@@ -8475,14 +11848,22 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
         ReplayFrames, ReplaySeconds,
         ReplaySeconds > 0.0 ? (ReplayFrames - 1) / ReplaySeconds : 0.0));
 
-    SendCommand(TEXT("cache_stop"));
+    TestTrue(TEXT("UE actor starts a third retained play"),
+        Source->StartActorCachedPlayback(*Actor));
+    const int32 BeforeStoppedPlay = CachedRoots.Num();
+    TestTrue(TEXT("third play applies a pose before stop"), PollUntil([&]()
+    {
+        PumpAll();
+        return CachedRoots.Num() > BeforeStoppedPlay;
+    }, 60.0));
+    TestTrue(TEXT("UE actor stops its local playback"),
+        Source->StopActorCachedPlayback(*Actor));
     const bool bCacheStopped = PollUntil([&]()
     {
         PumpAll();
-        const TSharedPtr<FJsonObject> Result = PeerResult(CommandId);
-        return Result.IsValid() && Result->GetStringField(TEXT("phase")) == TEXT("stopped");
-    }, 300.0);
-    TestTrue(TEXT("Maya stops the local replay"), bCacheStopped);
+        return Source->GetActorCachePlaybackView(*Actor).State == EMtoUCacheState::Stopped;
+    }, 60.0);
+    TestTrue(TEXT("UE keeps the stopped cache"), bCacheStopped);
     VerifyComposedPose(TEXT("cached stop"));
 
     SendCommand(TEXT("cache_live"));
@@ -8549,4 +11930,2859 @@ bool FMtoUMayaCharacterPartsHostTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Protocol v10 linkage: pairing, mode transitions, pose groups and evidence.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+/** Editor-side seam stub: the hooks the runtime asks the editor to run. */
+struct FMtoULinkageTestHooks
+{
+    FMtoULinkageHooks Hooks;
+    int32 PlannedTargets = 0;
+    int32 SentTargets = 0;
+    double Frame = 1.0;
+    int32 TakeOverCalls = 0;
+    int32 RestoreCalls = 0;
+    bool bTakeOverSucceeds = true;
+    FString TakeOverErrorCode = TEXT("WRITER_NOT_ISOLATABLE");
+    int32 ViewChanges = 0;
+    FMtoULinkageView LastView;
+    // The next synthetic target comes from a discrete event (pause, jump,
+    // camera edit) instead of advancing playback.
+    bool bNextDiscontinuous = false;
+    // The next synthetic target repeats the previous evaluation (an event
+    // that keeps the time, such as a pause exactly on it).
+    bool bNextRepeatsPrevious = false;
+    // False once the takeover's sequence, world or target went away.
+    bool bTakeoverValid = true;
+    int32 ValidateCalls = 0;
+    // The takeover's common anchor every linkage mode_state names.
+    FTransform Anchor = FTransform::Identity;
+
+    void Install()
+    {
+        Hooks.EvaluateCameraTime = [this](FMtoUCameraTimeTarget& OutTarget) -> bool
+        {
+            if (SentTargets >= PlannedTargets)
+            {
+                return false;
+            }
+            ++SentTargets;
+            const bool bRepeat = bNextRepeatsPrevious;
+            bNextRepeatsPrevious = false;
+            const double TargetFrame = bRepeat ? Frame - 1.0 : Frame;
+            OutTarget.EvalId = FString::Printf(TEXT("seq@%d+0"), static_cast<int32>(TargetFrame));
+            OutTarget.EvalSerial = SentTargets;
+            OutTarget.DisplayFrame = TargetFrame;
+            OutTarget.Seconds = TargetFrame / 24.0;
+            OutTarget.PlaybackRangeStart = 1;
+            OutTarget.PlaybackRangeEnd = 240;
+            OutTarget.DisplayRateNumerator = 24;
+            OutTarget.DisplayRateDenominator = 1;
+            OutTarget.TickNumerator = 24000;
+            OutTarget.TickDenominator = 1;
+            OutTarget.CutStage = TEXT("root");
+            OutTarget.CutName = TEXT("shotA");
+            OutTarget.bDiscontinuous = bNextDiscontinuous;
+            bNextDiscontinuous = false;
+            // The synthetic target carries the same fields the editor adapter
+            // writes, so the Maya side maps a complete payload instead of
+            // reporting a missing filmback or basis.
+            OutTarget.Camera = MakeShared<FJsonObject>();
+            OutTarget.Camera->SetNumberField(TEXT("focal_length_mm"), 35.0);
+            OutTarget.Camera->SetNumberField(TEXT("sensor_width_mm"), 36.0);
+            OutTarget.Camera->SetNumberField(TEXT("sensor_height_mm"), 20.25);
+            OutTarget.Camera->SetArrayField(TEXT("location"),
+                {MakeShared<FJsonValueNumber>(0.0), MakeShared<FJsonValueNumber>(120.0),
+                 MakeShared<FJsonValueNumber>(240.0)});
+            OutTarget.Camera->SetArrayField(TEXT("right"),
+                {MakeShared<FJsonValueNumber>(1.0), MakeShared<FJsonValueNumber>(0.0),
+                 MakeShared<FJsonValueNumber>(0.0)});
+            OutTarget.Camera->SetArrayField(TEXT("up"),
+                {MakeShared<FJsonValueNumber>(0.0), MakeShared<FJsonValueNumber>(0.0),
+                 MakeShared<FJsonValueNumber>(1.0)});
+            OutTarget.Camera->SetArrayField(TEXT("forward"),
+                {MakeShared<FJsonValueNumber>(0.0), MakeShared<FJsonValueNumber>(1.0),
+                 MakeShared<FJsonValueNumber>(0.0)});
+            OutTarget.Gate = MakeShared<FJsonObject>();
+            OutTarget.Gate->SetNumberField(TEXT("output_width"), 1920);
+            OutTarget.Gate->SetNumberField(TEXT("output_height"), 1080);
+            if (!bRepeat)
+            {
+                Frame += 1.0;
+            }
+            return true;
+        };
+        Hooks.TakeOverTarget = [this](FString& OutError, FString& OutErrorCode) -> bool
+        {
+            ++TakeOverCalls;
+            if (!bTakeOverSucceeds)
+            {
+                OutError = TEXT(
+                    "The target's writers cannot be muted without touching unrelated tracks.");
+                OutErrorCode = TakeOverErrorCode;
+                return false;
+            }
+            return true;
+        };
+        Hooks.RestoreTarget = [this](FString& OutError, FString& OutErrorCode) -> bool
+        {
+            ++RestoreCalls;
+            OutError.Reset();
+            OutErrorCode.Reset();
+            return true;
+        };
+        Hooks.ValidateTakeover = [this](FString& OutReason) -> bool
+        {
+            ++ValidateCalls;
+            if (!bTakeoverValid)
+            {
+                OutReason = TEXT("the Level Sequence 'Shot' was closed in the editor");
+                return false;
+            }
+            return true;
+        };
+        Hooks.OnViewChanged = [this](const FMtoULinkageView& View)
+        {
+            ++ViewChanges;
+            LastView = View;
+        };
+        Hooks.GetAnchor = [this](FTransform& OutAnchor) -> bool
+        {
+            OutAnchor = Anchor;
+            return true;
+        };
+    }
+};
+
+/** One complete pose group answering one target. */
+FString LinkageGroupJson(
+    const FString& EvalId,
+    int32 SampleSerial,
+    int32 SessionId,
+    int32 SetRevision,
+    int32 ModeRevision,
+    int32 SpaceRevision,
+    double DisplayFrame,
+    const FString& PoseTransforms,
+    int32 CurveCount,
+    double CurveValue = 0.5)
+{
+    FString Curves = TEXT("[");
+    for (int32 Index = 0; Index < CurveCount; ++Index)
+    {
+        if (Index > 0)
+        {
+            Curves += TEXT(",");
+        }
+        Curves += FString::Printf(TEXT("%.3f"), CurveValue);
+    }
+    Curves += TEXT("]");
+    return FString::Printf(
+        TEXT("{\"type\":\"group\",\"session_id\":%d,\"set_revision\":%d,"
+             "\"mode_revision\":%d,\"space_revision\":%d,\"eval_id\":\"%s\","
+             "\"transport_serial\":%d,\"sample_serial\":%d,"
+             "\"objects\":[{\"object_id\":\"character\",\"transforms\":[%s],\"curves\":%s}],"
+             "\"camera\":{\"focal_length_mm\":35.0},"
+             "\"time\":{\"maya_frame\":%.3f,\"ue_display_frame\":%.3f}}"),
+        SessionId,
+        SetRevision,
+        ModeRevision,
+        SpaceRevision,
+        *EvalId,
+        SampleSerial,
+        SampleSerial,
+        *PoseTransforms,
+        *Curves,
+        DisplayFrame,
+        DisplayFrame);
+}
+
+/** Pose rows (ten numbers each) of a reference skeleton. */
+FString PoseTransformsJson(const FReferenceSkeleton& Skeleton)
+{
+    FString Text;
+    for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+    {
+        if (Index > 0)
+        {
+            Text += TEXT(",");
+        }
+        Text += TransformJson(Skeleton.GetRefBonePose()[Index]);
+    }
+    return Text;
+}
+
+/** The v10 greeting the Maya client opens a connection with. */
+TArray<uint8> LinkageHelloPacket()
+{
+    return Packet(
+        TEXT("{\"type\":\"hello\",\"version\":11,\"host\":\"maya\",\"maya_version\":\"2024\","
+             "\"scene\":{\"linear_unit\":\"cm\",\"unit_scale_cm\":1.0,\"fps\":24.0},"
+             "\"capabilities\":{\"linkage\":true,\"reference\":true,\"cache\":true,\"model\":true}}"));
+}
+
+/**
+ * Persistent reply reader: one decoder across calls so a partial packet is
+ * never lost, and every reply of another type is recorded instead of dropped.
+ */
+struct FMtoULinkageReplyReader
+{
+    FMtoUFrameDecoder Decoder;
+    TArray<FString> OtherTypes;
+    // The payloads of OtherTypes, so a step can still find a reply that
+    // arrived while it waited for another one.
+    TArray<TArray<uint8>> OtherPayloads;
+    // A read can carry several replies (the runtime answers a group with the
+    // application evidence and, in the same update, the next camera/time
+    // target). Messages that are not the one being awaited are queued by type
+    // instead of dropped, so a later Next() still finds them; without this the
+    // test races the TCP segmentation.
+    TMap<FString, TArray<TArray<uint8>>> Pending;
+
+    bool Next(FSocket& Socket, const FString& ExpectedType, TArray<uint8>& OutPayload,
+        TFunctionRef<void()> Pump, double TimeoutSeconds = 1.0)
+    {
+        // Fresh replies win: a queued reply of the same type can be an older
+        // statement (for example a mode_state the test did not read at its own
+        // step), and returning it early would let the test observe a state the
+        // runtime has already left. The queue is only a fallback for a reply
+        // that arrived in the same read as the one just returned.
+        const bool bFresh = PollUntil([&]()
+        {
+            Pump();
+            uint8 Buffer[65536];
+            int32 Read = 0;
+            if (Socket.Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+            {
+                Decoder.Append(Buffer, Read);
+            }
+            TArray<uint8> Payload;
+            FString Error;
+            while (Decoder.Pop(Payload, Error) == EMtoUDecodeResult::Message)
+            {
+                TSharedPtr<FJsonObject> Object;
+                const FString Type = (JsonObjectFromBytes(Payload, Object) && Object.IsValid())
+                    ? Object->GetStringField(TEXT("type"))
+                    : FString(TEXT("invalid"));
+                if (Type == ExpectedType)
+                {
+                    OutPayload = MoveTemp(Payload);
+                    return true;
+                }
+                OtherTypes.Add(Type);
+                OtherPayloads.Add(Payload);
+                Pending.FindOrAdd(Type).Add(MoveTemp(Payload));
+            }
+            return false;
+        }, TimeoutSeconds);
+        if (bFresh)
+        {
+            return true;
+        }
+        if (TArray<TArray<uint8>>* Queued = Pending.Find(ExpectedType))
+        {
+            if (Queued->Num() > 0)
+            {
+                OutPayload = MoveTemp((*Queued)[0]);
+                Queued->RemoveAt(0);
+                return true;
+            }
+        }
+        return false;
+    }
+};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkagePairingTest,
+    "MtoULiveLink.Linkage.Pairing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkagePairingTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const USkeletalMesh* TestMesh = Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
+    const FReferenceSkeleton* TestSkeleton = TestMesh ? &TestMesh->GetRefSkeleton() : nullptr;
+    TestTrue(TEXT("test mesh exposes a skeleton"), TestSkeleton && TestSkeleton->GetNum() >= 2);
+    if (!TestSkeleton)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    const FString Bones = ReferenceSkeletonBonesJson(*TestSkeleton);
+    auto InitPacket = [&](const FString& ObjectId)
+    {
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"%s\","
+                 "\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\","
+                 "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+            *ObjectId,
+            *Bones));
+    };
+
+    // Pairing is the consent for linkage, not for the v9 workflows: an object
+    // the user never paired negotiates exactly as before, and only the
+    // linkage entry asks for the pairing. The public boundary resolves
+    // through this source, so it becomes the active one for the whole fixture
+    // and is restored before the fixture is destroyed.
+    TSharedPtr<FMtoULiveLinkSource> PreviousSource;
+    FSocket* Unpaired = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("unpaired client connects"), Unpaired);
+    // One reader per client: a decoder that outlives a single reply keeps the
+    // packets the peer pipelines behind it.
+    FMtoULinkageReplyReader UnpairedReader;
+    if (Unpaired)
+    {
+        const TArray<uint8> Hello = LinkageHelloPacket();
+        const TArray<uint8> Init = InitPacket(TEXT("character"));
+        TestTrue(TEXT("unpaired greeting is sent"),
+            SendBytes(*Unpaired, Hello.GetData(), Hello.Num()));
+        TestTrue(TEXT("unpaired init is sent"),
+            SendBytes(*Unpaired, Init.GetData(), Init.Num()));
+        TArray<uint8> Payload;
+        PreviousSource = MtoUSetActiveSource(Source);
+        TestTrue(TEXT("the greeting is answered first"),
+            UnpairedReader.Next(*Unpaired, TEXT("hello_ack"), Payload,
+                [&]() { Source->Update(); }));
+        // No pairing exists yet, so the greeting names no selected target.
+        TestTrue(TEXT("the greeting answer names no target before pairing"),
+            FromUtf8(Payload).Contains(TEXT("\"targets\":[]")));
+        Payload.Reset();
+        TestTrue(TEXT("an unpaired object still negotiates the v9 workflow"),
+            UnpairedReader.Next(*Unpaired, TEXT("ready"), Payload,
+                [&]() { Source->Update(); }));
+        // Linkage takes over a target, so it is where the pairing is required.
+        FString EnterError;
+        TestFalse(TEXT("linkage entry is refused without a pairing"),
+            MtoURequestLinkageEnter(1, EnterError));
+        const FMtoULinkageView UnpairedView = MtoUGetLinkageView();
+        TestEqual(TEXT("the refusal names the frozen code"),
+            UnpairedView.ErrorCode, FString(TEXT("PAIRING_REQUIRED")));
+        TestEqual(TEXT("the refused entry leaves the mode unchanged"),
+            UnpairedView.Mode, FString(TEXT("realtime")));
+        TestFalse(TEXT("the refused entry borrows no writer"), UnpairedView.bTakeoverHeld);
+        DestroySocket(*SocketSubsystem, Unpaired);
+    }
+
+    // The user pairs the actor's Binding with one Maya object id.
+    TestTrue(TEXT("the actor is paired with the Maya object"), PairLinkageTarget(Actor));
+    const FMtoULinkageView PairedView = MtoUGetLinkageView();
+    TestEqual(TEXT("the pairing is visible through the public boundary"),
+        PairedView.PairedObjectId, FString(TEXT("character")));
+    TestTrue(TEXT("the view reports the pairing"),
+        PairedView.bPaired && PairedView.PairedObjectId == TEXT("character"));
+    TestTrue(TEXT("the listener survives the refusal"),
+        WaitForStatus(Source, TEXT("Listening on")));
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("paired client connects"), Client);
+    if (!Client)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    const TArray<uint8> Hello = LinkageHelloPacket();
+    const TArray<uint8> Init = InitPacket(TEXT("character"));
+    TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the greeting is answered"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TSharedPtr<FJsonObject> HelloAck;
+    TestTrue(TEXT("the greeting answer is JSON"), JsonObjectFromBytes(Payload, HelloAck));
+    int32 SessionId = 1;
+    if (HelloAck.IsValid())
+    {
+        TestEqual(TEXT("the greeting answer type"),
+            HelloAck->GetStringField(TEXT("type")), FString(TEXT("hello_ack")));
+        TestEqual(TEXT("the greeting answer declares the adapter version"),
+            static_cast<int32>(HelloAck->GetNumberField(TEXT("version"))),
+            FMtoUProtocol::Version);
+        SessionId = static_cast<int32>(HelloAck->GetNumberField(TEXT("session_id")));
+        TestTrue(TEXT("the greeting answer names one session"), SessionId >= 1);
+        const TArray<TSharedPtr<FJsonValue>> Targets = HelloAck->GetArrayField(TEXT("targets"));
+        TestEqual(TEXT("the greeting answer names the one paired target"), Targets.Num(), 1);
+        const TSharedPtr<FJsonObject> Target = Targets.IsEmpty()
+            ? MakeShared<FJsonObject>()
+            : Targets[0]->AsObject();
+        TestEqual(TEXT("the paired object id is described"),
+            Target->GetStringField(TEXT("object_id")), FString(TEXT("character")));
+        TestEqual(TEXT("the target kind is described"),
+            Target->GetStringField(TEXT("kind")), FString(TEXT("binding_actor")));
+        TestTrue(TEXT("the binding path is described"),
+            !Target->GetStringField(TEXT("binding_path")).IsEmpty());
+        TestTrue(TEXT("the pairing generation is described"),
+            !Target->GetStringField(TEXT("generation")).IsEmpty());
+    }
+
+    TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
+    Payload.Reset();
+    TestTrue(TEXT("negotiation reaches ready"), ReceivePacket(
+        *Client, Payload, [&]() { Source->Update(); }));
+    TSharedPtr<FJsonObject> Ready;
+    TestTrue(TEXT("ready is JSON"), JsonObjectFromBytes(Payload, Ready));
+    if (Ready.IsValid())
+    {
+        // The paired object id is part of the session identity and is echoed
+        // in ready together with the session, set and space revisions.
+        TestEqual(TEXT("ready echoes the session id"),
+            static_cast<int32>(Ready->GetNumberField(TEXT("session_id"))), SessionId);
+        TestEqual(TEXT("ready echoes the paired object id"),
+            Ready->GetStringField(TEXT("object_id")), FString(TEXT("character")));
+        TestEqual(TEXT("ready echoes the set revision"),
+            static_cast<int32>(Ready->GetNumberField(TEXT("set_revision"))), 1);
+        TestEqual(TEXT("ready echoes the space revision"),
+            static_cast<int32>(Ready->GetNumberField(TEXT("space_revision"))), 1);
+        TestEqual(TEXT("ready echoes the negotiated revision"),
+            static_cast<int32>(Ready->GetNumberField(TEXT("revision"))), 9);
+    }
+
+    DestroySocket(*SocketSubsystem, Client);
+    // The pairing is per actor; leaving it registered would let a later
+    // fixture greet with a target it no longer owns.
+    MtoUClearLinkageTarget(*Actor);
+    MtoUSetActiveSource(PreviousSource);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkageMixedVersionTest,
+    "MtoULiveLink.Linkage.MixedVersion",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageMixedVersionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    // No actor is placed, so any message that reaches a target discovery step
+    // would answer NO_BINDING_ACTOR: receiving the version code instead proves
+    // the refusal happened before the target was discovered.
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    // The refusal the worker itself answers, without any game-thread state.
+    const auto ExpectVersionRefusal = [&](const TArray<uint8>& Message)
+    {
+        FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+        TestNotNull(TEXT("legacy client connects"), Client);
+        if (!Client)
+        {
+            return;
+        }
+        TestTrue(TEXT("the legacy message is sent"),
+            SendBytes(*Client, Message.GetData(), Message.Num()));
+        const bool bRefused = PollUntil([&]()
+        {
+            uint8 Buffer[4096];
+            int32 Read = 0;
+            if (Client->Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read) && Read > 0)
+            {
+                FMtoUFrameDecoder Decoder;
+                Decoder.Append(Buffer, Read);
+                TArray<uint8> Payload;
+                FString Error;
+                return Decoder.Pop(Payload, Error) == EMtoUDecodeResult::Message
+                    && FromUtf8(Payload).Contains(TEXT("PROTOCOL_VERSION_MISMATCH"));
+            }
+            return !Client->Recv(Buffer, UE_ARRAY_COUNT(Buffer), Read);
+        });
+        TestTrue(TEXT("a mismatched version is refused with the frozen code"), bRefused);
+        DestroySocket(*SocketSubsystem, Client);
+    };
+
+    // A v9 greeting is refused before any target, writer or handoff exists.
+    ExpectVersionRefusal(Packet(
+        TEXT("{\"type\":\"hello\",\"version\":9,\"host\":\"maya\","
+             "\"maya_version\":\"2024\",\"scene\":{\"linear_unit\":\"cm\","
+             "\"unit_scale_cm\":1.0,\"fps\":24.0},\"capabilities\":{}}")));
+    // The v9 message set kept as regression: a v9 init, frame and cache_begin
+    // against a v10 adapter all report the same code.
+    ExpectVersionRefusal(Packet(
+        TEXT("{\"type\":\"init\",\"version\":9,\"revision\":9,\"workflow\":\"animation\","
+             "\"blendshapes_enabled\":true,\"bones\":[[\"root\",-1,"
+             "[0,0,0,0,0,0,1,1,1,1]]],\"curves\":[]}")));
+    ExpectVersionRefusal(Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[[0,0,0,0,0,0,1,1,1,1]],\"curves\":[]}")));
+    ExpectVersionRefusal(Packet(
+        TEXT("{\"type\":\"cache_begin\",\"upload_id\":1,\"revision\":9,\"fps\":30.0,"
+             "\"start_frame\":1,\"end_frame\":2,\"frame_count\":2,\"payload_size\":64}")));
+
+    // A mismatched pair never partially succeeds: the listener returns to its
+    // greeting state and a matching v10 greeting is answered normally.
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("v10 client connects"), Client);
+    if (Client)
+    {
+        const TArray<uint8> Hello = LinkageHelloPacket();
+        TestTrue(TEXT("the v10 greeting is sent"),
+            SendBytes(*Client, Hello.GetData(), Hello.Num()));
+        TArray<uint8> Payload;
+        TestTrue(TEXT("the v10 greeting is answered"), ReceivePacket(
+            *Client, Payload, [&]() { Source->Update(); }));
+        TestTrue(TEXT("the answer is a greeting acknowledgement"),
+            FromUtf8(Payload).Contains(TEXT("\"type\":\"hello_ack\"")));
+        DestroySocket(*SocketSubsystem, Client);
+    }
+
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkageSessionTest,
+    "MtoULiveLink.Linkage.Session",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageSessionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+
+    // A private copy of the engine cube carries one Morph, so the applied
+    // evidence can name an actually read-back Morph value.
+    USkeletalMesh* SharedCube = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    TestNotNull(TEXT("engine cube loads"), SharedCube);
+    USkeletalMesh* Mesh = SharedCube
+        ? DuplicateObject<USkeletalMesh>(SharedCube, GetTransientPackage())
+        : nullptr;
+    TestTrue(TEXT("one Morph target is added to the private mesh"),
+        Mesh && AddUniformMorph(*Mesh, TEXT("Smile"), FVector3f(0.0f, 1.0f, 0.0f)));
+    // An imported character carries Morph curve metadata, so a streamed value
+    // reaches the evaluated Morph weight the applied barrier verifies. The
+    // private mesh gets it on its own Skeleton duplicate; the engine asset
+    // stays untouched.
+    USkeleton* FixtureSkeleton = Mesh
+        ? DuplicateObject<USkeleton>(Mesh->GetSkeleton(), GetTransientPackage())
+        : nullptr;
+    if (FixtureSkeleton)
+    {
+        Mesh->SetSkeleton(FixtureSkeleton);
+        FixtureSkeleton->AddCurveMetaData(FName(TEXT("Smile")), false);
+        if (FCurveMetaData* MetaData = FixtureSkeleton->GetCurveMetaData(FName(TEXT("Smile"))))
+        {
+            MetaData->Type.bMorphtarget = true;
+        }
+    }
+    UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+    Binding->SkeletalMesh = Mesh;
+    // One enabled Additional Part whose bones the primary mesh also covers, so
+    // only the part check (not the bone union) notices when it goes missing.
+    if (Mesh)
+    {
+        FMtoUCharacterPart& HatPart = Binding->AdditionalParts.AddDefaulted_GetRef();
+        HatPart.PartId = FGuid::NewGuid();
+        HatPart.PartName = TEXT("Hat");
+        HatPart.SkeletalMesh =
+            DuplicateObject<USkeletalMesh>(Mesh, GetTransientPackage(), TEXT("SessionHat"));
+    }
+    AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor || !Mesh)
+    {
+        if (World) { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); }
+        return false;
+    }
+    Actor->SetBinding(Binding);
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("the actor is paired with the Maya object"), PairLinkageTarget(Actor));
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
+    const FString Bones = ReferenceSkeletonBonesJson(Skeleton);
+    const FString Pose = PoseTransformsJson(Skeleton);
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("Maya client connects"), Client);
+    if (!Client)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    FMtoULinkageReplyReader Reader;
+    // The editor ticks the Live Link client every frame; the applied barrier
+    // waits for the subject to hold the published group, so the pump ticks it.
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
+
+    const TArray<uint8> Hello = LinkageHelloPacket();
+    TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
+
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\","
+             "\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\","
+             "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"),
+        *Bones));
+    TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
+    TestTrue(TEXT("negotiation reaches ready"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
+
+    // The public boundary reaches this source, exactly as the editor does.
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    FMtoULinkageTestHooks Hooks;
+    Hooks.PlannedTargets = 2;
+    Hooks.Anchor = FTransform(FRotator(-4.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+    Hooks.Install();
+    MtoUSetLinkageHooks(Hooks.Hooks);
+
+    // ---- entering linkage -------------------------------------------------
+    FString EnterError;
+    TestTrue(TEXT("linkage entry is accepted"), MtoURequestLinkageEnter(1, EnterError));
+    TestEqual(TEXT("the editor took the target's writers over once"), Hooks.TakeOverCalls, 1);
+    const FMtoULinkageView EnterView = MtoUGetLinkageView();
+    TestEqual(TEXT("the mode is the authority statement"), EnterView.Mode, FString(TEXT("linkage")));
+    TestEqual(TEXT("Unreal owns time in linkage"), EnterView.Control, FString(TEXT("unreal")));
+    TestEqual(TEXT("the mode revision is the accepted one"), EnterView.Identity.ModeRevision, 1);
+    TestTrue(TEXT("the pose gate is closed during the transition"), EnterView.bTransitioning);
+
+    // Maya confirms the transition it was told about.
+    const TArray<uint8> ModeReady = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":1,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"));
+    TestTrue(TEXT("Maya's mode statement is sent"),
+        SendBytes(*Client, ModeReady.GetData(), ModeReady.Num()));
+    PollUntil([&]()
+    {
+        Source->Update();
+        return !MtoUGetLinkageView().bTransitioning;
+    });
+    TestTrue(TEXT("Unreal answers with its own authority statement"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> ModeState;
+    TestTrue(TEXT("the mode statement is JSON"), JsonObjectFromBytes(Payload, ModeState));
+    if (ModeState.IsValid())
+    {
+        TestEqual(TEXT("the mode statement mode"),
+            ModeState->GetStringField(TEXT("mode")), FString(TEXT("linkage")));
+        TestEqual(TEXT("the mode statement control"),
+            ModeState->GetStringField(TEXT("control")), FString(TEXT("unreal")));
+        TestEqual(TEXT("the mode statement revision"),
+            static_cast<int32>(ModeState->GetNumberField(TEXT("mode_revision"))), 1);
+        // Maya checks its scene reference against the takeover's anchor.
+        const TSharedPtr<FJsonObject>* Anchor = nullptr;
+        TestTrue(TEXT("the linkage statement names the anchor"),
+            ModeState->TryGetObjectField(TEXT("anchor"), Anchor));
+        if (Anchor)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Location =
+                (*Anchor)->GetArrayField(TEXT("location_cm"));
+            TestEqual(TEXT("the anchor location has three values"), Location.Num(), 3);
+            TestNearlyEqual(TEXT("the anchor location x"),
+                Location.Num() == 3 ? Location[0]->AsNumber() : 0.0, 60.0, 1.0e-6);
+            TestNearlyEqual(TEXT("the anchor location y"),
+                Location.Num() == 3 ? Location[1]->AsNumber() : 0.0, 40.0, 1.0e-6);
+            const TSharedPtr<FJsonObject> Degrees = (*Anchor)->GetObjectField(TEXT("rotation_deg"));
+            TestNearlyEqual(TEXT("the anchor yaw"), Degrees->GetNumberField(TEXT("yaw")), 37.0, 1.0e-4);
+            TestNearlyEqual(TEXT("the anchor pitch"), Degrees->GetNumberField(TEXT("pitch")), -4.0, 1.0e-4);
+            TestNearlyEqual(TEXT("the anchor roll"), Degrees->GetNumberField(TEXT("roll")), 3.0, 1.0e-4);
+        }
+    }
+    TestFalse(TEXT("the pose gate opens once Maya confirmed"),
+        MtoUGetLinkageView().bTransitioning);
+
+
+    // ---- the camera/time pump --------------------------------------------
+    TestTrue(TEXT("the current target is serialized"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> CameraTime;
+    TestTrue(TEXT("the target is JSON"), JsonObjectFromBytes(Payload, CameraTime));
+    FString FirstEvalId;
+    if (CameraTime.IsValid())
+    {
+        FirstEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+        TestEqual(TEXT("the target names the session"),
+            static_cast<int32>(CameraTime->GetNumberField(TEXT("session_id"))), 1);
+        TestEqual(TEXT("the target names the set revision"),
+            static_cast<int32>(CameraTime->GetNumberField(TEXT("set_revision"))), 1);
+        TestEqual(TEXT("the target names the mode revision"),
+            static_cast<int32>(CameraTime->GetNumberField(TEXT("mode_revision"))), 1);
+        TestEqual(TEXT("the target names the space revision"),
+            static_cast<int32>(CameraTime->GetNumberField(TEXT("space_revision"))), 1);
+        const TSharedPtr<FJsonObject> Time = CameraTime->GetObjectField(TEXT("time"));
+        const TSharedPtr<FJsonObject> DisplayRate = Time->GetObjectField(TEXT("display_rate"));
+        TestEqual(TEXT("the display rate numerator"),
+            static_cast<int32>(DisplayRate->GetNumberField(TEXT("numerator"))), 24);
+        TestEqual(TEXT("the display rate denominator"),
+            static_cast<int32>(DisplayRate->GetNumberField(TEXT("denominator"))), 1);
+        TestTrue(TEXT("the evaluated camera travels with the target"),
+            CameraTime->GetObjectField(TEXT("camera"))->HasField(TEXT("focal_length_mm")));
+        TestTrue(TEXT("the gate travels with the target"),
+            CameraTime->GetObjectField(TEXT("gate"))->HasField(TEXT("output_width")));
+    }
+    const FMtoULinkageView IssuedView = MtoUGetLinkageView();
+    TestEqual(TEXT("the view names the issued target"), IssuedView.TargetEvalId, FirstEvalId);
+
+    // ---- one staged group, applied and read back -------------------------
+    const TArray<uint8> GroupOne = Packet(LinkageGroupJson(
+        FirstEvalId, 1, 1, 1, 1, 1, 1.0, Pose, 1));
+    TestTrue(TEXT("the first group is sent"),
+        SendBytes(*Client, GroupOne.GetData(), GroupOne.Num()));
+    TestTrue(TEXT("the applied evidence answers the group"),
+        Reader.Next(*Client, TEXT("applied"), Payload, Pump));
+    TSharedPtr<FJsonObject> Applied;
+    TestTrue(TEXT("the applied evidence is JSON"), JsonObjectFromBytes(Payload, Applied));
+    AddInfo(TEXT("Session applied evidence: ") + FromUtf8(Payload));
+    if (Applied.IsValid())
+    {
+        TestEqual(TEXT("the evidence names the answered target"),
+            Applied->GetStringField(TEXT("eval_id")), FirstEvalId);
+        TestEqual(TEXT("the evidence reports the application"),
+            Applied->GetBoolField(TEXT("applied")), true);
+        TestEqual(TEXT("the evidence names the sample"),
+            static_cast<int32>(Applied->GetNumberField(TEXT("sample_serial"))), 1);
+        TestEqual(TEXT("the evidence names the mode revision"),
+            static_cast<int32>(Applied->GetNumberField(TEXT("mode_revision"))), 1);
+        TestTrue(TEXT("a successful application names no reason"),
+            Applied->GetStringField(TEXT("reason")).IsEmpty());
+        const TArray<TSharedPtr<FJsonValue>>& Components = Applied->GetArrayField(TEXT("components"));
+        TestEqual(TEXT("the evidence names the negotiated object"), Components.Num(), 1);
+        if (Components.Num() == 1)
+        {
+            const TSharedPtr<FJsonObject> Component = Components[0]->AsObject();
+            TestEqual(TEXT("the component row names the object"),
+                Component->GetStringField(TEXT("object_id")), FString(TEXT("character")));
+            TestTrue(TEXT("the actual bones were read back"),
+                static_cast<int32>(Component->GetNumberField(TEXT("bones"))) >= Skeleton.GetNum());
+            TestTrue(TEXT("the actual Morph values were read back"),
+                static_cast<int32>(Component->GetNumberField(TEXT("morphs"))) >= 1);
+        }
+    }
+    const FMtoULinkageView AppliedView = MtoUGetLinkageView();
+    TestEqual(TEXT("the view records the applied target"), AppliedView.AppliedEvalId, FirstEvalId);
+    TestEqual(TEXT("the view records the applied sample"), AppliedView.AppliedSampleSerial, 1);
+
+    // ---- the second target and the convergence window --------------------
+    // Drive the pump the way the runtime expects: keep ticking the source
+    // until the editor has been asked for the second target, then read the
+    // wire reply. Anchoring the wait on the runtime's own counter keeps a
+    // loaded editor tick from consuming a fixed window before the target
+    // exists, which is what made this step flaky under full-suite load.
+    const bool bSecondTargetIssued = PollUntil([&]()
+    {
+        Source->Update();
+        return Hooks.SentTargets >= 2;
+    }, 5.0);
+    TestTrue(TEXT("the editor was asked for the second target"), bSecondTargetIssued);
+    FString SecondEvalId;
+    TestTrue(TEXT("the next target is serialized"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    if (JsonObjectFromBytes(Payload, CameraTime))
+    {
+        SecondEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+    }
+    TestTrue(TEXT("an advancing target replaced the waiting one only"),
+        !SecondEvalId.IsEmpty() && SecondEvalId != FirstEvalId);
+    const TArray<uint8> GroupTwo = Packet(LinkageGroupJson(
+        SecondEvalId, 1, 1, 1, 1, 1, 2.0, Pose, 1));
+    TestTrue(TEXT("the second group is sent"),
+        SendBytes(*Client, GroupTwo.GetData(), GroupTwo.Num()));
+    TestTrue(TEXT("the second applied evidence answers the group"),
+        Reader.Next(*Client, TEXT("applied"), Payload, Pump));
+
+    // With no further target the desired, issued and applied triples agree.
+    const bool bConverged = PollUntil([&]()
+    {
+        Source->Update();
+        return MtoUGetLinkageView().bConverged;
+    }, 5.0);
+    TestTrue(TEXT("the view reports the converged linkage"), bConverged);
+    TestEqual(TEXT("the pump asked the editor for exactly two targets"), Hooks.SentTargets, 2);
+
+    // ---- a stale group keeps the last complete display -------------------
+    const TArray<uint8> StaleGroup = Packet(LinkageGroupJson(
+        TEXT("seq@9+0"), 1, 1, 1, 1, 1, 9.0, Pose, 1));
+    TestTrue(TEXT("the stale group is sent"),
+        SendBytes(*Client, StaleGroup.GetData(), StaleGroup.Num()));
+    TestTrue(TEXT("the stale group is refused"),
+        Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TSharedPtr<FJsonObject> StaleError;
+    TestTrue(TEXT("the refusal is JSON"), JsonObjectFromBytes(Payload, StaleError));
+    if (StaleError.IsValid())
+    {
+        TestEqual(TEXT("the refusal names the frozen code"),
+            StaleError->GetStringField(TEXT("code")), FString(TEXT("EVAL_STALE")));
+    }
+    const FMtoULinkageView AfterStale = MtoUGetLinkageView();
+    TestEqual(TEXT("a refused group keeps the applied target"),
+        AfterStale.AppliedEvalId, SecondEvalId);
+    TestTrue(TEXT("a stale group is scheduling noise, not an error row"),
+        AfterStale.Error.IsEmpty() && AfterStale.ErrorCode.IsEmpty());
+    TestEqual(TEXT("the stale group is counted"), AfterStale.RefusedGroupCount, 1);
+
+    // ---- the failure paths of the whole-group barrier --------------------
+    // Every group so far carried Smile = 0.5; the groups below carry 0.9, so
+    // the displays tell which group they show.
+    const FLiveLinkSubjectKey CharacterKey(SourceGuid, FName(TEXT("MtoU_Character")));
+    const auto SubjectGeneration = [&]() -> FString
+    {
+        FLiveLinkSubjectFrameData SubjectFrame;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                CharacterKey, ULiveLinkAnimationRole::StaticClass(), SubjectFrame)
+            && SubjectFrame.FrameData.GetBaseData())
+        {
+            return SubjectFrame.FrameData.GetBaseData()->MetaData.StringMetaData
+                .FindRef(FName(TEXT("MtoU.LinkageGeneration")));
+        }
+        return FString();
+    };
+    const auto ShownSmile = [&](const USkeletalMeshComponent* Display) -> float
+    {
+        // Each display's mesh owns its Morph targets.
+        const UMorphTarget* SmileMorph = Display && Display->GetSkeletalMeshAsset()
+            ? Display->GetSkeletalMeshAsset()->FindMorphTarget(FName(TEXT("Smile")))
+            : nullptr;
+        if (!SmileMorph)
+        {
+            return -1.0f;
+        }
+        if (const int32* WeightIndex = Display->ActiveMorphTargets.Find(SmileMorph))
+        {
+            return Display->MorphTargetWeights.IsValidIndex(*WeightIndex)
+                ? Display->MorphTargetWeights[*WeightIndex]
+                : 0.0f;
+        }
+        return 0.0f;
+    };
+    USkeletalMeshComponent* PrimaryDisplay = Actor->GetSkeletalMeshComponent();
+    UMtoUCharacterPartComponent* HatDisplay = Actor->GetCharacterPartComponents().Num() > 0
+        ? Actor->GetCharacterPartComponents()[0].Get()
+        : nullptr;
+    TestNotNull(TEXT("the enabled part has a display"), HatDisplay);
+    const auto AssertPreviousGroupShown = [&](const TCHAR* What)
+    {
+        TestNearlyEqual(*FString::Printf(TEXT("%s: the primary display keeps the last group"), What),
+            ShownSmile(PrimaryDisplay), 0.5f, 1.0e-3f);
+        TestEqual(*FString::Printf(TEXT("%s: the latest complete application stays"), What),
+            MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
+    };
+    // Collects every `applied` the source sends while it is pumped. Each pump
+    // listens only briefly: the source answers within the update that decides
+    // a group, so a full read timeout per pump only adds idle seconds.
+    constexpr double CollectWindowSeconds = 0.2;
+    const auto CollectApplied = [&](int32 Pumps)
+    {
+        TArray<TSharedPtr<FJsonObject>> Answers;
+        const auto Take = [&](const TArray<uint8>& Bytes)
+        {
+            TSharedPtr<FJsonObject> Object;
+            if (JsonObjectFromBytes(Bytes, Object) && Object.IsValid())
+            {
+                Answers.Add(Object);
+            }
+        };
+        for (int32 Index = 0; Index < Pumps; ++Index)
+        {
+            Pump();
+            TArray<uint8> Fresh;
+            if (Reader.Next(*Client, TEXT("applied"), Fresh, Pump, CollectWindowSeconds))
+            {
+                Take(Fresh);
+            }
+            if (TArray<TArray<uint8>>* Queued = Reader.Pending.Find(TEXT("applied")))
+            {
+                for (const TArray<uint8>& Bytes : *Queued)
+                {
+                    Take(Bytes);
+                }
+                Queued->Reset();
+            }
+        }
+        return Answers;
+    };
+    const auto AnswerFor = [](const TArray<TSharedPtr<FJsonObject>>& Answers,
+        const FString& EvalId, int32 SampleSerial) -> TSharedPtr<FJsonObject>
+    {
+        for (const TSharedPtr<FJsonObject>& Answer : Answers)
+        {
+            if (Answer->GetStringField(TEXT("eval_id")) == EvalId
+                && static_cast<int32>(Answer->GetNumberField(TEXT("sample_serial"))) == SampleSerial)
+            {
+                return Answer;
+            }
+        }
+        return nullptr;
+    };
+    // Pumps until the source answers the named group, returning as soon as it
+    // does; the caller then checks what the answer says.
+    const auto AwaitAnswer = [&](const FString& EvalId, int32 SampleSerial)
+    {
+        TArray<TSharedPtr<FJsonObject>> Answers;
+        TSharedPtr<FJsonObject> Found;
+        PollUntil([&]()
+        {
+            Answers.Append(CollectApplied(1));
+            Found = AnswerFor(Answers, EvalId, SampleSerial);
+            return Found.IsValid();
+        }, 3.0);
+        return Found;
+    };
+    // Sends one 0.9 group, lets one update publish it and the client's own
+    // tick hand it to the subject; true once the subject holds it while no
+    // display was allowed to evaluate it yet.
+    const auto PublishToSubject = [&](const FString& EvalId, int32 SampleSerial) -> bool
+    {
+        const TArray<uint8> Group = Packet(LinkageGroupJson(
+            EvalId, SampleSerial, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+        if (!SendBytes(*Client, Group.GetData(), Group.Num()))
+        {
+            return false;
+        }
+        const FString Generation = FString::Printf(TEXT("%s#%d"), *EvalId, SampleSerial);
+        return PollUntil([&]()
+        {
+            Source->Update();
+            LiveLinkClient.ForceTick();
+            return SubjectGeneration().EndsWith(Generation);
+        }, 3.0);
+    };
+    TestTrue(TEXT("the subject holds the last applied group"),
+        SubjectGeneration().Contains(SecondEvalId));
+    AssertPreviousGroupShown(TEXT("before the failure cases"));
+    TestNearlyEqual(TEXT("before the failure cases: the part shows the last group"),
+        ShownSmile(HatDisplay), 0.5f, 1.0e-3f);
+
+    // 1. Published, then cancelled by a pause in a later, separate update.
+    Hooks.PlannedTargets = 3;
+    TestTrue(TEXT("a target to cancel is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    FString CancelledEvalId;
+    if (JsonObjectFromBytes(Payload, CameraTime))
+    {
+        CancelledEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+    }
+    TestTrue(TEXT("the group to cancel reaches the subject before the event"),
+        PublishToSubject(CancelledEvalId, 1));
+    // The event happens in the editor only now, after the publication.
+    Hooks.PlannedTargets = 4;
+    Hooks.bNextDiscontinuous = true;
+    Source->Update();
+    const TArray<TSharedPtr<FJsonObject>> CancelAnswers = CollectApplied(4);
+    TestFalse(TEXT("a group cancelled after its publication is never confirmed"),
+        AnswerFor(CancelAnswers, CancelledEvalId, 1).IsValid());
+    TestFalse(TEXT("the subject does not keep the cancelled group"),
+        SubjectGeneration().EndsWith(CancelledEvalId + TEXT("#1")));
+    AssertPreviousGroupShown(TEXT("after a cancel in a later update"));
+
+    // The event's target is issued; its first answer meets a part that
+    // evaluates another subject, so half of the character would show it.
+    TestTrue(TEXT("the event's target is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    FString EventEvalId;
+    if (JsonObjectFromBytes(Payload, CameraTime))
+    {
+        EventEvalId = CameraTime->GetStringField(TEXT("eval_id"));
+    }
+    ULiveLinkInstance* HatInstance = HatDisplay
+        ? Cast<ULiveLinkInstance>(HatDisplay->GetAnimInstance())
+        : nullptr;
+    TestNotNull(TEXT("the part evaluates Live Link"), HatInstance);
+
+    // 2. Half the character evaluates the group: nothing is shown.
+    if (HatInstance)
+    {
+        HatInstance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Elsewhere"))));
+    }
+    TestTrue(TEXT("the half-evaluated group reaches the subject"),
+        PublishToSubject(EventEvalId, 1));
+    const TSharedPtr<FJsonObject> Half = AwaitAnswer(EventEvalId, 1);
+    // A refused group's fallback reaches the displays in the following updates.
+    CollectApplied(2);
+    TestTrue(TEXT("the half-evaluated group is answered"), Half.IsValid());
+    if (Half.IsValid())
+    {
+        TestFalse(TEXT("the half-evaluated group is not confirmed"),
+            Half->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the display that disagrees"),
+            Half->GetStringField(TEXT("reason")).Contains(HatDisplay->GetName()));
+    }
+    AssertPreviousGroupShown(TEXT("after a half-evaluated group"));
+    if (HatInstance)
+    {
+        HatInstance->SetSubject(FLiveLinkSubjectName(FName(TEXT("MtoU_Character"))));
+    }
+
+    // 3. A part goes missing after the publication: refused, no crash.
+    TestTrue(TEXT("the group whose part goes missing reaches the subject"),
+        PublishToSubject(EventEvalId, 2));
+    USkeletalMesh* HatMesh = HatDisplay ? HatDisplay->GetSkeletalMeshAsset() : nullptr;
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(nullptr);
+    }
+    const TSharedPtr<FJsonObject> Missing = AwaitAnswer(EventEvalId, 2);
+    // A refused group's fallback reaches the displays in the following updates.
+    CollectApplied(2);
+    TestTrue(TEXT("the group with a part missing after publication is answered"),
+        Missing.IsValid());
+    if (Missing.IsValid())
+    {
+        TestFalse(TEXT("the group with a missing part is not confirmed"),
+            Missing->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the missing part"),
+            Missing->GetStringField(TEXT("reason")).Contains(TEXT("part 'Hat'")));
+    }
+    TestNearlyEqual(TEXT("after a missing part: the primary display keeps the last group"),
+        ShownSmile(PrimaryDisplay), 0.5f, 1.0e-3f);
+    TestEqual(TEXT("after a missing part: the latest complete application stays"),
+        MtoUGetLinkageView().AppliedEvalId, SecondEvalId);
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(HatMesh);
+    }
+    // The restored part shows the last complete group once it evaluates.
+    CollectApplied(2);
+    AssertPreviousGroupShown(TEXT("after the part returns"));
+
+    // 4. A part missing before the publication refuses the group at once.
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(nullptr);
+    }
+    const TArray<uint8> Unshown = Packet(LinkageGroupJson(
+        EventEvalId, 3, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+    TestTrue(TEXT("the group meeting a missing part is sent"),
+        SendBytes(*Client, Unshown.GetData(), Unshown.Num()));
+    TSharedPtr<FJsonObject> Refused;
+    PollUntil([&]()
+    {
+        Refused = AnswerFor(CollectApplied(1), EventEvalId, 3);
+        return Refused.IsValid();
+    }, 3.0);
+    TestTrue(TEXT("the group meeting a missing part is answered"), Refused.IsValid());
+    AssertPreviousGroupShown(TEXT("after a part missing before publication"));
+    if (Refused.IsValid())
+    {
+        TestFalse(TEXT("the group meeting a missing part is not confirmed"),
+            Refused->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal before publication names the part"),
+            Refused->GetStringField(TEXT("reason")).Contains(TEXT("part 'Hat'")));
+    }
+    if (HatDisplay)
+    {
+        HatDisplay->SetSkeletalMeshAsset(HatMesh);
+    }
+    CollectApplied(2);
+
+    // 5. The subject never receives the group: another frame always takes
+    //    its place before the subject snapshot, so it is refused after the
+    //    window.
+    const auto PushForeign = [&]()
+    {
+        FLiveLinkSubjectFrameData Current;
+        if (LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                CharacterKey, ULiveLinkAnimationRole::StaticClass(), Current))
+        {
+            FLiveLinkFrameDataStruct Foreign;
+            Foreign.InitializeWith(Current.FrameData);
+            if (FLiveLinkBaseFrameData* Base = Foreign.GetBaseData())
+            {
+                Base->WorldTime = FLiveLinkWorldTime();
+                Base->MetaData.StringMetaData.Add(
+                    FName(TEXT("MtoU.LinkageGeneration")), TEXT("foreign"));
+            }
+            LiveLinkClient.PushSubjectFrameData_AnyThread(CharacterKey, MoveTemp(Foreign));
+        }
+    };
+    const auto ForeignPump = [&]()
+    {
+        Source->Update();
+        PushForeign();
+        LiveLinkClient.ForceTick();
+    };
+    const TArray<uint8> LostGroup = Packet(LinkageGroupJson(
+        EventEvalId, 4, 1, 1, 1, 1, 5.0, Pose, 1, 0.9));
+    TestTrue(TEXT("the group the subject loses is sent"),
+        SendBytes(*Client, LostGroup.GetData(), LostGroup.Num()));
+    TSharedPtr<FJsonObject> Lost;
+    PollUntil([&]()
+    {
+        TArray<uint8> Reply;
+        TSharedPtr<FJsonObject> Object;
+        if (Reader.Next(*Client, TEXT("applied"), Reply, ForeignPump)
+            && JsonObjectFromBytes(Reply, Object) && Object.IsValid()
+            && Object->GetStringField(TEXT("eval_id")) == EventEvalId
+            && static_cast<int32>(Object->GetNumberField(TEXT("sample_serial"))) == 4)
+        {
+            Lost = Object;
+        }
+        return Lost.IsValid();
+    }, FMtoUProtocol::LinkageConvergenceSeconds + 4.0);
+    TestTrue(TEXT("the group the subject lost is answered"), Lost.IsValid());
+    if (Lost.IsValid())
+    {
+        TestFalse(TEXT("the group the subject lost is not confirmed"),
+            Lost->GetBoolField(TEXT("applied")));
+        TestTrue(TEXT("the refusal names the lost subject frame"),
+            Lost->GetStringField(TEXT("reason")).Contains(TEXT("never received")));
+    }
+    CollectApplied(2);
+    AssertPreviousGroupShown(TEXT("after the subject lost a group"));
+
+    // 6. A complete group switches every display together.
+    TestTrue(TEXT("a complete group reaches the subject"), PublishToSubject(EventEvalId, 5));
+    const TSharedPtr<FJsonObject> Complete = AwaitAnswer(EventEvalId, 5);
+    TestTrue(TEXT("the complete group is answered"), Complete.IsValid());
+    if (Complete.IsValid())
+    {
+        TestTrue(TEXT("the complete group is confirmed"), Complete->GetBoolField(TEXT("applied")));
+    }
+    TestNearlyEqual(TEXT("the primary display shows the complete group"),
+        ShownSmile(PrimaryDisplay), 0.9f, 1.0e-3f);
+    TestNearlyEqual(TEXT("the part shows the complete group"),
+        ShownSmile(HatDisplay), 0.9f, 1.0e-3f);
+    TestEqual(TEXT("the complete group is the latest complete application"),
+        MtoUGetLinkageView().AppliedEvalId, EventEvalId);
+    // While linkage owns time a display changes only through the barrier:
+    // its own tick is held, so it never consumes an unverified group.
+    TestFalse(TEXT("linkage holds the primary display's own tick"),
+        PrimaryDisplay->IsComponentTickEnabled());
+    TestFalse(TEXT("linkage holds the part's own tick"),
+        HatDisplay && HatDisplay->IsComponentTickEnabled());
+
+    // ---- a display whose Live Link evaluation was stopped from outside ----
+    // A Sequencer restoring what a muted track saved before the takeover puts
+    // an anim instance back with its evaluation stopped; the set's display
+    // must evaluate its subject again instead of freezing on an old frame.
+    if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(PrimaryDisplay->GetAnimInstance()))
+    {
+        Stopped->EnableLiveLinkEvaluation(false);
+        Source->Update();
+        TestTrue(TEXT("the display of the set evaluates its subject again"),
+            Stopped->GetEnableLiveLinkEvaluation());
+    }
+    if (HatDisplay)
+    {
+        if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(HatDisplay->GetAnimInstance()))
+        {
+            Stopped->EnableLiveLinkEvaluation(false);
+            Source->Update();
+            TestTrue(TEXT("the part of the set evaluates its subject again"),
+                Stopped->GetEnableLiveLinkEvaluation());
+        }
+    }
+
+    // ---- the scheduling measurement --------------------------------------
+    {
+        const FMtoULinkageScheduleStats Stats = MtoUGetLinkageScheduleStats();
+        AddInfo(FString::Printf(TEXT("Schedule: issued %d, applied %d, cancelled %d, failed %d, coalesced %d"),
+            Stats.Issued, Stats.Applied, Stats.Cancelled, Stats.Failed, Stats.Coalesced));
+        TestTrue(TEXT("every issued target is recorded"),
+            Stats.Records.Num() == Stats.Issued && Stats.DroppedRecords == 0);
+        TestTrue(TEXT("the confirmed groups are counted as applied"), Stats.Applied >= 3);
+        TestTrue(TEXT("the target a pause dropped is counted as cancelled"), Stats.Cancelled >= 1);
+        int32 Open = 0;
+        bool bAppliedAfterIssue = true;
+        for (const FMtoULinkageIssueRecord& Record : Stats.Records)
+        {
+            Open += Record.Outcome == TEXT("open") ? 1 : 0;
+            if (Record.Outcome == TEXT("applied"))
+            {
+                bAppliedAfterIssue &= Record.AppliedSeconds >= Record.IssuedSeconds;
+            }
+        }
+        TestEqual(TEXT("every issue ends once"),
+            Stats.Applied + Stats.Cancelled + Open, Stats.Issued);
+        TestTrue(TEXT("the half group the barrier refused is counted"), Stats.Failed >= 1);
+        TestTrue(TEXT("a group is applied after its target was issued"), bAppliedAfterIssue);
+        TestEqual(TEXT("at most one target is in flight"), Stats.InFlightPeak, 1);
+        TestTrue(TEXT("at most one target waits"), Stats.PendingPeak <= 1);
+        TestTrue(TEXT("the staged groups stay within the frozen budget"),
+            Stats.StagedPeak <= FMtoUProtocol::MaxPendingCameraTargets);
+        TestTrue(TEXT("the outgoing control queue stays within the frozen budget"),
+            Stats.OutgoingControlPeak >= 1 && Stats.OutgoingControlPeak <= FMtoUProtocol::MaxControlQueue);
+        MtoUResetLinkageScheduleStats();
+        TestEqual(TEXT("a reset starts a new measurement window"),
+            MtoUGetLinkageScheduleStats().Issued, 0);
+    }
+
+    // ---- leaving for realtime and ending the preview ---------------------
+    FString LeaveError;
+    TestTrue(TEXT("leaving for realtime is accepted"),
+        MtoURequestLinkageLeave(TEXT("realtime"), 2, LeaveError));
+    TestTrue(TEXT("Unreal answers the leave with its authority statement"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    if (JsonObjectFromBytes(Payload, ModeState))
+    {
+        TestEqual(TEXT("the leave statement mode"),
+            ModeState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the leave statement control"),
+            ModeState->GetStringField(TEXT("control")), FString(TEXT("maya")));
+        TestEqual(TEXT("the leave statement revision"),
+            static_cast<int32>(ModeState->GetNumberField(TEXT("mode_revision"))), 2);
+    }
+    TestEqual(TEXT("Maya restores its own state, so Unreal keeps the takeover"),
+        Hooks.RestoreCalls, 0);
+    // Realtime under the kept takeover still streams into the set's displays.
+    if (ULiveLinkInstance* Stopped = Cast<ULiveLinkInstance>(PrimaryDisplay->GetAnimInstance()))
+    {
+        Stopped->EnableLiveLinkEvaluation(false);
+        Source->Update();
+        TestTrue(TEXT("the kept takeover evaluates the subject again in realtime"),
+            Stopped->GetEnableLiveLinkEvaluation());
+    }
+
+    TestTrue(TEXT("entering linkage again is accepted"), MtoURequestLinkageEnter(3, EnterError));
+    const TArray<uint8> ModeConfirm = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":3,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following again\"}"));
+    TestTrue(TEXT("Maya confirms the second transition"),
+        SendBytes(*Client, ModeConfirm.GetData(), ModeConfirm.Num()));
+    PollUntil([&]()
+    {
+        Source->Update();
+        return !MtoUGetLinkageView().bTransitioning;
+    });
+    // The game thread must process the confirmation before the next
+    // transition request, because a transition in progress refuses a leave.
+    PollUntil([&]()
+    {
+        Source->Update();
+        return !MtoUGetLinkageView().bTransitioning;
+    });
+    // The restored writer takes the display back from Live Link, as a
+    // restored Level Sequence or animation does.
+    FMtoULinkageHooks HandBackHooks = Hooks.Hooks;
+    HandBackHooks.RestoreTarget = [&Hooks, PrimaryDisplay](FString& OutError, FString& OutErrorCode)
+    {
+        const bool bRestored = Hooks.Hooks.RestoreTarget(OutError, OutErrorCode);
+        PrimaryDisplay->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+        return bRestored;
+    };
+    MtoUSetLinkageHooks(HandBackHooks);
+    FString EndError;
+    TestTrue(TEXT("ending the preview is accepted"),
+        MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
+    TestEqual(TEXT("ending the preview restores every borrowed writer"), Hooks.RestoreCalls, 1);
+    const FMtoULinkageView EndedView = MtoUGetLinkageView();
+    TestEqual(TEXT("the ended linkage reports realtime"), EndedView.Mode, FString(TEXT("realtime")));
+    Pump();
+    for (int32 Update = 0; Update < 3; ++Update)
+    {
+        Source->Update();
+    }
+    TestEqual(TEXT("after the end the restored writer keeps the display"),
+        static_cast<int32>(PrimaryDisplay->GetAnimationMode()),
+        static_cast<int32>(EAnimationMode::AnimationSingleNode));
+    TestTrue(TEXT("realtime gives the primary display its own tick back"),
+        PrimaryDisplay->IsComponentTickEnabled());
+    TestTrue(TEXT("realtime gives the part its own tick back"),
+        HatDisplay && HatDisplay->IsComponentTickEnabled());
+    TestTrue(TEXT("no control message stayed undelivered"),
+        Source->GetQueuedControlMessageCount() == 0);
+
+    MtoUSetLinkageHooks(FMtoULinkageHooks());
+    MtoUSetActiveSource(PreviousSource);
+    MtoUClearLinkageTarget(*Actor);
+    DestroySocket(*SocketSubsystem, Client);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkageModeTransitionTest,
+    "MtoULiveLink.Linkage.ModeTransitions",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageModeTransitionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("the actor is paired with the Maya object"), PairLinkageTarget(Actor));
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const USkeletalMesh* Mesh = Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
+    const FReferenceSkeleton* Skeleton = Mesh ? &Mesh->GetRefSkeleton() : nullptr;
+    if (!Skeleton)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+
+    FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+    TestNotNull(TEXT("Maya client connects"), Client);
+    if (!Client)
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    FMtoULinkageReplyReader Reader;
+    // The editor ticks the Live Link client every frame; the applied barrier
+    // waits for the subject to hold the published group, so the pump ticks it.
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
+
+    const TArray<uint8> Hello = LinkageHelloPacket();
+    TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
+    TArray<uint8> Payload;
+    TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
+    const TArray<uint8> Init = Packet(FString::Printf(
+        TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\","
+             "\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\","
+             "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+        *ReferenceSkeletonBonesJson(*Skeleton)));
+    TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
+    TestTrue(TEXT("negotiation reaches ready"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
+
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    FMtoULinkageTestHooks Hooks;
+    Hooks.PlannedTargets = 0;
+    Hooks.Install();
+    MtoUSetLinkageHooks(Hooks.Hooks);
+
+    // ---- refusals that change no host state -------------------------------
+    FString Error;
+    TestFalse(TEXT("a mode revision that is not newer is refused"),
+        MtoURequestLinkageEnter(0, Error));
+    TestTrue(TEXT("the refusal names the frozen code"),
+        MtoUGetLinkageView().ErrorCode == TEXT("MODE_CONFLICT"));
+    TestFalse(TEXT("leaving a mode that is not active is refused"),
+        MtoURequestLinkageLeave(TEXT("realtime"), 1, Error));
+    TestTrue(TEXT("the leave refusal names the frozen code"),
+        MtoUGetLinkageView().ErrorCode == TEXT("LINKAGE_NOT_ACTIVE"));
+
+    // A target whose writers cannot be isolated keeps the previous mode and
+    // reports the code the editor named.
+    Hooks.bTakeOverSucceeds = false;
+    Hooks.TakeOverErrorCode = TEXT("WRITER_NOT_ISOLATABLE");
+    TestFalse(TEXT("a non-isolatable writer refuses the transition"),
+        MtoURequestLinkageEnter(1, Error));
+    TestEqual(TEXT("the editor was asked to take the target over once"),
+        Hooks.TakeOverCalls, 1);
+    const FMtoULinkageView FailedTakeover = MtoUGetLinkageView();
+    TestEqual(TEXT("the failed transition keeps realtime"),
+        FailedTakeover.Mode, FString(TEXT("realtime")));
+    TestEqual(TEXT("the failed transition reports the editor's code"),
+        FailedTakeover.ErrorCode, FString(TEXT("WRITER_NOT_ISOLATABLE")));
+    TestTrue(TEXT("Unreal reports the failed transition to Maya"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> ModeState;
+    if (JsonObjectFromBytes(Payload, ModeState))
+    {
+        TestEqual(TEXT("the reported statement keeps realtime"),
+            ModeState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+    }
+    TestEqual(TEXT("no writer was borrowed"),
+        MtoUGetLinkageView().Identity.ModeRevision, 0);
+
+    // ---- Maya's own failed transition ------------------------------------
+
+    // The gate is closed during a transition: a group that answers the
+    // previous revision is refused with MODE_CONFLICT and nothing is applied.
+    Hooks.bTakeOverSucceeds = true;
+    TestTrue(TEXT("linkage entry is accepted"), MtoURequestLinkageEnter(2, Error));
+    const FString Pose = PoseTransformsJson(*Skeleton);
+    const TArray<uint8> EarlyGroup = Packet(LinkageGroupJson(
+        TEXT("seq@1+0"), 1, 1, 1, 2, 1, 1.0, Pose, 0));
+    TestTrue(TEXT("a group during the transition is sent"),
+        SendBytes(*Client, EarlyGroup.GetData(), EarlyGroup.Num()));
+    TestTrue(TEXT("the group during the transition is refused"),
+        Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TSharedPtr<FJsonObject> GateError;
+    if (JsonObjectFromBytes(Payload, GateError))
+    {
+        TestEqual(TEXT("the closed gate names the frozen code"),
+            GateError->GetStringField(TEXT("code")), FString(TEXT("MODE_CONFLICT")));
+    }
+    TestFalse(TEXT("the transition stays closed"), MtoUGetLinkageView().bTransitioning == false);
+    TestEqual(TEXT("a group that arrives during the transition is counted"),
+        MtoUGetLinkageView().RefusedGroupCount, 1);
+
+    // Maya's failed transition keeps the previous mode on both hosts.
+    const TArray<uint8> ModeFailed = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":2,\"mode\":\"realtime\","
+             "\"control\":\"maya\",\"transition\":\"failed\","
+             "\"detail\":\"the capture could not be taken\"}"));
+    TestTrue(TEXT("Maya's failed transition is sent"),
+        SendBytes(*Client, ModeFailed.GetData(), ModeFailed.Num()));
+    TestTrue(TEXT("Unreal reports the failed transition"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    const FMtoULinkageView AfterFailed = MtoUGetLinkageView();
+    TestEqual(TEXT("a failed transition keeps the previous mode"),
+        AfterFailed.Mode, FString(TEXT("realtime")));
+    TestEqual(TEXT("the failed transition reports its code"),
+        AfterFailed.ErrorCode, FString(TEXT("MODE_CONFLICT")));
+
+    // ---- ending the preview restores every borrowed writer ---------------
+    TestTrue(TEXT("entering linkage is accepted again"), MtoURequestLinkageEnter(3, Error));
+    const TArray<uint8> ModeReady = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":3,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"));
+    TestTrue(TEXT("Maya confirms the transition"),
+        SendBytes(*Client, ModeReady.GetData(), ModeReady.Num()));
+    PollUntil([&]()
+    {
+        Source->Update();
+        return !MtoUGetLinkageView().bTransitioning;
+    });
+    FString EndError;
+    TestTrue(TEXT("ending the preview is accepted"),
+        MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
+    // Each restore is per resource and idempotent: the failed transition
+    // restored what it had borrowed and ending the preview restored again.
+    TestEqual(TEXT("every borrowed writer was restored"), Hooks.RestoreCalls, 2);
+    const FMtoULinkageView AfterEnd = MtoUGetLinkageView();
+    TestTrue(TEXT("the recovery result reports the restore, not the session detail"),
+        AfterEnd.bWritersRestored && AfterEnd.RecoveryResidual.IsEmpty());
+
+    // A group that arrives while another host owns time is refused.
+    const TArray<uint8> LateGroup = Packet(LinkageGroupJson(
+        TEXT("seq@1+0"), 1, 1, 1, 3, 1, 1.0, Pose, 0));
+    TestTrue(TEXT("the late group is sent"),
+        SendBytes(*Client, LateGroup.GetData(), LateGroup.Num()));
+    TestTrue(TEXT("the late group is refused"), Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    if (JsonObjectFromBytes(Payload, GateError))
+    {
+        TestEqual(TEXT("the refusal names the frozen code"),
+            GateError->GetStringField(TEXT("code")), FString(TEXT("LINKAGE_NOT_ACTIVE")));
+    }
+
+    // ---- an exit that already happened is idempotent ---------------------
+    // Maya's 结束预览 after Unreal already ended the preview is confirmed, not
+    // refused: it hands back nothing more and adopts Maya's newer revision.
+    const TArray<uint8> LateEnd = Packet(
+        TEXT("{\"type\":\"leave_linkage\",\"session_id\":1,\"mode_revision\":5,"
+             "\"target\":\"end\",\"detail\":\"\"}"));
+    TestTrue(TEXT("a repeated end is sent"), SendBytes(*Client, LateEnd.GetData(), LateEnd.Num()));
+    TestTrue(TEXT("a repeated end is confirmed"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> EndState;
+    if (JsonObjectFromBytes(Payload, EndState))
+    {
+        TestEqual(TEXT("the confirmation keeps realtime"),
+            EndState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the confirmation adopts the newer revision"),
+            static_cast<int32>(EndState->GetNumberField(TEXT("mode_revision"))), 5);
+    }
+    TestEqual(TEXT("nothing more was restored"), Hooks.RestoreCalls, 2);
+
+    // ---- a late Maya entry never takes the target over again -------------
+    const int32 TakeOversBeforeStale = Hooks.TakeOverCalls;
+    const TArray<uint8> StaleEntry = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":3,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"late\"}"));
+    TestTrue(TEXT("a stale entry is sent"), SendBytes(*Client, StaleEntry.GetData(), StaleEntry.Num()));
+    TestTrue(TEXT("a stale entry is answered with the current mode"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> StaleState;
+    if (JsonObjectFromBytes(Payload, StaleState))
+    {
+        TestEqual(TEXT("the answer keeps realtime so Maya rolls back"),
+            StaleState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the answer names the current revision"),
+            static_cast<int32>(StaleState->GetNumberField(TEXT("mode_revision"))), 5);
+    }
+    TestEqual(TEXT("the stale entry borrowed no writer"),
+        Hooks.TakeOverCalls, TakeOversBeforeStale);
+
+    // ---- a discrete event cancels the target in flight -------------------
+    TestTrue(TEXT("linkage entry for the scheduling case is accepted"),
+        MtoURequestLinkageEnter(6, Error));
+    const TArray<uint8> ScheduleReady = Packet(
+        TEXT("{\"type\":\"mode\",\"session_id\":1,\"mode_revision\":6,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"));
+    TestTrue(TEXT("Maya confirms the scheduling entry"),
+        SendBytes(*Client, ScheduleReady.GetData(), ScheduleReady.Num()));
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("the first target is issued"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> FirstTarget;
+    FString FirstEval;
+    if (JsonObjectFromBytes(Payload, FirstTarget))
+    {
+        FirstEval = FirstTarget->GetStringField(TEXT("eval_id"));
+    }
+    // Ordinary playback only replaces the waiting target: no second issue.
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    for (int32 Tick = 0; Tick < 20 && Hooks.SentTargets < Hooks.PlannedTargets; ++Tick)
+    {
+        Pump();
+        FPlatformProcess::Sleep(0.02f);
+    }
+    TestFalse(TEXT("continuous playback keeps the issued target"),
+        MtoUGetLinkageView().TargetEvalId != FirstEval);
+    // A pause, jump or camera edit cancels it and issues the new target.
+    Hooks.bNextDiscontinuous = true;
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("a discrete event issues its target at once"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> JumpTarget;
+    if (JsonObjectFromBytes(Payload, JumpTarget))
+    {
+        TestNotEqual(TEXT("the discrete target replaces the cancelled one"),
+            JumpTarget->GetStringField(TEXT("eval_id")), FirstEval);
+    }
+    // A late answer to the cancelled target is refused and changes nothing.
+    const TArray<uint8> CancelledAnswer = Packet(LinkageGroupJson(
+        FirstEval, 1, 1, 1, 6, 1, 1.0, Pose, 0));
+    TestTrue(TEXT("the cancelled answer is sent"),
+        SendBytes(*Client, CancelledAnswer.GetData(), CancelledAnswer.Num()));
+    TestTrue(TEXT("the cancelled answer is refused"),
+        Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TSharedPtr<FJsonObject> StaleError;
+    if (JsonObjectFromBytes(Payload, StaleError))
+    {
+        TestEqual(TEXT("the refusal names the frozen code"),
+            StaleError->GetStringField(TEXT("code")), FString(TEXT("EVAL_STALE")));
+    }
+    TestTrue(TEXT("the cancelled answer was never applied"),
+        MtoUGetLinkageView().AppliedEvalId != FirstEval);
+    // An event that names the evaluation already in flight (a pause exactly
+    // on it) is not taken for a heartbeat: the work in flight is cancelled
+    // and issued again as a new issue.
+    const FString InFlightEval = MtoUGetLinkageView().TargetEvalId;
+    const int32 InFlightTransport = JumpTarget.IsValid()
+        ? static_cast<int32>(JumpTarget->GetNumberField(TEXT("transport_serial")))
+        : 0;
+    Hooks.bNextDiscontinuous = true;
+    Hooks.bNextRepeatsPrevious = true;
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    TestTrue(TEXT("an event on the target in flight issues it again"),
+        Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> ReissuedTarget;
+    if (JsonObjectFromBytes(Payload, ReissuedTarget))
+    {
+        TestEqual(TEXT("the event names the evaluation in flight"),
+            ReissuedTarget->GetStringField(TEXT("eval_id")), InFlightEval);
+        TestTrue(TEXT("the evaluation is issued as new work"),
+            static_cast<int32>(ReissuedTarget->GetNumberField(TEXT("transport_serial")))
+                > InFlightTransport);
+    }
+
+    // ---- a closed sequence ends linkage on both hosts --------------------
+    const int32 RestoresBeforeLoss = Hooks.RestoreCalls;
+    Hooks.bTakeoverValid = false;
+    TestTrue(TEXT("losing the takeover is reported to Maya"),
+        Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> LostState;
+    if (JsonObjectFromBytes(Payload, LostState))
+    {
+        TestEqual(TEXT("Maya hears that linkage ended"),
+            LostState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+        TestEqual(TEXT("the exit is a newer revision Maya follows"),
+            static_cast<int32>(LostState->GetNumberField(TEXT("mode_revision"))), 7);
+        TestTrue(TEXT("the statement names what went away"),
+            LostState->GetStringField(TEXT("detail")).Contains(TEXT("closed")));
+    }
+    const FMtoULinkageView LostView = MtoUGetLinkageView();
+    TestEqual(TEXT("Unreal returns to realtime"), LostView.Mode, FString(TEXT("realtime")));
+    TestEqual(TEXT("the loss names the frozen code"),
+        LostView.ErrorCode, FString(TEXT("TARGET_UNKNOWN")));
+    TestFalse(TEXT("no writer stays borrowed"), LostView.bTakeoverHeld);
+    TestEqual(TEXT("the borrowed writers were restored once"),
+        Hooks.RestoreCalls, RestoresBeforeLoss + 1);
+    // The writer handed back after a failed exit keeps the display.
+    if (USkeletalMeshComponent* Display = Actor->GetSkeletalMeshComponent())
+    {
+        Display->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+        for (int32 Update = 0; Update < 3; ++Update)
+        {
+            Source->Update();
+        }
+        TestEqual(TEXT("after a failed exit the restored writer keeps the display"),
+            static_cast<int32>(Display->GetAnimationMode()),
+            static_cast<int32>(EAnimationMode::AnimationSingleNode));
+    }
+    TestTrue(TEXT("the stale synchronisation is dropped"),
+        LostView.AppliedEvalId.IsEmpty() && !LostView.bConverged);
+
+    MtoUSetLinkageHooks(FMtoULinkageHooks());
+    MtoUSetActiveSource(PreviousSource);
+    MtoUClearLinkageTarget(*Actor);
+    DestroySocket(*SocketSubsystem, Client);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkageMayaLeaveFramesTest,
+    "MtoULiveLink.Linkage.MayaLeaveFrames",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageMayaLeaveFramesTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("the actor is paired with the Maya object"), PairLinkageTarget(Actor));
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const USkeletalMesh* Mesh = Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
+    const FReferenceSkeleton* Skeleton = Mesh ? &Mesh->GetRefSkeleton() : nullptr;
+    FSocket* Client = nullptr;
+    FMtoULinkageReplyReader Reader;
+    TArray<uint8> Payload;
+    int32 SessionId = 0;
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
+    // The game thread is not pumped while the worker reads a burst: this is
+    // the editor tick that has not processed Maya's exit yet.
+    const auto Hold = []() {};
+    // Greets and negotiates one connection; the same source numbers each
+    // accepted connection as a new session.
+    const auto Connect = [&](int32 ExpectedSession)
+    {
+        Reader = FMtoULinkageReplyReader();
+        Client = Skeleton ? ConnectLoopback(*SocketSubsystem, Port) : nullptr;
+        TestNotNull(TEXT("Maya client connects"), Client);
+        if (!Client)
+        {
+            return false;
+        }
+        const TArray<uint8> Hello = LinkageHelloPacket();
+        TestTrue(TEXT("greeting is sent"), SendBytes(*Client, Hello.GetData(), Hello.Num()));
+        TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
+        TSharedPtr<FJsonObject> Ack;
+        if (JsonObjectFromBytes(Payload, Ack))
+        {
+            TestEqual(TEXT("the connection is a new session"),
+                static_cast<int32>(Ack->GetNumberField(TEXT("session_id"))), ExpectedSession);
+        }
+        const TArray<uint8> Init = Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"character\","
+                 "\"set_revision\":1,\"space_revision\":1,\"set_objects\":[\"character\"],\"workflow\":\"animation\","
+                 "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[]}"),
+            *ReferenceSkeletonBonesJson(*Skeleton)));
+        TestTrue(TEXT("init is sent"), SendBytes(*Client, Init.GetData(), Init.Num()));
+        TestTrue(TEXT("negotiation reaches ready"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
+        SessionId = ExpectedSession;
+        return true;
+    };
+    if (!Connect(1))
+    {
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    FMtoULinkageTestHooks Hooks;
+    Hooks.PlannedTargets = 0;
+    Hooks.Install();
+    MtoUSetLinkageHooks(Hooks.Hooks);
+
+    // Every burst ends with a malformed mode message the worker refuses on its
+    // own: its refusal proves the worker has read everything before it.
+    const TArray<uint8> Marker = Packet(TEXT("{\"type\":\"mode\",\"session_id\":1}"));
+    const TArray<uint8> LiveFrame = Packet(
+        TEXT("{\"type\":\"frame\",\"transforms\":[],\"curves\":[]}"));
+    const auto EnterLinkage = [&](int32 Revision)
+    {
+        FString EnterError;
+        TestTrue(TEXT("linkage entry is accepted"), MtoURequestLinkageEnter(Revision, EnterError));
+        const TArray<uint8> Ready = Packet(FString::Printf(
+            TEXT("{\"type\":\"mode\",\"session_id\":%d,\"mode_revision\":%d,\"mode\":\"linkage\","
+                 "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"),
+            SessionId, Revision));
+        TestTrue(TEXT("Maya confirms the transition"), SendBytes(*Client, Ready.GetData(), Ready.Num()));
+        PollUntil([&]()
+        {
+            Pump();
+            return MtoUGetLinkageView().Mode == TEXT("linkage") && !MtoUGetLinkageView().bTransitioning;
+        });
+        TestEqual(TEXT("linkage is active"), MtoUGetLinkageView().Mode, FString(TEXT("linkage")));
+    };
+    const auto SendBurst = [&](const TArray<TArray<uint8>>& Messages)
+    {
+        TArray<uint8> Burst;
+        for (const TArray<uint8>& Message : Messages)
+        {
+            Burst.Append(Message);
+        }
+        Burst.Append(Marker);
+        return SendBytes(*Client, Burst.GetData(), Burst.Num());
+    };
+    const auto NextErrorCode = [&](TFunctionRef<void()> Driver, FString& OutMessage)
+    {
+        TSharedPtr<FJsonObject> Object;
+        if (Reader.Next(*Client, TEXT("error"), Payload, Driver) && JsonObjectFromBytes(Payload, Object))
+        {
+            OutMessage = Object->GetStringField(TEXT("message"));
+            return Object->GetStringField(TEXT("code"));
+        }
+        return FString();
+    };
+    const auto LeavePacket = [&](int32 Revision)
+    {
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"leave_linkage\",\"session_id\":%d,\"mode_revision\":%d,"
+                 "\"target\":\"realtime\",\"detail\":\"\"}"),
+            SessionId, Revision));
+    };
+    FString Message;
+
+    // ---- Maya's exit followed at once by a live frame --------------------
+    EnterLinkage(1);
+    TestTrue(TEXT("Maya's exit and its first live frame are sent"), SendBurst({LeavePacket(2), LiveFrame}));
+    TestEqual(TEXT("the frame behind the unapplied exit is dropped, not refused"),
+        NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    TestTrue(TEXT("the exit is confirmed"), Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+    TSharedPtr<FJsonObject> ModeState;
+    if (JsonObjectFromBytes(Payload, ModeState))
+    {
+        TestEqual(TEXT("the exit statement mode"),
+            ModeState->GetStringField(TEXT("mode")), FString(TEXT("realtime")));
+    }
+    const TArray<TArray<uint8>>* QueuedErrors = Reader.Pending.Find(TEXT("error"));
+    TestTrue(TEXT("no refusal followed the exit"), !QueuedErrors || QueuedErrors->Num() == 0);
+
+    // ---- a frame while linkage stays active is still refused -------------
+    EnterLinkage(3);
+    TestTrue(TEXT("a live frame during linkage is sent"),
+        SendBytes(*Client, LiveFrame.GetData(), LiveFrame.Num()));
+    TestEqual(TEXT("a live frame during linkage is refused"),
+        NextErrorCode(Pump, Message), FString(TEXT("MODE_CONFLICT")));
+    TestTrue(TEXT("the refusal says Unreal owns time"), Message.Contains(TEXT("owns the sequence time")));
+
+    // A refused exit keeps linkage, and frames are refused again once the
+    // game thread has answered it.
+    TestTrue(TEXT("a stale exit and a live frame are sent"), SendBurst({LeavePacket(3), LiveFrame}));
+    TestEqual(TEXT("the frame behind the unanswered exit is dropped"),
+        NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    TestEqual(TEXT("the stale exit is refused"),
+        NextErrorCode(Pump, Message), FString(TEXT("MODE_CONFLICT")));
+    TestTrue(TEXT("the refusal names the exit"), Message.Contains(TEXT("leave_linkage")));
+    TestEqual(TEXT("the refused exit keeps linkage"), MtoUGetLinkageView().Mode, FString(TEXT("linkage")));
+    TestTrue(TEXT("a live frame after the refused exit is sent"),
+        SendBytes(*Client, LiveFrame.GetData(), LiveFrame.Num()));
+    TestEqual(TEXT("a live frame after the refused exit is refused"),
+        NextErrorCode(Pump, Message), FString(TEXT("MODE_CONFLICT")));
+    TestTrue(TEXT("that refusal says Unreal owns time"), Message.Contains(TEXT("owns the sequence time")));
+
+    // ---- an exit the connection loses before the game thread sees it -----
+    // The worker drops the dead session's queue; that exit must not drop the
+    // frames of the next session on the same source. A stale exit (it would
+    // have been refused) and a valid one (it would have been applied) are
+    // both lost this way.
+    const auto LoseExitThenReconnect = [&](int32 ExitRevision, const TCHAR* Kind)
+    {
+        TestTrue(FString::Printf(TEXT("the %s exit is sent"), Kind), SendBurst({LeavePacket(ExitRevision)}));
+        TestEqual(FString::Printf(TEXT("the worker staged the %s exit"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        DestroySocket(*SocketSubsystem, Client);
+        Client = nullptr;
+        TestTrue(FString::Printf(TEXT("the source listens again after the %s exit was lost"), Kind),
+            WaitForStatus(Source, TEXT("Listening on")));
+        Pump();
+        TestEqual(FString::Printf(TEXT("the game thread uncounted the lost %s exit"), Kind),
+            Source->GetPendingLeaveCount(), 0);
+        if (!Connect(SessionId + 1))
+        {
+            return;
+        }
+        EnterLinkage(1);
+        TestTrue(FString::Printf(TEXT("a live frame after the lost %s exit is sent"), Kind),
+            SendBurst({LiveFrame}));
+        TestEqual(FString::Printf(TEXT("a live frame after the lost %s exit is still refused"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("MODE_CONFLICT")));
+        TestTrue(FString::Printf(TEXT("the refusal after the lost %s exit says Unreal owns time"), Kind),
+            Message.Contains(TEXT("owns the sequence time")));
+        TestEqual(FString::Printf(TEXT("the marker follows the refusal after the lost %s exit"), Kind),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    };
+    LoseExitThenReconnect(3, TEXT("stale"));
+    LoseExitThenReconnect(2, TEXT("valid"));
+
+    // ---- a disconnect while the game thread applies an exit --------------
+    // Maya's 结束预览 restores the borrowed writers inside the drain, with the
+    // exit already taken off the queue and a second exit still behind it.
+    // The connection drops right there and the worker finishes its cleanup
+    // before the drain resumes: the game thread stays the queue's only
+    // consumer and uncounts each exit exactly once.
+    bool bDropInRestore = true;
+    bool bWorkerSawDrop = false;
+    int32 LeavesDuringRestore = INDEX_NONE;
+    FMtoULinkageHooks DropInRestore = Hooks.Hooks;
+    DropInRestore.RestoreTarget = [&](FString& OutError, FString& OutErrorCode) -> bool
+    {
+        ++Hooks.RestoreCalls;
+        OutError.Reset();
+        OutErrorCode.Reset();
+        if (bDropInRestore && Client)
+        {
+            bDropInRestore = false;
+            DestroySocket(*SocketSubsystem, Client);
+            Client = nullptr;
+            bWorkerSawDrop = WaitForStatus(Source, TEXT("Listening on"));
+            LeavesDuringRestore = Source->GetPendingLeaveCount();
+        }
+        return true;
+    };
+    MtoUSetLinkageHooks(DropInRestore);
+    const TArray<uint8> EndExit = Packet(FString::Printf(
+        TEXT("{\"type\":\"leave_linkage\",\"session_id\":%d,\"mode_revision\":2,"
+             "\"target\":\"end\",\"detail\":\"\"}"),
+        SessionId));
+    TestTrue(TEXT("Maya's end and a second exit are sent"), SendBurst({EndExit, LeavePacket(3)}));
+    TestEqual(TEXT("the worker staged both exits"),
+        NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+    TestEqual(TEXT("both staged exits are counted"), Source->GetPendingLeaveCount(), 2);
+    const int32 RestoresBeforeDrop = Hooks.RestoreCalls;
+    Pump();
+    TestTrue(TEXT("the end restored the writers on the game thread"), Hooks.RestoreCalls > RestoresBeforeDrop);
+    TestTrue(TEXT("the worker noticed the drop while the game thread applied the exit"), bWorkerSawDrop);
+    TestEqual(TEXT("the worker's cleanup leaves the queued exits to the game thread"), LeavesDuringRestore, 2);
+    TestEqual(TEXT("each exit is uncounted exactly once"), Source->GetPendingLeaveCount(), 0);
+    Pump();
+    TestEqual(TEXT("the session end uncounts nothing more"), Source->GetPendingLeaveCount(), 0);
+    MtoUSetLinkageHooks(Hooks.Hooks);
+    if (Connect(SessionId + 1))
+    {
+        EnterLinkage(1);
+        TestTrue(TEXT("a live frame after the interleaved drop is sent"), SendBurst({LiveFrame}));
+        TestEqual(TEXT("a live frame after the interleaved drop is still refused"),
+            NextErrorCode(Hold, Message), FString(TEXT("MODE_CONFLICT")));
+        TestEqual(TEXT("the marker follows that refusal"),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        // The count did not go below zero: a new exit still covers its frame.
+        TestTrue(TEXT("a new exit and its frame are sent"), SendBurst({LeavePacket(2), LiveFrame}));
+        TestEqual(TEXT("the frame behind the new exit is dropped"),
+            NextErrorCode(Hold, Message), FString(TEXT("INVALID_MESSAGE")));
+        TestEqual(TEXT("the new exit is counted once"), Source->GetPendingLeaveCount(), 1);
+        TestTrue(TEXT("the new exit is confirmed"), Reader.Next(*Client, TEXT("mode_state"), Payload, Pump));
+        TestEqual(TEXT("the applied exit is uncounted"), Source->GetPendingLeaveCount(), 0);
+        EnterLinkage(3);
+    }
+
+    FString EndError;
+    TestTrue(TEXT("ending the preview is accepted"), MtoURequestLinkageLeave(TEXT("end"), 4, EndError));
+    TestTrue(TEXT("no control message stayed undelivered"),
+        Source->GetQueuedControlMessageCount() == 0);
+
+    MtoUSetLinkageHooks(FMtoULinkageHooks());
+    MtoUSetActiveSource(PreviousSource);
+    MtoUClearLinkageTarget(*Actor);
+    if (Client)
+    {
+        DestroySocket(*SocketSubsystem, Client);
+    }
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+/**
+ * Opt-in cross-host linkage acceptance. It drives the real Maya peer
+ * (`maya_linkage_peer.py`) against the runtime: greeting, explicit pairing,
+ * negotiation, the linkage mode with camera/time targets, complete pose
+ * groups answered with actual component evidence, and the leave that restores
+ * Maya's own state.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoUMayaLinkageHostTest,
+    "MtoUOptIn.Source.MayaLinkageHost",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoUMayaLinkageHostTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FString Fixture, Mayapy, Peer, Evidence;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoULinkageFixture="), Fixture))
+    {
+        AddError(TEXT("Cross-host linkage acceptance requires "
+            "-MtoULinkageFixture=<json> with port/targets/timeout_seconds/fps, "
+            "-MtoUMayapy=, -MtoUMayaLinkagePeer= and -MtoUEvidence=."));
+        return false;
+    }
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MtoUMayapy="), Mayapy)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUMayaLinkagePeer="), Peer)
+        || !FParse::Value(FCommandLine::Get(), TEXT("MtoUEvidence="), Evidence)
+        || !FPaths::FileExists(Mayapy) || !FPaths::FileExists(Peer)
+        || !FPaths::FileExists(Fixture))
+    {
+        AddError(TEXT("Host acceptance requires an existing fixture, mayapy and peer path plus an evidence directory."));
+        return false;
+    }
+
+    FString FixtureText;
+    TSharedPtr<FJsonObject> FixtureObject;
+    TestTrue(TEXT("linkage fixture loads"),
+        FFileHelper::LoadFileToString(FixtureText, *Fixture)
+        && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(FixtureText), FixtureObject)
+        && FixtureObject.IsValid());
+    if (!FixtureObject.IsValid())
+    {
+        return false;
+    }
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    TestNotNull(TEXT("platform socket subsystem is available"), SocketSubsystem);
+    if (!SocketSubsystem)
+    {
+        return false;
+    }
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("Live Link client feature is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    TestNotNull(TEXT("test port can be reserved"), Reservation);
+    if (!Reservation)
+    {
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    TestNotNull(TEXT("editor world is created"), World);
+    if (!World || !GEngine)
+    {
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+    AMtoULiveLinkActor* Actor = World ? AddBoundActor(*World) : nullptr;
+    TestNotNull(TEXT("placed binding actor is created"), Actor);
+    if (!Actor)
+    {
+        return false;
+    }
+    Actor->PostRegisterAllComponents();
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    const USkeletalMesh* Mesh = Actor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
+    TestNotNull(TEXT("the fixture mesh loads"), Mesh);
+    if (!Mesh)
+    {
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+
+    // The Maya peer builds its disposable character from the skeleton Unreal
+    // negotiates, so the two hosts describe the same object.
+    const FString ObjectId = FixtureObject->HasField(TEXT("object_id"))
+        ? FixtureObject->GetStringField(TEXT("object_id"))
+        : FString(TEXT("character"));
+    TestTrue(TEXT("the actor is paired with the peer's object"),
+        PairLinkageTarget(Actor, ObjectId));
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("Live Link source receives a guid"), SourceGuid.IsValid());
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+    FMtoULinkageTestHooks Hooks;
+    int32 WantedTargets = 5;
+    FParse::Value(FCommandLine::Get(), TEXT("MtoULinkageTargets="), WantedTargets);
+    if (FixtureObject->HasField(TEXT("targets")))
+    {
+        WantedTargets = static_cast<int32>(FixtureObject->GetNumberField(TEXT("targets")));
+    }
+    Hooks.PlannedTargets = FMath::Max(1, WantedTargets);
+    Hooks.Install();
+    MtoUSetLinkageHooks(Hooks.Hooks);
+
+    IFileManager::Get().MakeDirectory(*Evidence, true);
+    const FString ResultPath = FPaths::Combine(Evidence, TEXT("linkage-peer.json"));
+    const FString RuntimeFixture = FPaths::Combine(Evidence, TEXT("linkage-fixture.json"));
+    FixtureObject->SetNumberField(TEXT("port"), Port);
+    FixtureObject->SetStringField(TEXT("object_id"), ObjectId);
+    TArray<TSharedPtr<FJsonValue>> Bones;
+    auto BoneReader = TJsonReaderFactory<>::Create(TEXT("[") + ReferenceSkeletonBonesJson(Mesh->GetRefSkeleton()) + TEXT("]"));
+    TestTrue(TEXT("the negotiated skeleton is sent to the peer"),
+        FJsonSerializer::Deserialize(BoneReader, Bones));
+    FixtureObject->SetArrayField(TEXT("synthetic_bones"), Bones);
+    WriteMtoUEvidence(RuntimeFixture, FixtureObject.ToSharedRef());
+    FFileHelper::SaveStringToFile(TEXT("{\"phase\":\"starting\"}"), *ResultPath);
+
+    const FString PeerArgs = FString::Printf(
+        TEXT("\"%s\" --fixture \"%s\" --result \"%s\""), *Peer, *RuntimeFixture, *ResultPath);
+    FProcHandle Process = FPlatformProcess::CreateProc(
+        *Mayapy, *PeerArgs, false, true, true, nullptr, 0, nullptr, nullptr);
+    TestTrue(TEXT("the real Maya peer process starts"), Process.IsValid());
+    if (!Process.IsValid())
+    {
+        MtoUSetLinkageHooks(FMtoULinkageHooks());
+        MtoUSetActiveSource(PreviousSource);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+
+    const auto ReadResult = [&ResultPath]()
+    {
+        FString Text;
+        TSharedPtr<FJsonObject> Value;
+        if (FFileHelper::LoadFileToString(Text, *ResultPath))
+        {
+            FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Value);
+        }
+        return Value;
+    };
+    const bool bFinished = PollUntil([&]()
+    {
+        // The runtime pump runs while the peer works, so the camera/time
+        // targets and the applied evidence keep flowing; the Live Link client
+        // ticks as the editor ticks it, which the applied barrier waits for.
+        Source->Update();
+        LiveLinkClient.ForceTick();
+        const TSharedPtr<FJsonObject> Result = ReadResult();
+        FString Phase;
+        return Result.IsValid() && Result->TryGetStringField(TEXT("phase"), Phase)
+            && Phase == TEXT("done");
+    }, 240.0);
+    if (FPlatformProcess::IsProcRunning(Process))
+    {
+        FPlatformProcess::WaitForProc(Process);
+    }
+    int32 ReturnCode = 0;
+    FPlatformProcess::GetProcReturnCode(Process, &ReturnCode);
+    FPlatformProcess::CloseProc(Process);
+
+    const TSharedPtr<FJsonObject> Result = ReadResult();
+    TestTrue(TEXT("the peer reported a result"), Result.IsValid());
+    if (!Result.IsValid())
+    {
+        AddError(TEXT("The Maya linkage peer never wrote a result."));
+        MtoUSetLinkageHooks(FMtoULinkageHooks());
+        MtoUSetActiveSource(PreviousSource);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        return false;
+    }
+
+    TestTrue(TEXT("the peer finished its workflow"), bFinished);
+    TestTrue(TEXT("the peer process succeeded"), ReturnCode == 0);
+    TestTrue(TEXT("the peer reports success"), Result->GetBoolField(TEXT("ok")));
+    TestTrue(TEXT("the peer answered at least one complete group"),
+        static_cast<int32>(Result->GetNumberField(TEXT("groups"))) > 0);
+    const TArray<TSharedPtr<FJsonValue>>& Applied = Result->GetArrayField(TEXT("applied"));
+    TestTrue(TEXT("the peer recorded the applied evidence"), Applied.Num() > 0);
+    int32 AppliedTrue = 0;
+    for (const TSharedPtr<FJsonValue>& Entry : Applied)
+    {
+        const TSharedPtr<FJsonObject> Row = Entry->AsObject();
+        if (Row.IsValid() && Row->GetBoolField(TEXT("applied")))
+        {
+            ++AppliedTrue;
+        }
+    }
+    TestEqual(TEXT("every recorded application was accepted"),
+        AppliedTrue, Applied.Num());
+    TestTrue(TEXT("the peer reached a converged linkage"), Result->GetBoolField(TEXT("converged")));
+    TestTrue(TEXT("Maya restored its own state with no residual"),
+        Result->GetArrayField(TEXT("restore")).IsEmpty());
+    TestTrue(TEXT("the peer reported no error"), Result->GetArrayField(TEXT("errors")).IsEmpty());
+    const TSharedPtr<FJsonObject> HelloReply = Result->GetObjectField(TEXT("hello_reply"));
+    if (HelloReply.IsValid())
+    {
+        TestEqual(TEXT("the greeting answer declared the adapter version"),
+            static_cast<int32>(HelloReply->GetNumberField(TEXT("version"))),
+            FMtoUProtocol::Version);
+        const TArray<TSharedPtr<FJsonValue>> Targets = HelloReply->GetArrayField(TEXT("targets"));
+        TestEqual(TEXT("the greeting answer named the paired object"),
+            Targets.IsEmpty() ? FString() : Targets[0]->AsObject()->GetStringField(TEXT("object_id")),
+            ObjectId);
+    }
+
+    const FMtoULinkageView View = MtoUGetLinkageView();
+    TestEqual(TEXT("the runtime returned to realtime after the peer left"),
+        View.Mode, FString(TEXT("realtime")));
+    TestEqual(TEXT("Maya's leave restored every borrowed writer"),
+        Hooks.RestoreCalls, 1);
+    TestEqual(TEXT("the pump evaluated exactly the planned targets"),
+        Hooks.SentTargets, Hooks.PlannedTargets);
+
+    TSharedPtr<FJsonObject> Report = MakeShared<FJsonObject>();
+    Report->SetNumberField(TEXT("targets"), Hooks.SentTargets);
+    Report->SetNumberField(TEXT("groups"), static_cast<int32>(Result->GetNumberField(TEXT("groups"))));
+    Report->SetNumberField(TEXT("applied"), Applied.Num());
+    Report->SetBoolField(TEXT("converged"), Result->GetBoolField(TEXT("converged")));
+    Report->SetBoolField(TEXT("ok"), Result->GetBoolField(TEXT("ok")));
+    Report->SetNumberField(TEXT("return_code"), ReturnCode);
+    Report->SetNumberField(TEXT("take_over_calls"), Hooks.TakeOverCalls);
+    Report->SetNumberField(TEXT("restore_calls"), Hooks.RestoreCalls);
+    WriteMtoUEvidence(FPaths::Combine(Evidence, TEXT("linkage-host-report.json")),
+        Report.ToSharedRef());
+    AddInfo(TEXT("Cross-host linkage acceptance complete: ")
+        + FPaths::Combine(Evidence, TEXT("linkage-host-report.json")));
+
+    MtoUSetLinkageHooks(FMtoULinkageHooks());
+    MtoUSetActiveSource(PreviousSource);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
+
+/** One frame or group row of the second object. */
+FString ObjectRowJson(const FString& ObjectId, const FString& PoseTransforms, double CurveValue)
+{
+    return FString::Printf(
+        TEXT("{\"object_id\":\"%s\",\"transforms\":[%s],\"curves\":[%.3f]}"),
+        *ObjectId, *PoseTransforms, CurveValue);
+}
+
+/** One linkage group of an explicit object list. */
+FString ObjectSetGroupJson(int32 SessionId, const FString& EvalId, int32 SampleSerial,
+    int32 SetRevision, const TArray<FString>& Rows)
+{
+    return FString::Printf(
+        TEXT("{\"type\":\"group\",\"session_id\":%d,\"set_revision\":%d,"
+             "\"mode_revision\":1,\"space_revision\":1,\"eval_id\":\"%s\","
+             "\"transport_serial\":1,\"sample_serial\":%d,\"objects\":[%s],"
+             "\"camera\":{\"focal_length_mm\":35.0},"
+             "\"time\":{\"maya_frame\":1.0,\"ue_display_frame\":1.0}}"),
+        SessionId, SetRevision, *EvalId, SampleSerial, *FString::Join(Rows, TEXT(",")));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMtoULinkageObjectSetTest,
+    "MtoULiveLink.Linkage.ObjectSet",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMtoULinkageObjectSetTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+    ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    IModularFeatures& Features = IModularFeatures::Get();
+    if (!SocketSubsystem || !Features.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
+    {
+        AddError(TEXT("The socket subsystem or the Live Link client is unavailable."));
+        return false;
+    }
+    ILiveLinkClient& LiveLinkClient =
+        Features.GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+    FSocket* Reservation = BindLoopback(*SocketSubsystem, 0, true);
+    if (!Reservation)
+    {
+        AddError(TEXT("A test port cannot be reserved."));
+        return false;
+    }
+    TSharedRef<FInternetAddr> ReservedAddress = SocketSubsystem->CreateInternetAddr();
+    Reservation->GetAddress(*ReservedAddress);
+    const uint16 Port = static_cast<uint16>(ReservedAddress->GetPort());
+    DestroySocket(*SocketSubsystem, Reservation);
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Editor, false);
+    if (!World || !GEngine)
+    {
+        AddError(TEXT("An editor world cannot be created."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Editor);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());
+
+    // Two objects with the same bone and Morph names: a value of one must
+    // never reach the other.
+    USkeletalMesh* SharedCube = LoadObject<USkeletalMesh>(
+        nullptr, TEXT("/Engine/EngineMeshes/SkeletalCube.SkeletalCube"));
+    const auto MakeMesh = [&](const TCHAR* Name) -> USkeletalMesh*
+    {
+        USkeletalMesh* Mesh = SharedCube
+            ? DuplicateObject<USkeletalMesh>(SharedCube, GetTransientPackage(), Name)
+            : nullptr;
+        if (!Mesh || !AddUniformMorph(*Mesh, TEXT("Smile"), FVector3f(0.0f, 1.0f, 0.0f)))
+        {
+            return nullptr;
+        }
+        USkeleton* Skeleton = DuplicateObject<USkeleton>(Mesh->GetSkeleton(), GetTransientPackage());
+        Mesh->SetSkeleton(Skeleton);
+        Skeleton->AddCurveMetaData(FName(TEXT("Smile")), false);
+        if (FCurveMetaData* MetaData = Skeleton->GetCurveMetaData(FName(TEXT("Smile"))))
+        {
+            MetaData->Type.bMorphtarget = true;
+        }
+        return Mesh;
+    };
+    USkeletalMesh* HeroMesh = MakeMesh(TEXT("ObjectSetHero"));
+    USkeletalMesh* PropMesh = MakeMesh(TEXT("ObjectSetProp"));
+    const FTransform Anchor(FRotator(0.0, 37.0, 3.0), FVector(60.0, 40.0, 0.0));
+    const auto MakeActor = [&](USkeletalMesh* Mesh) -> AMtoULiveLinkActor*
+    {
+        UMtoULiveLinkBinding* Binding = NewObject<UMtoULiveLinkBinding>(GetTransientPackage());
+        Binding->SkeletalMesh = Mesh;
+        AMtoULiveLinkActor* Actor = World->SpawnActor<AMtoULiveLinkActor>();
+        if (Actor)
+        {
+            Actor->SetActorTransform(Anchor);
+            Actor->SetBinding(Binding);
+            Actor->PostRegisterAllComponents();
+        }
+        return Actor;
+    };
+    AMtoULiveLinkActor* Hero = HeroMesh ? MakeActor(HeroMesh) : nullptr;
+    AMtoULiveLinkActor* Prop = PropMesh ? MakeActor(PropMesh) : nullptr;
+    // A third compatible actor at the same anchor that no object is paired with.
+    AMtoULiveLinkActor* Idle = HeroMesh ? MakeActor(HeroMesh) : nullptr;
+    if (!Hero || !Prop || !Idle)
+    {
+        AddError(TEXT("The two Binding actors cannot be created."));
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    TestTrue(TEXT("the primary actor is paired"), PairLinkageTarget(Hero, TEXT("character")));
+    TestTrue(TEXT("the second actor is paired"), PairLinkageTarget(Prop, TEXT("secondary")));
+    FString PairError;
+    TestFalse(TEXT("an unknown object id is refused"),
+        MtoUPairLinkageTarget(*Prop, TEXT("third"), PairError));
+
+    TSharedRef<FMtoULiveLinkSource> Source = MakeShared<FMtoULiveLinkSource>(Port);
+    const FGuid SourceGuid = LiveLinkClient.AddSource(Source);
+    TestTrue(TEXT("source reaches listening state"), WaitForStatus(Source, TEXT("Listening on")));
+    const TSharedPtr<FMtoULiveLinkSource> PreviousSource = MtoUSetActiveSource(Source);
+
+    const FReferenceSkeleton& Skeleton = HeroMesh->GetRefSkeleton();
+    const FString Bones = ReferenceSkeletonBonesJson(Skeleton);
+    const FString Pose = PoseTransformsJson(Skeleton);
+    const auto InitPacket = [&](const TCHAR* ObjectId)
+    {
+        return Packet(FString::Printf(
+            TEXT("{\"type\":\"init\",\"revision\":9,\"version\":11,\"object_id\":\"%s\","
+                 "\"set_revision\":1,\"space_revision\":1,"
+                 "\"set_objects\":[\"character\",\"secondary\"],\"workflow\":\"animation\","
+                 "\"blendshapes_enabled\":true,\"bones\":[%s],\"curves\":[\"Smile\"]}"),
+            ObjectId, *Bones));
+    };
+    int32 SessionId = 0;
+    const auto Connect = [&](FMtoULinkageReplyReader& Reader, TFunctionRef<void()> Pump) -> FSocket*
+    {
+        FSocket* Client = ConnectLoopback(*SocketSubsystem, Port);
+        if (!Client)
+        {
+            return nullptr;
+        }
+        TArray<uint8> Bytes = LinkageHelloPacket();
+        Bytes.Append(InitPacket(TEXT("character")));
+        Bytes.Append(InitPacket(TEXT("secondary")));
+        SendBytes(*Client, Bytes.GetData(), Bytes.Num());
+        TArray<uint8> Payload;
+        TestTrue(TEXT("the greeting is answered"), Reader.Next(*Client, TEXT("hello_ack"), Payload, Pump));
+        TSharedPtr<FJsonObject> Ack;
+        if (JsonObjectFromBytes(Payload, Ack))
+        {
+            TestEqual(TEXT("the greeting names both paired targets"),
+                Ack->GetArrayField(TEXT("targets")).Num(), 2);
+            SessionId = static_cast<int32>(Ack->GetNumberField(TEXT("session_id")));
+        }
+        return Client;
+    };
+    const auto SubjectCurve = [&](const TCHAR* Subject) -> float
+    {
+        FLiveLinkSubjectFrameData Data;
+        if (!LiveLinkClient.EvaluateFrameFromSource_AnyThread(
+                FLiveLinkSubjectKey(SourceGuid, FName(Subject)),
+                ULiveLinkAnimationRole::StaticClass(), Data))
+        {
+            return -1.0f;
+        }
+        const FLiveLinkAnimationFrameData* Animation =
+            Data.FrameData.Cast<FLiveLinkAnimationFrameData>();
+        return Animation && Animation->PropertyValues.Num() > 0
+            ? Animation->PropertyValues[0] : -1.0f;
+    };
+    const auto Pump = [&]() { Source->Update(); LiveLinkClient.ForceTick(); };
+    TArray<uint8> Payload;
+
+    // ---- a second target at another placement is refused ------------------
+    {
+        Prop->SetActorLocation(Anchor.GetLocation() + FVector(120.0, 0.0, 0.0));
+        FMtoULinkageReplyReader Reader;
+        FSocket* Client = Connect(Reader, Pump);
+        TestNotNull(TEXT("the first client connects"), Client);
+        if (Client)
+        {
+            TestTrue(TEXT("the primary negotiates"), Reader.Next(*Client, TEXT("ready"), Payload, Pump));
+            TestTrue(TEXT("the misplaced second object ends the set"),
+                Reader.Next(*Client, TEXT("error"), Payload, Pump));
+            TSharedPtr<FJsonObject> Error;
+            if (JsonObjectFromBytes(Payload, Error))
+            {
+                TestEqual(TEXT("the refusal names the common anchor"),
+                    Error->GetStringField(TEXT("code")), FString(TEXT("ANCHOR_MISMATCH")));
+            }
+            DestroySocket(*SocketSubsystem, Client);
+        }
+        Prop->SetActorTransform(Anchor);
+        TestTrue(TEXT("the listener survives the refusal"),
+            PollUntil([&]() { Source->Update(); return Source->GetSourceStatus().ToString().StartsWith(TEXT("Listening on")); }, 5.0));
+    }
+
+    // ---- both objects negotiate and stream in one frame -------------------
+    FMtoULinkageReplyReader Reader;
+    FSocket* Client = Connect(Reader, Pump);
+    TestNotNull(TEXT("the set client connects"), Client);
+    if (!Client)
+    {
+        MtoUSetActiveSource(PreviousSource);
+        Source->StopListener();
+        LiveLinkClient.RemoveSource(Source);
+        World->DestroyWorld(false);
+        GEngine->DestroyWorldContext(World);
+        return false;
+    }
+    TArray<FString> ReadyObjects;
+    for (int32 Index = 0; Index < 2; ++Index)
+    {
+        TSharedPtr<FJsonObject> Ready;
+        if (Reader.Next(*Client, TEXT("ready"), Payload, Pump) && JsonObjectFromBytes(Payload, Ready))
+        {
+            ReadyObjects.Add(Ready->GetStringField(TEXT("object_id")));
+        }
+    }
+    TestEqual(TEXT("one ready per object, primary first"),
+        ReadyObjects, TArray<FString>({TEXT("character"), TEXT("secondary")}));
+    TestEqual(TEXT("the second actor evaluates its own subject"),
+        Prop->GetLiveLinkSubject(), FName(TEXT("MtoU_Secondary")));
+    TestEqual(TEXT("the primary actor keeps the character subject"),
+        Hero->GetLiveLinkSubject(), FName(TEXT("MtoU_Character")));
+    const auto Evaluates = [](const AMtoULiveLinkActor* Actor)
+    {
+        ULiveLinkInstance* Instance = Actor
+            ? Cast<ULiveLinkInstance>(Actor->GetSkeletalMeshComponent()->GetAnimInstance()) : nullptr;
+        return Instance && Instance->GetEnableLiveLinkEvaluation();
+    };
+    TestTrue(TEXT("both objects of the set evaluate their subjects"),
+        Hero->IsInLiveLinkSet() && Prop->IsInLiveLinkSet() && Evaluates(Hero) && Evaluates(Prop));
+    TestFalse(TEXT("an unpaired actor outside the set evaluates no subject"),
+        Idle->IsInLiveLinkSet() || Evaluates(Idle));
+
+    const TArray<uint8> Frame = Packet(FString::Printf(
+        TEXT("{\"type\":\"frame\",\"transforms\":[%s],\"curves\":[0.250],\"objects\":[%s]}"),
+        *Pose, *ObjectRowJson(TEXT("secondary"), Pose, 0.75)));
+    SendBytes(*Client, Frame.GetData(), Frame.Num());
+    const bool bBothStreamed = PollUntil([&]()
+    {
+        Pump();
+        return FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Character")), 0.25f, 1.0e-3f)
+            && FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Secondary")), 0.75f, 1.0e-3f);
+    }, 5.0);
+    TestTrue(TEXT("one frame reaches both subjects with their own Morph values"), bBothStreamed);
+
+    const TArray<uint8> CacheEnter = Packet(TEXT("{\"type\":\"cache_enter\"}"));
+    SendBytes(*Client, CacheEnter.GetData(), CacheEnter.Num());
+    TestTrue(TEXT("cached playback of a set is refused"), Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TestTrue(TEXT("the refusal names the single-character contract"),
+        FromUtf8(Payload).Contains(TEXT("OBJECT_SET_UNSUPPORTED")));
+
+    // ---- linkage answers for the whole set --------------------------------
+    FMtoULinkageTestHooks Hooks;
+    Hooks.PlannedTargets = 2;
+    Hooks.Install();
+    int32 RestoredObjects = 0;
+    Hooks.Hooks.RestoreObject = [&RestoredObjects](const FString& ObjectId, FString&, FString&)
+    {
+        RestoredObjects += ObjectId == TEXT("secondary") ? 1 : 100;
+        return true;
+    };
+    MtoUSetLinkageHooks(Hooks.Hooks);
+    FString EnterError;
+    TestTrue(TEXT("linkage entry takes the set over"), MtoURequestLinkageEnter(1, EnterError));
+    const TArray<uint8> ModeReady = Packet(FString::Printf(
+        TEXT("{\"type\":\"mode\",\"session_id\":%d,\"mode_revision\":1,\"mode\":\"linkage\","
+             "\"control\":\"unreal\",\"transition\":\"ready\",\"detail\":\"following\"}"),
+        SessionId));
+    SendBytes(*Client, ModeReady.GetData(), ModeReady.Num());
+    TestTrue(TEXT("Maya's confirmation opens the pose gate"), PollUntil([&]()
+    {
+        Pump();
+        return MtoUGetLinkageView().Mode == TEXT("linkage") && !MtoUGetLinkageView().bTransitioning;
+    }, 5.0));
+    TestTrue(TEXT("the first target is issued"), Reader.Next(*Client, TEXT("camera_time"), Payload, Pump));
+    TSharedPtr<FJsonObject> Target;
+    FString EvalId;
+    if (JsonObjectFromBytes(Payload, Target))
+    {
+        EvalId = Target->GetStringField(TEXT("eval_id"));
+    }
+
+    const TArray<uint8> Partial = Packet(ObjectSetGroupJson(SessionId, EvalId, 1, 1,
+        {ObjectRowJson(TEXT("character"), Pose, 0.1)}));
+    SendBytes(*Client, Partial.GetData(), Partial.Num());
+    TestTrue(TEXT("a partial group is refused"), Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TestTrue(TEXT("the refusal names the missing object"),
+        FromUtf8(Payload).Contains(TEXT("secondary")));
+
+    const TArray<uint8> Whole = Packet(ObjectSetGroupJson(SessionId, EvalId, 2, 1,
+        {ObjectRowJson(TEXT("character"), Pose, 0.1), ObjectRowJson(TEXT("secondary"), Pose, 0.9)}));
+    SendBytes(*Client, Whole.GetData(), Whole.Num());
+    TestTrue(TEXT("the whole group is applied"), Reader.Next(*Client, TEXT("applied"), Payload, Pump, 5.0));
+    TSharedPtr<FJsonObject> Applied;
+    if (JsonObjectFromBytes(Payload, Applied))
+    {
+        AddInfo(TEXT("Object set applied evidence: ") + FromUtf8(Payload));
+        TestTrue(TEXT("the set was displayed"), Applied->GetBoolField(TEXT("applied")));
+        const TArray<TSharedPtr<FJsonValue>>& Components = Applied->GetArrayField(TEXT("components"));
+        TestEqual(TEXT("one evidence row per object"), Components.Num(), 2);
+        for (const TSharedPtr<FJsonValue>& Component : Components)
+        {
+            TestTrue(TEXT("every object's Morph value was read back"),
+                Component->AsObject()->GetNumberField(TEXT("morphs")) >= 1);
+        }
+    }
+    TestTrue(TEXT("each subject holds its own group value"),
+        FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Character")), 0.1f, 1.0e-3f)
+        && FMath::IsNearlyEqual(SubjectCurve(TEXT("MtoU_Secondary")), 0.9f, 1.0e-3f));
+
+    // ---- a display failing after staging never shows a half set -----------
+    // The second object's display leaves the world once every display staged
+    // the group of the next target. After every game-thread step, which is
+    // when a frame renders, the first object must still show the last complete
+    // group; that target stays issued, so the next whole group answers it.
+    {
+        USkeletalMeshComponent* HeroDisplay = Hero->GetSkeletalMeshComponent();
+        USkeletalMeshComponent* PropDisplay = Prop->GetSkeletalMeshComponent();
+        const UMorphTarget* HeroSmile = HeroMesh->FindMorphTarget(TEXT("Smile"));
+        const auto HeroSmileShown = [&]() -> float
+        {
+            const int32* Index = HeroSmile ? HeroDisplay->ActiveMorphTargets.Find(HeroSmile) : nullptr;
+            return Index && HeroDisplay->MorphTargetWeights.IsValidIndex(*Index)
+                ? HeroDisplay->MorphTargetWeights[*Index] : 0.0f;
+        };
+        const float SmileBefore = HeroSmileShown();
+        TestTrue(TEXT("the first object shows the complete group's Morph"),
+            FMath::IsNearlyEqual(SmileBefore, 0.1f, 1.0e-3f));
+        const TArray<FTransform> PoseBefore = HeroDisplay->GetComponentSpaceTransforms();
+        bool bBroken = false;
+        MtoUSetLinkageApplyProbe([&](EMtoULinkageApplyStage Stage, const FString&, const FString&)
+        {
+            if (Stage == EMtoULinkageApplyStage::Staged && !bBroken)
+            {
+                bBroken = true;
+                PropDisplay->UnregisterComponent();
+            }
+            return true;
+        });
+        int32 Steps = 0;
+        float MaxSmileChange = 0.0f;
+        double MaxPoseChange = 0.0;
+        const auto WatchedPump = [&]()
+        {
+            Pump();
+            ++Steps;
+            MaxSmileChange = FMath::Max(MaxSmileChange, FMath::Abs(HeroSmileShown() - SmileBefore));
+            const TArray<FTransform>& PoseNow = HeroDisplay->GetComponentSpaceTransforms();
+            for (int32 Bone = 0; Bone < FMath::Min(PoseNow.Num(), PoseBefore.Num()); ++Bone)
+            {
+                MaxPoseChange = FMath::Max(MaxPoseChange,
+                    FVector::Distance(PoseNow[Bone].GetLocation(), PoseBefore[Bone].GetLocation()));
+            }
+        };
+        // The synthetic editor offers one more target.
+        Hooks.PlannedTargets = Hooks.SentTargets + 1;
+        TestTrue(TEXT("the next target is issued"), Reader.Next(*Client, TEXT("camera_time"), Payload, Pump, 5.0));
+        if (JsonObjectFromBytes(Payload, Target))
+        {
+            EvalId = Target->GetStringField(TEXT("eval_id"));
+        }
+        const TArray<uint8> Failing = Packet(ObjectSetGroupJson(SessionId, EvalId, 3, 1,
+            {ObjectRowJson(TEXT("character"), Pose, 0.6), ObjectRowJson(TEXT("secondary"), Pose, 0.4)}));
+        SendBytes(*Client, Failing.GetData(), Failing.Num());
+        TestTrue(TEXT("the group whose display failed is answered"),
+            Reader.Next(*Client, TEXT("applied"), Payload, WatchedPump, 5.0));
+        TSharedPtr<FJsonObject> Failed;
+        if (JsonObjectFromBytes(Payload, Failed))
+        {
+            TestFalse(TEXT("the group whose display failed after staging is not confirmed"),
+                Failed->GetBoolField(TEXT("applied")));
+        }
+        for (int32 Extra = 0; Extra < 5; ++Extra)
+        {
+            WatchedPump();
+        }
+        MtoUSetLinkageApplyProbe(nullptr);
+        AddInfo(FString::Printf(TEXT("Display failure after staging: %d game-thread steps watched, first object changed at most %.6f Morph weight and %.6f cm"),
+            Steps, MaxSmileChange, MaxPoseChange));
+        TestTrue(TEXT("the display failed after the group was staged"), bBroken);
+        TestTrue(TEXT("the first object keeps the last complete Morph at every step"), MaxSmileChange < 1.0e-3f);
+        TestTrue(TEXT("the first object keeps the last complete pose at every step"), MaxPoseChange < 1.0e-3);
+
+        PropDisplay->RegisterComponent();
+        const TArray<uint8> Again = Packet(ObjectSetGroupJson(SessionId, EvalId, 4, 1,
+            {ObjectRowJson(TEXT("character"), Pose, 0.15), ObjectRowJson(TEXT("secondary"), Pose, 0.85)}));
+        SendBytes(*Client, Again.GetData(), Again.Num());
+        TestTrue(TEXT("the next whole group is answered"), Reader.Next(*Client, TEXT("applied"), Payload, Pump, 5.0));
+        TSharedPtr<FJsonObject> Recovered;
+        if (JsonObjectFromBytes(Payload, Recovered))
+        {
+            TestTrue(TEXT("the restored display shows the next whole group"), Recovered->GetBoolField(TEXT("applied")));
+        }
+        TestTrue(TEXT("the first object shows the next whole group"),
+            FMath::IsNearlyEqual(HeroSmileShown(), 0.15f, 1.0e-3f));
+    }
+
+    // ---- removing the second object inside the connection -----------------
+    // The synthetic editor offers exactly one more target: the one the new
+    // set must answer.
+    Hooks.PlannedTargets = Hooks.SentTargets + 1;
+    const TArray<uint8> Remove = Packet(FString::Printf(
+        TEXT("{\"type\":\"remove_object\",\"session_id\":%d,\"object_id\":\"secondary\","
+             "\"set_revision\":2,\"detail\":\"pairing window\"}"), SessionId));
+    const int32 SkippedBeforeRemoval = Reader.OtherPayloads.Num();
+    SendBytes(*Client, Remove.GetData(), Remove.Num());
+    TestTrue(TEXT("the removal is confirmed"), Reader.Next(*Client, TEXT("object_removed"), Payload, Pump));
+    TSharedPtr<FJsonObject> Removed;
+    if (JsonObjectFromBytes(Payload, Removed))
+    {
+        TestEqual(TEXT("the confirmation names the new set"),
+            static_cast<int32>(Removed->GetNumberField(TEXT("set_revision"))), 2);
+        TestTrue(TEXT("the removed target was restored"), Removed->GetBoolField(TEXT("restored")));
+    }
+    TestEqual(TEXT("only the second object's writers came back"), RestoredObjects, 1);
+    TestEqual(TEXT("the primary's takeover stays"), Hooks.RestoreCalls, 0);
+    const FMtoULinkageView RemovedView = MtoUGetLinkageView();
+    TestEqual(TEXT("the set revision advanced"), RemovedView.Identity.SetRevision, 2);
+    TestEqual(TEXT("linkage continues"), RemovedView.Mode, FString(TEXT("linkage")));
+    Pump();
+    TestTrue(TEXT("the second subject left the stream"), SubjectCurve(TEXT("MtoU_Secondary")) < 0.0f);
+    TestEqual(TEXT("the second actor reports its removal"),
+        Prop->GetConnectionStatus(), FString(TEXT("Removed from the set")));
+    TestFalse(TEXT("the removed actor stops evaluating any subject"),
+        Prop->IsInLiveLinkSet() || Evaluates(Prop));
+    TestTrue(TEXT("the primary keeps evaluating its subject"), Evaluates(Hero));
+
+    // A target issued for the old set before the removal may still be on the
+    // wire; the next one names the new set.
+    int32 NewSetTargets = 0;
+    // The new set's target may arrive before the removal's confirmation.
+    for (int32 Skipped = SkippedBeforeRemoval; Skipped < Reader.OtherPayloads.Num() && NewSetTargets == 0; ++Skipped)
+    {
+        if (JsonObjectFromBytes(Reader.OtherPayloads[Skipped], Target)
+            && Target->GetStringField(TEXT("type")) == TEXT("camera_time")
+            && static_cast<int32>(Target->GetNumberField(TEXT("set_revision"))) == 2)
+        {
+            ++NewSetTargets;
+            EvalId = Target->GetStringField(TEXT("eval_id"));
+        }
+    }
+    for (int32 Attempt = 0; Attempt < 3 && NewSetTargets == 0; ++Attempt)
+    {
+        if (Reader.Next(*Client, TEXT("camera_time"), Payload, Pump, 5.0)
+            && JsonObjectFromBytes(Payload, Target)
+            && static_cast<int32>(Target->GetNumberField(TEXT("set_revision"))) == 2)
+        {
+            ++NewSetTargets;
+            EvalId = Target->GetStringField(TEXT("eval_id"));
+        }
+    }
+    TestEqual(TEXT("the current target is issued again for the new set"), NewSetTargets, 1);
+    const TArray<uint8> Stale = Packet(ObjectSetGroupJson(SessionId, EvalId, 5, 1,
+        {ObjectRowJson(TEXT("character"), Pose, 0.2), ObjectRowJson(TEXT("secondary"), Pose, 0.8)}));
+    SendBytes(*Client, Stale.GetData(), Stale.Num());
+    TestTrue(TEXT("a group of the closed set is refused"), Reader.Next(*Client, TEXT("error"), Payload, Pump));
+    TestTrue(TEXT("the refusal names the stale set"),
+        FromUtf8(Payload).Contains(TEXT("SET_REVISION_STALE")));
+    const TArray<uint8> Primary = Packet(ObjectSetGroupJson(SessionId, EvalId, 6, 2,
+        {ObjectRowJson(TEXT("character"), Pose, 0.3)}));
+    SendBytes(*Client, Primary.GetData(), Primary.Num());
+    TestTrue(TEXT("the primary continues alone"), Reader.Next(*Client, TEXT("applied"), Payload, Pump, 5.0));
+    if (JsonObjectFromBytes(Payload, Applied))
+    {
+        TestTrue(TEXT("the primary group was displayed"), Applied->GetBoolField(TEXT("applied")));
+        TestEqual(TEXT("one evidence row remains"), Applied->GetArrayField(TEXT("components")).Num(), 1);
+    }
+
+    FString EndError;
+    TestTrue(TEXT("ending the preview is accepted"),
+        MtoURequestLinkageLeave(TEXT("end"), MtoUGetLinkageView().Identity.ModeRevision + 1, EndError));
+    TestEqual(TEXT("ending the preview restores the remaining writers"), Hooks.RestoreCalls, 1);
+
+    DestroySocket(*SocketSubsystem, Client);
+    TestTrue(TEXT("every actor of the ended session stops evaluating"), PollUntil([&]()
+    {
+        Pump();
+        return !Hero->IsInLiveLinkSet() && !Evaluates(Hero);
+    }, 5.0));
+
+    // ---- a changed pairing ends the connected set -------------------------
+    // Takeover and stream must name one target: replacing the second object's
+    // actor (B unpaired, C paired) ends the connection and hands the takeover
+    // back instead of muting C while B keeps receiving the stream.
+    TestTrue(TEXT("the listener is ready for another set"),
+        PollUntil([&]() { Source->Update(); return Source->GetSourceStatus().ToString().StartsWith(TEXT("Listening on")); }, 5.0));
+    FMtoULinkageReplyReader SecondReader;
+    FSocket* Second = Connect(SecondReader, Pump);
+    TestNotNull(TEXT("the set connects again"), Second);
+    if (Second)
+    {
+        for (int32 Index = 0; Index < 2; ++Index)
+        {
+            TestTrue(TEXT("each object is ready again"), SecondReader.Next(*Second, TEXT("ready"), Payload, Pump));
+        }
+        TestTrue(TEXT("while connected, the takeover target is the negotiated actor"),
+            MtoUFindLinkagePairedActor(TEXT("secondary")) == Prop);
+        Hooks.PlannedTargets = Hooks.SentTargets;
+        const int32 RestoresBefore = Hooks.RestoreCalls;
+        TestTrue(TEXT("linkage entry takes the set over again"),
+            MtoURequestLinkageEnter(MtoUGetLinkageView().Identity.ModeRevision + 1, EnterError));
+        MtoUClearLinkageTarget(*Prop);
+        TestTrue(TEXT("the idle actor pairs as the second object"), PairLinkageTarget(Idle, TEXT("secondary")));
+        TestTrue(TEXT("the changed pairing ends the set"), SecondReader.Next(*Second, TEXT("error"), Payload, Pump));
+        TestTrue(TEXT("the refusal asks for a new connection"), FromUtf8(Payload).Contains(TEXT("PAIRING_REQUIRED")));
+        TestTrue(TEXT("the takeover is handed back"), PollUntil([&]()
+        {
+            Pump();
+            return Hooks.RestoreCalls > RestoresBefore && !MtoUGetLinkageView().bTakeoverHeld;
+        }, 5.0));
+        TestFalse(TEXT("the newly paired actor never joined the stream"), Idle->IsInLiveLinkSet() || Evaluates(Idle));
+        DestroySocket(*SocketSubsystem, Second);
+    }
+
+    MtoUSetLinkageHooks(FMtoULinkageHooks());
+    MtoUSetActiveSource(PreviousSource);
+    MtoUClearLinkageTarget(*Hero);
+    MtoUClearLinkageTarget(*Prop);
+    MtoUClearLinkageTarget(*Idle);
+    Source->StopListener();
+    LiveLinkClient.RemoveSource(Source);
+    World->DestroyWorld(false);
+    GEngine->DestroyWorldContext(World);
+    return true;
+}
 #endif

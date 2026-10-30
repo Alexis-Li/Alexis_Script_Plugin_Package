@@ -1,0 +1,3 @@
+[submodule "substance-painter/plugins/StoUTextureSync"]
+	path = substance-painter/plugins/StoUTextureSync
+	url = https://github.com/Alexis-Li/StoUTextureSync.git

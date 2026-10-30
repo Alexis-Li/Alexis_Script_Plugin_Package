@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+from submodule_registry import registered_submodules
+
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$")
 KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -58,7 +60,20 @@ def resolve_component(label: str, candidates: tuple[Path, ...]) -> Path:
     if len(matches) > 1:
         locations = ", ".join(_component_location(path) for path in matches)
         raise ValueError("ambiguous {0}: {1}".format(label, locations))
-    return matches[0]
+    project = matches[0]
+    independent = registered_submodules(ROOT, [], [])
+    current = project.resolve()
+    has_nested_git = False
+    while current != ROOT.resolve() and current.is_relative_to(ROOT.resolve()):
+        has_nested_git = has_nested_git or (current / ".git").exists()
+        current = current.parent
+    if has_nested_git or any(
+        project.resolve().is_relative_to(path.resolve()) for path in independent
+    ):
+        raise ValueError(
+            "{0} is an independent submodule; use its repository's tools".format(label)
+        )
+    return project
 
 
 def maya_tool_path(name: str) -> Path:
@@ -91,15 +106,37 @@ def maya_runtime_files(project: Path) -> list[Path]:
     return sorted(files)
 
 
-def maya_version(project: Path) -> str:
+def python_runtime_version(files: list[Path], label: str) -> str:
     versions = {
         match.group(2)
-        for path in maya_runtime_files(project)
+        for path in files
         for match in MAYA_VERSION_RE.finditer(path.read_text(encoding="utf-8-sig"))
     }
     if len(versions) != 1:
-        raise ValueError("Maya tool must declare one consistent runtime version")
+        raise ValueError("{0} must declare one consistent runtime version".format(label))
     return require_semver(versions.pop())
+
+
+def maya_version(project: Path) -> str:
+    return python_runtime_version(maya_runtime_files(project), "Maya tool")
+
+
+SUBSTANCE_PAINTER_RUNTIME_DIRS = ("plugins", "modules", "startup")
+
+
+def substance_painter_runtime_files(project: Path) -> list[Path]:
+    files = []
+    for name in SUBSTANCE_PAINTER_RUNTIME_DIRS:
+        directory = project / name
+        if directory.is_dir():
+            files.extend(directory.rglob("*.py"))
+    return sorted(files)
+
+
+def substance_painter_version(project: Path) -> str:
+    return python_runtime_version(
+        substance_painter_runtime_files(project), "Substance Painter plug-in"
+    )
 
 
 def pascal_case(kebab_name: str) -> str:

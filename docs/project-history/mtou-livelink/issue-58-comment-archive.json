@@ -1,0 +1,73 @@
+{
+  "schema": "github-issue-comment-archive/1",
+  "issue": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58",
+  "archived_on": "2026-10-28",
+  "purpose": "Preserve the issue's original agent comments before its closing consolidation: the PR #82 delivery and first host acceptance (2026-10-27), the three review summaries, the responses to R-001–R-004, and the integration comment (2026-10-28). Original wording and provenance are retained; the current state lives in the single status comment, not in these historical claims.",
+  "current_status_comment": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6461172099",
+  "comments": [
+    {
+      "id": 6431842989,
+      "created_at": "2026-10-27T01:58:11Z",
+      "updated_at": "2026-10-27T11:00:32Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6431842989",
+      "body": "## 开发进展：实现与自动化覆盖（PR #82）\n\n交付 PR：#82（`feature/mtou-dual-object` → `codex/mtou-preview-workflow`，范围 `bbba40ce75918820eb681b0da104d02f2c07faf5..831e1e21793c5803d15e5990578cf8c5e7d98863`）。\n\n**已实现**\n\n- 协议成对升级为 v11（`composite/MtoULiveLink/protocol/v11.md`、`conformance-v11.json`）：`init.set_objects` 声明对象集合（`character` 加可选 `secondary`），每个对象各自 `ready`，实时 `frame.objects`，`group`/`applied` 必须正好覆盖整组，`remove_object`/`object_removed`，`hello_ack.targets`，新增拒绝码 `ANCHOR_MISMATCH`、`OBJECT_SET_UNSUPPORTED`。v9/v10 对端在改动任何场景之前就被拒绝。\n- UE：每个对象独立协商，独立 Live Link Subject（`MtoU_Character`/`MtoU_Secondary`），同名骨骼和 Morph 不会跨对象。实时帧和联动整组先完成全部重定向再一起发布；只有两个对象的全部显示组件都通过同一代数校验后才提交，并且每个对象各给一行 applied 证据，失败时全部回滚。副对象 Actor 必须与主角色在同一放置（0.01 cm / 0.01°）。接管时逐个目标进行，任一目标被拒绝就交还已经接管的部分。移除副对象时只交还它自己的 writer，移除它的 Subject，确认集合修订 N+1 后重新下发当前目标；恢复失败则以 `RECOVERY_REFUSED` 结束整组。缓存播放和 Model 拒绝双对象集合。Details 中可以把 Actor 配对为主角色或副对象，并提供 **移除副对象**。\n- Maya：新增 **对象配对** 子窗口，从主面板的镜头联动卡片打开。可以设置或移除副对象（道具可以没有 Display 控制器）。同一连接协商整组；实时预览时两个对象来自同一次求值；联动时一次设置时间后对整组采样；移除过程中暂停发送分组；连接中更换对象集合会结束连接。\n\n**自动化验证（本机，head `831e1e2`）**\n\n- Maya 纯 Python：587 项 OK（新增 33 项）。Maya 2024 宿主测试：38 项 OK。Maya 2022.4（Python 3.7.7）编译检查通过。\n- 一致性语料检查通过（224 个用例）。\n- stock UE 5.7.4：编译 0 错误；`RunTests MtoULiveLink`（NullRHI）94/94 成功，0 警告。其中新增的 `MtoULiveLink.Linkage.ObjectSet` 覆盖：放置不一致被拒绝；一帧送达两个 Subject 且 Morph 值互不串流；缓存被拒绝；残缺分组被拒绝；双对象分组被应用，并给出两行证据；移除时只恢复副对象 writer；旧集合的分组被拒绝；主角色继续联动。\n- 仓库门禁通过；PR CI 2/2 通过。\n\n**未完成（验收缺口）**\n\n- I2-AC01–AC05 的宿主验收尚未执行：在 Maya 2024 GUI 与 Backups 生产 Sequence 副本中，用真实 C01＋C02 验证非零 Morph、错骨架和目标重复被拒绝、非原点旋转 Anchor 的世界与屏幕 oracle、自然 tick 下的组件延迟和半组注入，以及逐目标接管、移除和恢复，同时回归 I-1 单角色与旧工作流 GUI。为此需要双对象 GUI 驱动，并在 Backups 中新建 C02 Binding（一次性测试项目，不覆盖现有资产）。\n- 合成 full-body/arms 替换的验证。生产手臂没有真实输入，不声称已通过手臂验收。\n\n**当前状态**：实现与自动化覆盖已在 PR #82 交付（CI 通过），尚未审核和集成；下一步由 agent 编写双对象宿主验收驱动，并在真实 Maya 2024/UE 中完成 I2-AC01–AC05。\n"
+    },
+    {
+      "id": 6434777739,
+      "created_at": "2026-10-27T05:46:24Z",
+      "updated_at": "2026-10-27T11:00:37Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6434777739",
+      "body": "## 宿主验收：真实双角色联动（PR #82）\n\n**结论：** 用真实项目动画（C04 与 C00 两个角色的互动镜头）在 Maya 2024 GUI 和 UE 5.7.4 测试项目的生产 Sequence 副本中完成了双对象联动验收，最终一轮 `MtoUOptIn.Editor.Linkage.ProductionSequence` Success，0 错误／0 警告。验收中发现并修复了一个 I-1 遗留的 Maya 时间映射缺陷。合成 full-body/arms、场景参考、旧工作流 GUI 回归和对象配对窗口的关闭重开尚未执行，见“未覆盖”。验收由脚本在后台驱动，不是人工点击。\n\n- 交付：`1d7e58089b1ed16e6697786ba64e83b6fae95803`（规则说明 `cb0315f`），PR #82 范围更新为 `bbba40ce75918820eb681b0da104d02f2c07faf5..cb0315ff322e47ff3221c0f936f97354c3bc9432`。\n- 新增可选验收：`MtoUOptIn.Editor.Linkage.ProductionSequence` 的 fixture 可加 `secondary` 块，Maya GUI 驱动 `maya_gui_linkage_driver.py` 通过对象配对窗口的动作设置副对象。\n\n### 验收输入\n\n- Maya：用户提供的真实动画文件 `C04_Interaction_ScratchChin`，引用 C04（MetaHuman 新头）与 C00 两个角色，打开后不保存。主角色 C04，副对象 C00（带 Display 控制器）。两个角色都用场景自带动画；C04 的面部在这段镜头中没有动画，所以在一次性进程里给 `eye_blink_L/R` 打了测试关键帧，C00 的 Morph 来自场景自身驱动的修正形变。\n- UE：关卡 `Level_D002CP7_Act02`，根序列 `Sequence_D002CP7_Act02` 复制到 `/Temp` 后使用，原资产不修改。该序列本身就同时绑定 C04（`BP_SequencePlayer`）和 C00（spawnable）；副本中 C00 的 spawnable 转为 possessable，两条绑定分别改绑到两个放在同一 Anchor 的 Binding Actor。\n- 目标网格：C04 用 `SK_C04_Head`（测试项目中唯一与 MetaHuman 骨架对应的 C04 网格；同骨架的 `SK_C04_Body` 缺少 Skeleton 资产，旧版 `SK_C04_Clothes03_All` 与该 Maya 骨架不匹配），C00 用 `SK_C000_Clothes_03_All`。\n- 非原点带旋转 Anchor：(60, 40, 0)，roll 3° / pitch -4° / yaw 37°，两个 Actor 共用。\n- writer 清单：C04 两条（骨骼动画、变换），C00 三条（变换、骨骼动画、可见性），无共用 writer。\n\n### 结果（最终一轮）\n\n| 项目 | 结果 |\n| --- | --- |\n| 世界与屏幕 oracle（AC02） | 100／250／450 帧：C04 6 根、C00 12 根骨骼，世界误差 0.0000 cm，UE 渲染相机与 Maya 联动相机的屏幕差 < 1e-5 NDC；Maya 时间与 UE 帧一致 |\n| 骨骼旋转与 Morph（AC01） | 两个对象的旋转变化误差 0.0000°（各帧间 Maya 姿势至少相差 18.6°）；C04 2 个、C00 4–7 个非零 Morph，差值 0.00000 |\n| 同名数据不串流（AC01） | 两个角色有同名骨骼（pelvis、spine_03、上臂等），在 Maya 中相距至少 81 cm，各自的 oracle 仍为 0.0000 cm |\n| 拒绝（AC01） | 同一 Actor 不能同时配对两个对象（`TARGET_ALREADY_PAIRED`）；Maya 把主角色根骨骼设为副对象被拒绝，原副对象保留；副对象 Actor 偏离 15 cm 时进入联动被拒绝（放置不一致），writer 全部保持未接管；副对象换成另一骨架的网格后连接被拒绝（`SKELETON_MISMATCH`），换回后重新连接成功 |\n| 不完整组与提交期间失效（AC03） | 驱动让 Maya 发出一组缺少副对象的 group：UE 以 `INVALID_MESSAGE` 拒绝，该组从未被确认，两个对象保持上一完整姿势，联动继续。副对象显示组件在提交期间注销：4 s 内没有任何新组被确认，主角色保持上一完整姿势；组件恢复后整组重新收敛 |\n| 持续播放（AC03） | 播放 8 s：42 次完整应用，跨 229.6 帧单调前进，最大滞后 0.21 s；停止后收敛；两个 Actor 的 Anchor 保持静止 |\n| 逐目标接管与移除（AC04） | 进入联动时两组 writer 全部静音；从 Maya（0.16 s）和从 UE 详情面板（0.03 s）移除副对象：集合修订升到 2，只交还副对象的三条 writer，主角色两条保持静音、联动不中断，主角色 oracle 仍为 0.0000 cm；之后重新设为副对象并重新连接，整组恢复 |\n| 退出（AC04） | 返回实时、结束预览（UE／Maya 发起）、关闭 Sequencer、切换序列、删除副对象 Actor、删除主角色 Actor、关闭关卡：两端都恢复，两组 writer 都交还，姿势与接管前差 0.0000 cm |\n| 真实资产（AC04） | 关卡、两个序列、两个网格和三个 Maya 文件运行前后 SHA-256 不变 |\n| I-1 回归（AC05） | D003 + C01 单角色同一测试：Success 0/0，14 根骨骼世界／屏幕／旋转误差均为 0，8 s 内 70 次完整应用，最大滞后 0.14 s，七种退出全部恢复 |\n\nMaya 弹窗全部在预期之内：连接时的 `BLENDSHAPE_MISMATCH`（Maya 有、UE 网格没有的 Morph），拒绝阶段的 `ROLE_SETUP_FAILED`、`SKELETON_MISMATCH`，注入阶段的 `INVALID_MESSAGE`，断流退出的 `STREAM_INTERRUPTED`。\n\n### 发现并修复的缺陷\n\n- **联动时间漂移（I-1 遗留，`e099a63`）**：Maya 端没有保存进入联动时的起点，每个目标都从上一次采样留下的 Maya 时间开始换算，Maya 时间随每组越走越远（本次首轮中 UE 第 100／250／450 帧对应到 Maya 1208／1458／1908 帧）。现在起点随进入联动时的状态一起记录，恢复时清除；新增两项回归。I-1 的验收没有发现，是因为它的 oracle 在同一个漂移后的时间上比较 Maya 和 UE。\n\n### 说明\n\n- C04 只用头部网格作为目标，前臂和腿部不被该网格蒙皮，按协议不参与串流（只串流目标网格需要的骨骼及其祖先），所以 C04 的 oracle 只取头部网格实际蒙皮的骨骼。\n- Binding Actor 的显示始终是 Live Link 显示，移除副对象后它不再跟随 Maya（显示 Binding 的参考姿势），Sequence 的骨骼动画轨无法驱动这种显示。README 的移除步骤已改为如实描述。\n\n### 本轮检查\n\nMaya 纯 Python 589 OK；Maya 2024 宿主 38 OK；Maya 2022.4（Python 3.7.7）编译通过；UE 默认 `RunTests MtoULiveLink` 94/94，0 警告；改动文件 ruff 通过。\n\n### 未覆盖\n\n- 合成 full-body/arms 替换未执行；生产手臂没有真实输入，不声称手臂验收。\n- 场景参考在两个对象下的对齐（AC02 的“参考”）未执行。\n- “人为延迟一个对象”以提交期间组件失效代替，没有单独注入网络延迟。\n- 旧工作流 GUI 回归（实时、缓存、Model、服装比较，`MtoUOptIn.Editor.Workflow.GuiRegression`）、Maya 对象配对窗口的关闭重开和 UE Details 宽度截图（AC05）未执行。\n\n**当前状态**：PR #82 已含双对象宿主验收（真实 C04 + C00，Success 0/0）和时间漂移修复，尚未审核和集成。\n下一步由开发方补合成 full-body/arms、双对象场景参考和旧工作流 GUI 回归，然后申请审核。\n"
+    },
+    {
+      "id": 6435688844,
+      "created_at": "2026-10-27T06:51:23Z",
+      "updated_at": "2026-10-27T06:51:23Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6435688844",
+      "body": "## 审核结果：PR #82 需修改\n\n[完整审核报告](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/82#issuecomment-6435664994) 已发布。比较基线为 `bbba40ce75918820eb681b0da104d02f2c07faf5`，审核 head 为 `cb0315ff322e47ff3221c0f936f97354c3bc9432`，目标分支为 `codex/mtou-preview-workflow`；当前尚未集成。\n\n本次覆盖 #58 的 I2-AC01–AC06、完整 PR 差异及相关调用链。结论为 **当前 head 不通过**，发现编号归属本 Issue：\n\n- **R-001（P1，已确认缺陷，阻塞合并）**：连接中重新配对副目标后，writer 接管读取新配对，姿势发布仍使用旧协商目标。开发方需要统一协商目标身份，并拒绝活动会话改配或在改配时结束连接、恢复接管；补充 A/B 连接后改配到 C 的回归。\n- **R-002（P2，已确认缺陷，阻塞合并）**：显式配对分支允许多个 Binding Actor 存在，但集合外 Actor 默认仍订阅主角色 Subject，会被主角色姿势驱动。开发方需要限制订阅为当前协商对象，并验证未配对 Actor 的实际骨骼/Morph 不变。\n- **R-003（验收缺口，I2-AC03）**：现有 dropout 在设置新目标前注销组件，只覆盖发布前不可用，不能证明提交期间失效后的整组回滚。开发方需要补充组已发布/暂存后失效和单对象/组件延迟的自然 tick 验证。\n- **R-004（验收缺口，I2-AC01/02/05）**：合成 full-body/arms、双对象场景参考、旧工作流 GUI、部件协商及主/子窗口生命周期与宽度验证仍未闭环。开发方需要补齐本片验收矩阵；生产手臂没有输入仍保持未验收。\n\nR-001/R-002 为源码调用链与本机 UE 实现核对所得，本次没有另行运行这两个故障场景的宿主复现。历史双对象和 I-1 生产 Sequence 报告均已核查，各为 1 Success、0 警告、0 失败；该历史证据不覆盖上述缺口。\n\n本次在审核 head 重新执行：Maya 纯 Python 589 项、Maya 2024 宿主 38 项、UE 5.7.4 默认自动化 94 项、仓库单元测试 55 项全部通过；UE 构建、Maya 2022 编译、协议语料、仓库结构与 diff 检查通过。Maya 宿主进程结束有 SWIG 析构提示，退出码为 0。完整命令和证据边界见 PR 报告。\n\n**当前状态**：#58 已实现并有部分宿主证据，PR #82 当前 head 审核未通过，尚未集成；开发方修复 R-001/R-002、补齐 R-003/R-004 后，由审核方复验最新 head，再按流程集成。"
+    },
+    {
+      "id": 6439799457,
+      "created_at": "2026-10-27T10:39:03Z",
+      "updated_at": "2026-10-27T10:39:03Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6439799457",
+      "body": "## 开发进展：PR #82 审核意见处理\n\nPR #82 在 `cb0315f` 上的审核（R-001–R-004）已处理，新 head `a8760b14f62b4f8144abede1b9961936b057bf3b`，逐条回应和证据见 [PR 评论](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/82#issuecomment-6439788570)。\n\n- **R-001**：连接中的集合若有对象的配对被替换或解除，连接以 `PAIRING_REQUIRED` 结束并交还接管；串流期间接管只解析协商时的 Actor。\n- **R-002**：只有被协商为集合对象的 Actor 才求值 Live Link；未配对、被移除和断连后的 Actor 不再跟随 Maya。\n- **R-003**：在组已发布后延迟副对象 1.2 s，以及在全部显示暂存后让副对象显示失效，两种情况下都没有混合代数、没有 applied，主角色保持或回滚到上一完整组。\n- **R-004**：完整 C04（身体 + 头 + 头发）与 C00 的双对象宿主验收通过；合成全身/部件替换、双对象场景参考对齐（0.0000 cm）、旧工作流 GUI、对象配对窗口生命周期、UE Details 350/430/500 px 均已补齐。\n- 验收中另外发现并修复两个产品缺陷：导入场景参考时实时采样可能落在半成品场景里，导致连接中断；Details 联动消息中无空格的对象路径在窄宽度下被截断。\n\n生产手臂仍无真实输入，不声称手臂验收。验收由脚本在后台驱动真实 Maya 2024 GUI 与 UE 5.7.4。\n\n**当前状态**：#58 的实现与 I2-AC01–AC05 宿主证据已在 PR #82（`a8760b1`）交付，未集成；下一步由审核方复验最新 head，通过后集成到 `codex/mtou-preview-workflow`。\n"
+    },
+    {
+      "id": 6440130415,
+      "created_at": "2026-10-27T10:55:22Z",
+      "updated_at": "2026-10-27T10:55:22Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6440130415",
+      "body": "## 复审结果：R-001/R-002 通过，R-003/R-004 未关闭\n\n[PR #82 完整复审报告及逐帧复现补丁](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/82#issuecomment-6440110790) 已发布。比较基线 `bbba40ce75918820eb681b0da104d02f2c07faf5`，本轮 head `a8760b14f62b4f8144abede1b9961936b057bf3b`，目标分支 `codex/mtou-preview-workflow`。结论：**当前 head 不通过，尚未集成**。\n\n- **R-001：已修复、复验通过。** 协商目标与接管身份一致；连接中改配结束集合并交还接管，A/B → C 回归通过。\n- **R-002：已修复、复验通过。** 仅协商对象求值 Live Link；集合外、移除及断连路径的回归通过。\n- **R-003：P1 已确认缺陷，阻塞合并。** 在真实 C04 全身 + C00 的 Maya 2024/UE 5.7.4 联动中，副对象显示在暂存后注销，主角色在连续两个帧末偏离上一完整组 **1.761796 cm**，期间成功 applied 未变化，随后才恢复。现有测试等待 1 秒后读到的 0 误差漏掉了这个瞬间。本轮只在测试副本加入帧末观测，运行时代码与审核 head 一致；唯一失败断言是“每个帧末都保持上一完整骨骼”，报告 1 error、0 warnings。开发方需保证提交失败不会跨帧暴露部分新姿势，并逐帧验证双方及各部件的骨骼/Morph。新增 1.2 s 延迟用例本轮通过，认可该部分证据。\n- **R-004：部分验收通过，合成 arms 仍缺失。** 已核查并认可双对象参考对齐、I-1、旧流程 GUI、窗口生命周期和 Details 窄宽度证据。当前组成替换只改两套全身衣服和移除头发部件，主显示仍是全身；没有 full-body ↔ arms 的合成目标、必要骨骼协商与实际显示证据。开发方仍需补齐 I2-AC01/INT-03 的合成 arms；生产手臂继续按无真实输入保留未验收。\n\n本轮重新执行：Python 591、Maya 宿主 38、UE 默认自动化 94、仓库单元测试 55 全部通过；UE 构建、Maya 2022 编译、结构验证、diff 检查通过。聚焦逐帧宿主复验失败如上；完整 GUI/窗口报告为本轮核查的交付历史证据。命令、边界及复现补丁见 PR 报告。临时测试副本已还原并重建，仓库源码未修改。\n\n**当前状态**：#58 已实现并有部分宿主验收，PR #82 的 R-001/R-002 复验通过；R-003 阻塞合并，R-004 尚缺合成 arms。开发方修复并补证后，由审核方复验新 head；当前未通过、未集成。"
+    },
+    {
+      "id": 6460812531,
+      "created_at": "2026-10-28T04:39:31Z",
+      "updated_at": "2026-10-28T04:39:31Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6460812531",
+      "body": "## 开发进展：PR #82 复审意见 R-003、R-004 处理\n\nPR #82 在 `a8760b1` 上的复审中，R-001、R-002 已通过；R-003、R-004 已处理，新 head `dfc91c910535df0ac1295882c603be48e11e5e48`，逐条回应和证据见 PR 评论。\n\n- **R-003**：提交后校验失败时，所有仍在世界中的显示在同一游戏线程步内写回提交前的姿势和 Morph，失败组不再到达任何渲染帧。真实 C04 + C00 宿主中，从注入起逐帧（每个帧末）检查两个对象的全部显示和部件：暂存后失效与 1.2 s 延迟两种注入均 0 帧偏离当时最后确认的组；默认 `ObjectSet` 回归逐个游戏线程步检查，对照构建（无恢复）失败。\n- **R-004（合成 full-body／arms，I2-AC01、INT-03 双对象范围）**：新场景 `arms` 从 C00 全身切出合成 arms 目标替换全身，整组结束并重新协商，必要骨骼从 406 变为 138；arms 显示的必要骨骼 0.0000 cm、非零 Morph 差值 0.00000，Unreal 的 applied 证据为 138 根骨骼、27 个 Morph；再换回全身同样结束并重新协商。\n- 主角色改用用户在 Backups 中创建的 `DA_C04_MtoUBinding`（Clothes_10 + 头 + 头发）后，完整双对象验收同样 Success（0／0）。\n\n生产手臂仍无真实输入，不声称生产手臂验收。验收由脚本在后台驱动真实 Maya 2024 GUI 与 UE 5.7.4。\n\n**当前状态**：#58 的实现与 I2-AC01–AC05 宿主证据（含合成 arms 与逐帧整组不变量）已在 PR #82（`dfc91c9`）交付，未集成；下一步由审核方复验最新 head，通过后集成到 `codex/mtou-preview-workflow`。\n"
+    },
+    {
+      "id": 6461005801,
+      "created_at": "2026-10-28T04:54:51Z",
+      "updated_at": "2026-10-28T04:54:51Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6461005801",
+      "body": "## PR #82 最新 head 复验通过，待集成\n\n- 比较基线：`c4b2f24fc2c2c54846686a40fc512f6a743270b0`；审核 head：`dfc91c910535df0ac1295882c603be48e11e5e48`；目标分支：`codex/mtou-preview-workflow`。\n- [完整审核与本轮实际验证](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/82#issuecomment-6460999525)。R-001、R-002 维持通过；R-003、R-004 本轮复验通过，未发现新的阻塞问题。\n- **R-003 / I2-AC03**：真实 Maya 2024 + UE 5.7.4 双对象自然 tick 复验，在 4 个显示上检查失效瞬间到恢复收敛。暂存后失效的 162 个帧末、延迟注入的 165 个帧末均 0 帧偏离当时确认组，位置/Morph 最大偏差均为 0。默认 `ObjectSet` 逐步骤回归同时通过。\n- **R-004 / I2-AC01**：合成 arms 替换实际完成整组结束、重连和必要骨骼 `406 → 138 → 406`；arms 的 8 根 oracle 骨骼误差 0.0000 cm、5 个非零 Morph 差值 0.00000，UE applied 的 138 根骨骼与协商范围一致。其余已审 I2-AC01–AC05 证据按完整报告中的范围复用，最新全量双对象及 I-1 历史报告也已核查。\n- 本轮构建成功；Python 591、UE 默认 91、仓库 55 项全部通过；聚焦双对象宿主报告 Success、0 errors / 0 warnings；11 个受保护资产 hash 不变。工作区干净，未修改源码、未合并或关闭 Issue。\n\n生产手臂仍无真实输入，不声称生产手臂验收。I2-AC06 的目标分支集成及记录尚待完成；I-3 整体验收与发布仍按母项安排。\n\n**当前状态**：#58 的实现与 I2-AC01–AC05 证据已通过复验，PR #82 的 `dfc91c910535df0ac1295882c603be48e11e5e48` 审核通过、尚未集成。下一步由集成方在获授权后复核 head/目标分支并集成，记录集成 SHA，按工作流完成 I2-AC06 与收尾。\n"
+    },
+    {
+      "id": 6461072878,
+      "created_at": "2026-10-28T05:00:15Z",
+      "updated_at": "2026-10-28T05:00:15Z",
+      "author": "Alexis-Li",
+      "original_url": "https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/58#issuecomment-6461072878",
+      "body": "## 集成：PR #82 已合入 `codex/mtou-preview-workflow`\n\n- 审核通过的 head：`dfc91c910535df0ac1295882c603be48e11e5e48`（[第三轮审核](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/pull/82#issuecomment-6460999525)，比较基线 `c4b2f24fc2c2c54846686a40fc512f6a743270b0`）。\n- 合并前复核：目标分支仍为 `c4b2f24`，PR head 未变，CI 4 个 job 通过；以 `--match-head-commit` 合并。\n- 集成 SHA：`codex/mtou-preview-workflow` = `31fa0f94a2c7527fdf46d92e5caf92715bd97e38`。远端与本地 `feature/mtou-dual-object` 已清理。\n- 覆盖：I2-AC01–AC05 的实现与宿主证据（含合成 full-body／arms），I2-AC06 的双端检查、宿主证据、范围审核与目标分支集成。\n- 交给 I-3 的整体验收：生产手臂仍无真实输入，按 I2-AC01 不声称已验收，有输入后单独验收；I-3 整体验收和后续发布不由本片替代。\n\n**当前状态**：#58 的实现与 I2-AC01–AC06 已完成并集成到 `codex/mtou-preview-workflow`（`31fa0f9`）；生产手臂验收待有真实输入后进行。下一步：用户确认后整理评论并关闭本 issue。\n"
+    }
+  ]
+}

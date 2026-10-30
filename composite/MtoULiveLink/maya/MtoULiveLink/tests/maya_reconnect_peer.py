@@ -1,4 +1,5 @@
-"""Opt-in real Maya peer for MtoULiveLink.Source.MayaCacheReconnect.
+# ruff: noqa: E402
+"""Opt-in real Maya peer for MtoUOptIn.Source.MayaCacheReconnect.
 
 Run with Maya's mayapy; --fixture and --result are supplied by the Unreal
 Automation test. Uses a disposable skinned scene, real controller, sender,
@@ -8,10 +9,27 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import pathlib
 import socket
+import sys
 import time
 import traceback
 from pathlib import Path
+
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from mtou_livelink import mayaapi as mtou_mayaapi  # noqa: E402
+from mtou_livelink import (
+    config as mtou_config,
+)
+from mtou_livelink import (
+    controller as mtou_controller,
+)
+from mtou_livelink import (
+    scene as mtou_scene,
+)
 
 
 def main():
@@ -30,7 +48,7 @@ def main():
         spec = importlib.util.spec_from_file_location("MtoUReconnectHost", str(script))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.PORT = fixture["port"]
+        mtou_config.PORT = fixture["port"]
         result["maya_version"] = cmds.about(version=True)
         result["maya_api"] = cmds.about(apiVersion=True)
         result["runtime_sha256"] = hashlib.sha256(script.read_bytes()).hexdigest()
@@ -53,13 +71,13 @@ def main():
         cmds.playbackOptions(minTime=1, maxTime=4)
         cmds.currentTime(1)
 
-        class HeadlessController(module._Controller):
+        class HeadlessController(mtou_controller.Controller):
             # Presentation only: retain the real lifecycle and error transition.
             def _show_error(self, diagnostic):
                 result.setdefault("diagnostics", []).append(diagnostic)
 
         controller = HeadlessController()
-        controller._scene = module._CharacterScene.capture(joints[0], display, "clothes")
+        controller._scene = mtou_scene.CharacterScene.capture(joints[0], display, "clothes")
 
         def pump_until(predicate, label, timeout=20):
             deadline = time.time() + timeout
@@ -77,6 +95,7 @@ def main():
                     cached._poll()
                 if predicate():
                     return
+                mtou_mayaapi.drain_deferred()  # mayapy has no idle loop
                 time.sleep(0.002)
             raise AssertionError("Timed out: {0}; diagnostics={1}".format(
                 label, result.get("diagnostics")))
@@ -85,11 +104,18 @@ def main():
             controller.connect()
             pump_until(lambda: controller._cached_playback is not None
                        and not controller._cached_playback._closed, "ready")
-            controller._on_mode_changed(module.CACHED_MODE)
+            controller._on_mode_changed(mtou_config.CACHED_MODE)
             return controller._cached_playback
+
+        def announce(phase):
+            result["phase"] = phase
+            Path(args.result).write_text(
+                json.dumps(result, indent=2, ensure_ascii=True), encoding="utf-8")
 
         first = connect()
         controller._capture_cached_playback()
+        pump_until(lambda: first.view.state == first.READY, "A upload ready")
+        announce("a_ready")
         pump_until(lambda: first.view.state == first.COMPLETED, "A capture/play complete")
         cache_path = Path(first._cache._frames_path)
         cache_digest = hashlib.sha256(cache_path.read_bytes()).hexdigest()
@@ -110,7 +136,9 @@ def main():
         assert Path(second._cache._frames_path) == cache_path
         # A different current animation makes an accidental recapture visible.
         cmds.setKeyframe(joints[0], attribute="translateX", time=4, value=999)
-        controller._replay_cached_playback()
+        controller._upload_retained_cache()
+        pump_until(lambda: second.view.state == second.READY, "B retained upload ready")
+        announce("b_ready")
         pump_until(lambda: second.view.state == second.COMPLETED,
                    "B retained-cache replay complete")
         assert hashlib.sha256(cache_path.read_bytes()).hexdigest() == cache_digest
@@ -120,10 +148,29 @@ def main():
                                    "play_id": second._play_id, "applied": second.view.current})
         result["same_completed_cache"] = True
         result["cache_sha256"] = cache_digest
-        result["capture_calls"] = 1
+        # Recapture on the connected session exercises clear acknowledgement
+        # and the enabled custom range, including a negative start frame.
+        cmds.setKeyframe(joints[0], attribute="translateX", time=-1, value=-10)
+        cmds.setKeyframe(joints[0], attribute="translateX", time=0, value=0)
+        controller._selected_capture_range = lambda: (-1, 1)
+        controller._capture_cached_playback()
+        pump_until(lambda: second.view.state == second.READY, "C custom upload ready")
+        assert second.view.cache_summary.capture_start == -1
+        assert second.view.cache_summary.capture_end == 1
+        assert second.view.cache_summary.frame_count == 3
+        assert not cache_path.exists()
+        custom_path = Path(second._cache._frames_path)
+        announce("c_ready")
+        pump_until(lambda: second.view.state == second.COMPLETED,
+                   "C custom-range replay complete")
+        assert second.view.current == 3
+        result["sessions"].append({"name": "C", "upload_id": second._upload_id,
+                                   "play_id": second._play_id, "applied": second.view.current,
+                                   "range": [-1, 1]})
+        result["capture_calls"] = 2
         controller.close()
         controller = None
-        assert not cache_path.exists()
+        assert not custom_path.exists()
         result["cache_cleaned"] = True
         result["ok"] = True
     except Exception:
