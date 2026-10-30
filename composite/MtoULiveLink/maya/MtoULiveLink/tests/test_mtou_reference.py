@@ -1964,6 +1964,22 @@ class HandoffValidationTest(unittest.TestCase):
         self.assertTrue(report["digest"]["matched"])
         self.assertEqual("manifest+geometry_md5-md5", report["digest"]["algorithm"])
 
+    def test_a_product_manifest_with_chinese_names_is_accepted(self):
+        # The exporter writes UTF-8 without a BOM and hashes those bytes followed
+        # by the geometry bytes; a non-ANSI actor label must still match.
+        fixture = HandoffFixture(self.directory / "handoff")
+        manifest = json.loads(fixture.manifest_text)
+        manifest["objects"] = [{"node_name": "测试石块", "actor": "测试石块",
+                                "exported": True}]
+        manifest_bytes = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+        (fixture.directory / "Lvl.manifest.json").write_bytes(manifest_bytes)
+        digest = hashlib.md5(
+            manifest_bytes + (fixture.directory / "Lvl.fbx").read_bytes()).hexdigest()
+        report = reference.inspect(dict(fixture.handoff, digest=digest),
+                                   frozen_budget())
+        self.assertTrue(report["accepted"], report["problems"])
+        self.assertTrue(report["digest"]["matched"])
+
     def test_a_handoff_without_a_space_revision_is_stale(self):
         fixture = HandoffFixture(self.directory / "handoff")
         with self.assertRaises(reference.ReferenceRefused) as caught:

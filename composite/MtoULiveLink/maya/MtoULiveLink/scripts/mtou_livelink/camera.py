@@ -1667,5 +1667,3 @@ class LinkCamera(object):
             raise CameraSyncRefused(
                 CATEGORY_HOST_STATE_MISMATCH,
                 "Maya read-back differs from the target: " + ", ".join(differences))
-
-

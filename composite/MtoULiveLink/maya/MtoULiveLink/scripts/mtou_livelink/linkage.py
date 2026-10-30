@@ -197,7 +197,7 @@ class LinkageStatus(object):
                  "issued", "applied_eval_id", "applied_display_frame",
                  "applied_sample_serial", "applied_age", "lag_seconds",
                  "pending", "applied_count", "refused_count", "converged",
-                 "recovery", "detail", "object_ids", "removing")
+                 "recovery", "detail", "object_ids", "removing", "apply_failure")
 
     def __init__(self, **values):
         for name in self.__slots__:
@@ -234,8 +234,17 @@ class LinkageSession(object):
         self._issued = None
         self._sample_serial = 0
         self._issued_sample_serial = 0
+        # The target Unreal currently asks for and the first sample Maya sent
+        # for it: only a completed group from that sample on answers it. A
+        # resample after a refusal keeps both; a new target or set starts over.
+        self._request = None
+        self._request_first_sample = 0
+        # The latest complete application; a refused group never replaces it.
         self._applied = None
         self._applied_at = None
+        # Unreal's reason for the latest group it could not complete, until a
+        # later group completes.
+        self._apply_failure = None
         self._applied_count = 0
         self._refused_count = 0
         self._recovery = []
@@ -299,6 +308,10 @@ class LinkageSession(object):
             self._object_ids = tuple(object_ids)
             self._removing = False
             self._issued = None
+            # The old set's results answer nothing the new set is asked for;
+            # the latest complete application stays what Unreal last showed.
+            self._request = None
+            self._apply_failure = None
             self._detail = "对象集合已更新（{0} 个对象）".format(len(self._object_ids))
         self._emit(LinkageEvent(
             "set", mode=self.mode(), control=self._control,
@@ -348,6 +361,7 @@ class LinkageSession(object):
                 detail=self._detail,
                 object_ids=self._object_ids,
                 removing=self._removing,
+                apply_failure=self._apply_failure,
             )
 
     def _converged_locked(self):
@@ -419,6 +433,7 @@ class LinkageSession(object):
             self._issued = None
             self._applied = None
             self._applied_at = None
+            self._apply_failure = None
             # Either way Unreal answers with mode_state linkage at this
             # revision; until then a same or older realtime statement is the
             # refusal or failure of this transition.
@@ -538,24 +553,29 @@ class LinkageSession(object):
             if sample_serial is None:
                 raise LinkageError(
                     "INVALID_MESSAGE", "applied requires an integer sample_serial")
-            self._applied = dict(message)
-            self._applied_at = self._clock()
             answers_issued = (self._issued is not None
                               and self._issued.eval_id == message.get("eval_id")
                               and sample_serial == self._issued_sample_serial)
             if message.get("applied"):
+                self._applied = dict(message)
+                self._applied_at = self._clock()
+                self._apply_failure = None
                 self._applied_count += 1
                 # The issued work is finished once Unreal confirms the actual
                 # components of that sample; a newer waiting target stays.
                 if answers_issued:
                     self._issued = None
-            elif answers_issued:
-                # Unreal refused this sample and keeps its target issued, and
-                # nothing else would answer it: the target is sampled again
-                # unless a newer one already waits.
-                if self._pending is None:
-                    self._pending = self._issued
-                self._issued = None
+            else:
+                # A refused group leaves the last complete application as it
+                # was; the refusal is reported until a later group completes.
+                self._apply_failure = str(message.get("reason") or "")
+                if answers_issued:
+                    # Unreal keeps its target issued, and nothing else would
+                    # answer it: the target is sampled again unless a newer
+                    # one already waits.
+                    if self._pending is None:
+                        self._pending = self._issued
+                    self._issued = None
             self._detail = (
                 "已应用 {0}".format(message.get("eval_id"))
                 if message.get("applied")
@@ -835,6 +855,9 @@ class LinkageSession(object):
             sample_serial = self._sample_serial
             self._issued = target
             self._issued_sample_serial = sample_serial
+            if target is not self._request:
+                self._request = target
+                self._request_first_sample = sample_serial
             self._detail = "已采样 {0}".format(target.eval_id)
         message = make_group_message(
             self._session_id, set_revision, self._mode_revision,
@@ -872,14 +895,26 @@ class LinkageSession(object):
             return self._converged_locked()
 
     def wait_seconds(self):
-        """Seconds the current target has been waiting for an applied result."""
+        """Seconds the current target has been waiting for an applied result.
+
+        A target Unreal refused waits to be sampled again and keeps the time it
+        was received, so its retries count toward convergence. Only a group
+        completed for this request answers it: an earlier success of the same
+        evaluation, for example by the set before a removal, does not.
+        """
         with self._lock:
-            if self._issued is None:
+            target = self._issued
+            if target is None and self._apply_failure is not None:
+                target = self._pending
+            if target is None:
                 return 0.0
-            if self._applied is not None \
-                    and self._applied.get("eval_id") == self._issued.eval_id:
+            applied = self._applied
+            if applied is not None and target is self._request \
+                    and applied.get("eval_id") == target.eval_id \
+                    and (exact_int(applied.get("sample_serial")) or 0) \
+                    >= self._request_first_sample:
                 return 0.0
-            return self._clock() - self._issued.received
+            return self._clock() - target.received
 
     def convergence_overdue(self):
         return self.wait_seconds() > LINKAGE_CONVERGENCE_SECONDS

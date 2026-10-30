@@ -1232,6 +1232,9 @@ class Controller(object):
             labels.get("lag") or "滞后：—",
             "已应用 / 已拒绝：{0} / {1}".format(
                 status.get("applied_count") or 0, status.get("refused_count") or 0),
+            "最近应用失败：{0}".format(
+                "无" if status.get("apply_failure") is None
+                else status.get("apply_failure") or "（Unreal 未给原因）"),
             "在途目标：{0}".format(
                 (status.get("issued") or 0) + (status.get("pending") or 0)),
             "详情：{0}".format(status.get("detail") or "—"),
@@ -1977,6 +1980,7 @@ class Controller(object):
             "issued": status.issued if status is not None else 0,
             "applied_count": status.applied_count if status is not None else 0,
             "refused_count": status.refused_count if status is not None else 0,
+            "apply_failure": status.apply_failure if status is not None else None,
             "converged": bool(status.converged) if status is not None else False,
             "overdue": overdue,
             "wait_seconds": wait,
@@ -2758,7 +2762,16 @@ def linkage_status_line(mode, status, recovery, overdue, wait, held):
         # the last complete application took.
         behind = float(wait) if overdue else (
             float(lag) if lag is not None else 0.0)
-        if overdue or behind >= LINKAGE_LAG_NOTICE_SECONDS:
+        failure = status.apply_failure if status is not None else None
+        if failure is not None:
+            # Unreal could not complete the latest group: Maya is not the cause,
+            # and the last complete application stays what Unreal shows.
+            parts.append("应用失败，重试 {0} 秒".format(_seconds_label(behind))
+                         if overdue else "应用失败，重试中")
+            hints.append("Unreal 拒绝了最新一组姿势{0}；Maya 会自动重试。"
+                         "持续失败时打开“诊断详情”查看原因。".format(
+                             "（{0}）".format(failure) if failure else ""))
+        elif overdue or behind >= LINKAGE_LAG_NOTICE_SECONDS:
             parts.append("Maya 跟不上，滞后 {0} 秒".format(_seconds_label(behind)))
             hints.append("Maya 正在追赶 Unreal 的最新时间；可暂停 Sequencer 等待，"
                          "或关闭占用性能的程序。")

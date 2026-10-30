@@ -491,8 +491,9 @@ class LinkagePanelTests(unittest.TestCase):
 
     def test_linkage_status_line_shows_only_state_and_problems(self):
         def line(mode, lag=None, applied="seq@1", overdue=False, wait=0.0,
-                 held=False, recovery=()):
-            status = types.SimpleNamespace(lag_seconds=lag, applied_eval_id=applied)
+                 held=False, recovery=(), failure=None):
+            status = types.SimpleNamespace(lag_seconds=lag, applied_eval_id=applied,
+                                           apply_failure=failure)
             text, tooltip = mtou_controller.linkage_status_line(
                 mode, status, recovery, overdue, wait, held)
             self.assertLessEqual(mtou_controller._text_units(text),
@@ -504,6 +505,14 @@ class LinkagePanelTests(unittest.TestCase):
                          line(linkage, lag=0.13)[0])
         self.assertEqual("镜头联动中 · Unreal 控制时间 · 正在同步",
                          line(linkage, applied=None)[0])
+        # A refused group is never 同步正常, whether or not one applied before,
+        # and is not blamed on Maya when the retry runs past convergence.
+        for applied in (None, "seq@1"):
+            text, tooltip = line(linkage, applied=applied, failure="display busy")
+            self.assertEqual("镜头联动中 · Unreal 控制时间 · 应用失败，重试中", text)
+            self.assertIn("display busy", tooltip)
+        self.assertEqual("镜头联动中 · Unreal 控制时间 · 应用失败，重试 5.0 秒",
+                         line(linkage, lag=0.1, failure="", overdue=True, wait=5.0)[0])
         text, tooltip = line(linkage, lag=0.8)
         self.assertEqual("镜头联动中 · Unreal 控制时间 · Maya 跟不上，滞后 0.8 秒", text)
         self.assertIn("暂停 Sequencer", tooltip)

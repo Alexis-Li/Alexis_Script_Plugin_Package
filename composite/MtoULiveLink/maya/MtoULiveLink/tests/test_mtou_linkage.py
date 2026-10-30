@@ -376,6 +376,98 @@ class LinkageEvidenceTests(unittest.TestCase):
         self.instance.note_applied(applied_message(sample_serial=2))
         self.assertTrue(self.instance.status().converged)
 
+    def test_a_refusal_never_becomes_the_latest_complete_application(self):
+        # The first group fails: nothing was ever completely applied.
+        self.instance.offer_target(camera_time())
+        self.instance.pump()
+        self.instance.note_applied(applied_message(applied=False, reason="display busy"))
+        status = self.instance.status()
+        self.assertIsNone(status.applied_eval_id)
+        self.assertIsNone(status.applied_display_frame)
+        self.assertEqual("display busy", status.apply_failure)
+        # A later frame applies, then the next one fails: frame 10 stays the
+        # latest complete application.
+        self.instance.pump()
+        self.instance.note_applied(applied_message(sample_serial=2))
+        self.assertIsNone(self.instance.status().apply_failure)
+        self.instance.offer_target(camera_time(eval_id="seq@20+0/cam#c1", eval_serial=2,
+                                               display_frame=20.0))
+        self.instance.pump()
+        failed = applied_message(eval_id="seq@20+0/cam#c1", sample_serial=3,
+                                 applied=False, reason="display busy")
+        failed["applied_display_frame"] = 20.0
+        self.instance.note_applied(failed)
+        status = self.instance.status()
+        self.assertEqual("seq@10+0/cam#c1", status.applied_eval_id)
+        self.assertEqual(10.0, status.applied_display_frame)
+        self.assertEqual(1, status.applied_count)
+        self.assertEqual("display busy", status.apply_failure)
+        self.assertFalse(status.converged)
+
+    def test_retries_of_a_refused_target_count_toward_convergence(self):
+        instance, host, session, events = build()
+        clock = {"now": 0.0}
+        instance = mtou_linkage.LinkageSession(
+            host, session, on_event=events.append, clock=lambda: clock["now"])
+        instance.set_session_id(5)
+        instance.enter(1)
+        instance.offer_target(camera_time())
+        instance.pump()
+        instance.note_applied(applied_message(applied=False, reason="display busy"))
+        # Waiting to be sampled again, and every resample, keeps the target's
+        # own receipt time; the earlier refusal of the same target is no answer.
+        clock["now"] = 1.0
+        self.assertAlmostEqual(1.0, instance.wait_seconds())
+        instance.pump()
+        instance.note_applied(applied_message(sample_serial=2, applied=False,
+                                              reason="display busy"))
+        instance.pump()
+        clock["now"] = 5.0
+        self.assertAlmostEqual(5.0, instance.wait_seconds())
+        self.assertTrue(instance.convergence_overdue())
+        # The retry that succeeds recovers.
+        instance.note_applied(applied_message(sample_serial=3))
+        self.assertEqual(0.0, instance.wait_seconds())
+        status = instance.status()
+        self.assertTrue(status.converged)
+        self.assertIsNone(status.apply_failure)
+
+    def test_the_old_sets_success_does_not_answer_the_new_set(self):
+        # Paused at one frame with two objects, the second object is removed:
+        # Unreal issues the same evaluation again for the new set.
+        instance, host, session, events = build()
+        clock = {"now": 0.0}
+        instance = mtou_linkage.LinkageSession(
+            host, session, on_event=events.append, clock=lambda: clock["now"],
+            object_ids=("character", "secondary"))
+        instance.set_session_id(5)
+        instance.enter(1)
+        instance.offer_target(camera_time())
+        instance.pump()
+        instance.note_applied(applied_message(sample_serial=1))
+        self.assertTrue(instance.status().converged)
+        self.assertTrue(instance.adopt_set(2, ("character",)))
+        instance.offer_target(camera_time(eval_serial=2, set_revision=2))
+        instance.pump()
+        clock["now"] = 5.0
+        self.assertAlmostEqual(5.0, instance.wait_seconds())
+        self.assertTrue(instance.convergence_overdue())
+        # The old set's frame stays the latest complete application.
+        self.assertEqual(1, instance.status().applied_sample_serial)
+        # A refusal and its retry keep counting from the new request.
+        instance.note_applied(applied_message(sample_serial=2, applied=False,
+                                              reason="display busy"))
+        instance.pump()
+        clock["now"] = 8.0
+        self.assertAlmostEqual(8.0, instance.wait_seconds())
+        self.assertEqual("display busy", instance.status().apply_failure)
+        instance.note_applied(applied_message(sample_serial=3))
+        self.assertEqual(0.0, instance.wait_seconds())
+        status = instance.status()
+        self.assertTrue(status.converged)
+        self.assertIsNone(status.apply_failure)
+        self.assertEqual(3, status.applied_sample_serial)
+
     def test_a_newer_waiting_target_goes_before_the_refused_one(self):
         self.instance.offer_target(camera_time())
         self.instance.pump()
