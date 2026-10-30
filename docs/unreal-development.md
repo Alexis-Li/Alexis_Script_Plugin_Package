@@ -24,6 +24,9 @@ APIs; implementation details stay in `Private/`.
 Assets belong in the plugin's own `Content/`. When there are no assets, omit the
 directory and set `CanContainContent` to `false`. The ToolsLab project only hosts
 and validates plug-ins; reusable plug-in code stays in its owning plug-in.
+ToolsLab enables MtoU Live Link from the `composite/MtoULiveLink` submodule, so
+initialize that submodule (see [submodules](submodules.md)) before opening or
+building the project.
 
 ## Verification path
 
