@@ -20,6 +20,8 @@ composite components and templates that reference this file.
 
 - For code/build changes, compile affected modules with the supported engine,
   inspect new warnings, and run relevant Automation tests.
+- ToolsLab loads MtoU Live Link from the `composite/MtoULiveLink` submodule;
+  initialize it before opening or building ToolsLab.
 - Verify changed host behavior in ToolsLab or the project's designated acceptance
   host. Use the project's documented build/package checks when applicable.
 - Capture automated viewport screenshots for visual asset acceptance in Buffer

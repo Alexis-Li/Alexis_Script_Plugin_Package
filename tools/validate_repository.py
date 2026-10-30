@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -377,28 +376,6 @@ HOST_COMPONENT_VALIDATORS = {
 }
 
 
-def _validate_mtou_conformance(root: Path, errors: list[str]) -> None:
-    protocol_root = root / "composite" / "MtoULiveLink" / "protocol"
-    generator_path = protocol_root / "generate_unreal_corpus.py"
-    if not generator_path.is_file():
-        return
-    spec = importlib.util.spec_from_file_location("generate_mtou_unreal_corpus", generator_path)
-    if spec is None or spec.loader is None:
-        errors.append("cannot load MtoU conformance generator")
-        return
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-        errors.extend(module.check_generated(
-            protocol_root / "conformance-v11.json",
-            root / "composite" / "MtoULiveLink" / "unreal" / "MtoULiveLink"
-            / "Source" / "MtoULiveLink" / "Private" / "Tests"
-            / "MtoUConformanceCorpus.inl",
-        ))
-    except (OSError, UnicodeError, ValueError) as exc:
-        errors.append("invalid MtoU conformance corpus: {0}".format(exc))
-
-
 def _validate_nested_git(
     root: Path, errors: list[str], excluded: frozenset[Path] = frozenset()
 ) -> None:
@@ -554,8 +531,6 @@ def validate(root: Path = ROOT) -> dict:
         _validate_substance_painter(root, errors, excluded)
     _validate_composite(root, errors, excluded)
     _validate_proposals(root, errors)
-    if root / "composite" / "MtoULiveLink" not in excluded:
-        _validate_mtou_conformance(root, errors)
 
     return {"ok": not errors, "errors": sorted(set(errors)), "warnings": sorted(set(warnings))}
 

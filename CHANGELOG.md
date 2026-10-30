@@ -6,6 +6,9 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Move MtoU Live Link, its history records and its Topia build tools to the
+  independent [MtoULiveLink](https://github.com/Alexis-Li/MtoULiveLink)
+  repository, mounted as the submodule `composite/MtoULiveLink`.
 - Generalize repository rules from Maya and Unreal to a registry of host
   applications, add Adobe Substance 3D Painter as a host with its own rule file
   and standalone plug-in location, and document how to add further hosts.

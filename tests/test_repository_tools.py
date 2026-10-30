@@ -1,12 +1,12 @@
 # ruff: noqa: E402
 
-import importlib.util
 import pathlib
 import shutil
 import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -18,69 +18,8 @@ import package_unreal_plugin
 import update_versions
 import validate_repository
 
-CONFORMANCE_GENERATOR = (
-    ROOT / "composite" / "MtoULiveLink" / "protocol" / "generate_unreal_corpus.py"
-)
-
 
 class RepositoryToolTests(unittest.TestCase):
-    def test_mtou_unreal_conformance_data_is_current(self):
-        spec = importlib.util.spec_from_file_location(
-            "generate_mtou_unreal_corpus", str(CONFORMANCE_GENERATOR)
-        )
-        self.assertIsNotNone(spec)
-        self.assertIsNotNone(spec.loader)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        self.assertEqual([], module.check_generated())
-
-    def test_mtou_conformance_validation_errors_are_deterministic(self):
-        spec = importlib.util.spec_from_file_location(
-            "generate_mtou_unreal_corpus_invalid", str(CONFORMANCE_GENERATOR)
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        invalid = {
-            "schema_version": 1,
-            "protocol_version": 4,            "cases": [
-                {
-                    "id": "duplicate",
-                    "operation": "init",
-                    "applies_to": ["unreal"],
-                    "payload": {},
-                    "expected": {"accepted": True, "close": False},
-                },
-                {
-                    "id": "duplicate",
-                    "operation": "unknown",
-                    "applies_to": [],
-                    "expected": {"accepted": False, "close": True},
-                },
-            ],
-            "limits": {
-                "max_message_bytes": 33554432,
-                "max_cache_payload_bytes": 1073741824,
-                "max_cache_frame_count": 20000,
-            },
-        }
-        self.assertEqual(
-            [
-                "protocol_version must equal 11",
-                "limits.max_linkage_group_bytes must be a positive integer",
-                "limits.max_control_queue must be a positive integer",
-                "limits.max_reference_bytes must be a positive integer",
-                "limits.max_reference_objects must be a positive integer",
-                "limits.max_reference_triangles must be a positive integer",
-                "limits.max_set_objects must be a positive integer",
-                "case 1 id is duplicated: duplicate",
-                "case 1 operation is unsupported",
-                "case 1 applies_to must contain maya and/or unreal",
-                "case 1 must define exactly one input source",
-                "case 1 rejected case needs a stable v11 error_code",
-            ],
-            module.validate_corpus(invalid),
-        )
-
     def _create_composite_fixture(self, root):
         project = root / "composite" / "SampleBridge"
         for metadata in ("README.md", "README_CN.md", "CHANGELOG.md", "LICENSE"):
@@ -140,29 +79,6 @@ class RepositoryToolTests(unittest.TestCase):
             second.mkdir(parents=True)
             with self.assertRaisesRegex(ValueError, "ambiguous Maya tool"):
                 _repo_tools.resolve_component("Maya tool", (first, second))
-
-    def test_mtou_components_resolve_from_composite_project(self):
-        self.assertEqual(
-            pathlib.Path("composite/MtoULiveLink/maya/MtoULiveLink"),
-            _repo_tools.maya_tool_path("MtoULiveLink").relative_to(ROOT),
-        )
-        self.assertEqual(
-            pathlib.Path("composite/MtoULiveLink/unreal/MtoULiveLink"),
-            _repo_tools.unreal_plugin_path("MtoULiveLink").relative_to(ROOT),
-        )
-
-    def test_composite_mtou_packages_can_be_previewed(self):
-        maya_result = package_maya_tool.package("MtoULiveLink", ROOT / "releases", apply=False)
-        unreal_result = package_unreal_plugin.package(
-            "MtoULiveLink", "5.7", ROOT / "releases", apply=False
-        )
-        self.assertEqual("releases/MtoULiveLink-0.10.0.zip", maya_result["archive"])
-        self.assertEqual(
-            "releases/MtoULiveLink-0.10.0-UE5.7.zip",
-            unreal_result["archive"],
-        )
-        self.assertGreater(maya_result["file_count"], 0)
-        self.assertGreater(unreal_result["file_count"], 0)
 
     def test_composite_project_requires_root_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -375,43 +291,45 @@ class RepositoryToolTests(unittest.TestCase):
 
     def test_composite_packages_contain_only_component_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = pathlib.Path(directory)
-            maya_result = package_maya_tool.package("MtoULiveLink", output, apply=True)
-            unreal_result = package_unreal_plugin.package(
-                "MtoULiveLink", "5.7", output, apply=True
+            root = pathlib.Path(directory).resolve()
+            _, maya_component, unreal_component = self._create_composite_fixture(root)
+            (maya_component / "install.mel").write_text("// install", encoding="utf-8")
+            (maya_component / "tests").mkdir()
+            (maya_component / "tests" / "test_sample.py").write_text("", encoding="utf-8")
+            (unreal_component / "SampleBridge.uplugin").write_text(
+                '{"VersionName": "1.0.0"}', encoding="utf-8"
             )
+            source = unreal_component / "Source" / "SampleBridge"
+            source.mkdir(parents=True)
+            (source / "SampleBridge.Build.cs").write_text("", encoding="utf-8")
+            (unreal_component / "Intermediate").mkdir()
+            (unreal_component / "Intermediate" / "Build.txt").write_text("", encoding="utf-8")
+            output = root / "releases"
 
-            with zipfile.ZipFile(output / pathlib.Path(maya_result["archive"]).name) as archive:
-                names = archive.namelist()
-            self.assertIn("scripts/MtoULiveLink.py", names)
-            self.assertIn("scripts/mtou_livelink/controller.py", names)
-            self.assertIn("scripts/mtou_livelink/ui/style.py", names)
-            self.assertIn("install.mel", names)
-            self.assertIn("scripts/mtou_livelink/install.py", names)
-            self.assertFalse(
-                [name for name in names if "__pycache__" in name or name.endswith(".pyc")]
-            )
+            with mock.patch.object(_repo_tools, "ROOT", root):
+                self.assertEqual(maya_component, _repo_tools.maya_tool_path("SampleBridge"))
+                self.assertEqual(
+                    unreal_component, _repo_tools.unreal_plugin_path("SampleBridge")
+                )
+                maya_result = package_maya_tool.package("SampleBridge", output, apply=True)
+                unreal_result = package_unreal_plugin.package(
+                    "SampleBridge", "5.7", output, apply=True
+                )
 
-            with zipfile.ZipFile(output / pathlib.Path(unreal_result["archive"]).name) as archive:
-                names = archive.namelist()
-            self.assertIn("MtoULiveLink/MtoULiveLink.uplugin", names)
-            self.assertIn(
-                "MtoULiveLink/Source/MtoULiveLink/Private/Tests/"
-                "MtoULiveLinkTests.cpp",
-                names,
-            )
-            forbidden_names = {
-                "README.md",
-                "README_CN.md",
-                "CHANGELOG.md",
-                "LICENSE",
-                "AGENTS.md",
-                "ICON.md",
-                ".gitkeep",
-            }
-            self.assertFalse(
-                [name for name in names if pathlib.PurePosixPath(name).name in forbidden_names]
-            )
+            self.assertEqual("SampleBridge-1.0.0.zip", maya_result["archive"])
+            self.assertEqual("SampleBridge-1.0.0-UE5.7.zip", unreal_result["archive"])
+            with zipfile.ZipFile(output / maya_result["archive"]) as archive:
+                self.assertEqual(
+                    ["install.mel", "scripts/SampleBridge.py"], sorted(archive.namelist())
+                )
+            with zipfile.ZipFile(output / unreal_result["archive"]) as archive:
+                self.assertEqual(
+                    [
+                        "SampleBridge/SampleBridge.uplugin",
+                        "SampleBridge/Source/SampleBridge/SampleBridge.Build.cs",
+                    ],
+                    sorted(archive.namelist()),
+                )
 
     def test_git_worktree_file_is_not_a_nested_repository(self):
         with tempfile.TemporaryDirectory() as directory:
