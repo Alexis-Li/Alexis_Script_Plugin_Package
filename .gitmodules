@@ -1,3 +1,6 @@
 [submodule "substance-painter/plugins/StoUTextureSync"]
 	path = substance-painter/plugins/StoUTextureSync
 	url = https://github.com/Alexis-Li/StoUTextureSync.git
+[submodule "composite/MtoULiveLink"]
+	path = composite/MtoULiveLink
+	url = https://github.com/Alexis-Li/MtoULiveLink.git

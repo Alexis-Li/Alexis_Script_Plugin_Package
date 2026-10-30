@@ -68,4 +68,7 @@ issue-owned scratch cleanup.
 
 ## Projects
 
-- [MtoU Live Link](mtou-livelink/README.md)
+No collection-owned project keeps a history record here. Independent products
+keep theirs in their own repository:
+
+- [MtoU Live Link](https://github.com/Alexis-Li/MtoULiveLink/blob/main/docs/history/README.md)
