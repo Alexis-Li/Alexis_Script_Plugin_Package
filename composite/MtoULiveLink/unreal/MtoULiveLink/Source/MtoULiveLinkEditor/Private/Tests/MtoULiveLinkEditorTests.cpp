@@ -32,6 +32,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/SecureHash.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -7420,7 +7421,9 @@ bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
     {
         return false;
     }
-    AActor* Reference = SpawnLinkageAnchor(*World, TEXT("ReferenceProp"));
+    // A non-ANSI label: the manifest still reaches Maya as UTF-8.
+    const FString ReferenceLabel = TEXT("测试石块");
+    AActor* Reference = SpawnLinkageAnchor(*World, *ReferenceLabel);
     UStaticMeshComponent* Mesh =
         NewObject<UStaticMeshComponent>(Reference, TEXT("ReferenceMesh"));
     Mesh->SetupAttachment(Reference->GetRootComponent());
@@ -7457,12 +7460,30 @@ bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
 
     // The frozen importer refuses a manifest without an objects list, and each
     // entry is what the Maya side compares against the imported file.
-    FString ManifestText;
     const FString ManifestPath = FPaths::Combine(Result.Directory, *Result.ManifestFile);
+    TArray<uint8> ManifestFileBytes;
     if (!TestTrue(TEXT("the manifest is read back"),
-            FFileHelper::LoadFileToString(ManifestText, *ManifestPath)))
+            FFileHelper::LoadFileToArray(ManifestFileBytes, *ManifestPath)
+            && ManifestFileBytes.Num() > 0))
     {
         return false;
+    }
+    // Maya reads the file as UTF-8 with no BOM and hashes its bytes.
+    TestEqual(TEXT("the manifest starts with its JSON object, not a BOM"),
+        ManifestFileBytes[0], static_cast<uint8>('{'));
+    const FUTF8ToTCHAR ManifestDecoded(
+        reinterpret_cast<const UTF8CHAR*>(ManifestFileBytes.GetData()), ManifestFileBytes.Num());
+    const FString ManifestText(ManifestDecoded.Length(), ManifestDecoded.Get());
+    TestTrue(TEXT("the UTF-8 manifest carries the non-ANSI label"),
+        ManifestText.Contains(ReferenceLabel));
+    {
+        TArray<uint8> DigestInput = ManifestFileBytes;
+        TArray<uint8> GeometryFileBytes;
+        FFileHelper::LoadFileToArray(GeometryFileBytes,
+            *FPaths::Combine(Result.Directory, *Result.GeometryFile));
+        DigestInput.Append(GeometryFileBytes);
+        TestEqual(TEXT("the digest covers the manifest bytes on disk and the geometry"),
+            Result.ManifestDigest, FMD5::HashBytes(DigestInput.GetData(), DigestInput.Num()));
     }
     TSharedPtr<FJsonObject> ManifestJson;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ManifestText);
@@ -7471,6 +7492,12 @@ bool FMtoUSceneRefExportTest::RunTest(const FString& Parameters)
     {
         return false;
     }
+    const TSharedPtr<FJsonObject>* Identity = nullptr;
+    FString ManifestTransferId;
+    TestTrue(TEXT("the manifest carries the export's own transfer id"),
+        ManifestJson->TryGetObjectField(TEXT("identity"), Identity) && Identity != nullptr
+        && (*Identity)->TryGetStringField(TEXT("transfer_id"), ManifestTransferId)
+        && ManifestTransferId == Result.TransferId);
     const TArray<TSharedPtr<FJsonValue>>* ManifestObjects = nullptr;
     if (!TestTrue(TEXT("the manifest carries an objects list"),
             ManifestJson->TryGetArrayField(TEXT("objects"), ManifestObjects)

@@ -995,7 +995,16 @@ bool FMtoUSceneRefExport::Run(
         Writer->WriteObjectEnd();
         Writer->Close();
     }
-    if (!FFileHelper::SaveStringToFile(ManifestText, *ManifestPath))
+    // Maya reads the manifest as UTF-8 and the digest covers these same bytes, so
+    // they are written as they are hashed: UTF-8 without a BOM, whatever the
+    // labels hold. SaveStringToFile would write UTF-16 for any non-ANSI label.
+    TArray<uint8> ManifestBytes;
+    {
+        const FTCHARToUTF8 ManifestUtf8(*ManifestText);
+        ManifestBytes.Append(
+            reinterpret_cast<const uint8*>(ManifestUtf8.Get()), ManifestUtf8.Length());
+    }
+    if (!FFileHelper::SaveArrayToFile(ManifestBytes, *ManifestPath))
     {
         Out.Error = TEXT("the manifest could not be written next to the geometry");
         return false;
@@ -1005,12 +1014,7 @@ bool FMtoUSceneRefExport::Run(
 
     // The content digest covers the manifest text and the geometry bytes, so a
     // changed handoff is a different handoff and cannot keep the old offer.
-    TArray<uint8> DigestInput;
-    {
-        const FTCHARToUTF8 ManifestUtf8(*ManifestText);
-        DigestInput.Append(
-            reinterpret_cast<const uint8*>(ManifestUtf8.Get()), ManifestUtf8.Length());
-    }
+    TArray<uint8> DigestInput = ManifestBytes;
     {
         TArray<uint8> GeometryFileBytes;
         if (FFileHelper::LoadFileToArray(GeometryFileBytes, *FbxPath))
@@ -1019,8 +1023,6 @@ bool FMtoUSceneRefExport::Run(
         }
     }
     Out.ManifestDigest = FMD5::HashBytes(DigestInput.GetData(), DigestInput.Num());
-    Out.TransferId = FString::Printf(TEXT("mtou-scene-ref-%s"),
-        *FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower));
 
     const TSharedRef<FJsonObject> Scope = MakeShared<FJsonObject>();
     Scope->SetStringField(TEXT("level"), Out.LevelPackage);
@@ -1071,4 +1073,3 @@ bool FMtoUSceneRefExport::HasImageData(const FMtoUSceneRefExportResult& Result)
 {
     return !Result.ImageFiles.IsEmpty() || Result.TextureScan.EmbeddedMediaRecords > 0;
 }
-
