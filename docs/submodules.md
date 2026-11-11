@@ -47,8 +47,10 @@ repository. A submodule commit does not automatically change the collection pin.
 
 To adopt a published and reviewed commit, check it out in the child after
 preserving local work, then stage that project's mount path in the collection.
-Review the old and new commit IDs and commit the pin change on a collection
-branch. The validator compares the checkout HEAD to the staged pin, so stage an
+Verify the old and new commit IDs and the published target, run collection
+gates, then commit and push routine pin synchronization directly on the current
+collection branch under the [delivery workflow](agents/issue-tracker.md).
+The validator compares the checkout HEAD to the staged pin, so stage an
 intentional update before running collection gates.
 
 Do not use automatic tracking of a moving branch tip for collection releases.

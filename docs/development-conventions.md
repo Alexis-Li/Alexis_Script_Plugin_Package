@@ -14,6 +14,8 @@ use the [repository map](workspace-spec.md) to find them.
 3. Choose a delivery boundary under the [Issue/PR workflow](agents/issue-tracker.md):
    small documentation and rule edits go on the current working branch when
    they change no code, tests, tools, CI, packaging, version or product decision.
+   Routine project-index, status and submodule-pin synchronization also goes
+   directly on the current working branch under that workflow.
    Other work uses a `feature/<topic>` or `fix/<topic>` branch and a PR to the
    intended integration branch. Use a PR when size or impact is uncertain.
 4. Make the smallest coherent change and preserve public entry points unless a

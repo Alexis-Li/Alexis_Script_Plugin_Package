@@ -175,8 +175,9 @@ exceptions, contracts, and useful commands.
   clone. The issue owns scope and acceptance; the delivery owns its exact diff,
   review and validation evidence. New branches use `feature/<topic>` or
   `fix/<topic>` with a short kebab-case topic. Small documentation and rule
-  edits go directly on the current working branch under that protocol;
-  other work goes through a PR.
+  edits and routine project-index, status and submodule-pin synchronization
+  go directly on the current working branch under that protocol; other work
+  goes through a PR.
 - Every merge requires a published review of the latest PR head SHA; merge
   authorization does not replace review. Record the integration SHA on the
   issue. GitHub automatically deletes merged remote head branches; prune and

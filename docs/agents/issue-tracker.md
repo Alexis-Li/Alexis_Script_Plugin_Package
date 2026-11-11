@@ -18,7 +18,11 @@ The PR owns the implementation diff, review findings and check results.
    branch, PR, development report or review report. They reach `main` with
    their branch; the current branch is `main` only when no development branch
    is in progress. Run applicable checks and use normal commits without
-   rewriting shared history. Use a PR if size or impact is uncertain.
+   rewriting shared history. Routine synchronization of project indexes, status
+   information and submodule pins to published child commits follows this same
+   direct-commit path when the task makes no source-code edits or product
+   decisions. Verify the intended targets, preserve local work and run applicable
+   collection checks. Use a PR if size or impact is uncertain.
    All other work, including development tasks, code changes and significant
    changes, goes through a PR. Branch from the intended integration branch
    with `feature/<topic>` for new features, tools or documentation, or
