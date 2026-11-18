@@ -164,6 +164,14 @@ class ValidateProjectTests(unittest.TestCase):
         self.assertEqual(["a.png", "b.md"], self.targets("[![badge](a.png)](b.md)\n"))
         self.assertEqual([], self.targets("[a\n\nb](x.md)\n"))
 
+    def test_inner_link_title_with_open_bracket_does_not_hide_outer_target(self):
+        text = '[![badge](a.png "Build [status")](missing.md)\n'
+        self.assertEqual([(1, "a.png"), (1, "missing.md")], validate_project.markdown_links(text))
+        self.write("docs/a.png", b"\x89PNG")
+        self.write("docs/guide.md", text)
+        self.assert_one_error("docs/guide.md:1", "broken link: missing.md")
+        self.assertEqual(["d.md", "x.md"], self.targets('[see [doc](d.md "a [b") here](x.md)\n'))
+
     def test_titles_and_unclosed_links(self):
         self.assertEqual(["z.md"], self.targets('[t](z.md "title")\n'))
         self.assertEqual(["q.md", "z.md"], self.targets("[t](z.md 'title') [s](q.md (title))\n"))
