@@ -54,9 +54,9 @@ FORBIDDEN_SUFFIXES = (".pyc", ".zip", ".7z")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)\1(?!`)", re.DOTALL)
-INLINE_LINK_START_RE = re.compile(r"\]\(")
 ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
-REFERENCE_LINK_RE = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^>\n]+>|\S+)", re.MULTILINE)
+REFERENCE_LINK_RE = re.compile(r"^ {0,3}(?P<label>\[)[^\]\n]+\]:[ \t]*(?P<dest><[^>\n]+>|\S+)", re.MULTILINE)
+TITLE_CLOSERS = {'"': '"', "'": "'", "(": ")"}
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
@@ -174,26 +174,48 @@ def _visible_markdown(text: str) -> str:
     return INLINE_CODE_RE.sub(_blank, visible)
 
 
-def _inline_destination(text: str, start: int) -> tuple[str, int] | None:
-    """Parse an inline link destination after `](`: <angle form> or balanced parentheses.
+def _skip_space(text: str, index: int, end: int) -> int:
+    while index < end and text[index] in " \t\n":
+        index += 1
+    return index
 
-    Returns the unescaped target and the index just past the consumed destination.
-    """
-    length = len(text)
+
+def _closing_bracket(text: str, start: int, end: int) -> int | None:
+    """Return the index of the `]` matching the `[` at start; labels never span a blank line."""
+    depth = 0
     index = start
-    while index < length and text[index] in " \t\n":
+    while index < end:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+        elif char == "\n":
+            line_end = text.find("\n", index + 1, end)
+            if not text[index + 1:end if line_end < 0 else line_end].strip():
+                return None
         index += 1
-    if index < length and text[index] == "<":
-        index += 1
-        begin = index
-        while index < length and text[index] not in ">\n":
+    return None
+
+
+def _destination(text: str, index: int, end: int) -> tuple[str, int] | None:
+    """Parse `<angle form>` or a plain destination with balanced parentheses."""
+    if index < end and text[index] == "<":
+        begin = index + 1
+        index = begin
+        while index < end and text[index] not in "<>\n":
             index += 2 if text[index] == "\\" else 1
-        if index < length and text[index] == ">":
-            return ESCAPE_RE.sub(r"\1", text[begin:index]), index + 1
+        if index < end and text[index] == ">":
+            return text[begin:index], index + 1
         return None
     begin = index
     depth = 0
-    while index < length and not text[index].isspace():
+    while index < end and not text[index].isspace():
         char = text[index]
         if char == "\\":
             index += 2
@@ -205,25 +227,83 @@ def _inline_destination(text: str, start: int) -> tuple[str, int] | None:
                 break
             depth -= 1
         index += 1
-    return ESCAPE_RE.sub(r"\1", text[begin:index]), index
+    return (text[begin:index], index) if depth == 0 else None
+
+
+def _title_end(text: str, index: int, end: int) -> int | None:
+    """Return the index past a `"..."`, `'...'` or `(...)` title starting at index."""
+    closer = TITLE_CLOSERS[text[index]]
+    index += 1
+    while index < end:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == closer:
+            return index + 1
+        if closer == ")" and char == "(":
+            return None
+        index += 1
+    return None
+
+
+def _inline_link_end(text: str, index: int, end: int) -> tuple[str, int] | None:
+    """Parse `(destination "title")` starting at the `(`; return the raw target and index past `)`."""
+    index = _skip_space(text, index + 1, end)
+    parsed = _destination(text, index, end)
+    if parsed is None:
+        return None
+    target, after = parsed
+    index = _skip_space(text, after, end)
+    if index > after and index < end and text[index] in TITLE_CLOSERS:
+        title_end = _title_end(text, index, end)
+        if title_end is None:
+            return None
+        index = _skip_space(text, title_end, end)
+    if index < end and text[index] == ")":
+        return target, index + 1
+    return None
+
+
+def _scan_inline_links(text: str, start: int, end: int, skip: dict, found: list) -> None:
+    """Pair each unescaped `[` with its `]`; a `(destination)` right after it makes a link.
+
+    A link's label is scanned too, so an image inside a link is still found. A `[` that
+    starts no link is plain text and scanning resumes just after it.
+    """
+    index = start
+    while index < end:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char != "[":
+            index += 1
+            continue
+        if index in skip:
+            index = skip[index]
+            continue
+        close = _closing_bracket(text, index, end)
+        parsed = None
+        if close is not None and close + 1 < end and text[close + 1] == "(":
+            parsed = _inline_link_end(text, close + 1, end)
+        if parsed is None:
+            index += 1
+            continue
+        found.append((text.count("\n", 0, index) + 1, ESCAPE_RE.sub(r"\1", parsed[0])))
+        _scan_inline_links(text, index + 1, close, skip, found)
+        index = parsed[1]
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
+    """Return (line, unescaped target) for inline links, images and reference definitions."""
     visible = _visible_markdown(text)
     found = []
-    position = 0
-    while True:
-        match = INLINE_LINK_START_RE.search(visible, position)
-        if match is None:
-            break
-        parsed = _inline_destination(visible, match.end())
-        if parsed is None:
-            position = match.end()
-            continue
-        target, position = parsed
-        found.append((visible.count("\n", 0, match.start()) + 1, target))
+    definitions = {}
     for match in REFERENCE_LINK_RE.finditer(visible):
-        found.append((visible.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match[1].strip("<>"))))
+        definitions[match.start("label")] = match.end()
+        found.append((visible.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match["dest"].strip("<>"))))
+    _scan_inline_links(visible, 0, len(visible), definitions, found)
     return sorted(found)
 
 

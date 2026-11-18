@@ -143,6 +143,39 @@ class ValidateProjectTests(unittest.TestCase):
         targets = [target for _, target in validate_project.markdown_links(text)]
         self.assertEqual(["guide_(v2).md"] * 3, targets)
 
+    def targets(self, text):
+        return [target for _, target in validate_project.markdown_links(text)]
+
+    def test_link_inside_stray_bracket_text_is_found(self):
+        text = "](#[manual](missing.md))\n"
+        self.assertEqual(["missing.md"], self.targets(text))
+        self.write("docs/guide.md", text)
+        self.assert_one_error("docs/guide.md:1", "broken link: missing.md")
+
+    def test_parenthesized_destinations_match_escaped_ones(self):
+        text = "[a](guide_(v2).md) [b](guide_\\(v2\\).md)\n\n[r]: guide_\\(v2\\).md\n"
+        self.assertEqual(["guide_(v2).md"] * 3, self.targets(text))
+
+    def test_labels_pair_brackets_and_honor_escapes(self):
+        self.assertEqual(["x.md"], self.targets("[a [b] c](x.md)\n"))
+        self.assertEqual([], self.targets("\\[not](a.md)\n"))
+        self.assertEqual(["img.png"], self.targets("![alt](img.png)\n"))
+        self.assertEqual(["y.md"], self.targets("[outer [inner](y.md)]\n"))
+        self.assertEqual(["a.png", "b.md"], self.targets("[![badge](a.png)](b.md)\n"))
+        self.assertEqual([], self.targets("[a\n\nb](x.md)\n"))
+
+    def test_titles_and_unclosed_links(self):
+        self.assertEqual(["z.md"], self.targets('[t](z.md "title")\n'))
+        self.assertEqual(["q.md", "z.md"], self.targets("[t](z.md 'title') [s](q.md (title))\n"))
+        self.assertEqual(["w.md"], self.targets("[t](z.md [u](w.md)\n"))
+
+    def test_code_is_not_scanned_and_lines_are_counted(self):
+        text = "Intro\n`[c](code.md)`\n```\n[d](fence.md)\n```\n[first\nlabel](one.md)\n\ntext [two](two.md)\n"
+        self.assertEqual([(6, "one.md"), (9, "two.md")], validate_project.markdown_links(text))
+
+    def test_reference_definition_label_is_not_an_inline_link(self):
+        self.assertEqual(["a[x](y.md)"], self.targets("[r]: a[x](y.md)\n"))
+
     def test_output_survives_a_legacy_code_page(self):
         self.write("docs/guide.md", "[x](中.md)\n")
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
