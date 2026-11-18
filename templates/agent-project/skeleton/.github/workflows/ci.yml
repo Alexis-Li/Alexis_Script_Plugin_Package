@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "dev/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate project files
+        run: python tools/validate_project.py
+      - name: Project tool tests
+        run: python -m unittest discover -s tests -v
+      # 待定制：在此添加项目自己的套件，例如 ruff 和 pytest、与宿主无关的纯 Python 测试；需要宿主软件（Maya、Unreal、Blender、Painter）的测试不能在 CI 运行，把它们写进 AGENTS.md 的默认检查表并注明只在本机运行。

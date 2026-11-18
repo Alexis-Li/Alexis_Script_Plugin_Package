@@ -55,9 +55,17 @@ for development, pin updates and migration.
    python tools/create_project.py maya-script SampleTool --json
    ```
 
-4. Keep Maya user-run project and entry-file names in PascalCase, such as
+4. To start a new independent project, generate its skeleton outside this
+   repository from [`templates/agent-project`](templates/agent-project/README.md)
+   (preview first, then add `--apply`):
+
+   ```powershell
+   python tools/create_agent_project.py SampleProject --destination <path-to-new-repo>
+   ```
+
+5. Keep Maya user-run project and entry-file names in PascalCase, such as
    `FlattenMeshToUV` and `FlattenMeshToUV.py`.
-5. For repository tooling or structural changes, run the repository checks:
+6. For repository tooling or structural changes, run the repository checks:
 
    ```powershell
    python -m unittest discover -s tests

@@ -31,15 +31,17 @@ directory's live rule file.
 | `.github/pull_request_template.md` | PR description: scope, SHAs, validation, remaining work |
 | `.github/ISSUE_TEMPLATE/` | Bug report, task (sub-issue) and stage (umbrella issue) forms |
 | `.gitignore`, `.gitattributes`, `.editorconfig` (from `*.tmpl`) | Common ignore, line-ending and editor rules |
-
-The skeleton's `tools/` (project validation, status-comment helper), `tests/`
-and `.github/workflows/` (CI) are described in the new project's own
-documents.
+| `tools/validate_project.py` | Project check (`--json` available): required files, UTF-8, portable paths, JSON, Markdown links, generated or private files visible to Git, leftover template markers |
+| `tools/issue_report.py` | Status-comment draft and check (`template`, `check`); see section 10.3 of `docs/workflow.md` |
+| `tests/` | Tests of the two tools; standard library only |
+| `.github/workflows/ci.yml` | CI on pushes to `main` and `dev/**` and on pull requests: the project check and the tests |
 
 ## Creating a project
 
 An agent generates the project with the collection's creation script. It
-previews first; nothing is written until `--apply`:
+previews first; nothing is written until `--apply`. The destination must be
+absent or an empty directory, outside this collection and outside any other Git
+working tree; the script does not run `git init`:
 
 ```powershell
 python tools/create_agent_project.py <ProjectName> --destination <path-to-new-repo>

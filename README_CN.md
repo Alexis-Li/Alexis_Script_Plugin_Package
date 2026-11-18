@@ -52,9 +52,17 @@
    python tools/create_project.py maya-script SampleTool --json
    ```
 
-4. Maya 用户直接运行的项目目录和入口文件使用 PascalCase，例如
+4. 新建独立项目时，从
+   [`templates/agent-project`](templates/agent-project/README_CN.md) 在本仓库之外
+   生成骨架（先预览，再加 `--apply`）：
+
+   ```powershell
+   python tools/create_agent_project.py SampleProject --destination <path-to-new-repo>
+   ```
+
+5. Maya 用户直接运行的项目目录和入口文件使用 PascalCase，例如
    `FlattenMeshToUV` 和 `FlattenMeshToUV.py`。
-5. 修改仓库工具或目录结构时，运行仓库检查：
+6. 修改仓库工具或目录结构时，运行仓库检查：
 
    ```powershell
    python -m unittest discover -s tests

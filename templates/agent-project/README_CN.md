@@ -27,13 +27,16 @@ StoUTextureSync）共有的 Agent 工作流：给 Agent 的规则、从需求到
 | `.github/pull_request_template.md` | PR 描述：范围、SHA、验证、遗留 |
 | `.github/ISSUE_TEMPLATE/` | 缺陷报告、任务（子工单）、阶段（总工单）表单 |
 | `.gitignore`、`.gitattributes`、`.editorconfig`（来自 `*.tmpl`） | 通用的忽略、换行和编辑器规则 |
-
-骨架里的 `tools/`（项目校验、状态评论脚本）、`tests/` 和
-`.github/workflows/`（CI）由新项目自己的文档说明。
+| `tools/validate_project.py` | 项目检查（可加 `--json`）：必需文件、UTF-8、可移植路径、JSON、Markdown 链接、Git 可见的生成物或私有文件、残留的模板标记 |
+| `tools/issue_report.py` | 状态评论的草稿与检查（`template`、`check`），见 `docs/workflow.md` 第 10.3 节 |
+| `tests/` | 上述两个工具的测试，只用标准库 |
+| `.github/workflows/ci.yml` | CI：推送到 `main`、`dev/**` 和 PR 时运行项目检查与测试 |
 
 ## 创建项目
 
-由 Agent 用集合仓库的创建脚本生成。脚本先预览，加 `--apply` 才写入：
+由 Agent 用集合仓库的创建脚本生成。脚本先预览，加 `--apply` 才写入。目标目录
+须不存在或为空，且在本集合仓库之外、不在任何其他 Git 工作树内；脚本不执行
+`git init`：
 
 ```powershell
 python tools/create_agent_project.py <ProjectName> --destination <path-to-new-repo>
