@@ -9,7 +9,6 @@ project can add or remove checks in one place.
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
 import re
@@ -181,37 +180,6 @@ def _skip_space(text: str, index: int, end: int) -> int:
     return index
 
 
-@functools.lru_cache(maxsize=4096)
-def _closing_bracket(text: str, start: int, end: int) -> int | None:
-    """Return the index of the `]` matching the `[` at start.
-
-    A `[` inside the label that starts a complete inline link is skipped as a whole, so
-    brackets in that link's destination or title do not change the pairing.
-    """
-    depth = 0
-    index = start
-    while index < end:
-        char = text[index]
-        if char == "\\":
-            index += 2
-            continue
-        if char == "[":
-            if depth:
-                inner = _closing_bracket(text, index, end)
-                if inner is not None and inner + 1 < end and text[inner + 1] == "(":
-                    parsed = _inline_link_end(text, inner + 1, end)
-                    if parsed is not None:
-                        index = parsed[1]
-                        continue
-            depth += 1
-        elif char == "]":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return None
-
-
 def _destination(text: str, index: int, end: int) -> tuple[str, int] | None:
     """Parse `<angle form>` or a plain destination with balanced parentheses."""
     if index < end and text[index] == "<":
@@ -274,34 +242,35 @@ def _inline_link_end(text: str, index: int, end: int) -> tuple[str, int] | None:
     return None
 
 
-def _scan_inline_links(text: str, start: int, end: int, skip: dict, found: list) -> None:
-    """Pair each unescaped `[` with its `]`; a `(destination)` right after it makes a link.
+def _scan_inline_links(text: str, skip: dict, found: list) -> None:
+    """Find inline links and images in one left-to-right pass with a stack of open `[`.
 
-    A link's label is scanned too, so an image inside a link is still found. A `[` that
-    starts no link is plain text and scanning resumes just after it.
+    A `]` pairs with the latest open `[`; a `(destination)` right after it makes a link,
+    and scanning resumes past that link so brackets in its destination or title do not
+    affect the outer pairing. Anything that does not form a link stays plain text.
     """
-    index = start
+    end = len(text)
+    opened = []
+    index = 0
     while index < end:
         char = text[index]
         if char == "\\":
             index += 2
             continue
-        if char != "[":
-            index += 1
-            continue
-        if index in skip:
-            index = skip[index]
-            continue
-        close = _closing_bracket(text, index, end)
-        parsed = None
-        if close is not None and close + 1 < end and text[close + 1] == "(":
-            parsed = _inline_link_end(text, close + 1, end)
-        if parsed is None:
-            index += 1
-            continue
-        found.append((text.count("\n", 0, index) + 1, ESCAPE_RE.sub(r"\1", parsed[0])))
-        _scan_inline_links(text, index + 1, close, skip, found)
-        index = parsed[1]
+        if char == "[":
+            if index in skip:
+                index = skip[index]
+                continue
+            opened.append(index)
+        elif char == "]" and opened:
+            start = opened.pop()
+            if index + 1 < end and text[index + 1] == "(":
+                parsed = _inline_link_end(text, index + 1, end)
+                if parsed is not None:
+                    found.append((text.count("\n", 0, start) + 1, ESCAPE_RE.sub(r"\1", parsed[0])))
+                    index = parsed[1]
+                    continue
+        index += 1
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
@@ -332,7 +301,7 @@ def _scan_paragraph(text: str, offset: int, found: list) -> None:
     for match in REFERENCE_LINK_RE.finditer(text):
         definitions[match.start("label")] = match.end()
         links.append((text.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match["dest"].strip("<>"))))
-    _scan_inline_links(text, 0, len(text), definitions, links)
+    _scan_inline_links(text, definitions, links)
     found.extend((line + offset, target) for line, target in links)
 
 
