@@ -174,8 +174,11 @@ def _visible_markdown(text: str) -> str:
     return INLINE_CODE_RE.sub(_blank, visible)
 
 
-def _inline_destination(text: str, start: int) -> str | None:
-    """Parse an inline link destination after `](`: <angle form> or balanced parentheses."""
+def _inline_destination(text: str, start: int) -> tuple[str, int] | None:
+    """Parse an inline link destination after `](`: <angle form> or balanced parentheses.
+
+    Returns the unescaped target and the index just past the consumed destination.
+    """
     length = len(text)
     index = start
     while index < length and text[index] in " \t\n":
@@ -186,7 +189,7 @@ def _inline_destination(text: str, start: int) -> str | None:
         while index < length and text[index] not in ">\n":
             index += 2 if text[index] == "\\" else 1
         if index < length and text[index] == ">":
-            return ESCAPE_RE.sub(r"\1", text[begin:index])
+            return ESCAPE_RE.sub(r"\1", text[begin:index]), index + 1
         return None
     begin = index
     depth = 0
@@ -202,18 +205,25 @@ def _inline_destination(text: str, start: int) -> str | None:
                 break
             depth -= 1
         index += 1
-    return ESCAPE_RE.sub(r"\1", text[begin:index])
+    return ESCAPE_RE.sub(r"\1", text[begin:index]), index
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
     visible = _visible_markdown(text)
     found = []
-    for match in INLINE_LINK_START_RE.finditer(visible):
-        target = _inline_destination(visible, match.end())
-        if target is not None:
-            found.append((visible.count("\n", 0, match.start()) + 1, target))
+    position = 0
+    while True:
+        match = INLINE_LINK_START_RE.search(visible, position)
+        if match is None:
+            break
+        parsed = _inline_destination(visible, match.end())
+        if parsed is None:
+            position = match.end()
+            continue
+        target, position = parsed
+        found.append((visible.count("\n", 0, match.start()) + 1, target))
     for match in REFERENCE_LINK_RE.finditer(visible):
-        found.append((visible.count("\n", 0, match.start()) + 1, match[1].strip("<>")))
+        found.append((visible.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match[1].strip("<>"))))
     return sorted(found)
 
 

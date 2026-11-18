@@ -130,6 +130,19 @@ class ValidateProjectTests(unittest.TestCase):
             self.write("docs/" + name, "# Target\n")
         self.assertEqual([], self.errors())
 
+    def test_angle_destination_containing_link_syntax_is_one_link(self):
+        text = "[manual](<guide](v2).md>)\n"
+        self.assertEqual(["guide](v2).md"], [t for _, t in validate_project.markdown_links(text)])
+        self.write("docs/guide.md", text)
+        self.assertEqual(1, len(self.errors()))
+        self.write("docs/guide](v2).md", "# Target\n")
+        self.assertEqual([], self.errors())
+
+    def test_inline_and_reference_destinations_unescape_the_same_way(self):
+        text = "[a](guide_\\(v2\\).md)\n[b](guide_(v2).md)\n\n[r]: guide_\\(v2\\).md\n"
+        targets = [target for _, target in validate_project.markdown_links(text)]
+        self.assertEqual(["guide_(v2).md"] * 3, targets)
+
     def test_output_survives_a_legacy_code_page(self):
         self.write("docs/guide.md", "[x](中.md)\n")
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")

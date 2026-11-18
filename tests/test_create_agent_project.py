@@ -109,15 +109,22 @@ class CreateAgentProjectTests(unittest.TestCase):
         ))
 
     def test_untracked_skeleton_files_are_not_copied(self):
-        stray = create_agent_project.SKELETON / "HANDOFF.md"
-        self.assertFalse(stray.exists())
-        self.addCleanup(lambda: stray.unlink() if stray.exists() else None)
-        stray.write_text("local notes\n", encoding="utf-8")
-        preview = create_agent_project.create("SampleProject", str(self.work / "Preview"))
-        self.assertNotIn("HANDOFF.md", preview["files"])
-        destination = self.generate()
-        self.assertNotIn("HANDOFF.md", self.files(destination))
-        self.assertEqual(sorted(preview["files"]), self.files(destination))
+        repository = self.work / "collection"
+        skeleton = repository / "templates" / "agent-project" / "skeleton"
+        skeleton.mkdir(parents=True)
+        (skeleton / "README.md").write_text("# {{PROJECT_NAME}}\n", encoding="utf-8")
+        (skeleton / "AGENTS.md.tmpl").write_text("rules\n", encoding="utf-8")
+        git = ["git", "-C", str(repository), "-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+        for command in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "skeleton"]):
+            subprocess.run([*git, *command], check=True, capture_output=True)
+        (skeleton / "HANDOFF.md").write_text("local notes\n", encoding="utf-8")
+        with mock.patch.object(create_agent_project, "ROOT", repository), \
+                mock.patch.object(create_agent_project, "SKELETON", skeleton):
+            preview = create_agent_project.create("SampleProject", str(self.work / "Preview"))
+            destination = self.work / "Applied"
+            create_agent_project.create("SampleProject", str(destination), apply=True)
+        self.assertEqual(["AGENTS.md", "README.md"], sorted(preview["files"]))
+        self.assertEqual(["AGENTS.md", "README.md"], self.files(destination))
 
     def test_missing_tracked_file_and_git_failure_are_errors(self):
         missing = create_agent_project.SKELETON / "no-such-tracked-file.md"
