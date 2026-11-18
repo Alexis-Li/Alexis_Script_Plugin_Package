@@ -181,7 +181,7 @@ def _skip_space(text: str, index: int, end: int) -> int:
 
 
 def _closing_bracket(text: str, start: int, end: int) -> int | None:
-    """Return the index of the `]` matching the `[` at start; labels never span a blank line."""
+    """Return the index of the `]` matching the `[` at start."""
     depth = 0
     index = start
     while index < end:
@@ -195,10 +195,6 @@ def _closing_bracket(text: str, start: int, end: int) -> int | None:
             depth -= 1
             if depth == 0:
                 return index
-        elif char == "\n":
-            line_end = text.find("\n", index + 1, end)
-            if not text[index + 1:end if line_end < 0 else line_end].strip():
-                return None
         index += 1
     return None
 
@@ -296,15 +292,35 @@ def _scan_inline_links(text: str, start: int, end: int, skip: dict, found: list)
 
 
 def markdown_links(text: str) -> list[tuple[int, str]]:
-    """Return (line, unescaped target) for inline links, images and reference definitions."""
-    visible = _visible_markdown(text)
+    """Return (line, unescaped target) for inline links, images and reference definitions.
+
+    Links never cross a paragraph boundary: a blank line of the source or a fenced
+    code line. Each paragraph of the code-blanked text is scanned on its own.
+    """
+    source = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    visible = _visible_markdown("\n".join(source)).split("\n")
     found = []
-    definitions = {}
-    for match in REFERENCE_LINK_RE.finditer(visible):
-        definitions[match.start("label")] = match.end()
-        found.append((visible.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match["dest"].strip("<>"))))
-    _scan_inline_links(visible, 0, len(visible), definitions, found)
+    first = None
+    for number, (line, shown) in enumerate(zip(source + [""], visible + [""])):
+        if line.strip() and shown:
+            if first is None:
+                first = number
+            continue
+        if first is not None:
+            _scan_paragraph("\n".join(visible[first:number]), first, found)
+            first = None
     return sorted(found)
+
+
+def _scan_paragraph(text: str, offset: int, found: list) -> None:
+    """Collect the links of one paragraph, numbering lines from offset + 1."""
+    links = []
+    definitions = {}
+    for match in REFERENCE_LINK_RE.finditer(text):
+        definitions[match.start("label")] = match.end()
+        links.append((text.count("\n", 0, match.start()) + 1, ESCAPE_RE.sub(r"\1", match["dest"].strip("<>"))))
+    _scan_inline_links(text, 0, len(text), definitions, links)
+    found.extend((line + offset, target) for line, target in links)
 
 
 def check_markdown_links(root: Path, names: list[str], texts: dict, errors: list[str]) -> None:

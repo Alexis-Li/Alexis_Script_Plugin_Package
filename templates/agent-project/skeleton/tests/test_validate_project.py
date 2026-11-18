@@ -173,6 +173,31 @@ class ValidateProjectTests(unittest.TestCase):
         text = "Intro\n`[c](code.md)`\n```\n[d](fence.md)\n```\n[first\nlabel](one.md)\n\ntext [two](two.md)\n"
         self.assertEqual([(6, "one.md"), (9, "two.md")], validate_project.markdown_links(text))
 
+    def test_title_may_follow_any_line_ending(self):
+        for newline in ("\r\n", "\r", "\n"):
+            with self.subTest(newline=repr(newline)):
+                text = '[guide](guide.md{0} "Manual")'.format(newline)
+                self.assertEqual([(1, "guide.md")], validate_project.markdown_links(text))
+
+    def test_label_line_of_only_inline_code_is_not_blank(self):
+        text = "[See\n`command`\nusage](missing.md)\n"
+        self.assertEqual([(1, "missing.md")], validate_project.markdown_links(text))
+        self.assertEqual([], self.targets("[See\n`command`\n\nusage](missing.md)\n"))
+
+    def test_title_does_not_cross_a_blank_line(self):
+        text = '[draft](old.md "unfinished\n\nRead [manual](missing.md) (")\n'
+        self.assertEqual([(3, "missing.md")], validate_project.markdown_links(text))
+
+    def test_trailing_backslash_does_not_join_paragraphs(self):
+        self.assertEqual([], self.targets("[first\\\n\nsecond](ghost.md)\n"))
+        self.assertEqual([(1, "ok.md")], validate_project.markdown_links("[first\\\nsecond](ok.md)\n"))
+
+    def test_crlf_file_reports_only_the_broken_link(self):
+        self.write("docs/workflow.md", "# Workflow\n")
+        text = "Intro\r\n\r\n[flow](workflow.md)\r\n[gone](missing.md\r\n \"Title\")\r\n"
+        self.write("docs/guide.md", text)
+        self.assert_one_error("docs/guide.md:4", "broken link: missing.md")
+
     def test_reference_definition_label_is_not_an_inline_link(self):
         self.assertEqual(["a[x](y.md)"], self.targets("[r]: a[x](y.md)\n"))
 
