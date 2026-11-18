@@ -1,0 +1,14 @@
+* text=auto
+.gitattributes text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+
+# 待定制：项目入库二进制资产时，在这里按下面的格式加入 Git LFS 规则（每个扩展名一行）并删除本行。
+# 例如 *.fbx filter=lfs diff=lfs merge=lfs -text（MtoULiveLink 的 .uasset、.umap、.fbx、.mb；StoUTextureSync 的 .spp、.sbsar）。
+# 项目有 Unreal、Maya 等宿主源码时，再给 .uplugin、.uproject、.cs、.cpp、.h、.mel 加 text eol=lf。

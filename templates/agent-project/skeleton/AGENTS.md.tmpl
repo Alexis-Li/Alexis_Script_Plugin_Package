@@ -1,0 +1,249 @@
+# {{PROJECT_NAME}} development rules
+
+This independent repository owns {{PROJECT_NAME}}.
+<!-- 待定制：在此补一句英文产品描述：它是什么、给谁用、由哪些部分组成（例如 LoomlineRetopo：半自动的游戏低模服装拓扑工具；MtoULiveLink：Maya 组件加 Unreal 插件的实时联动；StoUTextureSync：Painter 到 Unreal 的贴图同步插件） -->
+It can be cloned alone and may be mounted as a registered submodule in a
+collection repository, which owns only the registration and the pinned commit.
+Run Git and `gh` here for product work and do not change sibling projects.
+
+## Read first
+
+Read an existing `HANDOFF.md` first and reconcile it with Git (see Session
+handoff). The other project documents are written in Chinese because the user
+reviews them. Read the ones your task needs, not all of them. Read a document
+you open in full: they are short, and a constraint missed in a skipped section
+costs more than the reading.
+
+Every task reads:
+
+- [CONTEXT.md](CONTEXT.md): vocabulary. Use these terms and code names
+  exactly.
+- The task's own entry in [docs/roadmap.md](docs/roadmap.md) (`S<stage>-T<n>`
+  IDs): its scope and completion criteria. Read the rest of the roadmap only
+  when planning or reordering work.
+
+Then read by what the task touches:
+
+| The task touches | Read |
+| --- | --- |
+| Modules, data objects, commands, dependencies, layout | [docs/architecture.md](docs/architecture.md) |
+| What the product does or does not do (`G-`, `F-`, `NG-`, `Q-` IDs) | [docs/requirements.md](docs/requirements.md) |
+| Delivering, reviewing, experiments, visual acceptance, architecture changes, releases | [docs/workflow.md](docs/workflow.md) |
+| The rationale of a decision in force | The linked entry in `docs/adr/` ([README](docs/adr/README.md)) |
+
+<!-- 待定制：按项目增补"改动范围 -> 要读的文档"行，例如 LoomlineRetopo 的拓扑规范 docs/topology-rules.md；MtoULiveLink 的跨宿主协议 protocol/README.md 和宿主验收流程 docs/testing.md；StoUTextureSync 把需求放在 Issue #1 -->
+
+When unsure whether a document applies, read it. A reviewer reads every
+document the change under review falls under.
+
+These rules apply to every contributor and tool. Stay within the scope you
+were given. Something those documents forbid is not worked around: raise it as
+docs/workflow.md section 8 describes. Something they simply do not cover is an
+ordinary implementation choice and is yours to make.
+
+## Working with the user
+
+- The user is a 3D game artist who does not write code. Contributors own
+  algorithm design, code and technical route; the user owns product
+  direction, project-specific conventions, usage feedback and every
+  outward-facing decision. docs/workflow.md section 2 lists what must go to
+  the user and what must not.
+- Talk to the user in Chinese, in art-pipeline terms. Do not hand them code,
+  commands to type, or a technical choice to make.
+- The user's comments are evidence to reason about, not rules by decree: if one
+  conflicts with the principles of the problem or common practice, say so and
+  discuss it. When you give the user something to look at, look at it yourself
+  first.
+<!-- 待定制：写明本项目凭什么判断结果合格、哪些约定归用户（例如 LoomlineRetopo：以 docs/topology-rules.md 的规则为准，每条写明依据，由执行者依据几何原理和行业做法提出，用户只定依据为"项目约定"的规则；MtoULiveLink：以跨宿主协议和宿主验收为准；StoUTextureSync：以 Painter 导出与 UE 重导入的实际行为为准） -->
+
+## Architecture rules that reviews enforce
+
+These restate the decisions (`AD-n`) in docs/architecture.md; that document
+wins on any difference. A change that breaks one is a review finding and goes
+through docs/workflow.md section 8.
+
+<!-- 待定制：把 architecture.md 的 AD 条目凝成可检查的编号规则，每条一两句。例如 LoomlineRetopo：核心不导入任何宿主模块、插件不含几何逻辑；各层只向下导入；各步骤是纯函数；不写死距离；不用未设种子的随机数；用结构化诊断报告问题而不是吞掉错误。MtoULiveLink：Maya 与 Unreal 两端只通过 protocol/ 的线协议协作；重复启动不得产生重复窗口或回调。StoUTextureSync：Painter API 只在主线程调用；关闭时撤销全部事件、定时器和界面注册 -->
+
+## Environment
+
+- Use what the machine already has. Do not add runtimes, package managers,
+  compilers, toolchains or services. The platform and the host application
+  versions the project supports are listed in its README.
+- Add a dependency only when the task cannot reasonably be done with what is
+  already declared, record it in the project's declarations, and say why in the
+  change. Prefer a few lines of plain code over a new package.
+- When the existing environment cannot support the work, or has a clear
+  ceiling, stop and put it to the user with the options. Do not install your
+  way around it.
+- Build only what the current task needs. No speculative abstraction layers,
+  configuration options or empty modules for imagined future needs, and no
+  retries, compatibility layers or fallback branches for cases with no real
+  trigger.
+- Drive host applications by background script. Do not ask the user to click
+  through a GUI to verify something a script can check. Stop only the host
+  process your own run started, by its PID; the user may have their own
+  instance open.
+- Never write a machine-specific path into a tracked file, Issue or PR. Use
+  placeholders such as `<scratch>`, `<samples>` or the host executable's name
+  in angle brackets.
+<!-- 待定制：写明运行时、宿主版本和环境创建办法。只有项目用 Python 依赖时才保留一个仓库根的 .venv，写出确切的版本和命令（例如 LoomlineRetopo：系统 Python 3.13，用 py -3.13 -m venv .venv 建环境并安装 pyproject.toml 声明的依赖；MtoULiveLink：Maya 2024 的 mayapy 和 UE 5.7，不建 venv；StoUTextureSync：Painter 11.0 自带的 Python），以及宿主可执行文件占位符对应什么（<mayapy>、<blender>） -->
+
+## Default checks
+
+Run from the repository root. Run the rows a change touches.
+
+| Scope | Command |
+| --- | --- |
+| Documentation, rules and project files | `python tools/validate_project.py` |
+| Project tools | `python -m unittest discover -s tests` |
+
+<!-- 待定制：增补本项目的检查行，每行写范围和命令（例如 LoomlineRetopo：python -m ruff check .、python -m pytest tests、Blender 后台测试 <blender> -b --factory-startup --python ...；MtoULiveLink：mayapy 的 unittest、UnrealEditor-Cmd 的 Automation RunTests；StoUTextureSync：python -m compileall -q plugins）。宿主检查写明需要什么宿主，CI 实际覆盖哪些行 -->
+
+- During iteration, rerun only the failing test or module. Run each affected
+  suite once more when the change stabilizes.
+- Automated tests use deterministic generated or hand-built fixtures. They
+  never read `samples/` or use the network.
+- Opt-in scripts (benchmarks, performance runs, host acceptance) run when a
+  task needs visual acceptance, stage acceptance or a performance claim.
+  Report their numbers with the machine and input size.
+- A missing prerequisite (no host application, no samples) is reported as
+  missing. Do not substitute a stand-in and claim the check passed.
+
+## Data and privacy
+
+- Production material lives only under the ignored `samples/` directory, one
+  subdirectory per set with a neutral code name (`set-a`). Review packages for
+  the user live only under the ignored `reviews/` directory. Never commit
+  them, and never upload files or images derived from them to an Issue, a PR
+  or any external service without the user's approval. Refer to sample sets by
+  their neutral names.
+- Never modify or overwrite a user input file. Commands write only to the
+  output paths they are given.
+- Keep scratch under the `.tmp/` directory beside the actual Git root
+  (the root's parent directory plus `.tmp`); when that is not writable, use
+  the ignored `.tmp/` inside this repository. Remove task-owned scratch when
+  it is no longer needed.
+- Never publish credentials, machine-specific paths or private asset contents
+  in files, Issues or PRs.
+
+## Session handoff
+
+A session can end without warning: the user's usage allowance runs out, and
+no session can see how much of it is left. Resuming or compacting a long
+conversation afterwards is expensive. So the work is kept resumable at all
+times by a fresh session that has only the repository and `HANDOFF.md`.
+
+- Keep `HANDOFF.md` in the root of the working directory you are working in;
+  each worktree has its own. Git ignores it: it is a note to the next
+  session, not a project document. Knowledge that must last still goes to the
+  Issue, docs/roadmap.md or an ADR.
+- Update it at every checkpoint, without being asked and without waiting for
+  the task to end: a step finished and verified, a decision made, an approach
+  tried and ruled out, and before starting anything long (a full suite, a
+  benchmark, a subagent, a review round). Do not try to guess when the
+  allowance will run out; a note that is always current is the only
+  protection.
+- Save the work at the same checkpoints: commit verified work to the branch
+  allowed by docs/workflow.md (the development branch for small rule or
+  documentation edits, the task branch for PR work), so the note points at a
+  commit. Anything left uncommitted is listed in the note with its state.
+- Write it in Chinese, as the current state, rewritten in place and never
+  appended to. It holds only what a fresh session cannot find in the
+  repository, the Issues or the documents. Before writing a line, ask: would
+  the next session go wrong without it, and can it not look this up? What can
+  be looked up gets a pointer (commit, Issue, file), never a copy.
+- Sections, each left out when it has nothing to say, except `进行中`:
+  - `任务`: the goal, Issue number, branch, last commit SHA, update date.
+  - `已完成`: progress on the task in flight that no commit message, Issue
+    comment or PR yet records, and how it was verified. Remove an entry once
+    it is merged or written to the Issue.
+  - `进行中`: what is half-done, exactly where it stopped, uncommitted files;
+    `无` when nothing is in flight.
+  - `下一步`: ordered actions, concrete enough to start on directly.
+  - `关键决定`: decisions taken and approaches ruled out on the task in
+    flight, each with its reason, until they are recorded in the code, the
+    Issue or an ADR.
+  - `未验证`: checks the task in flight still needs before delivery, host
+    acceptance included.
+- State as fact only what this session observed or verified itself. A claim
+  taken over from an earlier note, a subagent's report or a guess is either
+  verified first or left out; do not pass it on, marked or unmarked.
+- It does not hold: the history of merged work, descriptions of code or
+  algorithms (those belong in the code and documents), lessons about how to
+  work (project-wide ones go to this file or docs/workflow.md; a tool's own
+  go to that tool's memory), or secrets and machine-specific paths.
+- Keep it within about 40 lines while a task is in flight, and about 15 when
+  none is: branch, last commit and `下一步`.
+- At the start of a session, if `HANDOFF.md` exists, read it before anything
+  else and compare it with `git status` and the recent log. Where they
+  disagree, the repository is right: correct the note. Then continue from
+  `下一步`; do not redo investigation the note already records.
+- When the user asks to continue interrupted work, continue from
+  `HANDOFF.md` in the current session; do not ask them to reopen the earlier
+  conversation.
+- When the task is delivered, cut the note down to branch, last commit and
+  `下一步`. A stale note misleads the next session.
+
+## Documentation and delivery
+
+- Write documents, Issues and comments as the current state. When a decision
+  changes, agree it with the user and rewrite it in place; leave out
+  development diaries and change notes.
+- README.md and README_CN.md are aligned current manuals for first-time users:
+  what it is, compatibility, installation, workflows, troubleshooting and
+  limits. Update the affected section in place; keep implementation, test
+  counts and development narrative out.
+- Each kind of content has one owner; other places link to it. Vocabulary in
+  CONTEXT.md, requirements in docs/requirements.md, structure in
+  docs/architecture.md, long-lived decisions in `docs/adr/`, plan and stage
+  status in docs/roadmap.md, version changes in `CHANGELOG.md`. A change that
+  makes a document's statement untrue rewrites that document in the same
+  change.
+- User-facing text (diagnostic messages, reports, UI labels, review notes) is
+  Chinese. Code, identifiers, logs and commit messages are English.
+- `main` holds only stable milestones and releases; task PRs never target it.
+  Work lands on the development branch in progress (`dev/<topic>`): check which
+  one it is before you start, and create one from `main` when none is. Task
+  branches are `feature/<topic>` or `fix/<topic>`, cut from it with a PR back
+  to it. Merging the development branch into `main` is a separate step the
+  user agrees to. A PR branch holds only its PR's change; small documentation
+  and rule edits go directly on the development branch as docs/workflow.md
+  defines.
+- Follow docs/workflow.md for Issue/PR work: `Refs #<issue>` (never closing
+  keywords), full base and head SHAs, AC and `R-` finding IDs, a published
+  review of the exact head SHA before every merge, `gh pr merge
+  --match-head-commit` merges, and issue comments that each end with a
+  `**当前状态**` footer. Comments stay short; one conclusion comment per review
+  round, and a comment a later one supersedes is deleted. Status comments are
+  generated and checked with `tools/issue_report.py`.
+- Whoever wrote a change does not review it and does not re-verify its own fix:
+  a PR is merged only after a review of its exact head commit by another
+  session, another tool or the user. The implementer delivers the PR as
+  **待审核** and stops there.
+- A review finding needs evidence: an unmet completion criterion, a broken
+  architecture rule or a reproducible defect. A preference for a different
+  approach is not a finding. A recorded decision is reopened only with new
+  evidence (docs/workflow.md section 6).
+- Report the state reached precisely: implemented, reviewed, merged, visually
+  accepted or released. Say which checks ran and which did not.
+
+## Versions and changelog
+
+Only the release change sets the product version; other PRs never change it.
+The version starts at 0.1.0; the user decides when it becomes 1.0.0. Release
+tags are `v<version>`; docs/workflow.md section 11 describes the release.
+
+Write `CHANGELOG.md` for users upgrading. Every PR with a user-visible change
+adds its entry under `## Unreleased`; the release change only renames that
+heading to the version and date. Group entries under `### Upgrade notes`,
+`### Added`, `### Changed`, `### Fixed` and `### Removed`, in that order,
+omitting empty groups. Upgrade notes say what the user must do. Each entry is
+one or two lines in the product's own terms and ends with its issue:
+
+```markdown
+- Long names no longer widen the panel; the full name is in the tooltip. (#71)
+```
+
+Leave out implementation, review finding IDs, tests and tooling; the issue and
+PR hold them.
+<!-- 待定制：写明版本号所在位置和打包、改版本的命令（例如 MtoULiveLink：python tools/version.py <version> --apply 与 python tools/package.py --apply；若暂无可发布产物，写"尚无打包命令"） -->

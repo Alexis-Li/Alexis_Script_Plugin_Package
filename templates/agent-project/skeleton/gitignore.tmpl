@@ -1,0 +1,48 @@
+# Local agent instructions
+AGENTS.override.md
+
+# Session handoff note (per working directory, see AGENTS.md)
+HANDOFF.md
+
+# Scratch
+.tmp/
+
+# Operating system
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors and worktrees
+.vscode/
+.idea/
+*.code-workspace
+.worktrees/
+.claude/worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Production material used as local test input (never committed)
+samples/
+
+# Review packages for the user's visual acceptance (derived from production material)
+reviews/
+
+# Packaged output
+releases/
+*.zip
+*.7z
+
+# 待定制：按项目用到的宿主软件加入它们的输出和缓存，并删除本块的这些说明行。
+# 例如 Maya：*.mb 备份和 .mayaSwatches/；Unreal：Binaries/、Intermediate/、Saved/、
+# DerivedDataCache/、.vs/、*.sln；Blender：*.blend1、*.blend2；
+# Substance 3D Painter：*.spp 备份和导出缓存。
