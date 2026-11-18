@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
-from _project_tools import ABSOLUTE_PATH_RE, ROOT, emit
+from _project_tools import ABSOLUTE_PATH_RE, ROOT, configure_output, emit
 
 # --- Check inputs: edit these when the project grows ------------------------------
 
@@ -54,7 +54,8 @@ FORBIDDEN_SUFFIXES = (".pyc", ".zip", ".7z")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)\1(?!`)", re.DOTALL)
-INLINE_LINK_RE = re.compile(r"\]\(\s*(<[^>\n]*>|[^)\s]+)")
+INLINE_LINK_START_RE = re.compile(r"\]\(")
+ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
 REFERENCE_LINK_RE = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^>\n]+>|\S+)", re.MULTILINE)
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -173,13 +174,46 @@ def _visible_markdown(text: str) -> str:
     return INLINE_CODE_RE.sub(_blank, visible)
 
 
+def _inline_destination(text: str, start: int) -> str | None:
+    """Parse an inline link destination after `](`: <angle form> or balanced parentheses."""
+    length = len(text)
+    index = start
+    while index < length and text[index] in " \t\n":
+        index += 1
+    if index < length and text[index] == "<":
+        index += 1
+        begin = index
+        while index < length and text[index] not in ">\n":
+            index += 2 if text[index] == "\\" else 1
+        if index < length and text[index] == ">":
+            return ESCAPE_RE.sub(r"\1", text[begin:index])
+        return None
+    begin = index
+    depth = 0
+    while index < length and not text[index].isspace():
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        index += 1
+    return ESCAPE_RE.sub(r"\1", text[begin:index])
+
+
 def markdown_links(text: str) -> list[tuple[int, str]]:
     visible = _visible_markdown(text)
     found = []
-    for pattern in (INLINE_LINK_RE, REFERENCE_LINK_RE):
-        for match in pattern.finditer(visible):
-            target = match[1].strip("<>")
+    for match in INLINE_LINK_START_RE.finditer(visible):
+        target = _inline_destination(visible, match.end())
+        if target is not None:
             found.append((visible.count("\n", 0, match.start()) + 1, target))
+    for match in REFERENCE_LINK_RE.finditer(visible):
+        found.append((visible.count("\n", 0, match.start()) + 1, match[1].strip("<>")))
     return sorted(found)
 
 
@@ -257,6 +291,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     args = parser.parse_args(argv)
+    configure_output()
     result = validate(ROOT)
     if args.json:
         emit(result, True)

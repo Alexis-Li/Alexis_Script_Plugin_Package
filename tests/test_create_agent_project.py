@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -106,6 +107,46 @@ class CreateAgentProjectTests(unittest.TestCase):
         self.assertEqual(written, sorted(
             create_agent_project.create("SampleProject", str(self.work / "Other"))["files"]
         ))
+
+    def test_untracked_skeleton_files_are_not_copied(self):
+        stray = create_agent_project.SKELETON / "HANDOFF.md"
+        self.assertFalse(stray.exists())
+        self.addCleanup(lambda: stray.unlink() if stray.exists() else None)
+        stray.write_text("local notes\n", encoding="utf-8")
+        preview = create_agent_project.create("SampleProject", str(self.work / "Preview"))
+        self.assertNotIn("HANDOFF.md", preview["files"])
+        destination = self.generate()
+        self.assertNotIn("HANDOFF.md", self.files(destination))
+        self.assertEqual(sorted(preview["files"]), self.files(destination))
+
+    def test_missing_tracked_file_and_git_failure_are_errors(self):
+        missing = create_agent_project.SKELETON / "no-such-tracked-file.md"
+        with mock.patch.object(create_agent_project, "_tracked_skeleton_files", return_value=[missing]):
+            code, text = self.cli("SampleProject", "--destination", str(self.work / "A"), "--apply")
+        self.assertEqual(1, code)
+        self.assertIn("missing from the working tree", text)
+        self.assertFalse((self.work / "A").exists())
+        with mock.patch.object(create_agent_project.subprocess, "run", side_effect=OSError("no git")):
+            code, text = self.cli("SampleProject", "--destination", str(self.work / "B"), "--apply")
+        self.assertEqual(1, code)
+        self.assertIn("cannot list tracked template files", text)
+        self.assertFalse((self.work / "B").exists())
+
+    def test_output_survives_a_legacy_code_page(self):
+        destination = self.work / "Legacy"
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with contextlib.redirect_stdout(stream):
+            code = create_agent_project.main(
+                ["SampleProject", "--destination", str(destination), "--apply"]
+            )
+        stream.flush()
+        self.assertEqual(0, code)
+        self.assertTrue((destination / "AGENTS.md").is_file())
+        self.assertIn(MARKER, stream.buffer.getvalue().decode("utf-8"))
+
+    def test_next_steps_start_the_repository_on_main(self):
+        steps = create_agent_project.create("SampleProject", str(self.work / "Steps"))["next_steps"]
+        self.assertIn("git init -b main", " ".join(steps))
 
     def test_apply_creates_missing_parent_directories_and_accepts_empty_directory(self):
         nested = self.work / "a" / "b" / "SampleProject"

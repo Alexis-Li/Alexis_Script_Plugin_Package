@@ -117,6 +117,31 @@ class ValidateProjectTests(unittest.TestCase):
         self.write("docs/guide.md", text)
         self.assertEqual([], self.errors())
 
+    def test_link_destinations_support_parentheses_escapes_and_angle_brackets(self):
+        text = (
+            '[a](guide_(v2).md) [b](<path with spaces.md>) [c](plain.md "Title")\n'
+            "[d](esc\\)aped.md)\n"
+        )
+        names = ["guide_(v2).md", "path with spaces.md", "plain.md", "esc)aped.md"]
+        self.assertEqual(names, [target for _, target in validate_project.markdown_links(text)])
+        self.write("docs/guide.md", text)
+        self.assertEqual(4, len(self.errors()))
+        for name in names:
+            self.write("docs/" + name, "# Target\n")
+        self.assertEqual([], self.errors())
+
+    def test_output_survives_a_legacy_code_page(self):
+        self.write("docs/guide.md", "[x](中.md)\n")
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(validate_project, "ROOT", self.root):
+            with mock.patch.object(sys, "stdout", stream):
+                code = validate_project.main([])
+        stream.flush()
+        self.assertEqual(1, code)
+        output = stream.buffer.getvalue().decode("utf-8")
+        self.assertIn("broken link", output)
+        self.assertIn("中.md", output)
+
     def test_reference_links_and_root_escape_are_checked(self):
         self.write("docs/guide.md", "[x][ref]\n\n[ref]: missing.md\n[out]: ../../outside.md\n")
         errors = self.errors()

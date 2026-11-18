@@ -44,8 +44,8 @@ python tools/create_agent_project.py <ProjectName> --destination <path-to-new-re
 ```
 
 `<ProjectName>` 用 PascalCase（例如 `LoomlineRetopo`），替换所有
-`{{PROJECT_NAME}}`。生成之后，在新仓库里 `git init`，提交骨架，并建立第一个
-开发分支 `dev/<主题>`。
+`{{PROJECT_NAME}}`。生成之后，在生成目录运行 `git init -b main`，提交骨架，
+然后从 main 创建 `dev/<主题>`。
 
 ## 首次搭建
 
@@ -75,8 +75,10 @@ python tools/create_agent_project.py <ProjectName> --destination <path-to-new-re
 两种可选做法：
 
 - 需求放在 Issue 里，不用 `docs/requirements.md`：由一个产品 Issue 持有需求，
-  子工单引用它的编号（StoUTextureSync 的做法）。删除 `docs/requirements.md`，
-  把阅读顺序、`docs/roadmap.md` 和任务模板里的指向改到那个 Issue。
+  子工单引用它的编号（StoUTextureSync 的做法）。将需求迁入产品 Issue，
+  把所有指向 `docs/requirements.md` 的链接和归属说明改为指向该 Issue，从
+  `tools/validate_project.py` 的 `REQUIRED_FILES` 中移除该路径，再删除文件并
+  运行项目检查。
 - 长期历史记录：项目需要在 ADR 之外保留选定的决定和证据时，增加
   `docs/history/` 并写明保留规则，MtoULiveLink 和 StoUTextureSync 就是这样做的。
   只在某条记录没有更合适的存放处时才加。

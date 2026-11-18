@@ -7,7 +7,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from _project_tools import ABSOLUTE_PATH_RE, emit
+from _project_tools import ABSOLUTE_PATH_RE, configure_output, emit
 
 STATUSES = ("进行中", "待审核", "待验证", "受阻", "可关闭", "已关闭")
 FIELDS = ("状态", "基线", "更新日期")
@@ -118,6 +118,7 @@ def validate_status(body: str) -> dict:
 
 
 def main(argv=None) -> int:
+    configure_output()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     scaffold = commands.add_parser("template", help="Write a draft; refuses to overwrite files.")

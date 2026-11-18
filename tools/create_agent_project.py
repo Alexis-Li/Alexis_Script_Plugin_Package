@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 
 from _repo_tools import ROOT, emit, require_pascal_name
@@ -44,12 +46,32 @@ def _destination_path(value: str) -> Path:
     return destination
 
 
+def _tracked_skeleton_files() -> list[Path]:
+    """Skeleton files tracked by the collection's Git index; untracked local files are never copied."""
+    relative = SKELETON.relative_to(ROOT).as_posix()
+    command = ["git", "-C", str(ROOT), "ls-files", "-z", "--", relative]
+    try:
+        completed = subprocess.run(command, check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "cannot list tracked template files with git ({0}); run from a working "
+            "clone of the collection repository with git on PATH".format(exc)
+        ) from exc
+    names = [name for name in completed.stdout.decode("utf-8").split("\0") if name]
+    return [ROOT / name for name in sorted(names)]
+
+
 def _planned_files() -> list[tuple[Path, str]]:
     planned = []
-    for source in sorted(path for path in SKELETON.rglob("*") if path.is_file()):
+    for source in _tracked_skeleton_files():
+        if not source.is_file():
+            raise ValueError(
+                "tracked template file is missing from the working tree: {0}; "
+                "restore it (git restore) before creating a project".format(
+                    source.relative_to(ROOT).as_posix()
+                )
+            )
         relative = source.relative_to(SKELETON)
-        if "__pycache__" in relative.parts or source.suffix in {".pyc", ".pyo"}:
-            continue
         name = RENAMES.get(relative.name, relative.name)
         planned.append((source, relative.with_name(name).as_posix()))
     return planned
@@ -83,8 +105,8 @@ def create(name: str, destination: str, apply: bool = False) -> dict:
         "destination": str(target),
         "files": [relative for _, relative in planned],
         "next_steps": [
-            "cd into the destination, run git init, and commit the skeleton",
-            "create the first development branch: git switch -c dev/<topic>",
+            "in the destination run git init -b main, commit the skeleton, "
+            "then create dev/<topic> from main",
             "resolve every '{0}' marker (fill it in or delete it) until "
             "python tools/validate_project.py passes".format(CUSTOMIZE_MARKER),
             "run python -m unittest discover -s tests",
@@ -92,7 +114,14 @@ def create(name: str, destination: str, apply: bool = False) -> dict:
     }
 
 
+def _configure_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main(argv=None) -> int:
+    _configure_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name", help="PascalCase project name, for example SampleProject.")
     parser.add_argument(

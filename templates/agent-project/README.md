@@ -49,8 +49,8 @@ python tools/create_agent_project.py <ProjectName> --destination <path-to-new-re
 ```
 
 `<ProjectName>` is PascalCase (for example `LoomlineRetopo`) and replaces every
-`{{PROJECT_NAME}}`. After generation, in the new repository: run `git init`,
-commit the skeleton, and create the first development branch `dev/<topic>`.
+`{{PROJECT_NAME}}`. After generation, in the new repository: run `git init -b main`,
+commit the skeleton, then create `dev/<topic>` from main.
 
 ## First setup
 
@@ -87,8 +87,10 @@ Two optional variants:
 
 - Requirements in an Issue instead of `docs/requirements.md`: one product Issue
   owns the requirements and sub-issues cite its IDs (StoUTextureSync's
-  approach). Delete `docs/requirements.md` and point the reading map,
-  `docs/roadmap.md` and the task template at that Issue.
+  approach). Move the requirements to the product Issue, replace all references
+  to `docs/requirements.md` with the Issue link, remove that path from
+  `REQUIRED_FILES` in `tools/validate_project.py`, then delete the file and run
+  the project checks.
 - Durable history: a project that needs to keep selected decisions and evidence
   beyond ADRs adds `docs/history/` with its own retention rules, as MtoULiveLink
   and StoUTextureSync do. Add it only when a record has no better owner.

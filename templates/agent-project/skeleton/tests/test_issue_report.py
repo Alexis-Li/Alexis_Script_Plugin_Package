@@ -176,6 +176,18 @@ class IssueStatusTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual({"ok": True, "issue": 65, "errors": []}, json.loads(text))
 
+    def test_output_survives_a_legacy_code_page(self):
+        path = self.work / "invalid-status.md"
+        path.write_text("<!-- issue-status:v1 issue=65 -->\n## 状态\n", encoding="utf-8")
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with contextlib.redirect_stdout(stream):
+            code = issue_report.main(["check", str(path), "--json"])
+        stream.flush()
+        self.assertEqual(1, code)
+        payload = json.loads(stream.buffer.getvalue().decode("utf-8"))
+        self.assertFalse(payload["ok"])
+        self.assertIn("状态", "".join(payload["errors"]))
+
     def test_cli_rejects_unknown_commands_and_options(self):
         cases = (
             ["unknown"],
