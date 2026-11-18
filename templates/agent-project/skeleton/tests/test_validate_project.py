@@ -177,6 +177,13 @@ class ValidateProjectTests(unittest.TestCase):
         self.assertEqual(["q.md", "z.md"], self.targets("[t](z.md 'title') [s](q.md (title))\n"))
         self.assertEqual(["w.md"], self.targets("[t](z.md [u](w.md)\n"))
 
+    def test_deeply_nested_brackets_do_not_recurse(self):
+        depth = 1200
+        self.assertEqual([(1, "ok.md")], validate_project.markdown_links("[" * depth + "x" + "]" * depth + "(ok.md)"))
+        nested = "[" * depth + "x" + "](d.md)" * depth
+        self.assertEqual(["d.md"] * depth, self.targets(nested))
+        self.assertEqual(["ok.md"], self.targets("[" * 5000 + "[a](ok.md)"))
+
     def test_code_is_not_scanned_and_lines_are_counted(self):
         text = "Intro\n`[c](code.md)`\n```\n[d](fence.md)\n```\n[first\nlabel](one.md)\n\ntext [two](two.md)\n"
         self.assertEqual([(6, "one.md"), (9, "two.md")], validate_project.markdown_links(text))
