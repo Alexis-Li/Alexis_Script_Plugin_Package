@@ -6,6 +6,10 @@ one changelog at the composite project root.
 
 ## Unreleased
 
+- Add the `templates/agent-project` skeleton for new independent projects
+  developed by agents, with `tools/create_agent_project.py` to generate it
+  outside this repository. The skeleton carries its own project check, status
+  comment helper, tests and CI.
 - Move MtoU Live Link, its history records and its Topia build tools to the
   independent [MtoULiveLink](https://github.com/Alexis-Li/MtoULiveLink)
   repository, mounted as the submodule `composite/MtoULiveLink`.

@@ -42,10 +42,13 @@ REQUIRED_PATHS = (
     "templates/maya-tool",
     "templates/unreal-plugin",
     "templates/standalone-python-tool",
+    "templates/agent-project",
     "templates/maya-shelf-script/README_CN.md",
     "templates/maya-tool/README_CN.md",
     "templates/unreal-plugin/README_CN.md",
     "templates/standalone-python-tool/README_CN.md",
+    "templates/agent-project/README_CN.md",
+    "templates/agent-project/skeleton/AGENTS.md.tmpl",
     "AGENTS.md",
     "README.md",
     "README_CN.md",
@@ -96,6 +99,7 @@ TEXT_SUFFIXES = {
     ".toml",
     ".yml",
     ".yaml",
+    ".tmpl",
 }
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
