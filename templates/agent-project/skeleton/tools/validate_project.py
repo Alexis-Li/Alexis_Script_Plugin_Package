@@ -9,6 +9,7 @@ project can add or remove checks in one place.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -180,8 +181,13 @@ def _skip_space(text: str, index: int, end: int) -> int:
     return index
 
 
+@functools.lru_cache(maxsize=4096)
 def _closing_bracket(text: str, start: int, end: int) -> int | None:
-    """Return the index of the `]` matching the `[` at start."""
+    """Return the index of the `]` matching the `[` at start.
+
+    A `[` inside the label that starts a complete inline link is skipped as a whole, so
+    brackets in that link's destination or title do not change the pairing.
+    """
     depth = 0
     index = start
     while index < end:
@@ -190,6 +196,13 @@ def _closing_bracket(text: str, start: int, end: int) -> int | None:
             index += 2
             continue
         if char == "[":
+            if depth:
+                inner = _closing_bracket(text, index, end)
+                if inner is not None and inner + 1 < end and text[inner + 1] == "(":
+                    parsed = _inline_link_end(text, inner + 1, end)
+                    if parsed is not None:
+                        index = parsed[1]
+                        continue
             depth += 1
         elif char == "]":
             depth -= 1
